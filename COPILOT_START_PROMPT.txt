@@ -1,0 +1,13 @@
+Continue from this repository context.
+
+Read these files first (in order):
+1) AI_HANDOFF_CHANGELOG.md
+2) PROJECT_CONTEXT.md
+3) AI_HANDOFF_CHECKLIST.md
+4) AI_PROJECT_RUNBOOK.md
+
+Then do this:
+- Summarize current project status in 6-10 bullets.
+- List open risks/blockers.
+- Propose the next 3 highest-value actions.
+- Keep AI_HANDOFF_CHANGELOG.md and PROJECT_CONTEXT.md updated as work progresses.

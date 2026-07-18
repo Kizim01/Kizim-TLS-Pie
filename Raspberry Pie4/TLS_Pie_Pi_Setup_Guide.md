@@ -79,13 +79,33 @@ After reboot, confirm:
 - the capture directory exists
 - a .pcap file is created
 
-## 10. Common issues
+## 10. MicroView display behavior and wiring
+MicroView now shows clear runtime states:
+- READY when idle and prepared to scan
+- SCANNING during active scan motion
+- REC once Pi confirms tcpdump recording started
+- PI TIMEOUT if no Pi recording acknowledgement is received
+- PI ABORTED with a reason code if Pi aborts
+
+Add one Pi-to-MicroView return signal line through an unused level shifter channel:
+- Pi GPIO22 -> level shifter -> MicroView D4 (PISTATUS)
+
+Abort cause codes shown on OLED:
+- 1 START TIMEOUT
+- 2 NO INTERFACE
+- 3 LIDAR OFFLINE
+- 4 TCPDUMP ERROR
+- 5 EMPTY PCAP
+- 6 INTERRUPTED
+- 7 TOOL MISSING
+
+## 11. Common issues
 - The lidar interface is not eth0
 - Missing packages
 - The Pi cannot reach the network
 - The Arduino and Pi do not share a common ground
 
-## 11. Useful links
+## 12. Useful links
 - Raspberry Pi OS downloads: https://www.raspberrypi.com/software/operating-systems/
 - Raspberry Pi Imager: https://www.raspberrypi.com/software/
 - Raspberry Pi documentation: https://www.raspberrypi.com/documentation/

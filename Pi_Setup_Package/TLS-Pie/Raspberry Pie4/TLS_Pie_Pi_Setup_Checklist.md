@@ -31,8 +31,13 @@ Make sure these files exist:
 - /home/lipi/TLS-Pie/Raspberry Pie4/TLS-Pie/VLPrecord.sh
 - /home/lipi/TLS-Pie/Raspberry Pie4/TLS-Pie/VLPbuttons.py
 - /home/lipi/TLS-Pie/Raspberry Pie4/TLS-Pie/VLPwaitbutton.py
+- /home/lipi/TLS-Pie/Raspberry Pie4/TLS-Pie/VLPstatussignal.py
 
-## 5. Test the script manually
+## 5. Verify status return wiring
+- Pi GPIO22 is connected through the level shifter to MicroView D4 (PISTATUS)
+- Shared ground is connected between Pi and MicroView
+
+## 6. Test the script manually
 Run:
 
 ```bash
@@ -43,8 +48,11 @@ Expected behavior:
 - the script starts
 - it waits for the Arduino trigger
 - it creates a .pcap file in /home/lipi/velodyne
+- MicroView shows READY before scan
+- MicroView shows SCANNING during scan
+- MicroView shows REC when Pi confirms recording
 
-## 6. If the interface is not eth0
+## 7. If the interface is not eth0
 Check the interface name:
 
 ```bash
@@ -53,7 +61,7 @@ ip -br addr
 
 Then run the script with the correct interface name.
 
-## 7. Enable automatic startup
+## 8. Enable automatic startup
 The setup script creates a startup launcher for the Pi desktop session.
 
 Reboot the Pi:
@@ -62,19 +70,21 @@ Reboot the Pi:
 sudo reboot
 ```
 
-## 8. Confirm the system works
+## 9. Confirm the system works
 After reboot:
 - verify the script starts automatically
 - verify a .pcap file is created
 - verify the Pi is waiting for the Arduino trigger
+- verify no PI TIMEOUT message appears unless Pi recording ACK fails
 
-## 9. Common problems
+## 10. Common problems
 - Wrong network interface name
 - Missing packages
 - No common ground between Arduino and Pi
 - No .pcap file created
+- Missing GPIO22 -> D4 status return wire
 
-## 10. Quick recovery commands
+## 11. Quick recovery commands
 If needed, run:
 
 ```bash

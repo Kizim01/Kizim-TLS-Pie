@@ -50,10 +50,163 @@ const int MOTOR_STEP_PIN = 5; //pan motor step
 const int MOTOR_DIRECTION_PIN = 3; //pan motor direction
 const int RECORDSTART = 7; // output to start bag record on Pie (avoid A4/A5, which MicroView uses for the OLED)
 const int RECORDSTOP = 8; // output to stop bag record on Pie
+const int PISTATUS = 4; // input from Pi status pulse line (through level shifter)
 
 bool buttonS360pressed = false;
 bool buttonF360pressed = false;
 bool buttonS180pressed = false;
+bool piAbortLatched = false;
+bool piStatusLast = HIGH;
+int piStatusPulseCount = 0;
+int piAbortCode = 0;
+bool readyScreenShown = false;
+bool piRecordingAckReceived = false;
+bool scanInProgress = false;
+unsigned long piStatusLastEdgeMs = 0;
+unsigned long piStatusLastPulseMs = 0;
+
+const unsigned long PI_STATUS_MIN_PULSE_MS = 20;
+const unsigned long PI_STATUS_CODE_GAP_MS = 500;
+const unsigned long PI_ACK_TIMEOUT_MS = 4000;
+const int PI_STATUS_CODE_RECORDING_ACK = 8;
+
+void showReadyScreen() {
+    uView.clear(PAGE);
+    uView.setFontType(1);
+    uView.setCursor(10,6);
+    uView.print("READY");
+    uView.setFontType(0);
+    uView.setCursor(8,26);
+    uView.print("PRESS A0/A1/A2");
+    uView.setCursor(14,38);
+    uView.print("TO SCAN");
+    uView.display();
+    readyScreenShown = true;
+}
+
+void showPiAckWaitScreen() {
+    uView.clear(PAGE);
+    uView.setFontType(1);
+    uView.setCursor(7,6);
+    uView.print("WAIT PI");
+    uView.setFontType(0);
+    uView.setCursor(7,28);
+    uView.print("ARMING REC...");
+    uView.display();
+}
+
+void showPiAckTimeoutMessage() {
+    uView.clear(PAGE);
+    uView.setFontType(1);
+    uView.setCursor(2,7);
+    uView.print("PI TIMEOUT");
+    uView.setFontType(0);
+    uView.setCursor(2,24);
+    uView.print("NO REC ACK");
+    uView.setCursor(2,36);
+    uView.print("PRESS RESET");
+    uView.display();
+}
+
+void showRecLostMessage() {
+    uView.clear(PAGE);
+    uView.setFontType(1);
+    uView.setCursor(4,7);
+    uView.print("REC LOST");
+    uView.setFontType(0);
+    uView.setCursor(8,26);
+    uView.print("PI ABORTED");
+    uView.display();
+}
+
+void drawRecBadge() {
+    uView.setFontType(0);
+    uView.setCursor(45,0);
+    uView.print("REC");
+}
+
+void showPiAbortMessage(int code) {
+    const char* reason = "UNKNOWN";
+    if (code == 1) reason = "START TIMEOUT";
+    else if (code == 2) reason = "NO INTERFACE";
+    else if (code == 3) reason = "LIDAR OFFLINE";
+    else if (code == 4) reason = "TCPDUMP ERROR";
+    else if (code == 5) reason = "EMPTY PCAP";
+    else if (code == 6) reason = "INTERRUPTED";
+    else if (code == 7) reason = "TOOL MISSING";
+
+    uView.clear(PAGE);
+    uView.setFontType(0);
+    uView.setCursor(2,4);
+    uView.print("PI ABORTED");
+    uView.setCursor(2,20);
+    uView.print(reason);
+    uView.setCursor(2,36);
+    uView.print("CODE ");
+    uView.print(code);
+    uView.display();
+    readyScreenShown = false;
+}
+
+void checkPiStatus() {
+    unsigned long now = millis();
+    bool current = digitalRead(PISTATUS);
+
+    if (current != piStatusLast) {
+        unsigned long dt = now - piStatusLastEdgeMs;
+        piStatusLastEdgeMs = now;
+
+        // Count only LOW-going edges as pulses and ignore obvious bounce.
+        if (current == LOW && dt >= PI_STATUS_MIN_PULSE_MS) {
+            piStatusPulseCount++;
+            piStatusLastPulseMs = now;
+        }
+        piStatusLast = current;
+    }
+
+    if (!piAbortLatched && piStatusPulseCount > 0 && (now - piStatusLastPulseMs) > PI_STATUS_CODE_GAP_MS) {
+        int code = piStatusPulseCount;
+        piStatusPulseCount = 0;
+
+        if (code == PI_STATUS_CODE_RECORDING_ACK) {
+            piRecordingAckReceived = true;
+            return;
+        }
+
+        piAbortCode = code;
+        piAbortLatched = true;
+        if (scanInProgress == true) {
+            showRecLostMessage();
+            delay(700);
+        }
+        showPiAbortMessage(piAbortCode);
+    }
+}
+
+bool sendRecordStartAndWaitForPiAck() {
+    piRecordingAckReceived = false;
+    showPiAckWaitScreen();
+
+    digitalWrite(RECORDSTART, LOW); // starts bag record
+    delay(1);
+    digitalWrite(RECORDSTART, HIGH);
+
+    unsigned long startMs = millis();
+    while ((millis() - startMs) < PI_ACK_TIMEOUT_MS) {
+        checkPiStatus();
+        if (piAbortLatched == true) {
+            return false;
+        }
+        if (piRecordingAckReceived == true) {
+            return true;
+        }
+        delay(10);
+    }
+
+    scanInProgress = false;
+    showPiAckTimeoutMessage();
+    return false;
+}
 
 SpeedyStepper stepper;
 
@@ -97,6 +250,7 @@ void setup() {
   pinMode(MOTOR_EN_PIN, OUTPUT);
   pinMode(RECORDSTART, OUTPUT);
   pinMode(RECORDSTOP, OUTPUT);
+    pinMode(PISTATUS, INPUT_PULLUP);
   
   attachInterrupt(digitalPinToInterrupt(KILL), KILL_SCAN, RISING);
   
@@ -131,21 +285,18 @@ void setup() {
     delay(1500);
     uView.clear(PAGE);
     uView.display();
-    uView.setFontType(0); // set font type 0: Numbers and letters. 10 characters per line (6 lines)
-    uView.setCursor(14,5);
-    uView.print("SELECT"); // display string
-    uView.display();
-    delay(500);
-    uView.setCursor(20,20);
-    uView.print("SCAN");
-    uView.display();
-    uView.setCursor(20,36);
-    uView.print("TYPE");
-    uView.display();
-    delay(750);
+    showReadyScreen();
 }
 
 void loop() {
+    checkPiStatus();
+    if (piAbortLatched == true) {
+        delay(25);
+        return;
+    }
+    if (readyScreenShown == false) {
+        showReadyScreen();
+    }
   readButtons();
   actOnButtons();
 }
@@ -180,6 +331,8 @@ void actOnButtons() {
  
 
 void PANO360S() {
+    readyScreenShown = false;
+    scanInProgress = true;
     digitalWrite(MOTOR_EN_PIN, LOW); // enable drive
     stepper.setStepsPerRevolution(640000); //CSF-14-50 harmonic drive 50:1, 32 microsteps, 0.9 deg motor
     stepper.setSpeedInRevolutionsPerSecond(0.0027778); // 1 degree per second, 360 degrees in 6 minutes
@@ -212,10 +365,13 @@ void PANO360S() {
     uView.setCursor(5,36);
     uView.print("6 Minutes");
     uView.display();
-    digitalWrite(RECORDSTART, LOW); // starts bag record
-    delay(1);
-    digitalWrite(RECORDSTART, HIGH);
-    //delay(200);
+    if (!sendRecordStartAndWaitForPiAck()) {
+        digitalWrite(MOTOR_EN_PIN, HIGH); // disable driver
+        return;
+    }
+    drawRecBadge();
+    uView.display();
+
     stepper.moveToPositionInRevolutions(1.05); // rotates 378 degrees. Add some rotation to be sure and record a full 360 after TCPDUMP starts
     digitalWrite(RECORDSTOP, LOW); // stops bag record
     delay(10);
@@ -236,13 +392,13 @@ void PANO360S() {
     delay(2000);
     uView.clear(PAGE);
     uView.display();
-    delay(100);
-    uView.setCursor(1,32);
-    uView.print("RESTART");
-    uView.display();
+    showReadyScreen();
+    scanInProgress = false;
     }
 
 void PANO360F() {
+    readyScreenShown = false;
+    scanInProgress = true;
     digitalWrite(MOTOR_EN_PIN, LOW); // enable drive
     stepper.setStepsPerRevolution(640000); 
     stepper.setSpeedInRevolutionsPerSecond(0.00556); // 2 degree per second, 360 degrees in 3 minutes
@@ -275,10 +431,13 @@ void PANO360F() {
     uView.setCursor(5,36);
     uView.print("3 Minutes");
     uView.display();
-    digitalWrite(RECORDSTART, LOW); // starts bag record
-    delay(1);
-    digitalWrite(RECORDSTART, HIGH);
-    //delay(200);  
+    if (!sendRecordStartAndWaitForPiAck()) {
+        digitalWrite(MOTOR_EN_PIN, HIGH); // disable driver
+        return;
+    }
+    drawRecBadge();
+    uView.display();
+
     stepper.moveToPositionInRevolutions(1.05); // rotates 378 degrees
     digitalWrite(RECORDSTOP, LOW); // stops bag record
     delay(10);
@@ -299,13 +458,13 @@ void PANO360F() {
     delay(2000);
     uView.clear(PAGE);
     uView.display();
-    delay(100);
-    uView.setCursor(1,32);
-    uView.print("RESTART");
-    uView.display();
+    showReadyScreen();
+    scanInProgress = false;
     }
 
 void PANO180S() {
+    readyScreenShown = false;
+    scanInProgress = true;
     digitalWrite(MOTOR_EN_PIN, LOW); // enable drive
     stepper.setStepsPerRevolution(640000); 
     stepper.setSpeedInRevolutionsPerSecond(0.0027778); // 1 degree per second, 360 degrees in 6 minutes
@@ -340,9 +499,13 @@ void PANO180S() {
     uView.setCursor(5,36);
     uView.print("3 Minutes");
     uView.display();
-    digitalWrite(RECORDSTART, LOW); // starts bag record
-    delay(1);
-    digitalWrite(RECORDSTART, HIGH);
+    if (!sendRecordStartAndWaitForPiAck()) {
+        digitalWrite(MOTOR_EN_PIN, HIGH); // disable driver
+        return;
+    }
+    drawRecBadge();
+    uView.display();
+
     //delay(500);    
     //stepper.moveToPositionInRevolutions(200); // runs 10 min at 20rpm    
     stepper.moveToPositionInRevolutions(0.53); // rotates 190.8 degrees adds 10.8 degrees overlap
@@ -367,13 +530,12 @@ void PANO180S() {
     delay(2000);
     uView.clear(PAGE);
     uView.display();
-    delay(100);
-    uView.setCursor(1,32);
-    uView.print("RESTART");
-    uView.display();
+    showReadyScreen();
+    scanInProgress = false;
     }
 
 void KILL_SCAN() {
+    scanInProgress = false;
     uView.clear(PAGE);
     uView.display();
     delay(100);
