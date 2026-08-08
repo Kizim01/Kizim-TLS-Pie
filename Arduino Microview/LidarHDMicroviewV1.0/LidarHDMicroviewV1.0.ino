@@ -38,16 +38,54 @@
 #include <SpeedyStepper.h>
 #include <MicroView.h>
 
-const int pan360s = A0; //button
-const int pan360f = A1; //button
-const int pan180s = A2; //button
-const int KILL = 2; //button
-const int MOTOR_EN_PIN = 6; //pan motor enable
-const int MOTOR_STEP_PIN = 5; //pan motor step
-const int MOTOR_DIRECTION_PIN = 3; //pan motor direction
-const int RECORDSTART = 7; // output to start bag record on Pie (avoid A4/A5, which MicroView uses for the OLED)
-const int RECORDSTOP = 8; // output to stop bag record on Pie
-const int PISTATUS = 4; // input from Pi status pulse line (through level shifter)
+/*
+ * PIN NUMBERING -- READ THIS BEFORE WIRING ANYTHING
+ *
+ * The MicroView has two different numbering schemes and they do NOT agree.
+ * Everything below names ARDUINO pins. The harness plugs into PHYSICAL pins.
+ * Getting these confused is how 12V ended up on physical pin 10 (= D1/TXD)
+ * and destroyed a board.
+ *
+ *   Arduino pin        physical pin
+ *   -----------        ------------
+ *   A0                  7
+ *   A1                  6
+ *   A2                  5
+ *   A3                  4
+ *   A4                  3
+ *   A5                  2
+ *   D0 / RXD            9      <- upload path, keep clear
+ *   D1 / TXD           10      <- upload path, keep clear
+ *   D2                 11
+ *   D3                 12
+ *   D5                 13
+ *   D6                 14
+ *
+ *   RESET               1
+ *   GND                 8
+ *   +5V                15
+ *   VIN                16      <- the ONLY pin that accepts more than 5.5V
+ *
+ * Only twelve I/O pins are broken out. D4, D7, D8, D10, D11 and D13 are NOT
+ * available: the OLED uses them internally. See SparkFun_MicroView/src/
+ * MicroView.h -- OLEDPWR is D4 (the display's 3.3V regulator enable), the
+ * OLED reset is PORTD bit 7 (D7), data/command is PORTB bit 0 (D8), chip
+ * select is PORTB bit 2 (D10), and D11/D13 are the SPI lines to the display.
+ *
+ * The OLED is SPI, not I2C, so A4/A5 are free -- an earlier comment here said
+ * the opposite and it was wrong.
+ */
+
+const int pan360s = A0; //button, physical pin 7
+const int pan360f = A1; //button, physical pin 6
+const int pan180s = A2; //button, physical pin 5
+const int KILL = 2; //button, physical pin 11 (INT0)
+const int MOTOR_EN_PIN = 6; //pan motor enable, physical pin 14
+const int MOTOR_STEP_PIN = 5; //pan motor step, physical pin 13
+const int MOTOR_DIRECTION_PIN = 3; //pan motor direction, physical pin 12
+const int RECORDSTART = A3; // output to start bag record on Pie, physical pin 4
+const int RECORDSTOP = A4; // output to stop bag record on Pie, physical pin 3
+const int PISTATUS = A5; // input from Pi status pulse line (through level shifter), physical pin 2
 
 bool buttonS360pressed = false;
 bool buttonF360pressed = false;
