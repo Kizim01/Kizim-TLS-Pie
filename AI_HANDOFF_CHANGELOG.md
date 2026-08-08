@@ -276,3 +276,106 @@ The original `Pi_Setup_Package` and `MicroView_Setup_Package` folders were kept 
 
 ### Remaining work
 - None code-side; this was documentation-only. The underlying VLPrecord.sh fixes and bench test checklist still need real hardware verification (see above).
+
+---
+
+## Session update (2026-08-08/09): MicroView destroyed, architecture moved to Pi-only
+
+> **If you are the next AI on this project, read this section and the rewritten
+> [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) before anything else.** Every earlier section of this
+> changelog describes an architecture that no longer exists.
+
+### 1. The MicroView is dead — cause confirmed
+
+Symptom: OLED dark, `avrdude` failing `not in sync: resp=0x00` at 115200 / 57600 / 19200 / 9600.
+
+Cause: the harness was wired with **both pin rows reversed** — right column physical pin N to pin
+(25−N), left column pin N to pin (9−N). That put **12 V on physical pin 10 = Arduino D1/TXD**
+(absolute max ≈ 5.5 V), and put the **GND wire on RESET**, leaving the board with no ground return.
+
+TXD is the pin the ATmega replies to `avrdude` on, which is why the FTDI programmer looked
+perfectly healthy while nothing answered — one fault explaining every symptom.
+
+Ruled out during diagnosis: the sketch, the Arduino IDE (bare `avrdude` fails identically), port
+contention, and the FT231X programmer itself.
+
+### 2. Unresolved — is the Pi damaged?
+
+The wires intended for TX and RX landed on pin 15 (**the +5 V rail**) and pin 16 (**VIN**), both
+running off-board. The path to the Pi went through **U2, the 4-channel level shifter**, which on a
+BSS138 MOSFET design blocks HV→LV conduction and probably protected the Pi. That is inference, not
+measurement.
+
+**Action for the next session:** run `gpio_selftest.py --pins 14,15` with the header disconnected.
+Replace U2 regardless.
+
+### 3. Firmware bugs found and fixed (commits `feb1d91`, `9fe8249`)
+
+Fixed but **never uploaded** — the board died first. Retained for reference only.
+
+- `KILL_SCAN()` ran as an ISR while calling `delay()` and driving the OLED. Interrupts are masked
+  inside an ISR so Timer0 never ticks and `delay()` blocks forever — the board hung permanently on
+  the first kill press, and because the `RECORDSTOP` pulse sat after those delays the Pi was never
+  told to stop.
+- KILL interrupt was `RISING` on an active-low button, so it fired on release. Now `FALLING`.
+- All four buttons were `INPUT` but read active-low — floating. Now `INPUT_PULLUP`.
+- Scan moves were blocking, so neither the kill button nor a Pi abort was looked at for the whole
+  3–6 minute rotation.
+- The PI TIMEOUT screen was drawn and immediately overwritten by `showReadyScreen()`.
+- RAM was at 67%; the logo moved to PROGMEM, now 49%.
+- **`PISTATUS`/`RECORDSTART`/`RECORDSTOP` were on D4/D7/D8 — pins the MicroView does not break
+  out.** The OLED uses D4 (3.3 V regulator enable), D7 (reset), D8 (data/command), D10, D11, D13
+  internally. Moved to A3/A4/A5. See `SparkFun_MicroView/src/MicroView.h`.
+
+### 4. New architecture — the Pi runs everything (commit `5360777`)
+
+New files in `Raspberry Pie4/TLS-Pie/`:
+
+- **`tls_stepper.py`** — pan axis on **pigpio DMA waveforms**. Linux is not real-time, so a step
+  train bit-banged from a Python loop stalls whenever the scheduler preempts it, and that jitter
+  lands in the point cloud as angular error. Trapezoidal profile: 16-segment ramp, chunked cruise,
+  mirrored decel, emitted as `wave_chain` loops.
+- **`tls_scan.py`** — controller. `VLPrecord.sh`'s preflight checks ported verbatim; `tcpdump`
+  still confirmed alive before the motor turns; capture still stops before the return leg.
+- **`gpio_selftest.py`** — GPIO damage check (commit `7c9fe44`).
+- **`MICROVIEW_REMOVAL.md`** — wiring tables, install, staged bench test.
+
+Removed from the design: the MicroView, U2, and the RECORDSTART/RECORDSTOP/PISTATUS handshake.
+GPIO17/22/27 are now free. **The DS3231 RTC is retained** — the Pi has no battery-backed clock and
+is now the sole timekeeper for pcap filenames and packet timestamps.
+
+Scan geometry unchanged, verified with `--plan`: 378.0 s at 1 °/s, 189.0 s at 2 °/s, 190.8 s for
+the 180, all step counts exact against 640,000 steps/rev.
+
+### 5. Rev 2.0 schematic
+
+Proposed sheet drawn in the Rev 1.0 style:
+<https://claude.ai/code/artifact/b2678f52-1866-431c-8107-538c1a09c199>
+
+### 6. Validation performed
+
+`py_compile` passes on all three new Python files; the motion planner runs and its arithmetic
+checks out. **That is the entire extent of it.** No motor has turned, no pcap has been written, no
+button has been pressed, and the Pi's GPIOs have not been tested since the incident.
+
+### 7. What to verify next
+
+1. `gpio_selftest.py` — is the Pi damaged?
+2. **Confirm the driver chip.** `STEPS_PER_REV = 640000` assumes 1/32 microstepping, which only the
+   DRV8825 does. An A4988-based Big Easy Driver maxes at 1/16 and would run every move twice as far
+   as commanded. The Rev 1.0 sheet labels U4 "BigEasyDriver" but gives the part as DRV8825.
+3. Fit the 10 kΩ ENABLE pull-up and remove the R1–R5 5 V button pull-ups **before** power-up.
+4. Bench test in the order given in `MICROVIEW_REMOVAL.md`, motor uncoupled.
+5. Watch for lost steps *while a capture is running* — DMA and `tcpdump` contend for memory
+   bandwidth, and that is the one open performance question.
+
+### 8. Known safety gaps — raised, not implemented
+
+- The stop button is **normally-open, which fails dangerous**: a broken wire reads as "not
+  pressed" and the stop function vanishes silently. Wire it normally-closed.
+- **No hardware E-stop.** pigpio's DMA engine keeps clocking steps if the Python process is
+  killed. A **latching** switch in series with ENABLE is the only stop that survives dead software.
+- No maximum-duration watchdog, and no systemd unit (so a service stop can SIGKILL past the
+  graceful path).
+- **`BTNPOWEROFF` was dropped in the port** — `VLPrecord.sh` could `poweroff` on a stop press;
+  `tls_scan.py` only aborts. Pulling power from a running Pi risks SD card corruption.

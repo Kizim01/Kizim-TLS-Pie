@@ -1,78 +1,287 @@
 # TLS_Pie / Kizim Robotics project context
 
+> **Last updated: 2026-08-09.** This file was rewritten in full on that date. Everything it
+> previously said about the MicroView driving the system is now historical — see
+> "Architecture change" below before acting on anything.
+
 ## Project summary
-TLS_Pie is a hardware and software prototype for a lidar-based scanning and capture system built around an Arduino / MicroView controller, Raspberry Pi, stepper driver, and Velodyne lidar.
+TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
+system: a pan stepper on a 50:1 harmonic drive sweeping a Velodyne VLP-16, with a Raspberry Pi 4
+capturing the packet stream to `.pcap`.
 
-The system is intended to support autonomous scanning workflows and has since evolved into a broader concept for a fully autonomous decentralized lidar mapping swarm platform.
+It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
+handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
+entirely** and the Pi takes over motion, buttons and capture in a single process.
 
-## Current technical status
-- The Arduino sketch uses D7 and D8 for record start/stop trigger outputs.
-- The Raspberry Pi scripts are aligned to wait for trigger pulses on GPIO17 and GPIO27.
-- The Raspberry Pi now sends status pulses back to MicroView on GPIO22 (through level shifter) for OLED state/abort-cause display.
-- The MicroView firmware now displays READY/WAIT PI/SCANNING/REC and Pi abort-related states.
-- Shared ground between the Arduino / MicroView, Raspberry Pi, and stepper driver is required.
-- The system should be validated first on the bench before longer field runs.
-- VLPrecord.sh no longer signals the MicroView recording ACK until tcpdump is confirmed running, fixing a race where the motor could start moving before capture actually began.
-- VLPrecord.sh now reads the capture interface from a positional argument first (matching how the autostart launcher invokes it), falling back to the ETH_INTERFACE environment variable, then eth0.
-- VLPrecord.sh now applies an optional BPF capture filter (CAPTURE_FILTER, default `host $LIDAR_IP`) so tcpdump only records lidar traffic instead of everything on the interface.
-- These fixes are applied identically in all three copies of VLPrecord.sh: the repo-root copy, the Pi_Setup_Package bundle, and the MicroView_Setup_Package companion copy.
-- A consolidated installer folder, SETUP_PACKAGE_18.07.26/, was created with Pi/ and MicroView/ subfolders bundling the fixed scripts and setup docs. The original Pi_Setup_Package and MicroView_Setup_Package folders are kept as backups.
-- Static validation on 2026-07-18: all Pi Python scripts pass py_compile, all shell scripts pass bash -n, and LidarHDMicroviewV1.0.ino has balanced braces/parens/brackets. Hardware-in-the-loop behavior (GPIO timing, motor sync, capture correctness) still needs bench verification.
+The wider concept has evolved into a fully autonomous decentralized lidar mapping swarm platform
+(see "Funding / company direction").
+
+---
+
+## ⚠ Hardware incident — read before touching the rig
+
+**The MicroView is destroyed.** On 2026-08-08 it stopped responding: OLED dark, `avrdude` failing
+with `not in sync: resp=0x00` at 115200 / 57600 / 19200 / 9600.
+
+**Cause, confirmed:** the harness was wired with **both pin rows reversed** — on the right column
+physical pin N went to pin (25−N), on the left column pin N went to pin (9−N). Two consequences:
+
+- **12 V landed on physical pin 10 = Arduino D1/TXD.** Absolute maximum on an ATmega I/O pin is
+  VCC + 0.5 V ≈ 5.5 V. TXD is the pin the chip replies to `avrdude` on, which is exactly why the
+  programmer looked healthy while nothing answered.
+- **The GND wire landed on RESET (pin 1)**, so the board had no ground return at all and every
+  return current went out through ESD protection diodes.
+
+**Ruled out during diagnosis:** the sketch (compiles clean), the Arduino IDE (bare `avrdude` fails
+identically), port contention, and the FTDI FT231X programmer (`VID_0403+PID_6015`,
+`ConfigManagerErrorCode: 0`, no USB overcurrent in the Windows event log).
+
+### Unresolved: is the Raspberry Pi damaged?
+
+The wires intended for TX and RX landed on pin 15 (**the +5 V rail**) and pin 16 (**VIN**), both of
+which run off-board. 12 V on D0 forward-biases that pin's clamp diode into VCC, pulling the whole
+5 V net to ~11 V — and pin 15 is that net.
+
+**The path from the MicroView to the Pi went through U2, the 4-channel level shifter.** If U2 is
+the usual BSS138 MOSFET type, the Pi was probably protected: the body diode is oriented LV→HV so a
+high voltage on the HV side reverse-biases it, and the FET's gate sits at the LV rail so it stays
+off. There is no conduction path to the Pi; only the HV-side 10 kΩ pull-up backfeeds the 5 V rail,
+under a milliamp.
+
+**This is inference, not measurement.** Before building on the Pi's GPIO:
+
+```bash
+sudo systemctl start pigpiod
+./gpio_selftest.py --pins 14,15      # header disconnected
+```
+
+Treat **U2 as destroyed** and replace it regardless — it is being removed anyway.
+
+**Probably unharmed:** the Big Easy Driver (all its lines landed on other I/O pins, no overvoltage
+went near it) and the DS3231 RTC (on the Pi's I²C, never connected to the MicroView).
+
+---
+
+## Architecture change (2026-08-09)
+
+The Pi now owns buttons, motor and capture in one process. The MicroView, the level shifter and
+the entire start/stop/status handshake come out.
+
+| Removed | Replaced by |
+|---|---|
+| `LidarHDMicroviewV1.0.ino` | `tls_scan.py` + `tls_stepper.py` |
+| `VLPbuttons.py` (GPIO17 start-in) | buttons read directly, no handshake |
+| `VLPwaitbutton.py` (GPIO27 stop-in) | stop button read directly |
+| `VLPstatussignal.py` (GPIO22 pulse codes) | `ScanAborted` exception in-process |
+| `VLPrecord.sh` | `tls_scan.py` (its preflight checks ported verbatim) |
+| MicroView OLED | the HDMI monitor (U9) already in the rig |
+| U2 4-channel level shifter | nothing — no 5 V logic remains |
+
+`VLPselfcheck.sh` is unaffected and still useful.
+
+**Why this is better, and where it isn't.** Rotation and capture are now sequenced by one process,
+so the timestamp-to-angle mapping is exact instead of inferred across a link with unknown latency —
+a real point-cloud quality gain. Against that: an AVR generating steps from a hardware timer is
+inherently more deterministic than Linux, the emergency stop becomes software unless a hardware
+E-stop is fitted, and the Pi becomes a single point of failure. None of it has run on hardware.
+
+### Why D4 / D7 / D8 were never valid
+
+The old firmware assigned `PISTATUS = D4`, `RECORDSTART = D7`, `RECORDSTOP = D8`. **The MicroView
+does not break those pins out.** Only twelve I/O pins reach the 16-pin header; the OLED uses D4,
+D7, D8, D10, D11 and D13 internally. Verified in `SparkFun_MicroView/src/MicroView.h`:
+
+- `OLEDPWR` = **D4** — the display's 3.3 V regulator enable
+- OLED reset = PORTD bit 7 = **D7**
+- data/command = PORTB bit 0 = **D8**
+- chip select = PORTB bit 2 = **D10**; SPI = **D11** / **D13**
+
+The old code comment saying to avoid A4/A5 because "MicroView uses them for the OLED" was
+backwards — the OLED is SPI, so A3/A4/A5 were always free.
+
+---
+
+## MicroView pin numbering (kept for reference)
+
+The MicroView has **two numbering schemes that share a board but not their numbers**. Confusing
+them is what destroyed the hardware. Physical pin 1 is marked by a dot on the underside;
+numbering increments counter-clockwise.
+
+| Arduino pin | Physical pin | | Arduino pin | Physical pin |
+|---|---|---|---|---|
+| A0 | 7 | | D0 / RXD | 9 |
+| A1 | 6 | | D1 / TXD | 10 |
+| A2 | 5 | | D2 | 11 |
+| A3 | 4 | | D3 | 12 |
+| A4 | 3 | | D5 | 13 |
+| A5 | 2 | | D6 | 14 |
+| RESET | 1 | | GND | 8 |
+| **+5V** | **15** | | **VIN** | **16** |
+
+**VIN (physical 16) is the only pin that tolerates more than 5.5 V** (rated 3.3–16 VDC).
+
+---
+
+## Pi pin map (current design)
+
+All of these are overridable by environment variable — nothing is hard-coded.
+
+| Signal | BCM | Header | Notes |
+|---|---|---|---|
+| M.STEP | GPIO19 | 35 | via 1 kΩ series resistor |
+| M.DIR | GPIO26 | 37 | via 1 kΩ series resistor |
+| M.ENABLE | GPIO13 | 33 | via 1 kΩ + latching E-stop |
+| Scan 1 (360° @ 1°/s) | GPIO5 | 29 | switch to GND, internal pull-up |
+| Scan 2 (360° @ 2°/s) | GPIO6 | 31 | switch to GND, internal pull-up |
+| Scan 3 (180° @ 1°/s) | GPIO12 | 32 | switch to GND, internal pull-up |
+| Stop | GPIO17 | 11 | switch to GND, internal pull-up |
+| SDA / SCL | GPIO2 / GPIO3 | 3 / 5 | DS3231 RTC |
+| 3V3 / 5V / GND | — | 1 / 2,4 / 6,9,39 | |
+
+GPIO17, GPIO22 and GPIO27 are free now — they were the handshake lines. GPIO14/15 (UART) are
+unused and are the pins to test for damage.
+
+### Two hardware requirements that are not optional
+
+1. **10 kΩ pull-up from the driver's ENABLE to +3V3.** Every Pi GPIO floats as an input for the
+   ~30 s of boot, and ENABLE is active-low, so the driver can sit energised with nothing in
+   control of it. The firmware handled this in `setup()`; on a Pi no software exists during that
+   window.
+2. **Remove the old R1–R5 button pull-ups.** They pull to **5 V**, and Pi GPIOs are not 5 V
+   tolerant — every idle button would sit at 5 V on a 3.3 V pin.
+
+Recommended alongside: **1 kΩ series resistors** on STEP/DIR/ENABLE. The driver's inputs are
+high-impedance so this costs nothing electrically, but it limits fault current into the Pi's clamp
+diodes to under 10 mA at 12 V.
+
+---
+
+## Scan geometry
+
+Carried over unchanged from the firmware. Verified by `tls_stepper.py --plan` against
+640,000 steps/rev.
+
+| Profile | Sweep | Return | Rate | Duration |
+|---|---|---|---|---|
+| scan1 | 378° | 18° | 1 °/s | 378.0 s |
+| scan2 | 378° | 18° | 2 °/s | 189.0 s |
+| scan3 | 190.8° | 190.8° | 1 °/s | 190.8 s |
+
+The 360° scans overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed
+live, then back off 18° to finish square with the start. The 180° scan carries 10.8° of overlap.
+
+### ⚠ Open question: DRV8825 or A4988?
+
+`STEPS_PER_REV = 640000` assumes 400 steps × **1/32** microstepping × 50:1. Only the DRV8825 does
+1/32. The A4988-based SparkFun Big Easy Driver tops out at 1/16, which makes it 320,000 — and
+would run every move **twice as far as commanded**. The Rev 1.0 schematic labels U4
+"BigEasyDriver" but gives the part as DRV8825; those are different chips. **Settle this before the
+first coupled run.**
+
+---
 
 ## Key files
-- Firmware: [Arduino Microview/LidarHDMicroviewV1.0/LidarHDMicroviewV1.0.ino](Arduino%20Microview/LidarHDMicroviewV1.0/LidarHDMicroviewV1.0.ino)
-- Raspberry Pi scripts:
-  - [Raspberry Pie4/TLS-Pie/VLPbuttons.py](Raspberry%20Pie4/TLS-Pie/VLPbuttons.py)
-  - [Raspberry Pie4/TLS-Pie/VLPwaitbutton.py](Raspberry%20Pie4/TLS-Pie/VLPwaitbutton.py)
-  - [Raspberry Pie4/TLS-Pie/VLPrecord.sh](Raspberry%20Pie4/TLS-Pie/VLPrecord.sh)
-  - [Raspberry Pie4/TLS-Pie/VLPstatussignal.py](Raspberry%20Pie4/TLS-Pie/VLPstatussignal.py)
-  - [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh)
-- Reference docs:
-  - [WIRING_DIAGRAM.md](WIRING_DIAGRAM.md)
-  - [CHANGELOG_AND_TEST_GUIDE.md](CHANGELOG_AND_TEST_GUIDE.md)
-  - [UPDATED_SCHEMATIC_COMPARE.md](UPDATED_SCHEMATIC_COMPARE.md)
-  - [VISUAL_SCHEMATICS.md](VISUAL_SCHEMATICS.md)
-  - [SCHEMATIC_VISUAL_REWORK.md](SCHEMATIC_VISUAL_REWORK.md)
-  - [BENCH_TEST_README.md](BENCH_TEST_README.md)
-  - [AI_HANDOFF_CHANGELOG.md](AI_HANDOFF_CHANGELOG.md)
-  - [AI_HANDOFF_CHECKLIST.md](AI_HANDOFF_CHECKLIST.md)
-  - [Pi_Setup_Package/TLS_Pie_Pi_Setup_Guide.md](Pi_Setup_Package/TLS_Pie_Pi_Setup_Guide.md)
-  - [Pi_Setup_Package/TLS_Pie_Pi_Setup_Checklist.md](Pi_Setup_Package/TLS_Pie_Pi_Setup_Checklist.md)
-  - [SETUP_PACKAGE_18.07.26/BENCH_TEST_CHECKLIST.md](SETUP_PACKAGE_18.07.26/BENCH_TEST_CHECKLIST.md)
 
-## Setup bundles
-- [SETUP_PACKAGE_18.07.26](SETUP_PACKAGE_18.07.26) - current consolidated installer folder. Contains `Pi/` (Raspberry Pi installer + runtime scripts) and `MicroView/` (firmware + Pi companion files), plus `BENCH_TEST_CHECKLIST.md`/`.pdf` for end-to-end bench testing.
-- [Pi_Setup_Package](Pi_Setup_Package) and [Pi_Setup_Package.zip](Pi_Setup_Package.zip) - original Pi package, kept as a backup.
-- [MicroView_Setup_Package](MicroView_Setup_Package) and [MicroView_Setup_Package.zip](MicroView_Setup_Package.zip) - original MicroView package, kept as a backup.
+### Current (Pi-side)
+- [Raspberry Pie4/TLS-Pie/tls_scan.py](Raspberry%20Pie4/TLS-Pie/tls_scan.py) — controller: buttons, scan profiles, tcpdump lifecycle
+- [Raspberry Pie4/TLS-Pie/tls_stepper.py](Raspberry%20Pie4/TLS-Pie/tls_stepper.py) — pan axis on pigpio DMA waveforms
+- [Raspberry Pie4/TLS-Pie/gpio_selftest.py](Raspberry%20Pie4/TLS-Pie/gpio_selftest.py) — GPIO damage check
+- [Raspberry Pie4/TLS-Pie/MICROVIEW_REMOVAL.md](Raspberry%20Pie4/TLS-Pie/MICROVIEW_REMOVAL.md) — wiring, install, staged bench test
+- [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh) — still current
 
-## Generated PDFs
-- [TLS_Pie_Test_Guide.pdf](TLS_Pie_Test_Guide.pdf)
-- [TLS_Pie_Updated_Schematic_Compare.pdf](TLS_Pie_Updated_Schematic_Compare.pdf)
-- [TLS_Pie_Visual_Schematic.pdf](TLS_Pie_Visual_Schematic.pdf)
-- [TLS_Pie_Schemdraw_Schematic_landscape.pdf](TLS_Pie_Schemdraw_Schematic_landscape.pdf)
-- [Kizim_Robotics_Funding_Packet.pdf](Kizim_Robotics_Funding_Packet.pdf)
+### Superseded but retained
+Kept deliberately: the Pi path has never run, and deleting these before it does would leave no
+working system.
+- [Arduino Microview/LidarHDMicroviewV1.0/LidarHDMicroviewV1.0.ino](Arduino%20Microview/LidarHDMicroviewV1.0/LidarHDMicroviewV1.0.ino)
+- [Raspberry Pie4/TLS-Pie/VLPrecord.sh](Raspberry%20Pie4/TLS-Pie/VLPrecord.sh), `VLPbuttons.py`, `VLPwaitbutton.py`, `VLPstatussignal.py`
+
+### Reference
+- [CHANGELOG_AND_TEST_GUIDE.md](CHANGELOG_AND_TEST_GUIDE.md)
+- [BENCH_TEST_README.md](BENCH_TEST_README.md)
+- [AI_HANDOFF_CHANGELOG.md](AI_HANDOFF_CHANGELOG.md) / [AI_HANDOFF_CHECKLIST.md](AI_HANDOFF_CHECKLIST.md)
+- [Schematic_TLS Mircoview.png](Schematic_TLS%20Mircoview.png) — Rev 1.0 schematic
+- [microview pinout.png](microview%20pinout.png) — SparkFun graphical datasheet
+- Rev 2.0 proposed schematic: <https://claude.ai/code/artifact/b2678f52-1866-431c-8107-538c1a09c199>
+
+> Earlier versions of this file linked `WIRING_DIAGRAM.md`, `UPDATED_SCHEMATIC_COMPARE.md`,
+> `VISUAL_SCHEMATICS.md` and `SCHEMATIC_VISUAL_REWORK.md`. **None of those files exist in the
+> repository** — the links were stale and have been removed.
+
+### Setup bundles
+- [SETUP_PACKAGE_18.07.26](SETUP_PACKAGE_18.07.26) — consolidated installer. **Contains the old
+  MicroView architecture and has not been updated for the Pi-only design.**
+- [Pi_Setup_Package](Pi_Setup_Package), [MicroView_Setup_Package](MicroView_Setup_Package) — backups.
+
+---
+
+## Verification status
+
+**Verified:** `tls_scan.py`, `tls_stepper.py` and `gpio_selftest.py` pass `py_compile`. The motion
+planner runs and produces exact step counts and correct durations for all three profiles.
+
+**Not verified — nothing has touched hardware.** No motor has turned, no pcap has been written, no
+button has been pressed, and the Pi's GPIOs have not been tested since the incident. The MicroView
+firmware had years of field use behind it; this code has none.
+
+### Bench test order
+
+Motor uncoupled from the head throughout.
+
+```bash
+./gpio_selftest.py                  # 0. Pi undamaged? header disconnected
+./tls_stepper.py --plan             # 1. step maths, no hardware needed
+./tls_scan.py --check               # 2. network + lidar checks, no motor
+./tls_scan.py --scan scan3 --no-record   # 3. motor only — direction, lost steps
+./tls_scan.py --scan scan3          # 4. full scan
+./tls_scan.py                       # 5. button-driven, as in the field
+```
+
+Set `TLSPIE_DIR_FORWARD=0` if the head turns the wrong way. Press stop during step 3 and confirm
+the motor halts. Watch specifically for lost steps *while a capture is running* — DMA and `tcpdump`
+contend for memory bandwidth, and that is the one real open performance question.
+
+---
+
+## Known safety gaps (raised, not yet implemented)
+
+1. **The stop button is normally-open, which fails dangerous.** A severed wire reads exactly like
+   "not pressed", so the stop function disappears silently. Wire it normally-closed so a broken
+   wire reads as pressed.
+2. **No hardware E-stop.** pigpio clocks steps from the DMA engine, which keeps running if the
+   Python process is killed — `kill -9`, an OOM kill, or a pigpiod hang all leave the motor turning
+   with nothing in control. A **latching** switch in series with ENABLE is the only stop that works
+   when software is gone. Latching matters: a momentary switch re-enables the driver on release
+   while the chain is still running.
+3. **No maximum-duration watchdog.** The planner already computes expected move time; if
+   `wave_tx_busy()` is still true past ~1.2× that, force `wave_tx_stop()`.
+4. **No systemd unit**, so a service stop or reboot can SIGKILL the process and bypass the
+   graceful shutdown path.
+5. **`BTNPOWEROFF` was dropped in the port.** `VLPrecord.sh` could `poweroff` on a stop press;
+   `tls_scan.py` only aborts the scan. Pulling power from a running Pi risks SD card corruption.
+   A long-press on Stop is the natural place to restore it.
+
+---
 
 ## Funding / company direction
+
 The project has evolved into a stronger concept for Kizim Robotics:
 - fully autonomous decentralized lidar mapping swarm drones
-- use cases in inspection, surveying, utilities, infrastructure, disaster response, and defense-related sensing
+- use cases in inspection, surveying, utilities, infrastructure, disaster response, and
+  defense-related sensing
 
-The funding materials created for this direction are:
+Materials:
 - [FUNDING_CONCEPT_NOTE.md](FUNDING_CONCEPT_NOTE.md)
 - [PITCH_DECK_OUTLINE.md](PITCH_DECK_OUTLINE.md)
 - [COMPANY_LAUNCH_CHECKLIST.md](COMPANY_LAUNCH_CHECKLIST.md)
+- [Kizim_Robotics_Funding_Packet.pdf](Kizim_Robotics_Funding_Packet.pdf)
 
-## Bench-test priorities
-Before longer runs, verify:
-1. Power and common ground
-2. Arduino boot and display
-3. Buttons and input behavior
-4. D7/D8 trigger outputs
-5. Raspberry Pi GPIO17/GPIO27 input
-6. Raspberry Pi GPIO22 status return to MicroView D4
-7. OLED states including READY, WAIT PI, SCANNING, REC, PI TIMEOUT, REC LOST, PI ABORTED
-6. Stepper driver control pins D3/D5/D6
-7. tcpdump capture output and .pcap file creation
+---
 
 ## Suggested next step
-The next practical step is to complete one successful bench-test cycle, capture the results, and then use the funding materials to pursue grants, innovation programs, strategic partnerships, and early-stage investment.
+
+1. Run `gpio_selftest.py` and settle whether the Pi is damaged.
+2. Confirm the driver chip (DRV8825 vs A4988) — every scan angle depends on it.
+3. Fit the ENABLE pull-up and remove R1–R5 before any power-up.
+4. Work the bench test order above.
+5. Once one full cycle passes, prune the superseded MicroView files and update the setup bundles,
+   which still describe the old architecture.
