@@ -146,12 +146,17 @@ All of these are overridable by environment variable — nothing is hard-coded.
 | M.STEP | GPIO19 | 35 | via 1 kΩ series resistor |
 | M.DIR | GPIO26 | 37 | via 1 kΩ series resistor |
 | M.ENABLE | GPIO13 | 33 | via 1 kΩ + latching E-stop |
-| Scan 1 (360° @ 1°/s) | GPIO5 | 29 | switch to GND, internal pull-up |
-| Scan 2 (360° @ 2°/s) | GPIO6 | 31 | switch to GND, internal pull-up |
-| Scan 3 (180° @ 1°/s) | GPIO12 | 32 | switch to GND, internal pull-up |
+| 360° Slow (1 °/s) | GPIO5 | 29 | switch to GND, internal pull-up |
+| 360° Quick (2 °/s) | GPIO6 | 31 | switch to GND, internal pull-up |
+| Restart | GPIO12 | 32 | switch to GND, internal pull-up |
 | Stop | GPIO17 | 11 | switch to GND, internal pull-up |
 | SDA / SCL | GPIO2 / GPIO3 | 3 / 5 | DS3231 RTC |
 | 3V3 / 5V / GND | — | 1 / 2,4 / 6,9,39 | |
+
+**Restart** exists because after an abort the position is genuinely unknown — pigpio cannot report
+how many steps actually left the DMA buffer. It drives the head back to zero when the position is
+known, and takes the current position as the new zero when it is not (align the head by hand
+first). This closes the "re-home manually" gap the earlier design could only warn about.
 
 GPIO17, GPIO22 and GPIO27 are free now — they were the handshake lines. GPIO14/15 (UART) are
 unused and are the pins to test for damage.
@@ -173,17 +178,17 @@ diodes to under 10 mA at 12 V.
 
 ## Scan geometry
 
-Carried over unchanged from the firmware. Verified by `tls_stepper.py --plan` against
-**320,000 steps/rev**.
+**Two profiles, both full 360°.** The firmware's 180° scan was dropped on 2026-08-09 — it was never
+wanted in practice, and removing it freed the fourth button for Restart. Verified by
+`tls_stepper.py --plan` against **320,000 steps/rev**.
 
 | Profile | Sweep | Return | Rate | Duration |
 |---|---|---|---|---|
-| scan1 | 378° | 18° | 1 °/s | 378.0 s |
-| scan2 | 378° | 18° | 2 °/s | 189.0 s |
-| scan3 | 190.8° | 190.8° | 1 °/s | 190.8 s |
+| `slow` — 360° Slow | 378° | 18° | 1 °/s | 378.0 s |
+| `fast` — 360° Quick | 378° | 18° | 2 °/s | 189.0 s |
 
-The 360° scans overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed
-live, then back off 18° to finish square with the start. The 180° scan carries 10.8° of overlap.
+Both overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
+back off 18° to finish square with the start.
 
 ### RESOLVED 2026-08-09: it is an A4983/A4988, and the old constant was wrong
 
@@ -213,11 +218,49 @@ before the motor turns under load.
 ## Key files
 
 ### Current (Pi-side)
-- [Raspberry Pie4/TLS-Pie/tls_scan.py](Raspberry%20Pie4/TLS-Pie/tls_scan.py) — controller: buttons, scan profiles, tcpdump lifecycle
+- [Raspberry Pie4/TLS-Pie/tls_scan.py](Raspberry%20Pie4/TLS-Pie/tls_scan.py) — controller: buttons, scan profiles, restart, tcpdump lifecycle
 - [Raspberry Pie4/TLS-Pie/tls_stepper.py](Raspberry%20Pie4/TLS-Pie/tls_stepper.py) — pan axis on pigpio DMA waveforms
+- [Raspberry Pie4/TLS-Pie/tls_web.py](Raspberry%20Pie4/TLS-Pie/tls_web.py) — phone control panel (stdlib HTTP, iOS-style glass UI)
+- [Raspberry Pie4/TLS-Pie/tls_cloud.py](Raspberry%20Pie4/TLS-Pie/tls_cloud.py) — VLP-16 decoder + live preview buffer (opt-in)
+- [Raspberry Pie4/TLS-Pie/tls-scan.service](Raspberry%20Pie4/TLS-Pie/tls-scan.service) — systemd unit
 - [Raspberry Pie4/TLS-Pie/gpio_selftest.py](Raspberry%20Pie4/TLS-Pie/gpio_selftest.py) — GPIO damage check
 - [Raspberry Pie4/TLS-Pie/MICROVIEW_REMOVAL.md](Raspberry%20Pie4/TLS-Pie/MICROVIEW_REMOVAL.md) — wiring, install, staged bench test
 - [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh) — still current
+
+### Operator interface — the phone panel
+
+The rig is headless, so the display is a web page the Pi serves at
+`http://raspberrypi.local:8080/`. Live phase, elapsed/remaining, progress bar, capture filename and
+growing size, both scan buttons, a large Stop and a Restart. Standard library only — no Flask,
+nothing to `pip install`, nothing to break in the field. It runs as a daemon thread inside
+`tls_scan.py` and shares state directly, so **its stop button raises the same flag the GPIO stop
+button does — one abort path, not two.** If the port cannot be bound the scanner still starts.
+
+`TLSPIE_WEB_TOKEN` adds a shared-secret token; without it, anyone who can reach the Pi can start
+the motor. That is fine on a phone hotspot with only you and the Pi on it, and not fine on a site
+network.
+
+**Never launch a scan from a foreground SSH session.** WiFi drops, SSH sends SIGHUP, and the
+controller dies mid-scan while pigpio's DMA keeps clocking steps. Use the systemd unit, or `tmux`.
+
+In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
+as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
+
+### Live point-cloud preview — opt in, and why
+
+`TLSPIE_PREVIEW=1` enables a second UDP socket on port 2368 that decodes a decimated slice of the
+VLP-16 stream into a top-down plan view coloured by height. Both it and `tcpdump` can read the same
+traffic — libpcap captures at the link layer and does not consume datagrams — so it cannot corrupt
+or steal from the capture.
+
+**It is off by default because it competes for the one resource under question.** Decoding lidar
+packets costs CPU and memory bandwidth on a Pi already running DMA step generation and writing a
+pcap to SD, and step-timing jitter under load is the open performance risk in this design. Turn it
+on, run a scan, check for lost steps. If the head drifts, turn it off.
+
+The preview is in the *sensor* frame and does not account for the pan axis turning underneath, so
+it smears into the sweep. That is what makes it useful for judging coverage and exactly why it is
+not survey data. The pcap remains the product.
 
 ### Superseded but retained
 Kept deliberately: the Pi path has never run, and deleting these before it does would leave no
@@ -246,12 +289,19 @@ working system.
 
 ## Verification status
 
-**Verified:** `tls_scan.py`, `tls_stepper.py` and `gpio_selftest.py` pass `py_compile`. The motion
-planner runs and produces exact step counts and correct durations for all three profiles.
+**Verified — 39 automated checks, no hardware required** (`--plan` plus a test harness):
+
+- the motion planner: exact step counts and correct durations for both profiles
+- the **VLP-16 decoder against hand-built packets with known geometry** — a 10 m return at 90°
+  azimuth on the −15° laser lands where the trigonometry says, likewise at 0° azimuth on the other
+  axis; plus range gating, malformed packets, laser decimation and the ring buffer
+- the whole HTTP surface: status, start, stop, restart, busy-rejection, progress maths, token auth,
+  404s, and that the served page makes no external requests
 
 **Not verified — nothing has touched hardware.** No motor has turned, no pcap has been written, no
-button has been pressed, and the Pi's GPIOs have not been tested since the incident. The MicroView
-firmware had years of field use behind it; this code has none.
+button has been pressed, no lidar packet has been decoded from a real sensor, and the Pi's GPIOs
+have not been tested since the incident. The MicroView firmware had years of field use behind it;
+this code has none.
 
 ### Bench test order
 
@@ -272,23 +322,32 @@ contend for memory bandwidth, and that is the one real open performance question
 
 ---
 
-## Known safety gaps (raised, not yet implemented)
+## Safety status
 
-1. **The stop button is normally-open, which fails dangerous.** A severed wire reads exactly like
+**Closed:**
+
+- ~~No systemd unit~~ — `tls-scan.service` added, `KillSignal=SIGTERM` with a 600 s stop timeout so
+  systemd cannot SIGKILL through the graceful shutdown. Also removes the SSH-drop hazard.
+- ~~Re-home after abort was manual and undefined~~ — the Restart button handles both cases.
+
+**Still open:**
+
+1. **Hardware E-stop — user confirmed 2026-08-09 they will fit one.** Until then nothing stops the
+   motor if the controller dies: pigpio clocks steps from the DMA engine, so `kill -9`, an OOM kill
+   or a pigpiod hang all leave it turning. Must be **latching** and in series with the driver's
+   ENABLE — a momentary switch re-enables the driver on release while the wave chain is still
+   running. Fit it on the driver side of the 10 kΩ pull-up.
+2. **The stop button is normally-open, which fails dangerous.** A severed wire reads exactly like
    "not pressed", so the stop function disappears silently. Wire it normally-closed so a broken
-   wire reads as pressed.
-2. **No hardware E-stop.** pigpio clocks steps from the DMA engine, which keeps running if the
-   Python process is killed — `kill -9`, an OOM kill, or a pigpiod hang all leave the motor turning
-   with nothing in control. A **latching** switch in series with ENABLE is the only stop that works
-   when software is gone. Latching matters: a momentary switch re-enables the driver on release
-   while the chain is still running.
+   wire reads as pressed. Needs a small code change to match.
 3. **No maximum-duration watchdog.** The planner already computes expected move time; if
-   `wave_tx_busy()` is still true past ~1.2× that, force `wave_tx_stop()`.
-4. **No systemd unit**, so a service stop or reboot can SIGKILL the process and bypass the
-   graceful shutdown path.
-5. **`BTNPOWEROFF` was dropped in the port.** `VLPrecord.sh` could `poweroff` on a stop press;
-   `tls_scan.py` only aborts the scan. Pulling power from a running Pi risks SD card corruption.
-   A long-press on Stop is the natural place to restore it.
+   `wave_tx_busy()` is still true past ~1.2× that, force `wave_tx_stop()`. Cheap insurance against
+   a bad step constant or a malformed chain.
+4. **`BTNPOWEROFF` was dropped in the port.** `VLPrecord.sh` could `poweroff` on a stop press;
+   `tls_scan.py` only aborts. Pulling power from a running Pi risks SD card corruption. A
+   long-press on Stop is the natural place to restore it.
+5. **The phone panel can start the motor.** The user operates within line of sight of the rig,
+   which is why remote start was accepted. Set `TLSPIE_WEB_TOKEN` on any shared network.
 
 ---
 

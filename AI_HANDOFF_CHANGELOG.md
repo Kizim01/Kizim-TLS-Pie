@@ -379,3 +379,90 @@ button has been pressed, and the Pi's GPIOs have not been tested since the incid
   graceful path).
 - **`BTNPOWEROFF` was dropped in the port** — `VLPrecord.sh` could `poweroff` on a stop press;
   `tls_scan.py` only aborts. Pulling power from a running Pi risks SD card corruption.
+
+---
+
+## Session update (2026-08-09, part 2): step constant corrected, phone UI, preview
+
+### 1. `STEPS_PER_REV` was wrong by 2× — corrected to 320,000
+
+A photograph of the fitted driver board shows the chip marked **`4983ET`**: an Allegro A4983/A4988,
+which is what the SparkFun Big Easy Driver uses. **Maximum 1/16 microstepping.** Only the DRV8825
+does 1/32, and that is not the fitted part.
+
+    400 steps × 16 microsteps × 50:1 = 320,000   ← correct
+    400 steps × 32 microsteps × 50:1 = 640,000   ← what the firmware used
+
+Because the step rate is derived from the same constant, both distance and speed were doubled. A
+nominal "360° at 1 °/s over 6 minutes" scan was really about **756° at 2 °/s**. This came straight
+from the MicroView firmware, so it has been wrong for as long as the rig has existed — relevant if
+any historical scan data ever looked odd.
+
+**Verify empirically anyway:** command 90° on an uncoupled motor, mark the shaft, measure.
+
+Also from the board photo: `VCC` is an **output** fed by the on-board regulator via the `3/5V APWR`
+jumper — do not drive it from the Pi. The board accepts **8–30 V DC** on M+/GND. Motor current is
+set on the `ADJ PWR` pot.
+
+### 2. Hardware removed at the user's direction
+
+The monitor, U6 (the 12 V boost that fed it) and the fan are all gone; there is no E-stop yet
+(user confirmed they will fit one). **Consequence worth carrying forward:** dropping the MicroView
+OLED was justified by the monitor being present, so with the monitor gone the rig was briefly
+headless with no status display at all. That is what motivated the phone panel below.
+
+### 3. Two scan profiles, four buttons
+
+Cut to `slow` (360° @ 1 °/s) and `fast` (360° @ 2 °/s). The 180° profile is gone. That freed the
+fourth button, so the mapping is now **Slow / Quick / Restart / Stop** on GPIO5 / 6 / 12 / 17.
+
+**Restart** closes a gap the old design could only warn about. After an abort the position is
+genuinely unknown — pigpio cannot report how many steps left the DMA buffer — so Restart drives the
+head back to zero when the position is known, and takes the current position as the new zero when
+it is not.
+
+### 4. Phone control panel — `tls_web.py`
+
+Stdlib-only HTTP server on a daemon thread inside `tls_scan.py`, sharing scanner state directly
+rather than guessing at it through a file. **Its stop button raises the same flag the GPIO stop
+button does: one abort path, not two.** iOS-style interface — frosted glass over a gradient
+wallpaper, SF Pro through the system stack, dark by deliberate choice for a field instrument.
+Optional `TLSPIE_WEB_TOKEN`, because the default bind lets anyone on the network start the motor.
+
+Remote start was accepted on the user's stated basis that they are always within line of sight of
+the rig while operating.
+
+### 5. Live point-cloud preview — `tls_cloud.py`, opt in
+
+Decodes a decimated slice of the VLP-16 UDP stream into a ring buffer the panel draws as a
+top-down plan view coloured by height. **Off by default** (`TLSPIE_PREVIEW=1`) because it competes
+for CPU and memory bandwidth with DMA step generation and `tcpdump` — step-timing jitter under load
+is the open performance question in this design. Defaults decode ~0.6% of the stream. `tcpdump` is
+unaffected: libpcap captures at the link layer and does not consume datagrams.
+
+The preview is in the sensor frame and ignores the pan axis turning underneath, so it smears into
+the sweep. Useful for judging coverage; not survey data.
+
+### 6. `tls-scan.service`
+
+Runs the scanner independently of any login. Not convenience: a scan launched from an SSH session
+dies with the link, and a controller killed mid-scan leaves the DMA clocking steps with nothing to
+stop them. `KillSignal=SIGTERM` with a 600 s stop timeout keeps systemd from SIGKILLing through the
+graceful shutdown.
+
+### 7. Validation
+
+39 automated checks, no hardware. Notably the **VLP-16 decoder verified against hand-built packets
+with known geometry** — a 10 m return at 90° azimuth on the −15° laser lands where the trigonometry
+says it should. Plus range gating, malformed packets, decimation, the ring buffer, and the whole
+HTTP surface including busy-rejection and token auth.
+
+**Still nothing on hardware.** No motor has turned, no pcap written, no real lidar packet decoded.
+
+### 8. What to verify next
+
+1. `gpio_selftest.py` — is the Pi damaged? GPIO14/15 ran to the harness that took 12 V.
+2. Measure a commanded 90° before trusting `STEPS_PER_REV`; confirm MS1/MS2/MS3 are set for 1/16.
+3. Fit the 10 kΩ ENABLE pull-up and remove the old R1–R5 5 V button pull-ups **before** power-up.
+4. Set motor current on the `ADJ PWR` pot.
+5. Bench-test uncoupled, motor before capture. Then enable the preview and re-check for lost steps.
