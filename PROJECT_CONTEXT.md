@@ -407,6 +407,32 @@ quarter to a third of the commanded steps going missing.
 board's own limit is 2 A/phase and it gets hot near it. **Never disconnect the motor while the
 driver is powered** — an open coil with the chopper running can destroy the driver.
 
+#### Setting the current with no ammeter — use the head as the instrument
+
+The operator has no current meter, so the usual Vref method is unavailable. It is not needed,
+because the rig can now measure its own step loss: `bench_move.py 90 1.0` takes 90 s and, if
+`S = 320,000`, must produce **exactly 180°** of head rotation.
+
+    mark the head -> run -> read the angle -> nudge the pot toward + -> repeat
+
+The achieved angle climbs as current rises and then **stops climbing**. That plateau is the
+endpoint: more current past it buys nothing and only makes heat. This converges on the current
+setting and the calibration constant at the same time, with no instrument beyond a pencil mark.
+
+Board facts read off `4670_additional_big_easy_driver_*.webp`, which is a clear photograph of the
+real thing: the IC is `4983ET` (A4983), the trimmer is silkscreened **`CUR ADJ PWR`** with a **`+`**
+beside it showing the direction that increases current, and the two sense resistors are marked
+**`R11F`** — i.e. **0.11 Ω**. For the A4983 that gives `I = Vref / (8 × Rs) = Vref / 0.88 ≈ 1.14 ×
+Vref`, so ~1.32 V for 1.5 A *if* the marking reads as 0.11 Ω. **Do not act on that arithmetic
+without checking it against SparkFun's own figure for this board revision** — a 2× error in current
+limit cooks a motor, and the widely-quoted "Vref × 2" implies a different sense resistor than this
+board appears to carry. The plateau method above needs none of it.
+
+**Driver power input is `M+`**, top-right of the board beside `GND`, silkscreened `PWR IN`. The
+board's own rating is **8–30 V DC** — note that is the *board's* figure, narrower than the A4983
+chip's 35 V, so treat 30 V as the ceiling. Motor coils are the separate `A`/`A` and `B`/`B` pairs
+along the top edge; `M+` is not a coil connection.
+
 ### The superseded argument for 640,000 — kept for the method, not the conclusion
 
 Earlier the same day this was "corrected" 640,000 → 320,000 from a photograph of the driver board.
