@@ -188,5 +188,54 @@ check("a 378 deg slow scan leg is allowed its full duration",
 check("but not unboundedly longer",
       big_limit < big_expected * 1.5, "%.0fs" % big_limit)
 
+# --- 5. the wave chain stays inside pigpio's loop-counter budget ---------
+#
+# Regression for a bug found on real hardware 2026-08-09. _build_chain used to
+# emit one loop counter per motion segment. pigpio allows only a handful per
+# chain and raises 'too many chain counters' past that. A slow move has a ramp
+# about two steps long, collapses to ~5 segments and worked; a fast move
+# spreads its ramp over RAMP_SEGMENTS at each end and did not. The 18 deg at
+# 7 deg/s return leg -- part of EVERY scan -- came to 31 segments and could
+# never have run. Nothing caught it because the only move ever run to
+# completion was the slow sweep, and that was aborted before its return leg.
+#
+# This asserts the budget for every move the rig can actually ask for, so the
+# next person to touch the chain builder finds out here and not on a tripod.
+print("\nwave chain stays inside pigpio's counter budget")
+
+
+def count_counters(chain):
+    """Loop starts are the 255,0 marker pairs; each costs one counter."""
+    return sum(1 for i in range(len(chain) - 1)
+               if chain[i] == 255 and chain[i + 1] == 0)
+
+
+chain_st = make_stepper(FakePi(0.0))   # never "busy"; we only build chains here
+BUDGET = 4
+
+for label, deg, rate in (
+        ("slow sweep    378 deg @ 1 deg/s", 378, 1.0),
+        ("fast sweep    378 deg @ 2 deg/s", 378, 2.0),
+        ("RETURN LEG     18 deg @ 7 deg/s", 18, 7.0),
+        ("short + fast    5 deg @ 4 deg/s", 5, 4.0),
+        ("re-home     190.8 deg @ 1 deg/s", 190.8, 1.0),
+):
+    segs, _ = tls_stepper.plan_move(
+        tls_stepper.degrees_to_steps(deg),
+        tls_stepper.deg_per_s_to_step_rate(rate),
+    )
+    n = count_counters(chain_st._build_chain(segs))
+    check("%s -> %2d segments, %d counter(s)" % (label, len(segs), n),
+          n <= BUDGET, "%d counters, over the budget of %d" % (n, BUDGET))
+
+# The exact shape of the old bug: many segments must NOT mean many counters.
+many, _ = tls_stepper.plan_move(
+    tls_stepper.degrees_to_steps(18),
+    tls_stepper.deg_per_s_to_step_rate(7.0),
+)
+check("a 31-segment ramp does not cost 31 counters",
+      len(many) > 20 and count_counters(chain_st._build_chain(many)) <= BUDGET,
+      "%d segments" % len(many))
+
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

@@ -124,6 +124,15 @@ RAMP_SEGMENTS = 16
 CRUISE_CHUNK_PULSES = 500
 MAX_LOOP_COUNT = 65535
 
+# A segment of at most this many steps is emitted as one wave holding all its
+# pulses, costing no loop counter. pigpio's counter budget is small and a
+# per-segment loop overruns it on any fast move -- see _build_chain. Kept well
+# under pigpio's 12000-pulse-per-wave ceiling (a step is two pulses), and
+# comfortably above the largest ramp segment the planner can produce: at the
+# 40 kHz rate ceiling the whole ramp is rate^2/(2*accel) = 1250 steps spread
+# over RAMP_SEGMENTS, so ~78 steps per segment.
+MAX_INLINE_STEPS = int(os.environ.get("TLSPIE_MAX_INLINE_STEPS", "250"))
+
 # Duration watchdog. A move is stopped if it runs past
 # expected * FACTOR + SLACK. The factor is generous because the planner's
 # estimate ignores the DMA engine's own per-pulse overhead, and the slack
@@ -269,7 +278,7 @@ class Stepper:
 
     @staticmethod
     def _loop(wave_id, count):
-        """Chain fragment: repeat `wave_id` `count` times."""
+        """Chain fragment: repeat `wave_id` `count` times. Costs ONE counter."""
         if count <= 0:
             return []
         if count == 1:
@@ -281,26 +290,49 @@ class Stepper:
         """
         Turn motion segments into a pigpio wave chain.
 
-        Each segment becomes a single-pulse wave looped N times, except the
-        cruise, which uses a 500-pulse wave so its loop count stays inside
-        pigpio's 65535 ceiling (500 * 65535 = 32.7M steps of headroom).
+        BUDGET THE LOOP COUNTERS. pigpio allows only a handful of loop
+        counters in one chain and raises 'too many chain counters' past that.
+        The original version emitted one loop per segment, which is fine for a
+        slow move -- its ramp is a couple of steps and collapses to about five
+        segments -- and breaks for a fast one, whose ramp is spread over
+        RAMP_SEGMENTS pieces at each end. Found 2026-08-09 on the real Pi:
+
+            378 deg at 1 deg/s   ->  5 segments  -> worked
+            378 deg at 2 deg/s   -> 19 segments  -> would have failed
+             18 deg at 7 deg/s   -> 31 segments  -> would have failed
+
+        That last line is the return leg of EVERY scan, so no scan could ever
+        have finished. It went unseen because the only move ever run to
+        completion was the slow sweep, and it was aborted before the return.
+
+        The fix: a short segment is emitted as ONE wave holding all of its
+        pulses, which needs no counter at all. Only a segment too long to fit
+        in a single wave falls back to a loop, and that is just the cruise --
+        so a chain now costs at most a couple of counters no matter how many
+        segments the ramp has.
         """
         chain = []
         for n_steps, rate in segments:
+            if n_steps <= 0:
+                continue
             period_us = 1e6 / rate
-            if n_steps > MAX_LOOP_COUNT:
-                chunk_wave = self._make_wave(CRUISE_CHUNK_PULSES, period_us)
-                loops = n_steps // CRUISE_CHUNK_PULSES
-                remainder = n_steps % CRUISE_CHUNK_PULSES
-                if loops > MAX_LOOP_COUNT:
-                    raise StepperError(
-                        "move is too long for a single wave chain: %d steps" % n_steps
-                    )
-                chain.extend(self._loop(chunk_wave, loops))
-                if remainder:
-                    chain.extend(self._loop(self._make_wave(1, period_us), remainder))
-            else:
-                chain.extend(self._loop(self._make_wave(1, period_us), n_steps))
+
+            # Short segment: one wave, no counter. This is every ramp segment.
+            if n_steps <= MAX_INLINE_STEPS:
+                chain.append(self._make_wave(n_steps, period_us))
+                continue
+
+            # Long segment (the cruise): chunk it and pay one counter.
+            chunk_wave = self._make_wave(CRUISE_CHUNK_PULSES, period_us)
+            loops = n_steps // CRUISE_CHUNK_PULSES
+            remainder = n_steps % CRUISE_CHUNK_PULSES
+            if loops > MAX_LOOP_COUNT:
+                raise StepperError(
+                    "move is too long for a single wave chain: %d steps" % n_steps
+                )
+            chain.extend(self._loop(chunk_wave, loops))
+            if remainder:
+                chain.append(self._make_wave(remainder, period_us))
         return chain
 
     # --- motion -----------------------------------------------------------
