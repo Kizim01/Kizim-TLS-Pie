@@ -481,7 +481,9 @@ working system.
   rig, named at both ends: three sheets (power / motor chain / capture path), the full 40-pin header
   map, per-device pinouts and a master netlist. Open it in a browser. This is the drawing to build
   from; `Schematic_TLS Mircoview.png` below is the superseded Rev 1.0 and still shows the MicroView,
-  the level shifter and the five buttons.
+  the level shifter and the five buttons. Also hosted at
+  <https://claude.ai/code/artifact/4cce8b5f-a4c9-4283-bcbb-e3fdf2397d72> for reading on a phone at
+  the bench — the file in this repo is the source of truth.
 - [CHANGELOG_AND_TEST_GUIDE.md](CHANGELOG_AND_TEST_GUIDE.md)
 - [BENCH_TEST_README.md](BENCH_TEST_README.md)
 - [AI_HANDOFF_CHANGELOG.md](AI_HANDOFF_CHANGELOG.md) / [AI_HANDOFF_CHECKLIST.md](AI_HANDOFF_CHECKLIST.md)
