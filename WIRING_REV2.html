@@ -563,77 +563,88 @@ li strong{color:var(--ink); font-weight:620;}
   <figure>
     <div class="plate">
       <div class="draw">
-<svg viewBox="0 0 1140 560" role="img" aria-label="Data path. Raspberry Pi header pin 1 3V3, pin 3 GPIO2 SDA, pin 5 GPIO3 SCL and pin 9 GND go to the DS3231 real time clock. Header pins 4 and 6 power the fan. The Pi's Ethernet jack runs to the Velodyne interface box RJ45, and the interface box terminal block TB1 runs the factory cable to the VLP-16. The GPS connector J1 is unused.">
+<svg viewBox="0 0 1140 620" role="img" aria-label="Capture path, clock and cooling. Raspberry Pi header pin 1 3V3 goes to the DS3231 breakout Vin, pin 9 ground to its GND, pin 5 GPIO3 SCL to SCL and pin 3 GPIO2 SDA to SDA; the breakout's BAT, 32K, SQW and RST pins are left unconnected. Header pins 4 and 6 power the fan. The Pi's on-board Ethernet jack runs to the Velodyne interface box RJ45, and the interface box terminal block TB1 carries the factory cable to the VLP-16. The GPS connector J1 is unused.">
   <defs>
     <g id="gnd3"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g>
   </defs>
 
-  <rect class="bx" x="50" y="60" width="190" height="360"/>
+  <!-- Pi -->
+  <rect class="bx" x="50" y="60" width="190" height="440"/>
   <text class="ref" x="145" y="84" text-anchor="middle">Raspberry Pi 4B</text>
-  <text class="dsc" x="58" y="216">JP1 header,</text>
-  <text class="dsc" x="58" y="232">odd column;</text>
-  <text class="dsc" x="58" y="290">RJ-45 is on</text>
-  <text class="dsc" x="58" y="306">the board</text>
+  <text class="dsc" x="58" y="256">JP1 header,</text>
+  <text class="dsc" x="58" y="272">odd column;</text>
+  <text class="dsc" x="58" y="392">RJ-45 is on</text>
+  <text class="dsc" x="58" y="408">the board</text>
   <text class="pn" x="234" y="104" text-anchor="end">1 · 3V3</text>
-  <text class="pn" x="234" y="144" text-anchor="end">3 · GPIO2 SDA</text>
+  <text class="pn" x="234" y="144" text-anchor="end">9 · GND</text>
   <text class="pn" x="234" y="184" text-anchor="end">5 · GPIO3 SCL</text>
-  <text class="pn" x="234" y="254" text-anchor="end">9 · GND</text>
-  <text class="pn" x="234" y="319" text-anchor="end">4 · 5V</text>
-  <text class="pn" x="234" y="354" text-anchor="end">6 · GND</text>
-  <text class="pn" x="234" y="399" text-anchor="end">eth0 RJ-45</text>
+  <text class="pn" x="234" y="224" text-anchor="end">3 · GPIO2 SDA</text>
+  <text class="pn" x="234" y="304" text-anchor="end">4 · 5V</text>
+  <text class="pn" x="234" y="339" text-anchor="end">6 · GND</text>
+  <text class="pn" x="234" y="454" text-anchor="end">eth0 RJ-45</text>
 
   <!-- RTC -->
   <path class="w v3"  d="M240 100 H460"/>
-  <path class="w i2c" d="M240 140 H460 M240 180 H460"/>
-  <path class="w gnd" d="M240 250 H460"/>
-  <rect class="bx" x="460" y="75" width="180" height="185"/>
-  <text class="ref" x="580" y="118" text-anchor="middle">U1 · DS3231</text>
-  <text class="dsc" x="580" y="136" text-anchor="middle">real-time clock</text>
-  <text class="dsc" x="580" y="152" text-anchor="middle">I²C addr 0x68</text>
-  <text class="pn" x="468" y="104">1 VCC</text>
-  <text class="pn" x="468" y="144">2 SDA</text>
-  <text class="pn" x="468" y="184">3 SCL</text>
-  <text class="pnf" x="468" y="219">4 NC</text>
-  <text class="pn" x="468" y="254">5 GND</text>
-  <path class="w" style="stroke:var(--ink-faint)" d="M460 215 H428"/>
-  <circle class="nc" cx="423" cy="215" r="4"/>
-  <text class="pnf" x="410" y="219" text-anchor="end">n/c</text>
+  <path class="w gnd" d="M240 140 H460"/>
+  <path class="w i2c" d="M240 180 H460 M240 220 H460"/>
+  <rect class="bx" x="460" y="75" width="210" height="300"/>
+  <text class="ref" x="565" y="66" text-anchor="middle">U1 · DS3231 breakout</text>
+  <text class="pn"  x="468" y="104">1 Vin</text>
+  <text class="pn"  x="468" y="144">2 GND</text>
+  <text class="pn"  x="468" y="184">3 SCL</text>
+  <text class="pn"  x="468" y="224">4 SDA</text>
+  <text class="pnf" x="468" y="259">5 BAT</text>
+  <text class="pnf" x="468" y="289">6 32K</text>
+  <text class="pnf" x="468" y="319">7 SQW</text>
+  <text class="pnf" x="468" y="349">8 RST</text>
+  <text class="pnf" x="536" y="259">n/c · coin cell</text>
+  <text class="pnf" x="536" y="289">n/c · 32.768 kHz</text>
+  <text class="pnf" x="536" y="319">n/c · alarm out</text>
+  <text class="pnf" x="536" y="349">n/c · reset</text>
+  <path class="w" style="stroke:var(--ink-faint)" d="M460 255 H434 M460 285 H434 M460 315 H434 M460 345 H434"/>
+  <circle class="nc" cx="429" cy="255" r="4"/><circle class="nc" cx="429" cy="285" r="4"/>
+  <circle class="nc" cx="429" cy="315" r="4"/><circle class="nc" cx="429" cy="345" r="4"/>
+  <text class="dsc" x="600" y="112" text-anchor="middle">Adafruit Precision RTC</text>
+  <text class="dsc" x="600" y="130" text-anchor="middle">I²C address 0x68</text>
+  <text class="dsc" x="600" y="148" text-anchor="middle">pins in silkscreen order</text>
+  <text class="dsc" x="600" y="166" text-anchor="middle">coin cell on the back</text>
+  <text class="net t-v3" x="350" y="94" text-anchor="middle">3V3 — NOT 5 V</text>
 
   <!-- fan -->
-  <path class="w v5"  d="M240 315 H500"/>
-  <path class="w gnd" d="M240 350 H500"/>
-  <rect class="bx" x="500" y="298" width="110" height="70"/>
-  <text class="ref" x="555" y="330" text-anchor="middle">U10</text>
-  <text class="dsc" x="555" y="348" text-anchor="middle">fan, 5 V</text>
-  <text class="pn" x="506" y="312">+</text>
-  <text class="pn" x="506" y="354">–</text>
+  <path class="w v5"  d="M240 300 H300"/>
+  <path class="w gnd" d="M240 335 H300"/>
+  <rect class="bx" x="300" y="286" width="110" height="66"/>
+  <text class="pn" x="306" y="304">+</text>
+  <text class="pn" x="306" y="339">–</text>
+  <text class="ref" x="372" y="314" text-anchor="middle">U10</text>
+  <text class="dsc" x="372" y="332" text-anchor="middle">fan, 5 V</text>
 
   <!-- ethernet -->
-  <path class="w eth" d="M240 395 H690 V430 H780"/>
-  <text class="net t-eth" x="450" y="387" text-anchor="middle">Cat5e · eth0 192.168.1.100 ⇄ VLP-16 192.168.1.201</text>
+  <path class="w eth" d="M240 450 H700 V520 H760"/>
+  <text class="net t-eth" x="450" y="442" text-anchor="middle">Cat5e · eth0 192.168.1.100 ⇄ VLP-16 192.168.1.201</text>
 
-  <rect class="bx" x="780" y="300" width="220" height="180"/>
-  <text class="ref" x="890" y="330" text-anchor="middle">U7</text>
-  <text class="dsc" x="890" y="455" text-anchor="middle">Velodyne interface box</text>
-  <text class="pn" x="788" y="344">J2·1 +12 V</text>
-  <text class="pn" x="788" y="379">J2·2 GND</text>
-  <text class="pn" x="788" y="426">J3 RJ-45</text>
-  <text class="pn" x="992" y="386" text-anchor="end">TB1 (9-way)</text>
+  <rect class="bx" x="760" y="395" width="220" height="175"/>
+  <text class="ref" x="870" y="425" text-anchor="middle">U7</text>
+  <text class="dsc" x="870" y="552" text-anchor="middle">Velodyne interface box</text>
+  <text class="pn" x="768" y="434">J2·1 +12 V</text>
+  <text class="pn" x="768" y="469">J2·2 GND</text>
+  <text class="pn" x="768" y="524">J3 RJ-45</text>
+  <text class="pn" x="972" y="474" text-anchor="end">TB1 (9-way)</text>
 
-  <path class="w batt" d="M780 340 H700"/>
-  <text class="net t-batt" x="776" y="330" text-anchor="end">from S2 · Fig 1</text>
-  <path class="w gnd" d="M780 375 H748 V403"/>
-  <use href="#gnd3" class="w gnd" x="748" y="405"/>
+  <path class="w batt" d="M760 430 H690"/>
+  <text class="net t-batt" x="756" y="420" text-anchor="end">from S2 · Fig 1</text>
+  <path class="w gnd" d="M760 465 H726 V493"/>
+  <use href="#gnd3" class="w gnd" x="726" y="495"/>
 
-  <path class="w" style="stroke:var(--ink-faint)" d="M890 480 V508"/>
-  <circle class="nc" cx="890" cy="513" r="4"/>
-  <text class="pnf" x="902" y="517">J1 GPS — n/c</text>
+  <path class="w" style="stroke:var(--ink-faint)" d="M870 570 V598"/>
+  <circle class="nc" cx="870" cy="603" r="4"/>
+  <text class="pnf" x="882" y="607">J1 GPS — n/c</text>
 
-  <path class="w eth" style="stroke-width:5" d="M1000 390 H1032"/>
-  <rect class="bx" x="1032" y="330" width="95" height="120"/>
-  <text class="ref" x="1079" y="382" text-anchor="middle">VLP-16</text>
-  <text class="dsc" x="1079" y="400" text-anchor="middle">factory</text>
-  <text class="dsc" x="1079" y="416" text-anchor="middle">cable</text>
+  <path class="w eth" style="stroke-width:5" d="M980 470 H1012"/>
+  <rect class="bx" x="1012" y="410" width="95" height="120"/>
+  <text class="ref" x="1059" y="462" text-anchor="middle">VLP-16</text>
+  <text class="dsc" x="1059" y="480" text-anchor="middle">factory</text>
+  <text class="dsc" x="1059" y="496" text-anchor="middle">cable</text>
 </svg>
       </div>
       <div class="titleblock">
@@ -665,6 +676,75 @@ li strong{color:var(--ink); font-weight:620;}
       </table>
     </div>
   </div>
+
+  <div class="stop">
+    <span class="hd">Vin goes to 3V3 — header pin 1, not pin 2 or 4</span>
+    On this breakout the I²C pull-up resistors reference <b>Vin</b>, so whatever you feed Vin is what
+    appears on SDA and SCL when the bus is idle. Put 5 V on Vin and the board pulls GPIO2 and GPIO3
+    to 5 V — <b>and the Pi's GPIOs are not 5 V tolerant.</b> The DS3231 runs happily from 2.3 V and
+    draws microamps, so there is no reason to use 5 V here even if it were safe.
+    <br><br>
+    <b>Check it before you trust it:</b> power the board from pin 1 with the SDA and SCL wires not
+    yet fitted, and measure SDA to GND. It must read about <b>3.3 V</b>, not 5.
+  </div>
+
+  <div class="scroll">
+    <table>
+      <caption>U1 · Adafruit DS3231 Precision RTC breakout · all eight pins</caption>
+      <thead><tr><th>Pin</th><th>Silkscreen</th><th>Goes to</th><th>Why / why not</th></tr></thead>
+      <tbody>
+        <tr><td class="m">1</td><td class="m">Vin</td><td class="m">JP1 pin 1 · 3V3</td><td>Powers the chip <em>and</em> sets the I²C bus voltage — see the box above</td></tr>
+        <tr><td class="m">2</td><td class="m">GND</td><td class="m">JP1 pin 9</td><td>Any Pi ground works; 9 is chosen because it sits beside the I²C pair</td></tr>
+        <tr><td class="m">3</td><td class="m">SCL</td><td class="m">JP1 pin 5 · GPIO3</td><td>I²C clock</td></tr>
+        <tr><td class="m">4</td><td class="m">SDA</td><td class="m">JP1 pin 3 · GPIO2</td><td>I²C data</td></tr>
+        <tr><td class="m">5</td><td class="m">BAT</td><td class="m">no connection</td><td>Positive of the coin cell, which lives in the holder on the underside. Nothing to wire</td></tr>
+        <tr><td class="m">6</td><td class="m">32K</td><td class="m">no connection</td><td>32.768 kHz output, open-drain. Useful as a reference clock; this rig has no use for it</td></tr>
+        <tr><td class="m">7</td><td class="m">SQW</td><td class="m">no connection</td><td>Alarm / square-wave output, open-drain. If you ever want the RTC to wake the Pi on a schedule, this is the pin — and it would need a free GPIO plus a pull-up</td></tr>
+        <tr><td class="m">8</td><td class="m">RST</td><td class="m">no connection</td><td>Open-drain reset, bidirectional. Leave it</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warnbox">
+    <span class="hd">Four things about this board specifically</span>
+    <ul>
+      <li><strong>The pin order is not the order the header hands the wires over in.</strong> The
+        breakout runs Vin, GND, SCL, SDA — the Pi's four pins arrive as 3V3, SDA, SCL, GND. Two of
+        the four wires cross. That is drawn honestly on Sheet 4 rather than tidied away.</li>
+      <li><strong>SDA and SCL are easy to swap and the symptom is silence, not damage.</strong>
+        <span class="m">i2cdetect</span> simply finds nothing. Check the pair before blaming the
+        board.</li>
+      <li><strong>No battery-charging circuit.</strong> That is the difference between this board and
+        the cheap ZS-042 clones, which do have one and slowly cook a non-rechargeable cell. Here a
+        plain coin cell is exactly right — fit it <b>+ side up</b>.</li>
+      <li><strong>Address 0x68 is fixed</strong> and nothing else in the rig is on I²C, so there is
+        no conflict to design around.</li>
+    </ul>
+  </div>
+
+  <div class="note">
+    <span class="hd">Wiring it is half the job — the Pi ignores it until you say so</span>
+    Raspberry Pi OS keeps time with <span class="m">fake-hwclock</span>, which just restores the last
+    known time at boot. The RTC only takes over once the kernel driver is bound:
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Step</th><th>Command</th></tr></thead>
+        <tbody>
+          <tr><td>Enable I²C</td><td class="m">sudo raspi-config nonint do_i2c 0</td></tr>
+          <tr><td>Confirm the board answers</td><td class="m">sudo i2cdetect -y 1 &nbsp;→ expect <b>68</b></td></tr>
+          <tr><td>Bind the driver</td><td class="m">add <b>dtoverlay=i2c-rtc,ds3231</b> to /boot/firmware/config.txt, reboot</td></tr>
+          <tr><td>Confirm it bound</td><td class="m">sudo i2cdetect -y 1 &nbsp;→ 68 becomes <b>UU</b></td></tr>
+          <tr><td>Stop the fake clock</td><td class="m">sudo apt -y remove fake-hwclock &amp;&amp; sudo systemctl disable fake-hwclock</td></tr>
+          <tr><td>Set the time once, online</td><td class="m">sudo hwclock -w</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <br>
+    This matters more here than on a desk machine. The rig runs off a phone hotspot with no
+    guaranteed internet, and <b>every scan's sidecar and filename is timestamped</b> — without the
+    RTC a cold boot in the field dates your captures from whenever the Pi was last switched off.
+  </div>
+
   </div>
 </section>
 
@@ -679,7 +759,7 @@ li strong{color:var(--ink); font-weight:620;}
   <figure>
     <div class="plate">
       <div class="draw">
-<svg viewBox="0 0 1300 720" role="img" aria-label="The Pi 40-pin header drawn in the orientation of the user's pinout card: pin 1 at the bottom right, odd-numbered pins running up the right column and even-numbered pins up the left. Pins 1, 3, 5 and 9 run right to the DS3231 clock. Pins 33, 35, 37 and 39 run right to the Big Easy Driver, the three signal lines each through a 1 kilohm resistor, with a 10 kilohm pull-up from ENABLE to the driver VCC. Pins 2 and 4 run left to the 5 volt converter and pins 4 and 6 to the fan. Pin 13, GPIO27, is marked damaged.">
+<svg viewBox="0 0 1300 740" role="img" aria-label="The Pi 40-pin header drawn in the orientation of the user's pinout card: pin 1 at the bottom right, odd-numbered pins running up the right column and even-numbered pins up the left. Pins 1, 3, 5 and 9 run right to the DS3231 breakout, crossing over each other because the breakout puts its pins in a different order than the header does. Pins 33, 35, 37 and 39 run right to the Big Easy Driver, the three signal lines each through a 1 kilohm resistor, with a 10 kilohm pull-up from ENABLE to the driver VCC. Pins 2 and 4 run left to the 5 volt converter and pins 4 and 6 to the fan. Pin 13, GPIO27, is marked damaged.">
   <defs><g id="gnd4"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g></defs>
   <rect class="bx" x="470" y="46" width="70" height="560" rx="3"/>
   <text class="pnf" x="505" y="36" text-anchor="middle">JP1</text>
@@ -834,7 +914,7 @@ li strong{color:var(--ink); font-weight:620;}
   <rect class="pinsq gndf" x="515.5" y="52.5" width="15" height="15" rx="2"/>
   <text class="pnum" x="523" y="63.2" text-anchor="middle">39</text>
   <text class="pinlbl used" x="555" y="54">Ground</text>
-  <text class="pinlbl dead" x="640" y="418">✗ DAMAGED — output-only, never an input</text>
+  <text class="pinlbl dead" x="640" y="418">✗ DAMAGED — output-only</text>
   <path class="w gnd" d="M540 60 H900"/>
   <path class="w sig" d="M540 88 H760 M830 88 H900"/>
   <rect class="bxn" x="760" y="77" width="70" height="22"/>
@@ -861,21 +941,37 @@ li strong{color:var(--ink); font-weight:620;}
   <text class="dsc" x="1090" y="150" text-anchor="middle">are on Figure 2</text>
   <text class="dsc" x="1090" y="200" text-anchor="middle">APWR jumper at 3.3 V;</text>
   <text class="dsc" x="1090" y="216" text-anchor="middle">measure VCC first</text>
-  <path class="w gnd" d="M540 480 H900"/>
-  <path class="w i2c" d="M540 536 H900 M540 564 H900"/>
-  <path class="w v3"  d="M540 592 H900"/>
-  <rect class="bx" x="900" y="458" width="290" height="156"/>
-  <text class="pn" x="908" y="484">5 GND</text>
-  <text class="pnf" x="908" y="512">4 NC</text>
-  <text class="pn" x="908" y="540">3 SCL</text>
-  <text class="pn" x="908" y="568">2 SDA</text>
-  <text class="pn" x="908" y="596">1 VCC</text>
-  <path class="lead" d="M900 508 H868"/>
-  <circle class="nc" cx="863" cy="508" r="4"/>
-  <text class="pnf" x="850" y="512" text-anchor="end">n/c</text>
-  <text class="ref" x="1085" y="494" text-anchor="middle">U1 · DS3231</text>
-  <text class="dsc" x="1085" y="516" text-anchor="middle">real-time clock</text>
-  <text class="dsc" x="1085" y="532" text-anchor="middle">I²C address 0x68</text>
+  <path class="w gnd" d="M540 480 H866 L900 450 H940"/>
+  <path class="w i2c" d="M540 536 H844 L900 480 H940"/>
+  <path class="w i2c" d="M540 564 H822 L900 510 H940"/>
+  <path class="w v3" d="M540 592 H800 L900 420 H940"/>
+  <rect class="bx" x="940" y="400" width="250" height="240"/>
+  <text class="ref" x="1065" y="390" text-anchor="middle">U1 · DS3231 breakout</text>
+  <text class="pn" x="948" y="424">1 Vin</text>
+  <text class="pn" x="948" y="454">2 GND</text>
+  <text class="pn" x="948" y="484">3 SCL</text>
+  <text class="pn" x="948" y="514">4 SDA</text>
+  <text class="pnf" x="948" y="544">5 BAT</text>
+  <text class="pnf" x="1010" y="544">n/c</text>
+  <path class="lead" d="M940 540 H912"/>
+  <circle class="nc" cx="907" cy="540" r="4"/>
+  <text class="pnf" x="948" y="570">6 32K</text>
+  <text class="pnf" x="1010" y="570">n/c</text>
+  <path class="lead" d="M940 566 H912"/>
+  <circle class="nc" cx="907" cy="566" r="4"/>
+  <text class="pnf" x="948" y="596">7 SQW</text>
+  <text class="pnf" x="1010" y="596">n/c</text>
+  <path class="lead" d="M940 592 H912"/>
+  <circle class="nc" cx="907" cy="592" r="4"/>
+  <text class="pnf" x="948" y="622">8 RST</text>
+  <text class="pnf" x="1010" y="622">n/c</text>
+  <path class="lead" d="M940 618 H912"/>
+  <circle class="nc" cx="907" cy="618" r="4"/>
+  <text class="dsc" x="1105" y="424" text-anchor="middle">Adafruit board,</text>
+  <text class="dsc" x="1105" y="440" text-anchor="middle">silkscreen order</text>
+  <text class="dsc" x="1105" y="474" text-anchor="middle">I²C 0x68</text>
+  <text class="dsc" x="1105" y="508" text-anchor="middle">Vin from 3V3,</text>
+  <text class="dsc" x="1105" y="524" text-anchor="middle">never 5 V</text>
   <path class="w v5"  d="M280 564 H470"/>
   <path class="w gnd" d="M280 536 H470"/>
   <path class="w v5"  d="M280 620 H310 V564"/>
@@ -935,11 +1031,11 @@ li strong{color:var(--ink); font-weight:620;}
           <tr><td class="lft free">GPIO23</td><td class="pn">16</td><td class="mid"></td><td class="pn">15</td><td class="free">GPIO22</td></tr>
           <tr><td class="lft pwg free">GND</td><td class="pn">14</td><td class="mid"></td><td class="pn">13</td><td class="bad">GPIO27 &nbsp;&#8212; DAMAGED, output-only</td></tr>
           <tr><td class="lft free">GPIO18</td><td class="pn">12</td><td class="mid"></td><td class="pn">11</td><td class="free">GPIO17</td></tr>
-          <tr><td class="lft free">GPIO15 RXD &nbsp;<span style="color:var(--ok)">tested OK</span></td><td class="pn">10</td><td class="mid"></td><td class="pn">9</td><td class="pwg">GND &nbsp;<span class="u">&#8594; U1 GND</span></td></tr>
+          <tr><td class="lft free">GPIO15 RXD &nbsp;<span style="color:var(--ok)">tested OK</span></td><td class="pn">10</td><td class="mid"></td><td class="pn">9</td><td class="pwg">GND &nbsp;<span class="u">&#8594; U1 GND (pin 2)</span></td></tr>
           <tr><td class="lft free">GPIO14 TXD &nbsp;<span style="color:var(--ok)">tested OK</span></td><td class="pn">8</td><td class="mid"></td><td class="pn">7</td><td class="free">GPIO4</td></tr>
-          <tr><td class="lft pwg">GND &nbsp;<span class="u">&#8594; U10 fan &#8211;</span></td><td class="pn">6</td><td class="mid"></td><td class="pn">5</td><td class="u">GPIO3 SCL &nbsp;&#8594; U1 SCL</td></tr>
-          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+ &#183; &#8594; U10 fan +</span></td><td class="pn">4</td><td class="mid"></td><td class="pn">3</td><td class="u">GPIO2 SDA &nbsp;&#8594; U1 SDA</td></tr>
-          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+</span></td><td class="pn">2</td><td class="mid"></td><td class="pn">1</td><td class="pw3">3V3 &nbsp;<span class="u">&#8594; U1 VCC</span></td></tr>
+          <tr><td class="lft pwg">GND &nbsp;<span class="u">&#8594; U10 fan &#8211;</span></td><td class="pn">6</td><td class="mid"></td><td class="pn">5</td><td class="u">GPIO3 SCL &nbsp;&#8594; U1 SCL (pin 3)</td></tr>
+          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+ &#183; &#8594; U10 fan +</span></td><td class="pn">4</td><td class="mid"></td><td class="pn">3</td><td class="u">GPIO2 SDA &nbsp;&#8594; U1 SDA (pin 4)</td></tr>
+          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+</span></td><td class="pn">2</td><td class="mid"></td><td class="pn">1</td><td class="pw3">3V3 &nbsp;<span class="u">&#8594; U1 Vin</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -997,10 +1093,11 @@ li strong{color:var(--ink); font-weight:620;}
           <tr><td class="m">COIL B</td><td class="m">U4 · B1</td><td class="m">M1 · B+</td><td>motor lead</td></tr>
           <tr><td class="m">COIL B</td><td class="m">U4 · B2</td><td class="m">M1 · B–</td><td>motor lead</td></tr>
           <tr class="grp"><td colspan="5">Clock, cooling, capture — Figure 3</td></tr>
-          <tr><td class="m">+3V3</td><td class="m">JP1 pin 1</td><td class="m">U1 · VCC (1)</td><td>red/thin</td><td>from the Pi's regulator</td></tr>
-          <tr><td class="m">SDA</td><td class="m">JP1 pin 3 · GPIO2</td><td class="m">U1 · SDA (2)</td><td>cyan</td><td>1.8 kΩ pull-up already on the Pi board</td></tr>
-          <tr><td class="m">SCL</td><td class="m">JP1 pin 5 · GPIO3</td><td class="m">U1 · SCL (3)</td><td>cyan</td><td>likewise</td></tr>
-          <tr><td class="m">GND</td><td class="m">JP1 pin 9</td><td class="m">U1 · GND (5)</td><td>green</td><td>U1 pin 4 stays open</td></tr>
+          <tr><td class="m">+3V3</td><td class="m">JP1 pin 1</td><td class="m">U1 · Vin (breakout pin 1)</td><td>red/thin</td><td><strong>3V3, never 5 V</strong> — the board's I²C pull-ups reference Vin</td></tr>
+          <tr><td class="m">GND</td><td class="m">JP1 pin 9</td><td class="m">U1 · GND (pin 2)</td><td>green</td><td></td></tr>
+          <tr><td class="m">SCL</td><td class="m">JP1 pin 5 · GPIO3</td><td class="m">U1 · SCL (pin 3)</td><td>cyan</td><td>Pi already has 1.8 kΩ to 3V3; the breakout adds ~10 kΩ</td></tr>
+          <tr><td class="m">SDA</td><td class="m">JP1 pin 3 · GPIO2</td><td class="m">U1 · SDA (pin 4)</td><td>cyan</td><td>likewise — the parallel pair is still legal</td></tr>
+          <tr><td class="m">—</td><td class="m">U1 · BAT, 32K, SQW, RST (pins 5–8)</td><td class="m">no connection</td><td>—</td><td>coin cell, 32.768 kHz out, alarm out, reset — none used here</td></tr>
           <tr><td class="m">+5V</td><td class="m">JP1 pin 4</td><td class="m">U10 · fan (+)</td><td>red</td><td></td></tr>
           <tr><td class="m">GND</td><td class="m">JP1 pin 6</td><td class="m">U10 · fan (–)</td><td>green</td><td></td></tr>
           <tr><td class="m">ETH</td><td class="m">Pi on-board RJ-45 (eth0)</td><td class="m">U7 · J3 RJ-45</td><td>Cat5e</td><td>not on the header — the capture path</td></tr>
