@@ -106,9 +106,29 @@ RAMP_SEGMENTS = 16
 CRUISE_CHUNK_PULSES = 500
 MAX_LOOP_COUNT = 65535
 
+# Duration watchdog. A move is stopped if it runs past
+# expected * FACTOR + SLACK. The factor is generous because the planner's
+# estimate ignores the DMA engine's own per-pulse overhead, and the slack
+# keeps very short moves from tripping on scheduling noise alone. The failure
+# this is aimed at is gross -- a 2x wrong STEPS_PER_REV, the exact error this
+# project shipped for years -- not a few percent of drift.
+WATCHDOG_FACTOR = float(os.environ.get("TLSPIE_WATCHDOG_FACTOR", "1.25"))
+WATCHDOG_SLACK_S = float(os.environ.get("TLSPIE_WATCHDOG_SLACK_S", "3.0"))
+
 
 class StepperError(RuntimeError):
     pass
+
+
+class MoveOverran(StepperError):
+    """
+    A move ran past its planned duration and was stopped.
+
+    Deliberately not a silent return: this means the step constant, the
+    microstep jumpers or the wave chain disagree with each other, and the head
+    is now somewhere unknown. Treat it as a fault to be investigated, not a
+    retry.
+    """
 
 
 def degrees_to_steps(degrees):
@@ -255,9 +275,10 @@ class Stepper:
                    poll_interval=0.01):
         """
         Move `steps` steps. Blocks until done, polling `should_abort` while the
-        DMA engine runs so the stop button stays responsive throughout.
+        DMA engine runs so a stop request stays responsive throughout.
 
         Returns True if the move completed, False if it was aborted.
+        Raises MoveOverran if the duration watchdog fires.
         """
         steps = int(steps)
         if steps <= 0:
@@ -266,6 +287,24 @@ class Stepper:
         segments, _ = plan_move(steps, rate_hz)
         if not segments:
             return True
+
+        # Duration watchdog. The planner knows exactly how long this move
+        # should take, so running far past that means the chain is not doing
+        # what we think it is -- a wrong STEPS_PER_REV, microstep jumpers that
+        # disagree with the constant, a malformed chain. Without this, the loop
+        # below polls for as long as the DMA engine feels like running.
+        #
+        # This matters more since the physical stop button was removed on
+        # 2026-08-09. The phone panel is the only software abort and it is
+        # carried over the phone's own hotspot, so if the phone is gone, so is
+        # the panel; this backstop needs no network.
+        #
+        # It is NOT a substitute for the hardware E-stop. It runs inside this
+        # process, so it cannot help in the one case that most needs it: the
+        # process dying while the DMA engine keeps clocking steps on its own.
+        expected_s = sum(n / r for n, r in segments if r > 0)
+        limit_s = expected_s * WATCHDOG_FACTOR + WATCHDOG_SLACK_S
+        started = time.time()
 
         direction = DIR_FORWARD if forward else (1 - DIR_FORWARD)
         self.pi.write(self.dir_pin, direction)
@@ -282,6 +321,16 @@ class Stepper:
                     # Steps actually emitted are unrecoverable from pigpio.
                     self.position_known = False
                     return False
+                elapsed = time.time() - started
+                if elapsed > limit_s:
+                    self.pi.wave_tx_stop()
+                    self.position_known = False
+                    raise MoveOverran(
+                        "Move overran: %.1fs elapsed, expected %.1fs for "
+                        "%d steps at %.1f Hz (limit %.1fs). Stopped by the "
+                        "duration watchdog -- check STEPS_PER_REV against the "
+                        "driver's microstep jumpers."
+                        % (elapsed, expected_s, steps, rate_hz, limit_s))
                 time.sleep(poll_interval)
         finally:
             self.pi.wave_tx_stop()

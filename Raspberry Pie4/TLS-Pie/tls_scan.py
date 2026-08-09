@@ -2,9 +2,9 @@
 """
 TLS Pie scanner controller -- the whole scanner, on the Pi.
 
-This replaces the MicroView entirely. One process owns the scan buttons, the
-pan motor, the pcap capture and the phone control panel, which removes the
-MicroView <-> Pi handshake rather than reimplementing it.
+This replaces the MicroView entirely. One process owns the pan motor, the pcap
+capture and the phone control panel, which removes the MicroView <-> Pi
+handshake rather than reimplementing it.
 
 WHAT THIS REPLACES
 ------------------
@@ -26,17 +26,21 @@ code.
 
 CONTROL SURFACES
 ----------------
-Three, all equivalent, all using the same code paths:
+Two, both using the same code paths:
 
-  * the four physical buttons on GPIO
   * the phone control panel (tls_web.py) -- start, stop, live status
-  * the command line (--scan)
+  * the command line (--scan), for the bench
 
-The phone panel's stop button raises the same flag the physical stop button
-does, so there is one abort path, not two.
+The physical buttons were removed on 2026-08-09; see the note further down.
+Because the panel is now the only way to stop a running scan, this program
+REFUSES TO START if the panel cannot bind its port -- a scanner that can be
+started and not stopped is worse than one that will not start.
 
 BEFORE FIRST RUN
 ----------------
+  * Fit a LATCHING E-STOP in series with the driver's ENABLE. With no stop
+    button, this is the only hardware abort, and the only thing that works if
+    the Pi crashes while pigpio's DMA engine is still clocking steps.
   * Fit a pull-up from the driver's ENABLE to +3V3. Pi GPIOs float for the
     ~30 s of boot and ENABLE is active-low. See tls_stepper.py.
   * sudo apt install pigpio python3-pigpio
@@ -46,7 +50,7 @@ BEFORE FIRST RUN
 
 USAGE
 -----
-    ./tls_scan.py                 buttons + phone panel, until stopped
+    ./tls_scan.py                 phone panel, until stopped
     ./tls_scan.py --scan scan1    run one scan immediately, then exit
     ./tls_scan.py --check         run the preflight checks and exit
     ./tls_scan.py --no-record     move the motor without capturing (bench test)
@@ -72,15 +76,28 @@ except ImportError:
     pigpio = None
 
 
-# --- Button pins (BCM). Active low, internal pull-ups. --------------------
-# Four buttons, four actions. GPIO17/27/22 are free now -- they were the
-# MicroView handshake.
-PIN_SLOW = int(os.environ.get("TLSPIE_SLOW_PIN", "5"))
-PIN_FAST = int(os.environ.get("TLSPIE_FAST_PIN", "6"))
-PIN_RESTART = int(os.environ.get("TLSPIE_RESTART_PIN", "12"))
-PIN_STOP = int(os.environ.get("TLSPIE_STOP_PIN", "17"))
-
-DEBOUNCE_S = float(os.environ.get("TLSPIE_DEBOUNCE_MS", "40")) / 1000.0
+# --- No push buttons ------------------------------------------------------
+# Removed 2026-08-09 at the user's direction: the rig is operated from the
+# phone, so SW1-SW5 and their pull-ups R1-R5 come off the board. S1 (Main) and
+# S2 (Lidar) in the schematic stay -- those are the power switches, not
+# buttons.
+#
+# The Pi's GPIO5, 6, 12 and 17 are therefore unused, as are 22 and 27 from the
+# old MicroView handshake. Only STEP, DIR and ENABLE remain on the header.
+#
+# ⚠ WHAT THIS COSTS, STATED PLAINLY
+# The phone panel is now the ONLY way to stop a scan, and the Pi reaches the
+# phone over the phone's own hotspot -- so one device is both the control
+# surface and the network carrying it. If the phone sleeps, crashes, goes flat
+# or walks out of range, there is no software abort left at all.
+#
+# A LATCHING E-STOP IN SERIES WITH THE DRIVER'S ENABLE IS NOW THE ONLY
+# HARDWARE ABORT. It was advisable when there was a stop button; it is
+# mandatory now. It is also strictly better than any button, because it still
+# works when the Pi has crashed with pigpio's DMA engine clocking step pulses
+# -- the one failure no software stop can ever cover.
+#
+# See also: run_scan()'s duration guard, which is the software half of this.
 
 # --- Capture --------------------------------------------------------------
 DUMPDIR = os.environ.get("DUMPDIR", "/home/lipi/velodyne")
@@ -111,13 +128,6 @@ SCAN_PROFILES = {
     "fast": {"label": "360° Quick", "detail": "2°/s · about 3¼ min",
              "order": 2, "sweep_deg": 378.0, "deg_per_s": 2.0,
              "return_deg": 18.0},
-}
-
-# Four buttons, four actions.
-BUTTON_ACTIONS = {
-    PIN_SLOW: ("scan", "slow"),
-    PIN_FAST: ("scan", "fast"),
-    PIN_RESTART: ("restart", None),
 }
 
 STATUSFILE = os.path.join(TMPDIR, "VLPrecord.status")
@@ -247,40 +257,21 @@ def stop_capture(proc, capture_file):
     return capture_file
 
 
-# --- Buttons --------------------------------------------------------------
-def setup_buttons(pi):
-    for pin in list(BUTTON_ACTIONS) + [PIN_STOP]:
-        pi.set_mode(pin, pigpio.INPUT)
-        pi.set_pull_up_down(pin, pigpio.PUD_UP)
-
-
-def button_pressed(pi, pin):
-    """Confirm the level is still low after the bounce window."""
-    if pi.read(pin) != 0:
-        return False
-    time.sleep(DEBOUNCE_S)
-    return pi.read(pin) == 0
-
-
+# --- Triggers -------------------------------------------------------------
 def wait_for_trigger(pi):
     """
-    Block until something is requested, by button or by the phone panel.
+    Block until the phone panel requests something.
+
     Returns ("scan", profile) or ("restart", None), or None if shutting down.
+    Since the buttons came off, the panel is the only source of requests.
     """
-    status_update("IDLE", "Ready — press a button or use the phone panel")
+    status_update("IDLE", "Ready — use the phone panel")
     while not _shutdown:
         if _state.take_restart_request():
             return ("restart", None)
         requested = _state.take_start_request()
         if requested:
             return ("scan", requested)
-
-        for pin, action in BUTTON_ACTIONS.items():
-            if button_pressed(pi, pin):
-                # Wait for release so one press cannot trigger twice.
-                while pi.read(pin) == 0 and not _shutdown:
-                    time.sleep(0.02)
-                return action
         time.sleep(0.02)
     return None
 
@@ -297,9 +288,10 @@ def do_restart(pi, stepper):
         the current position as the new zero
     """
     def should_abort():
-        return (_shutdown
-                or _state.stop_requested()
-                or button_pressed(pi, PIN_STOP))
+        # One abort path. The phone panel's stop button and SIGTERM both
+        # land here; the physical stop button that used to be a third source
+        # was removed with the rest of the buttons on 2026-08-09.
+        return _shutdown or _state.stop_requested()
 
     _state.set(busy=True)
     try:
@@ -345,9 +337,10 @@ def run_scan(pi, stepper, profile_name, record=True):
 
     def should_abort():
         # One abort path for all three control surfaces.
-        return (_shutdown
-                or _state.stop_requested()
-                or button_pressed(pi, PIN_STOP))
+        # One abort path. The phone panel's stop button and SIGTERM both
+        # land here; the physical stop button that used to be a third source
+        # was removed with the rest of the buttons on 2026-08-09.
+        return _shutdown or _state.stop_requested()
 
     _state.begin_scan(profile_name, estimate_duration(profile))
     if _state.cloud is not None:
@@ -397,6 +390,20 @@ def run_scan(pi, stepper, profile_name, record=True):
                          else "no capture"))
         return True
 
+    except tls_stepper.MoveOverran as exc:
+        # The duration watchdog stopped the motion. Report it like any other
+        # abort rather than letting it kill the controller: the operator needs
+        # to see WHY on the phone, and a dead controller is a scanner that
+        # cannot be told anything at all now that the buttons are gone.
+        stepper.stop_and_release()
+        _terminate(proc)
+        status_update("ABORTED", "MOVE_OVERRAN: %s" % exc)
+        _state.set(position_known=False)
+        status_update("REHOME",
+                      "Position unknown after an overrun — re-home, and check "
+                      "the microstep jumpers against STEPS_PER_REV before the "
+                      "next scan")
+        return False
     except ScanAborted as exc:
         stepper.stop_and_release()
         _terminate(proc)
@@ -445,6 +452,14 @@ def main():
         print("pigpio is not installed. sudo apt install python3-pigpio")
         return 1
 
+    # --no-web used to leave the physical buttons in charge. There are none
+    # now, so without the panel and without --scan this would sit waiting for
+    # a trigger that can never arrive.
+    if args.no_web and not args.scan:
+        print("--no-web needs --scan: with the buttons removed the control "
+              "panel is the only way to start or stop anything.")
+        return 1
+
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
@@ -459,12 +474,23 @@ def main():
     httpd = None
     stepper = None
     try:
-        setup_buttons(pi)
         stepper = Stepper(pi)
         print("Steps per revolution: %d" % tls_stepper.STEPS_PER_REV)
 
         if not args.no_web:
             httpd = tls_web.start(_state)
+            # With the buttons gone the panel is the only stop control, so a
+            # panel that will not bind is fatal rather than a warning. The
+            # previous behaviour -- carry on without it -- was correct when a
+            # physical stop button existed and is dangerous now: it would give
+            # a scanner that can be started from the command line and stopped
+            # by nothing.
+            if httpd is None and not args.scan:
+                print("REFUSING TO START: the control panel could not bind, "
+                      "and it is now the only way to stop a scan.")
+                print("Free the port, or set TLSPIE_WEB_PORT, or use "
+                      "--scan/--no-web for a bench run you supervise.")
+                return 1
 
         if args.scan:
             ok = run_scan(pi, stepper, args.scan, record=not args.no_record)
@@ -476,7 +502,16 @@ def main():
                 break
             kind, value = action
             if kind == "restart":
-                do_restart(pi, stepper)
+                # run_scan handles its own overruns; do_restart moves the head
+                # too, so it needs the same guard. The controller must survive
+                # a fault -- it is the only thing the phone can talk to.
+                try:
+                    do_restart(pi, stepper)
+                except tls_stepper.MoveOverran as exc:
+                    stepper.stop_and_release()
+                    _state.set(busy=False, position_known=False)
+                    status_update("ABORTED", "MOVE_OVERRAN during re-home: %s"
+                                  % exc)
             else:
                 run_scan(pi, stepper, value, record=not args.no_record)
         return 0

@@ -1,7 +1,8 @@
 # Removing the MicroView — Pi-only scanner
 
-The Pi 4 now owns the scan buttons, the pan motor and the pcap capture. The
-MicroView, its firmware and the whole start/stop/status handshake come out.
+The Pi 4 now owns the pan motor, the pcap capture and the operator interface.
+The MicroView, its firmware and the whole start/stop/status handshake come out.
+The push buttons went too, on 2026-08-09 -- the rig is run from the phone.
 
 ## Why
 
@@ -20,8 +21,8 @@ does not break out.
 | Removed | Replaced by |
 |---|---|
 | `LidarHDMicroviewV1.0.ino` | `tls_scan.py` + `tls_stepper.py` |
-| `VLPbuttons.py` (GPIO17 start-in) | buttons read directly, no handshake |
-| `VLPwaitbutton.py` (GPIO27 stop-in) | stop button read directly |
+| `VLPbuttons.py` (GPIO17 start-in) | the phone panel, no handshake |
+| `VLPwaitbutton.py` (GPIO27 stop-in) | the phone panel's Stop |
 | `VLPstatussignal.py` (GPIO22 pulse codes) | `ScanAborted` in-process |
 | `VLPrecord.sh` | `tls_scan.py` (checks ported verbatim) |
 | MicroView OLED | the phone control panel (`tls_web.py`) — the monitor came out too |
@@ -54,35 +55,48 @@ the driver energised with nothing in control of it.
 handled this in `setup()`; on a Pi there is no software during the window that
 matters. This is a hardware requirement.
 
-### Buttons
+### Buttons — all removed
 
-Four buttons, four actions. Both scans are a full 360°; the firmware's 180°
-profile is gone.
+**Removed 2026-08-09.** The rig is operated from the phone, so the push
+buttons and their pull-ups come off the board entirely:
 
-| Button | Pi GPIO (BCM) | Header pin | Action |
-|---|---|---|---|
-| 360° Slow | GPIO5 | 29 | 1 °/s, about 6½ min |
-| 360° Quick | GPIO6 | 31 | 2 °/s, about 3¼ min |
-| Restart | GPIO12 | 32 | return the head to start, clear the fault |
-| Stop | GPIO17 | 11 | abort |
+| Remove | Was |
+|---|---|
+| SW1 | Reset |
+| SW2 | Scan3 |
+| SW3 | Scan2 |
+| SW4 | Scan1 |
+| SW5 | Stop Scan |
+| R1–R5 | their pull-ups to the MicroView's 5 V rail |
 
-**Restart** does one of two things depending on what the controller knows. If
-the position is known it drives the head back to zero. If a previous abort left
-it unknown — pigpio cannot report how many steps actually left the DMA buffer —
-it takes wherever the head is now as the new start position, so align the head
-by hand first.
+**Keep S1 (Main) and S2 (Lidar)** — those are the power switches after the
+battery and the F1 6 A fuse, not buttons.
 
-Wire each switch between its GPIO and GND. The code enables the Pi's internal
-pull-ups.
+R1–R5 had to go regardless: they pull to **5 V**, and a 10 kΩ pull-up to 5 V
+on a Pi GPIO puts 5 V on a pin that is not 5 V tolerant whenever the button is
+open. That hazard now disappears with the buttons.
 
-### ⚠ Remove the existing pull-up resistors
+Nothing but the motor lines remains on the header. GPIO5, 6, 12, 17, 22 and 27
+are all free.
 
-R1–R5 in the current schematic pull the button lines up to the MicroView's
-5 V rail. **A 10 kΩ pull-up to 5 V on a Pi GPIO puts 5 V on that pin whenever
-the button is open, and Pi GPIOs are not 5 V tolerant.** Remove R1–R5, or
-re-reference them to 3.3 V. The internal pull-ups make them unnecessary.
+### ⚠ The E-stop is no longer optional
 
-GPIO17, GPIO22 and GPIO27 are free now — they were the handshake lines.
+With no stop button, **the phone panel is the only software abort** — and the
+Pi reaches the phone over the phone's own hotspot, so one device is both the
+control surface and the network carrying it. A phone that sleeps, crashes,
+goes flat or walks out of range takes the abort with it.
+
+**Fit a latching E-stop in series with the driver's ENABLE before the rig runs
+again.** It is also strictly better than the button it replaces: it still
+works when the Pi has crashed with pigpio's DMA engine clocking step pulses,
+which is the one failure no software stop can ever cover.
+
+The software half of this is the **duration watchdog** in `tls_stepper.py`: a
+move that runs past `expected × 1.25 + 3 s` is stopped and raises
+`MoveOverran`. That catches a wrong `STEPS_PER_REV` or a malformed chain
+without needing any network — but it runs *inside* the controller, so it
+cannot help if the controller itself dies. Only the E-stop covers that.
+Tested by `test_stepper_watchdog.py` (17 checks, no hardware).
 
 ## Install
 
@@ -155,14 +169,17 @@ specifically guards that the icons stay reachable without a token while
 `/api/*` stays protected.
 
 It shows live phase, elapsed and remaining time, a progress bar, the capture
-filename and its growing size, and gives you the three scan buttons plus a
-large STOP. All three control surfaces — physical buttons, phone panel,
-`--scan` — use the same code paths, so the panel's stop raises exactly the
-same flag the GPIO stop button does.
+filename and its growing size, and gives you both scan buttons, a Restart and
+a large STOP. The panel and `--scan` use the same code paths, so there is one
+abort path, not two.
 
 Standard library only: no Flask, nothing to `pip install`, nothing to break in
-the field. It runs as a daemon thread inside `tls_scan.py`, and if the port
-cannot be bound the scanner still starts without it.
+the field. It runs as a daemon thread inside `tls_scan.py`.
+
+**If the port cannot be bound, the scanner now refuses to start.** That is a
+deliberate change from the old behaviour of carrying on without the panel,
+which was reasonable when a physical stop button existed. With the buttons
+gone it would leave a scanner that can be started and stopped by nothing.
 
 **Never launch a scan from a foreground SSH session.** WiFi drops, SSH sends
 SIGHUP, and the controller dies mid-scan — while pigpio's DMA engine keeps
@@ -240,7 +257,7 @@ Do all of this with the motor uncoupled from the head.
 # 4. Full scan.
 ./tls_scan.py --scan scan3
 
-# 5. Button-driven, as it will run in the field.
+# 5. Panel-driven, as it will run in the field.
 ./tls_scan.py
 ```
 
