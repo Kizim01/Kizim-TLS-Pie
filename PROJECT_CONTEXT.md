@@ -11,7 +11,9 @@ capturing the packet stream to `.pcap`.
 
 It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
 handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
-entirely** and the Pi takes over motion, buttons and capture in a single process.
+entirely** and the Pi takes over motion and capture in a single process, operated from the phone.
+The Pi was built and proven on 2026-08-09 — see "Restart pointer" for exactly what is and is not
+verified. **No motor has turned yet.**
 
 The wider concept has evolved into a fully autonomous decentralized lidar mapping swarm platform
 (see "Funding / company direction").
@@ -36,26 +38,31 @@ physical pin N went to pin (25−N), on the left column pin N went to pin (9−N
 identically), port contention, and the FTDI FT231X programmer (`VID_0403+PID_6015`,
 `ConfigManagerErrorCode: 0`, no USB overcurrent in the Windows event log).
 
-### Unresolved: is the Raspberry Pi damaged?
+### RESOLVED 2026-08-09: the Pi survived
 
-The wires intended for TX and RX landed on pin 15 (**the +5 V rail**) and pin 16 (**VIN**), both of
-which run off-board. 12 V on D0 forward-biases that pin's clamp diode into VCC, pulling the whole
-5 V net to ~11 V — and pin 15 is that net.
+Measured, not inferred. `gpio_selftest.py --all` on the real Pi, header disconnected:
 
-**The path from the MicroView to the Pi went through U2, the 4-channel level shifter.** If U2 is
-the usual BSS138 MOSFET type, the Pi was probably protected: the body diode is oriented LV→HV so a
-high voltage on the HV side reverse-biases it, and the FET's gate sits at the LV rail so it stays
-off. There is no conduction path to the Pi; only the HV-side 10 kΩ pull-up backfeeds the 5 V rail,
-under a milliamp.
+- **GPIO14 and GPIO15 both PASS.** These were the pins at risk — the wires intended for TX and RX
+  landed on pin 15 (the +5 V rail) and pin 16 (VIN), and 12 V on D0 forward-biases that pin's clamp
+  diode into VCC, pulling the whole 5 V net to ~11 V.
+- **25 of 26 pins fully healthy.**
+- **GPIO27 is output-only** — it drives both rails correctly but its internal pull-up no longer
+  holds it high as an input. It was the old RECORDSTOP handshake line, so this fits the incident.
+  Nothing in the current design uses it. Never wire a button there.
 
-**This is inference, not measurement.** Before building on the Pi's GPIO:
+Ruled out as a software artefact before calling it damage: `gpioinfo` reports line 27 unused,
+`pinctrl` shows it low while GPIO26 reads high under identical conditions, reproduced 3/3.
 
-```bash
-sudo systemctl start pigpiod
-./gpio_selftest.py --pins 14,15      # header disconnected
-```
+**The earlier inference was right about the mechanism.** The path from the MicroView to the Pi went
+through U2, the 4-channel level shifter; a BSS138's body diode is oriented LV→HV, so high voltage on
+the HV side reverse-biases it and the Pi is protected. Treat **U2 as destroyed** and replace it
+regardless — it is being removed anyway.
 
-Treat **U2 as destroyed** and replace it regardless — it is being removed anyway.
+**So the incident cost one MicroView, not a Pi.**
+
+Note for anyone re-running the test: `gpio_selftest.py` had two bugs that made a healthy Pi look
+damaged, fixed in `6a8d191`. GPIO2/GPIO3 carry **fixed 1.8 kΩ I2C pull-ups on the Pi board**, so
+"ignores the internal pull-down" is normal there and not a fault.
 
 **Probably unharmed:** the Big Easy Driver (all its lines landed on other I/O pins, no overvoltage
 went near it) and the DS3231 RTC (on the Pi's I²C, never connected to the MicroView).
@@ -64,14 +71,15 @@ went near it) and the DS3231 RTC (on the Pi's I²C, never connected to the Micro
 
 ## Architecture change (2026-08-09)
 
-The Pi now owns buttons, motor and capture in one process. The MicroView, the level shifter and
-the entire start/stop/status handshake come out.
+The Pi now owns motor and capture in one process, driven from the phone. The MicroView, the level
+shifter, the entire start/stop/status handshake and all five push buttons come out.
 
 | Removed | Replaced by |
 |---|---|
 | `LidarHDMicroviewV1.0.ino` | `tls_scan.py` + `tls_stepper.py` |
-| `VLPbuttons.py` (GPIO17 start-in) | buttons read directly, no handshake |
-| `VLPwaitbutton.py` (GPIO27 stop-in) | stop button read directly |
+| `VLPbuttons.py` (GPIO17 start-in) | the phone panel, no handshake |
+| `VLPwaitbutton.py` (GPIO27 stop-in) | the phone panel's Stop |
+| SW1–SW5 push buttons + R1–R5 | the phone panel. **S1/S2 power switches stay.** |
 | `VLPstatussignal.py` (GPIO22 pulse codes) | `ScanAborted` exception in-process |
 | `VLPrecord.sh` | `tls_scan.py` (its preflight checks ported verbatim) |
 | U2 4-channel level shifter | nothing — no 5 V logic remains |
@@ -86,9 +94,10 @@ longer holds. There is no READY screen, no SCANNING indicator, no abort reason �
 rig tells the operator what it is doing.
 
 State is still written to `/tmp/tlspie/VLPrecord.status` and to stdout, so SSH shows everything.
-But in the field you press a button and watch the motor to know it worked. Decide whether a
-couple of status LEDs on spare GPIOs are wanted before this goes out. `NOTIFY_DESKTOP` /
-`notify-send` in `tls_scan.py` is now pointless and should be dropped.
+The phone panel is the operator display, and it was driven end to end on 2026-08-09. With the
+buttons gone there is no local indication at all, so status LEDs on spare GPIOs — of which there are
+now plenty — are worth deciding on before this goes to a site. `NOTIFY_DESKTOP` / `notify-send` in
+`tls_scan.py` is now pointless and should be dropped.
 
 The fan is also gone — watch Pi temperature under sustained capture.
 
@@ -97,8 +106,9 @@ The fan is also gone — watch Pi temperature under sustained capture.
 **Why this is better, and where it isn't.** Rotation and capture are now sequenced by one process,
 so the timestamp-to-angle mapping is exact instead of inferred across a link with unknown latency —
 a real point-cloud quality gain. Against that: an AVR generating steps from a hardware timer is
-inherently more deterministic than Linux, the emergency stop becomes software unless a hardware
-E-stop is fitted, and the Pi becomes a single point of failure. None of it has run on hardware.
+inherently more deterministic than Linux, and the Pi becomes a single point of failure. The
+emergency stop is S1, the main power switch. The software has now run on the Pi end to end; the
+mechanism has not.
 
 ### Why D4 / D7 / D8 were never valid
 
@@ -145,21 +155,22 @@ All of these are overridable by environment variable — nothing is hard-coded.
 |---|---|---|---|
 | M.STEP | GPIO19 | 35 | via 1 kΩ series resistor |
 | M.DIR | GPIO26 | 37 | via 1 kΩ series resistor |
-| M.ENABLE | GPIO13 | 33 | via 1 kΩ + latching E-stop |
-| 360° Slow (1 °/s) | GPIO5 | 29 | switch to GND, internal pull-up |
-| 360° Quick (2 °/s) | GPIO6 | 31 | switch to GND, internal pull-up |
-| Restart | GPIO12 | 32 | switch to GND, internal pull-up |
-| Stop | GPIO17 | 11 | switch to GND, internal pull-up |
+| M.ENABLE | GPIO13 | 33 | via 1 kΩ series resistor |
 | SDA / SCL | GPIO2 / GPIO3 | 3 / 5 | DS3231 RTC |
 | 3V3 / 5V / GND | — | 1 / 2,4 / 6,9,39 | |
 
-**Restart** exists because after an abort the position is genuinely unknown — pigpio cannot report
-how many steps actually left the DMA buffer. It drives the head back to zero when the position is
-known, and takes the current position as the new zero when it is not (align the head by hand
-first). This closes the "re-home manually" gap the earlier design could only warn about.
+**Three motor lines and the RTC. That is the whole header now.** All push buttons were removed on
+2026-08-09 — the rig is operated from the phone — so GPIO5, 6, 12, 17, 22 and 27 are all free.
 
-GPIO17, GPIO22 and GPIO27 are free now — they were the handshake lines. GPIO14/15 (UART) are
-unused and are the pins to test for damage.
+**Restart** still exists, as a control on the phone panel. After an abort the position is genuinely
+unknown, because pigpio cannot report how many steps actually left the DMA buffer. It drives the
+head back to zero when the position is known, and takes the current position as the new zero when
+it is not (align the head by hand first).
+
+**GPIO27 is damaged — output-only.** Verified 2026-08-09: it drives both rails correctly but its
+internal pull-up no longer holds it high as an input. It was the old RECORDSTOP handshake line, so
+this is consistent with the 12 V incident. Nothing in the current design uses it. Never put a
+button there. **GPIO14/15 both PASS**, which was the open damage question — the Pi survived.
 
 ### Two hardware requirements that are not optional
 
@@ -167,8 +178,9 @@ unused and are the pins to test for damage.
    ~30 s of boot, and ENABLE is active-low, so the driver can sit energised with nothing in
    control of it. The firmware handled this in `setup()`; on a Pi no software exists during that
    window.
-2. **Remove the old R1–R5 button pull-ups.** They pull to **5 V**, and Pi GPIOs are not 5 V
-   tolerant — every idle button would sit at 5 V on a 3.3 V pin.
+2. **Remove SW1–SW5 and the R1–R5 pull-ups.** The buttons are gone from the design entirely. R1–R5
+   pull to **5 V**, and Pi GPIOs are not 5 V tolerant. **Keep S1 (Main) and S2 (Lidar)** — those are
+   the power switches after the battery, not buttons.
 
 Recommended alongside: **1 kΩ series resistors** on STEP/DIR/ENABLE. The driver's inputs are
 high-impedance so this costs nothing electrically, but it limits fault current into the Pi's clamp
@@ -179,8 +191,7 @@ diodes to under 10 mA at 12 V.
 ## Scan geometry
 
 **Two profiles, both full 360°.** The firmware's 180° scan was dropped on 2026-08-09 — it was never
-wanted in practice, and removing it freed the fourth button for Restart. Verified by
-`tls_stepper.py --plan` against **320,000 steps/rev**.
+wanted in practice. Verified by `tls_stepper.py --plan` against **320,000 steps/rev**, on the Pi.
 
 | Profile | Sweep | Return | Rate | Duration |
 |---|---|---|---|---|
@@ -218,7 +229,7 @@ before the motor turns under load.
 ## Key files
 
 ### Current (Pi-side)
-- [Raspberry Pie4/TLS-Pie/tls_scan.py](Raspberry%20Pie4/TLS-Pie/tls_scan.py) — controller: buttons, scan profiles, restart, tcpdump lifecycle
+- [Raspberry Pie4/TLS-Pie/tls_scan.py](Raspberry%20Pie4/TLS-Pie/tls_scan.py) — controller: scan profiles, restart, tcpdump lifecycle, duration watchdog
 - [Raspberry Pie4/TLS-Pie/tls_stepper.py](Raspberry%20Pie4/TLS-Pie/tls_stepper.py) — pan axis on pigpio DMA waveforms
 - [Raspberry Pie4/TLS-Pie/tls_web.py](Raspberry%20Pie4/TLS-Pie/tls_web.py) — phone control panel (stdlib HTTP, iOS-style glass UI)
 - [Raspberry Pie4/TLS-Pie/tls_cloud.py](Raspberry%20Pie4/TLS-Pie/tls_cloud.py) — VLP-16 decoder + live preview buffer (opt-in)
@@ -234,8 +245,11 @@ The rig is headless, so the display is a web page the Pi serves at
 `http://raspberrypi.local:8080/`. Live phase, elapsed/remaining, progress bar, capture filename and
 growing size, both scan buttons, a large Stop and a Restart. Standard library only — no Flask,
 nothing to `pip install`, nothing to break in the field. It runs as a daemon thread inside
-`tls_scan.py` and shares state directly, so **its stop button raises the same flag the GPIO stop
-button does — one abort path, not two.** If the port cannot be bound the scanner still starts.
+`tls_scan.py` and shares state directly, so the panel and `--scan` use **one abort path, not two**.
+
+**If the port cannot be bound, the scanner now refuses to start** (changed 2026-08-09). That was
+reasonable when a physical stop button existed; with the buttons gone it would leave a scanner that
+can be started and stopped by nothing. `--no-web` without `--scan` is refused for the same reason.
 
 `TLSPIE_WEB_TOKEN` adds a shared-secret token; without it, anyone who can reach the Pi can start
 the motor. That is fine on a phone hotspot with only you and the Pi on it, and not fine on a site
@@ -335,7 +349,14 @@ working system.
 
 ## Verification status
 
-**Verified — 39 automated checks, no hardware required** (`--plan` plus a test harness):
+**Verified on the real Pi, 2026-08-09** — see the restart pointer for the full list. In short: the
+card is Bookworm with `pigpiod` running, `gpio_selftest.py` says the Pi survived the 12 V incident,
+and **the user drove the phone panel end to end** — both scans, Stop mid-scan, re-home, Restart,
+Full screen, Add to Home screen — with `--no-record`, so the real motion state machine ran with no
+motor attached.
+
+**Committed test suites, no hardware required** (`test_stepper_watchdog.py` 17/17,
+`test_web_install.py` 49/49, both run on the Pi):
 
 - the motion planner: exact step counts and correct durations for both profiles
 - the **VLP-16 decoder against hand-built packets with known geometry** — a 10 m return at 90°
@@ -344,10 +365,10 @@ working system.
 - the whole HTTP surface: status, start, stop, restart, busy-rejection, progress maths, token auth,
   404s, and that the served page makes no external requests
 
-**Not verified — nothing has touched hardware.** No motor has turned, no pcap has been written, no
-button has been pressed, no lidar packet has been decoded from a real sensor, and the Pi's GPIOs
-have not been tested since the incident. The MicroView firmware had years of field use behind it;
-this code has none.
+**Not verified — no motor has turned.** Nothing has been driven by an actual stepper, no pcap has
+been written, and no lidar packet has been decoded from a real sensor. The motion code has been
+executed end to end against pins with nothing attached, which proves the software and nothing about
+the mechanism. The MicroView firmware had years of field use behind it; this code has none.
 
 ### Bench test order
 
@@ -359,7 +380,7 @@ Motor uncoupled from the head throughout.
 ./tls_scan.py --check               # 2. network + lidar checks, no motor
 ./tls_scan.py --scan scan3 --no-record   # 3. motor only — direction, lost steps
 ./tls_scan.py --scan scan3          # 4. full scan
-./tls_scan.py                       # 5. button-driven, as in the field
+./tls_scan.py                       # 5. panel-driven, as in the field
 ```
 
 Set `TLSPIE_DIR_FORWARD=0` if the head turns the wrong way. Press stop during step 3 and confirm
@@ -374,26 +395,37 @@ contend for memory bandwidth, and that is the one real open performance question
 
 - ~~No systemd unit~~ — `tls-scan.service` added, `KillSignal=SIGTERM` with a 600 s stop timeout so
   systemd cannot SIGKILL through the graceful shutdown. Also removes the SSH-drop hazard.
-- ~~Re-home after abort was manual and undefined~~ — the Restart button handles both cases.
+- ~~Re-home after abort was manual and undefined~~ — the panel's Restart handles both cases.
+
+- ~~No hardware emergency stop~~ — **S1, the main power switch, is the E-stop** (decided
+  2026-08-09). Cutting it stops rotation whichever way the supply is arranged: if S1 feeds the
+  driver the coils de-energise; if it only feeds the Pi's 5 V converter then STEP stops toggling and
+  the motor stops turning anyway. More complete than a switch in series with ENABLE, and it cannot
+  be defeated by a crashed Pi with the DMA engine still clocking pulses.
+- ~~The stop button is normally-open, which fails dangerous~~ — moot, the buttons were removed.
+- ~~No maximum-duration watchdog~~ — added to `tls_stepper.move_steps()`. A move past
+  `expected × 1.25 + 3 s` is stopped and raises `MoveOverran`, caught in `run_scan` and around
+  `do_restart` so a fault cannot kill the controller. 17 tests, and it needs no network.
+
+**Operating rule: the phone panel's Stop for normal aborts, S1 only when something is wrong.**
+A power cut truncates the pcap and, repeated, will eventually damage the SD card.
 
 **Still open:**
 
-1. **Hardware E-stop — user confirmed 2026-08-09 they will fit one.** Until then nothing stops the
-   motor if the controller dies: pigpio clocks steps from the DMA engine, so `kill -9`, an OOM kill
-   or a pigpiod hang all leave it turning. Must be **latching** and in series with the driver's
-   ENABLE — a momentary switch re-enables the driver on release while the wave chain is still
-   running. Fit it on the driver side of the 10 kΩ pull-up.
-2. **The stop button is normally-open, which fails dangerous.** A severed wire reads exactly like
-   "not pressed", so the stop function disappears silently. Wire it normally-closed so a broken
-   wire reads as pressed. Needs a small code change to match.
-3. **No maximum-duration watchdog.** The planner already computes expected move time; if
-   `wave_tx_busy()` is still true past ~1.2× that, force `wave_tx_stop()`. Cheap insurance against
-   a bad step constant or a malformed chain.
+1. **The 10 kΩ ENABLE pull-up is still not fitted.** The gating item before anything drives a motor;
+   until then `tls-scan.service` stays disabled.
+2. **Check S1's DC rating** if it carries motor current. It is breaking a DC inductive load, and DC
+   arcs do not self-extinguish the way AC ones do — an under-rated switch can slowly weld its
+   contacts, and a welded E-stop looks fine right up until it is needed.
+3. **The phone is both the control surface and the network.** The Pi joins the phone's hotspot, so a
+   phone that sleeps, crashes or goes flat takes the only software abort with it. This is precisely
+   why the duration watchdog needs no network and why S1 exists. Accepted, not solved.
 4. **`BTNPOWEROFF` was dropped in the port.** `VLPrecord.sh` could `poweroff` on a stop press;
-   `tls_scan.py` only aborts. Pulling power from a running Pi risks SD card corruption. A
-   long-press on Stop is the natural place to restore it.
-5. **The phone panel can start the motor.** The user operates within line of sight of the rig,
-   which is why remote start was accepted. Set `TLSPIE_WEB_TOKEN` on any shared network.
+   `tls_scan.py` only aborts. With the buttons gone, the natural home for this is a control on the
+   phone panel — a clean shutdown is far kinder to the SD card than reaching for S1.
+5. **The phone panel can start the motor, and no token is set.** The user operates within line of
+   sight of the rig, which is why remote start was accepted. Set `TLSPIE_WEB_TOKEN` on any network
+   that is not just the Pi and one phone.
 
 ---
 
@@ -409,6 +441,43 @@ Materials:
 - [PITCH_DECK_OUTLINE.md](PITCH_DECK_OUTLINE.md)
 - [COMPANY_LAUNCH_CHECKLIST.md](COMPANY_LAUNCH_CHECKLIST.md)
 - [Kizim_Robotics_Funding_Packet.pdf](Kizim_Robotics_Funding_Packet.pdf)
+
+---
+
+## Working with the Pi — read this first
+
+**`ssh tlspie`** from the Windows laptop. That is the whole command: `~/.ssh/config` has the host,
+and `~/.ssh/tlspie_ed25519` is a passphrase-free key so it works non-interactively.
+
+| | |
+|---|---|
+| Hostname / user | `tlspie` / `lipi`, home `/home/lipi`, project at `~/TLS-Pie` |
+| OS | **Raspberry Pi OS Bookworm 64-bit Lite. This is mandatory — see below.** |
+| Network | the phone hotspot, `10.153.229.0/24`. No clash with the lidar's `192.168.1.x`. |
+| Panel | `http://<pi-ip>:8080/` — the Pi prints its reachable address at startup |
+| Deploy | `scp "Raspberry Pie4/TLS-Pie/"*.py tlspie:~/TLS-Pie/` |
+
+**⚠ The OS must be Bookworm (Debian 12), not Trixie (13).** Verified on hardware: Trixie has **no
+`pigpiod` at all** — the daemon package was dropped and only client pieces remain, so
+`apt-cache policy pigpio` gives `Candidate: (none)`. The Raspberry Pi archive carries `pigpio` and
+`pigpiod` for bookworm. This is load-bearing because `tls_stepper.py` uses pigpio's DMA
+**`wave_chain`**, and `lgpio` — the supported successor available on Trixie — has `tx_wave` and
+`tx_pulse` but **no `wave_chain`**. Without it, step timing leaves the DMA engine for Python.
+**Imager trap:** its "Raspberry Pi OS Lite (64-bit)" entry now means Trixie; Bookworm sits under
+*Raspberry Pi OS (other)* and must be identified by the description text, not the word "Legacy".
+
+**To demo or test without any hardware attached**, which is how the phone panel was validated:
+
+```bash
+sudo systemd-run --unit=tls-demo --working-directory=/home/lipi/TLS-Pie \
+    /usr/bin/python3 /home/lipi/TLS-Pie/tls_scan.py --no-record
+sudo systemctl stop tls-demo        # when done
+```
+
+`--no-record` skips preflight and `tcpdump`, so the **real motion state machine runs** with the
+pulses going into a pin with nothing on it. Transient unit: it dies at reboot and leaves the real
+`tls-scan.service` disabled. Re-imaging the card changes the host key —
+`ssh-keygen -R tlspie.local`.
 
 ---
 
