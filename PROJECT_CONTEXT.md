@@ -246,6 +246,30 @@ controller dies mid-scan while pigpio's DMA keeps clocking steps. Use the system
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 
+### Networking — two interfaces, two jobs
+
+| Interface | Job | Notes |
+|---|---|---|
+| `eth0` | the Velodyne, `192.168.1.x` | **the capture path**; `tcpdump` runs here |
+| `wlan0` | control panel + SSH | phone hotspot in the field |
+
+Run [Raspberry Pie4/TLS-Pie/setup_wifi.sh](Raspberry%20Pie4/TLS-Pie/setup_wifi.sh) to join a
+network. **It takes the SSID as an argument and reads the password interactively — no credential is
+stored in this repository**, because the repo is on GitHub and anything committed there is
+permanent. On the `wpa_supplicant` path it uses `wpa_passphrase`, so even the Pi's local config
+holds a hash rather than plaintext. The operating WiFi network is the user's phone hotspot; ask
+them for it rather than looking for it here.
+
+The script's checks are the point, not the connection. **If WiFi hands out an address in
+`192.168.1.x` it collides with the lidar and packets can leave via the wrong interface — breaking
+capture quietly rather than loudly.** Samsung hotspots normally use `192.168.43.x`, which is clear,
+but the script refuses a clash outright and confirms the lidar route still points at `eth0`.
+
+A phone hotspot drops when the phone sleeps or moves out of range, which is another reason the
+systemd unit matters: a dropped link must not be able to kill a scan mid-rotation. Set
+`TLSPIE_WEB_TOKEN` in `tls-scan.service` before using the panel on any network that is not just the
+Pi and one phone.
+
 ### Live point-cloud preview — opt in, and why
 
 `TLSPIE_PREVIEW=1` enables a second UDP socket on port 2368 that decodes a decimated slice of the
@@ -366,11 +390,26 @@ Materials:
 
 ---
 
-## Suggested next step
+## Restart pointer — do these in order
 
-1. Run `gpio_selftest.py` and settle whether the Pi is damaged.
-2. Confirm the driver chip (DRV8825 vs A4988) — every scan angle depends on it.
-3. Fit the ENABLE pull-up and remove R1–R5 before any power-up.
-4. Work the bench test order above.
-5. Once one full cycle passes, prune the superseded MicroView files and update the setup bundles,
+Everything below is unstarted. All code is committed and pushed; nothing has run on hardware.
+
+1. **`./gpio_selftest.py`** with the header disconnected. Settles whether the Pi survived the 12 V.
+   GPIO14/15 are the ones at risk.
+2. **Confirm MS1/MS2/MS3 are set for 1/16**, then measure a commanded 90° on an uncoupled motor
+   before trusting `STEPS_PER_REV = 320000`.
+3. **Before any power-up:** fit the 10 kΩ ENABLE pull-up; remove the old R1–R5 5 V button pull-ups;
+   set motor current on the driver's `ADJ PWR` pot.
+4. **Rewire** to the Rev 2.0 map — the three Pi-handshake signals move to pins that exist, and the
+   buttons are now Slow / Quick / Restart / Stop.
+5. **Bench test uncoupled**, in the order in `MICROVIEW_REMOVAL.md`: `--plan`, `--check`,
+   `--scan slow --no-record`, then a full scan. Confirm the stop button halts it.
+6. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps — that is the open
+   performance question.
+7. Once a full cycle passes, prune the superseded MicroView files and regenerate the setup bundles,
    which still describe the old architecture.
+
+Two small pieces of work were offered and not yet done: the **normally-closed stop button** (a
+broken wire currently fails silent, which is the wrong way round) and the **maximum-duration
+watchdog** (~10 lines; catches a bad step constant or a malformed wave chain). Both are testable
+without the motor.
