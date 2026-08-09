@@ -199,6 +199,28 @@ Recommended alongside: **1 kΩ series resistors** on STEP/DIR/ENABLE. The driver
 high-impedance so this costs nothing electrically, but it limits fault current into the Pi's clamp
 diodes to under 10 mA at 12 V.
 
+### ENABLE pull-up, measured — 2026-08-09
+
+R_PU was fitted by the user and then **verified electrically rather than believed**, in keeping with
+this project's own record on inspections. The test reproduces the boot condition: tell the Pi to
+stop driving GPIO13 and ask what the external circuit does to it.
+
+| internal pull | reading | means |
+|---|---|---|
+| PULL-DOWN | HIGH | something external is pulling up, and it beats the internal ~50 kΩ |
+| PULL-UP | HIGH | consistent, but on its own proves nothing |
+| — | — | |
+| PULL-**UP** reading **LOW** would mean | | R_PU fitted but the driver's VCC is at 0 V |
+| PULL-DOWN low + PULL-UP high would mean | | nothing external at all — R_PU absent or open |
+
+**Result: 40/40 HIGH in all three states.** So R_PU is fitted *and* the driver's VCC is live, and the
+~30 s boot window is genuinely covered. The pin was restored to OUTPUT/HIGH (disabled) in a `finally`
+block before anything else could run; the controller was confirmed IDLE first.
+
+The method is worth keeping: it distinguishes "pull-up fitted and powered", "pull-up fitted but
+unpowered" and "nothing connected" without a meter, over SSH, in about 50 ms. Note that the 1 kΩ
+series resistor R_EN does not defeat it — 10 kΩ + 1 kΩ against the internal ~50 kΩ still reads high.
+
 ### The RTC is an Adafruit DS3231 breakout — 8 pins, and Vin must be 3V3
 
 Identified from a photo of the actual board on 2026-08-09. Earlier drawings carried a generic
@@ -630,8 +652,12 @@ A power cut truncates the pcap and, repeated, will eventually damage the SD card
 
 **Still open:**
 
-1. **The 10 kΩ ENABLE pull-up is still not fitted.** The gating item before anything drives a motor;
-   until then `tls-scan.service` stays disabled.
+1. ~~The 10 kΩ ENABLE pull-up is not fitted~~ — **CLOSED 2026-08-09, and verified electrically.**
+   The user fitted it; it was then *measured* rather than taken on trust. With the Pi told to stop
+   driving GPIO13, ENABLE stayed HIGH against the internal pull-down **and** against the internal
+   pull-up — a signature only an external pull-up on a live supply can produce. So R_PU is fitted
+   and the driver's VCC is powered, and the boot window is genuinely covered. See "ENABLE pull-up,
+   measured" below for the method.
 2. **Check S1's DC rating** if it carries motor current. It is breaking a DC inductive load, and DC
    arcs do not self-extinguish the way AC ones do — an under-rated switch can slowly weld its
    contacts, and a welded E-stop looks fine right up until it is needed.
@@ -733,8 +759,8 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
   Enabling it does **not** move the motor: the controller comes up IDLE and only turns the head when
   someone presses a scan. Two things are now permanently true, and are recorded in the unit's own
   header: the panel is reachable **with no token** from the moment the Pi boots, which is fine on a
-  private hotspot and not on a site network; and the **10 kΩ ENABLE pull-up is still unfitted**,
-  which was already true but matters more now the Pi boots unattended.
+  private hotspot and not on a site network. (The second item recorded here, the unfitted 10 kΩ
+  ENABLE pull-up, was **closed and measured later the same day** — see Safety status.)
 - **Two faults in the unit file, fixed while enabling it.** `StartLimitBurst` /
   `StartLimitIntervalSec` were in `[Service]`, where systemd ignores them — the journal had been
   logging `Unknown key 'StartLimitIntervalSec' in section [Service], ignoring` all along, so the
@@ -754,8 +780,7 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 ### Still to do — nothing below has been done
 
-1. **Fit the 10 kΩ ENABLE pull-up.** This is the gating item. Pi GPIOs float for the ~30 s of boot
-   and ENABLE is active-low, so without it the driver can sit energised with nothing in control.
+1. ~~Fit the 10 kΩ ENABLE pull-up~~ — **done and verified 2026-08-09.**
 2. **Remove SW1–SW5 and R1–R5.** All push buttons are gone from the design; R1–R5 pulled to 5 V,
    which a Pi GPIO must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches.
 3. **Measure a commanded 90° on an uncoupled motor** to confirm `STEPS_PER_REV = 640000`. The
