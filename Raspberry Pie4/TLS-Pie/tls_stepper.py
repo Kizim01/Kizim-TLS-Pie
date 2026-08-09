@@ -92,7 +92,31 @@ except ImportError:  # allows --plan to run off-Pi for checking the step maths
 # day in 2022, and it assumes the drivetrain has not been altered since. That
 # is much stronger than arithmetic from a photograph and still not a
 # calibration.
-STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "640000"))
+# MEASURED ON THIS RIG, 2026-08-09. Do not change it from arithmetic.
+#
+#     200 steps/rev  x  16 microsteps  x  50:1  =  160,000
+#     (1.8 deg/step motor -- a StepperOnline NEMA 17 59Ncm 2A)
+#
+# How it was measured, and why this number and not another: 640,000 pulses
+# were commanded at 7 deg/s and the head was watched. It turned EXACTLY FOUR
+# full revolutions and landed back on its mark. 640,000 / 4 = 160,000. A
+# return-to-mark reading has no instrument and no reading error -- the mark
+# lines up or it does not -- which is why it settled in one run what an
+# eyeballed protractor angle had failed to settle in three.
+#
+# The value this replaces was 640,000, wrong by exactly 4x: it assumed a
+# 0.9 deg/step motor (2x) AND a 100:1 reduction (2x). The 50:1 in the oldest
+# documents was right the whole time. Every scan this rig ever ran therefore
+# swept four times as far, and four times as fast, as it was told to.
+#
+# Do NOT re-derive this from captures/driveway.pcap. That file is from a
+# DIFFERENT RIG and its drivetrain is not this one's.
+#
+# Re-measure with:  ./bench_move.py 360 7.0   -> must be exactly 4 turns
+# Use 7 deg/s, not a slow rate: below ~30 RPM at the motor this rig sheds
+# most of its steps (see the resonance note in PROJECT_CONTEXT.md), and a
+# calibration taken while losing steps is worthless.
+STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "160000"))
 
 # --- Motor pins (BCM numbering) -------------------------------------------
 PIN_STEP = int(os.environ.get("TLSPIE_STEP_PIN", "19"))
@@ -107,8 +131,12 @@ ENABLE_ACTIVE_LOW = os.environ.get("TLSPIE_ENABLE_ACTIVE_LOW", "1") == "1"
 DIR_FORWARD = int(os.environ.get("TLSPIE_DIR_FORWARD", "1"))
 
 # --- Motion ----------------------------------------------------------------
+# One output revolution per second squared. Derived from STEPS_PER_REV rather
+# than hardcoded, so correcting the constant does not silently change the
+# acceleration the mechanism actually sees -- it was a bare 640000 literal
+# until the 4x calibration error was found, which tied it to a wrong number.
 ACCEL_STEPS_PER_S2 = float(
-    os.environ.get("TLSPIE_ACCEL_STEPS_PER_S2", str(1.0 * 640000))
+    os.environ.get("TLSPIE_ACCEL_STEPS_PER_S2", str(1.0 * STEPS_PER_REV))
 )
 
 # STEP pulse high time. DRV8825 needs >= 1.9 us, A4988 >= 1.0 us; 5 us is

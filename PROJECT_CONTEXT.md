@@ -333,48 +333,66 @@ wanted in practice. Verified by `tls_stepper.py --plan` against **320,000 steps/
 Both overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
 back off 18° to finish square with the start.
 
-### ⛔ OVERTURNED THE SAME DAY BY THE FIRST REAL MOTION: 640,000 IS IMPOSSIBLE
+### ✅ SETTLED ON THIS RIG, 2026-08-09: `STEPS_PER_REV` = 160,000
 
-**Read this before the section below it.** The section that follows argued 640,000 from
-`captures/driveway.pcap`. The first bench run on real hardware, 2026-08-09, contradicts it outright,
-and the bench beats the inference.
+**Measured, by return-to-mark, at a speed where the motor is not losing steps.** This replaces the
+640,000 that had been configured since the beginning and that this document argued for earlier the
+same day from `captures/driveway.pcap` — a file that turns out to be **from a different rig**.
 
-A stepper **cannot advance more than one microstep per STEP pulse.** So the number of pulses
-emitted puts a hard ceiling on `STEPS_PER_REV`, and any step loss only pushes the true value lower.
+    640,000 pulses commanded at 7 deg/s  ->  head turned EXACTLY 4 full revolutions
+    640,000 / 4                          =   160,000 steps per output revolution
 
-| run | pulses emitted | head actually moved | implies ≤ |
-|---|---|---|---|
-| aborted sweep, 71.774 s at 1777.8 Hz | 127,600 | 90° | 510,399 |
-| **completed `bench_move.py 360 1.0`** | **640,000** | **550°** (360 + 190 over the mark) | **418,909** |
+    200 steps/rev  x  16 microsteps  x  50:1  =  160,000   ✓
 
-640,000 pulses producing 550° of head rotation requires ≤ 418,909 steps/rev **with zero step loss**.
-The configured constant is therefore **at least 53% too big**, and 512,000 (the 80:1 harmonic-drive
-candidate) is ruled out too.
+**The configured value was wrong by exactly 4×, from two independent 2× errors compounding:** it
+assumed a **0.9°/step motor** (it is 1.8°/step — a StepperOnline NEMA 17, 59 Ncm, 2 A) *and* a
+**100:1 reduction** (it is 50:1). The 50:1 in the oldest documents was right the whole time.
 
-**`400 × 16 × 50:1 = 320,000` is consistent with both runs** — which is exactly the value the driver
-photograph implied, and which was wrongly "reverted" earlier the same day.
+**Every scan this rig ever ran swept four times as far, and four times as fast, as commanded.**
 
-**Why there was never really a conflict.** `captures/driveway.pcap` **is from a different rig** —
-the user said so once the contradiction surfaced. It measured that machine's drivetrain correctly
-and says nothing about this one. There is no discrepancy to reconcile: the bench number is the only
-evidence about the rig on the table, and it is the one to use.
+#### Why the reading is trustworthy where three previous ones were not
 
-**A methodological caveat worth keeping anyway**, because it nearly became the explanation:
-autocorrelation peaks at *every multiple* of the true period, so a scene repeating every 181.4 s
-also correlates strongly at 362.9 s. **A rotation measured by correlation needs its harmonics
-excluded before the first large peak can be called the fundamental.** That was not the bug here, but
-it is a live trap in that estimator.
+| attempt | method | result |
+|---|---|---|
+| aborted sweep, 1 °/s | eyeballed angle | 90° — implied ~510,000 |
+| 360° command, 1 °/s | eyeballed overshoot | 550° — implied ~419,000 |
+| **360° command, 7 °/s** | **count whole turns to a mark** | **4.000 turns — 160,000** |
 
-**The exact value is still not pinned, because the rig is not yet repeatable.** The two runs
-disagree with each other by 21.8% in steps-per-actual-degree (1417.8 vs 1163.6), and the motor
-clicks loudly throughout — it is losing steps. Under `S = 320,000` the two runs achieved 62.7% and
-76.4% of their commanded angle. **Fix the step loss before trusting any calibration number**: set
-the current limit on the `ADJ PWR` pot, confirm MS1/MS2/MS3 really are 1/16, then re-run
-`bench_move.py` at a much lower rate. If a slower command produces *more* rotation, it was stalling;
-if it produces the same, the ratio is real.
+The first two disagreed with each other by 22% because **the motor was shedding two thirds of its
+steps at those speeds**. Re-read against the true constant:
 
-**Consequence if 320,000 holds:** every scan this rig has ever run swept **twice** as far and fast as
-commanded, which is precisely the failure the duration watchdog in `move_steps()` was written for.
+| run | pulses | should have moved | actually moved | steps kept |
+|---|---|---|---|---|
+| aborted sweep @ 1 °/s | 127,600 | 287° | 90° | **31%** |
+| 360° cmd @ 1 °/s | 640,000 | 1440° | 550° | **38%** |
+| **360° cmd @ 7 °/s** | 640,000 | 1440° | **1440°** | **100%** |
+
+Two lessons, both cheap to reuse: **count whole turns against a mark rather than reading an angle**
+— it has no instrument and no reading error — and **never calibrate at a speed where the mechanism
+is audibly complaining**, because a measurement taken while losing steps measures the loss, not the
+gearing.
+
+### ⚠ It sheds most of its steps below ~30 RPM at the motor — UNRESOLVED
+
+Silent and lossless at 7 °/s; loud clicking and ~2/3 of steps lost at 1 °/s and below. The clicking
+starts about two seconds in and builds, which is the signature of a resonance or a stick-slip limit
+cycle rather than a wiring fault.
+
+| commanded | microstep rate | full-steps/s | motor RPM | behaviour |
+|---|---|---|---|---|
+| 0.25 °/s | 111 Hz | 6.9 | 2.1 | clicks |
+| **1 °/s — the `slow` scan** | 444 Hz | 27.8 | **8.3** | **clicks, loses ~2/3** |
+| **2 °/s — the `fast` scan** | 889 Hz | 55.6 | **16.7** | untested |
+| 4 °/s | 1778 Hz | 111 | 33.3 | silent |
+| 7 °/s | 3111 Hz | 194 | 58.3 | silent, lossless |
+
+**This matters more now, not less.** Correcting the constant made the motor run *four times slower*
+for the same commanded scan rate, pushing both scan profiles deeper into the bad zone. **The scan
+profiles are not usable until this is fixed.**
+
+**The current limit has still never been touched** — it is the prime suspect and the obvious next
+move. More phase current is the standard cure for both low-speed resonance and stick-slip. Set it
+by the plateau method (below), then re-run `bench_move.py 360 1.0` and require exactly one turn.
 
 #### The motor, and why the error is exactly 2×
 

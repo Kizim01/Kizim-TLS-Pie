@@ -180,7 +180,12 @@ check("position marked unknown", st.position_known is False)
 
 # --- 4. the watchdog scales with the move, not a fixed timeout ------------
 print("\nwatchdog scales with move length")
-big_segments, _ = tls_stepper.plan_move(336000, 888.9)
+# Derived from the real constant, not a literal: a hardcoded step count went
+# stale the moment STEPS_PER_REV was corrected 640,000 -> 160,000.
+big_segments, _ = tls_stepper.plan_move(
+    tls_stepper.degrees_to_steps(378),
+    tls_stepper.deg_per_s_to_step_rate(1.0),
+)
 big_expected = sum(n / r for n, r in big_segments if r > 0)
 big_limit = big_expected * tls_stepper.WATCHDOG_FACTOR + tls_stepper.WATCHDOG_SLACK_S
 check("a 378 deg slow scan leg is allowed its full duration",
