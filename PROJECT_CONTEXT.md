@@ -372,27 +372,47 @@ Two lessons, both cheap to reuse: **count whole turns against a mark rather than
 is audibly complaining**, because a measurement taken while losing steps measures the loss, not the
 gearing.
 
-### ⚠ It sheds most of its steps below ~30 RPM at the motor — UNRESOLVED
+### ⛔ THE BLOCKER: it sheds steps below roughly 100 RPM at the motor
 
-Silent and lossless at 7 °/s; loud clicking and ~2/3 of steps lost at 1 °/s and below. The clicking
-starts about two seconds in and builds, which is the signature of a resonance or a stick-slip limit
-cycle rather than a wiring fault.
+**Key the behaviour to MOTOR RPM, never to the commanded deg/s.** `deg_per_s_to_step_rate()`
+multiplies by `STEPS_PER_REV`, so correcting the constant 640,000 → 160,000 **divided every step
+rate by four**. The same `7 °/s` command means 233 RPM before the correction and 58 RPM after. A
+table written in deg/s is a trap; this one is in RPM.
 
-| commanded | microstep rate | full-steps/s | motor RPM | behaviour |
+| motor RPM | full-steps/s | behaviour | steps kept | measured as |
 |---|---|---|---|---|
-| 0.25 °/s | 111 Hz | 6.9 | 2.1 | clicks |
-| **1 °/s — the `slow` scan** | 444 Hz | 27.8 | **8.3** | **clicks, loses ~2/3** |
-| **2 °/s — the `fast` scan** | 889 Hz | 55.6 | **16.7** | untested |
-| 4 °/s | 1778 Hz | 111 | 33.3 | silent |
-| 7 °/s | 3111 Hz | 194 | 58.3 | silent, lossless |
+| 8.3 | 27.8 | clicks | — | 0.25 °/s @ old constant |
+| 33.3 | 111 | clicks | **34%** | 1 °/s @ old constant |
+| 58.3 | 194 | clicks | **56%** | 7 °/s @ new constant |
+| 133 | 444 | silent | — | 4 °/s @ old constant |
+| **233** | **778** | **silent** | **100%** | 7 °/s @ old constant — the calibration run |
 
-**This matters more now, not less.** Correcting the constant made the motor run *four times slower*
-for the same commanded scan rate, pushing both scan profiles deeper into the bad zone. **The scan
-profiles are not usable until this is fixed.**
+The threshold sits somewhere between **58 and 133 RPM**. Below it the motor clicks, the noise
+builds over the first couple of seconds, and it keeps between a third and a half of its steps.
 
-**The current limit has still never been touched** — it is the prime suspect and the obvious next
-move. More phase current is the standard cure for both low-speed resonance and stick-slip. Set it
-by the plateau method (below), then re-run `bench_move.py 360 1.0` and require exactly one turn.
+**This is backwards from ordinary stepper behaviour** — a motor short of torque fails at *high*
+speed, where back-EMF eats its margin. Failing only at *low* speed is the signature of **low-speed
+resonance or a stick-slip limit cycle**, not of a wiring error, and the standard cure for both is
+**more phase current**.
+
+**Both scan profiles sit inside the bad band**, and the calibration fix pushed them deeper into it:
+
+| profile | commanded | motor RPM |
+|---|---|---|
+| `slow` | 1 °/s | **8.3** |
+| `fast` | 2 °/s | **16.7** |
+
+There is no escaping it by changing the scan rate: 1 °/s of pan through a 50:1 reduction *is*
+8.3 RPM. **The scan profiles are unusable until this is fixed.**
+
+**The current limit has still never been touched.** It is the one untried variable, it is the
+textbook cure for exactly this symptom, and it is free. That is the critical path — everything else
+about this rig now waits behind it. If raising it to the motor's 2 A rating does not clear the
+band, the next suspects are mechanical: check the head turns smoothly by hand with the driver
+disabled, and look for preload or a tight spot in the harmonic drive.
+
+**Calibration is unaffected by any of this.** The 4.000-turn measurement was taken at 233 RPM where
+the motor keeps 100% of its steps, which is precisely why that speed was chosen for it.
 
 #### The motor, and why the error is exactly 2×
 
