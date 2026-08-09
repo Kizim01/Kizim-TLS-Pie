@@ -56,12 +56,21 @@ matters. This is a hardware requirement.
 
 ### Buttons
 
-| Button | Pi GPIO (BCM) | Header pin | Profile |
+Four buttons, four actions. Both scans are a full 360°; the firmware's 180°
+profile is gone.
+
+| Button | Pi GPIO (BCM) | Header pin | Action |
 |---|---|---|---|
-| Scan 1 (SW4) | GPIO5 | 29 | 360° @ 1 °/s |
-| Scan 2 (SW3) | GPIO6 | 31 | 360° @ 2 °/s |
-| Scan 3 (SW2) | GPIO12 | 32 | 180° @ 1 °/s |
-| Stop (SW5) | GPIO17 | 11 | abort |
+| 360° Slow | GPIO5 | 29 | 1 °/s, about 6½ min |
+| 360° Quick | GPIO6 | 31 | 2 °/s, about 3¼ min |
+| Restart | GPIO12 | 32 | return the head to start, clear the fault |
+| Stop | GPIO17 | 11 | abort |
+
+**Restart** does one of two things depending on what the controller knows. If
+the position is known it drives the head back to zero. If a previous abort left
+it unknown — pigpio cannot report how many steps actually left the DMA buffer —
+it takes wherever the head is now as the new start position, so align the head
+by hand first.
 
 Wire each switch between its GPIO and GND. The code enables the Pi's internal
 pull-ups.
@@ -81,8 +90,91 @@ GPIO17, GPIO22 and GPIO27 are free now — they were the handshake lines.
 sudo apt install pigpio python3-pigpio tcpdump
 sudo systemctl enable --now pigpiod
 sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/tcpdump   # or run as root
-chmod +x tls_scan.py tls_stepper.py
+chmod +x tls_scan.py tls_stepper.py tls_web.py gpio_selftest.py
+
+# run it as a service so a dropped SSH link cannot kill a scan
+sudo cp tls-scan.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tls-scan
 ```
+
+## Phone control panel
+
+The rig is headless — no OLED, no monitor — so the operator display is a web
+page served by the Pi. Open it on a phone on the same network:
+
+```
+http://raspberrypi.local:8080/
+```
+
+It shows live phase, elapsed and remaining time, a progress bar, the capture
+filename and its growing size, and gives you the three scan buttons plus a
+large STOP. All three control surfaces — physical buttons, phone panel,
+`--scan` — use the same code paths, so the panel's stop raises exactly the
+same flag the GPIO stop button does.
+
+Standard library only: no Flask, nothing to `pip install`, nothing to break in
+the field. It runs as a daemon thread inside `tls_scan.py`, and if the port
+cannot be bound the scanner still starts without it.
+
+**Never launch a scan from a foreground SSH session.** WiFi drops, SSH sends
+SIGHUP, and the controller dies mid-scan — while pigpio's DMA engine keeps
+clocking step pulses with nothing left to stop them. Use the systemd service
+above, or `tmux` if you are running it by hand.
+
+### Network exposure
+
+By default the panel binds `0.0.0.0`, so anyone who can reach the Pi can start
+the motor. On a phone hotspot with only you and the Pi that is fine; on a site
+network it is not. Set a token:
+
+```bash
+TLSPIE_WEB_TOKEN=somethingLong ./tls_scan.py
+# then: http://raspberrypi.local:8080/?t=somethingLong
+```
+
+That is a shared secret over plain HTTP — it stops a bystander, nothing more.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TLSPIE_WEB_HOST` | 0.0.0.0 | bind address; `127.0.0.1` for local only |
+| `TLSPIE_WEB_PORT` | 8080 | panel port |
+| `TLSPIE_WEB_TOKEN` | *(none)* | require `?t=` on every request |
+
+### In the field
+
+There is no router at a survey site. Either make the Pi its own access point
+with `hostapd` and have the phone join it, or use the phone as a hotspot and
+let the Pi join that. Both leave `eth0` free, which matters — the Velodyne owns
+that interface and the capture runs on it.
+
+### Live point-cloud preview — opt in
+
+```bash
+TLSPIE_PREVIEW=1 ./tls_scan.py
+```
+
+A second UDP socket on port 2368 decodes a decimated slice of the VLP-16
+stream and the panel draws it as a top-down plan view, coloured by height. It
+answers one question — "is this capturing what I think it is?" — and nothing
+more. The pcap remains the actual product; the preview is not survey data and
+does not account for the pan axis turning underneath it.
+
+**It is off by default because it competes for the resource that matters.**
+Decoding lidar packets costs CPU and memory bandwidth on a Pi that is already
+running pigpio's DMA step generation and `tcpdump` writing to SD. Step-timing
+jitter under load is the one genuinely open performance question in this
+design, so turn the preview on, run a scan, and check for lost steps before
+trusting it. If the head drifts, turn it off — the preview is a convenience and
+the scan is not.
+
+Defaults decimate to roughly 0.6% of the stream (one packet in ten, every
+second block, every second laser). Tune with `TLSPIE_PREVIEW_PACKET_STRIDE`,
+`TLSPIE_PREVIEW_LASER_STRIDE` and `TLSPIE_PREVIEW_MAX_POINTS`.
+
+Both `tcpdump` and the preview can read the same traffic — libpcap captures at
+the link layer and does not consume datagrams — so the preview cannot corrupt
+or steal from the capture.
 
 ## Bench test — in this order
 

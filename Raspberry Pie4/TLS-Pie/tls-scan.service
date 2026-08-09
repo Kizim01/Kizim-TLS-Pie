@@ -1,0 +1,61 @@
+# TLS Pie scanner -- systemd unit
+#
+# Runs the scanner independently of any login session, so a dropped SSH or WiFi
+# link cannot kill it. That matters more than convenience: pigpio clocks step
+# pulses from the DMA engine, so a controller killed mid-scan leaves the motor
+# turning with nothing in control of it. Running under systemd means the only
+# routine way the process ends is SIGTERM, which the controller handles.
+#
+# INSTALL
+#   sudo cp tls-scan.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tls-scan
+#
+# WATCH IT (from a laptop or phone over SSH)
+#   journalctl -u tls-scan -f
+#
+# The phone control panel is at http://<pi>:8080/ once this is running.
+
+[Unit]
+Description=TLS Pie lidar scanner controller
+Documentation=file:/home/lipi/TLS-Pie/MICROVIEW_REMOVAL.md
+After=network-online.target pigpiod.service
+Wants=network-online.target
+Requires=pigpiod.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lipi/TLS-Pie
+ExecStart=/usr/bin/python3 /home/lipi/TLS-Pie/tls_scan.py
+
+# tcpdump needs raw sockets. Prefer setcap on tcpdump and drop this to a normal
+# user; running the motor controller as root is not required by anything else.
+#   sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/tcpdump
+User=root
+
+Environment=ETH_INTERFACE=eth0
+Environment=LIDAR_IP=192.168.1.201
+Environment=DUMPDIR=/home/lipi/velodyne
+# Uncomment to require a token on the control panel. Without one, anyone who
+# can reach the Pi on the network can start the motor.
+#Environment=TLSPIE_WEB_TOKEN=change-me
+
+# A scan takes up to ~6.5 minutes. Give the controller time to decelerate the
+# motor, close the pcap and park the head before systemd escalates to SIGKILL
+# -- a SIGKILL here is exactly the case that orphans the DMA waveform.
+KillSignal=SIGTERM
+TimeoutStopSec=600
+SendSIGKILL=yes
+
+# Restart if it dies, but never in a tight loop: repeated restarts while the
+# motor is energised are worse than staying down.
+Restart=on-failure
+RestartSec=15
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -299,6 +299,17 @@ class Stepper:
             should_abort=should_abort,
         )
 
+    def set_home(self):
+        """
+        Declare the current head position to be the start position.
+
+        Used by Restart after an abort, where the steps actually emitted are
+        unrecoverable from pigpio. The operator aligns the head physically and
+        this makes that alignment authoritative again.
+        """
+        self.position_steps = 0
+        self.position_known = True
+
     def stop_and_release(self):
         try:
             self.pi.wave_tx_stop()
