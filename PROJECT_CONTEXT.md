@@ -630,14 +630,30 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 - Test suites: `test_stepper_watchdog.py` 17/17, `test_web_install.py` 49/49, both on the Pi.
 - **The cloud pipeline and the 3D viewer are deployed and running on the Pi**, confirmed from the
   phone. All `*.py` are at `~/TLS-Pie`; `driveway.cloud` + `.json` are in `~/velodyne` so there is a
-  real 146,824-point scan to open. Started as a transient unit, so it dies on reboot and leaves
-  `tls-scan.service` disabled:
+  real 146,824-point scan to open.
+- **`tls-scan.service` is ENABLED (2026-08-09).** The panel comes up on its own at every boot — no
+  SSH, nothing to remember. Verified by rebooting twice and confirming it came back serving
+  untouched. Panel at `http://tlspie.local:8080/` (`10.153.229.165` on the hotspot, DHCP so it can
+  move; the Pi logs its address to the journal as soon as WiFi associates).
 
-      sudo systemd-run --unit=tls-demo --working-directory=/home/lipi/TLS-Pie \
-          /usr/bin/python3 /home/lipi/TLS-Pie/tls_scan.py --no-record
-      sudo systemctl stop tls-demo
+      systemctl status tls-scan          # is it up
+      journalctl -u tls-scan -b          # this boot's log, including the address
+      sudo systemctl stop tls-scan       # for bench work; `start` to put it back
 
-  Panel at `http://tlspie.local:8080/` (was `10.153.229.165` on the hotspot). Suites on the Pi:
+  Enabling it does **not** move the motor: the controller comes up IDLE and only turns the head when
+  someone presses a scan. Two things are now permanently true, and are recorded in the unit's own
+  header: the panel is reachable **with no token** from the moment the Pi boots, which is fine on a
+  private hotspot and not on a site network; and the **10 kΩ ENABLE pull-up is still unfitted**,
+  which was already true but matters more now the Pi boots unattended.
+- **Two faults in the unit file, fixed while enabling it.** `StartLimitBurst` /
+  `StartLimitIntervalSec` were in `[Service]`, where systemd ignores them — the journal had been
+  logging `Unknown key 'StartLimitIntervalSec' in section [Service], ignoring` all along, so the
+  guard against restarting in a tight loop while the motor is energised was never in effect. And
+  `network-online.target` was a dependency, which would have stalled boot for the best part of two
+  minutes every time the Pi was switched on before the phone's hotspot — the normal order on site.
+  The panel binds `0.0.0.0` and needs no address to start, so it is now `After=network.target` and
+  announces its address to the journal once WiFi turns up.
+- Suites on the Pi:
   `test_viewer.py` 76/80 — the four it skips are the `node --check` of the panel JavaScript, which
   needs node the Pi does not have. **Run the viewer suite on the laptop before shipping UI changes.**
 - **Two viewer bugs found only by using it on the phone**, neither visible to any test that existed

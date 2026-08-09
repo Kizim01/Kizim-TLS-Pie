@@ -1599,10 +1599,37 @@ def start(state, host=WEB_HOST, port=WEB_PORT):
         if address:
             print("  http://%s:%d%s" % (address, bound, suffix))
         else:
-            print("  no network address yet -- is WiFi up?")
+            # Normal at boot. Since tls-scan.service stopped waiting for
+            # network-online.target, the panel starts BEFORE WiFi associates --
+            # deliberately, so a Pi switched on before the phone's hotspot does
+            # not stall for two minutes. The address simply does not exist yet.
+            print("  waiting for the network -- the address is logged below "
+                  "as soon as WiFi is up")
+            _announce_when_online(bound, suffix)
         print("  http://%s.local:%d%s" % (socket.gethostname(), bound, suffix))
     else:
         print("  http://%s:%d%s" % (host, bound, suffix))
     if not WEB_TOKEN:
         print("  No token set - anyone on this network can start the motor.")
     return httpd
+
+
+def _announce_when_online(port, suffix, timeout_s=600.0, interval_s=3.0):
+    """
+    Log the panel's address once the network turns up, then stop.
+
+    Without this, `journalctl -u tls-scan` from a boot only ever says the
+    address was unknown, because at boot it genuinely was -- which is exactly
+    when an operator goes looking for it. Gives up quietly after `timeout_s`
+    rather than polling forever on a rig that will never have WiFi.
+    """
+    def wait():
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            time.sleep(interval_s)
+            address = lan_address()
+            if address:
+                print("Control panel is reachable at http://%s:%d%s"
+                      % (address, port, suffix), flush=True)
+                return
+    threading.Thread(target=wait, daemon=True).start()
