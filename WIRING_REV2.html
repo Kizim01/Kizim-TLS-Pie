@@ -251,7 +251,7 @@ li strong{color:var(--ink); font-weight:620;}
   <figure>
     <div class="plate">
       <div class="draw">
-<svg viewBox="0 0 1270 440" role="img" aria-label="Power tree: a 12 to 24 volt battery through a 6 amp fuse F1 splits to two switches. S1 Main feeds two XL6009 converters, one producing 5 volts for the Raspberry Pi and one producing 12 volts for the Big Easy Driver motor supply. S2 Lidar feeds the Velodyne interface box 12 volt input directly. Every negative return goes to one common ground.">
+<svg viewBox="0 0 1270 440" role="img" aria-label="Power tree: a 12 to 24 volt battery through a 6 amp fuse F1 splits to two switches. S1 Main feeds two LM2596 buck converters, one producing 5 volts for the Raspberry Pi and one producing 12 volts for the Big Easy Driver motor supply. S2 Lidar feeds the Velodyne interface box 12 volt input directly. Every negative return goes to one common ground.">
   <defs>
     <g id="gnd"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g>
   </defs>
@@ -1166,7 +1166,8 @@ li strong{color:var(--ink); font-weight:620;}
       <li><strong>Header disconnected</strong> — run <span class="m">./gpio_selftest.py</span>.
         Expect 25 of 26 pins healthy and GPIO27 output-only.</li>
       <li><strong>Converters on the bench, no loads.</strong> Confirm U3 holds 5.1 V and U6 holds
-        12 V from the real pack. This is where a boost-only XL6009 shows itself.</li>
+        12 V from the real pack, and measure M+ again <em>while the motor is turning</em> — a buck
+        set to 12 V on a 12 V pack is in dropout and will sag exactly when the motor needs it.</li>
       <li><strong>Ground first.</strong> Star-point every return, then check continuity from the
         Pi's pin 39 to the battery negative before any supply is connected.</li>
       <li><strong>Power the Pi only.</strong> Panel reachable at
