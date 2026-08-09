@@ -15,13 +15,40 @@
 #   journalctl -u tls-scan -f
 #
 # The phone control panel is at http://<pi>:8080/ once this is running.
+#
+# ENABLED 2026-08-09 so the panel comes up on its own at every boot, with no
+# SSH and nothing to remember. Starting this unit does NOT move the motor: the
+# controller comes up IDLE and only turns the head when someone presses a scan
+# on the panel.
+#
+# ⚠ TWO THINGS THAT ARE NOW ALWAYS TRUE
+#
+# 1. The panel is reachable to anyone on the same network from the moment the
+#    Pi boots, and it has no token, so anyone on it can start the motor. That
+#    is fine on a private phone hotspot and NOT fine on a site network -- set
+#    TLSPIE_WEB_TOKEN below before this ever joins one.
+# 2. The 10k ENABLE pull-up is still not fitted. Every Pi GPIO floats for the
+#    ~30 s of boot and ENABLE is active-low, so the driver can sit energised
+#    with nothing in control of it. That was true before this unit was enabled
+#    and is unchanged by it, but the Pi now boots unattended more often.
 
 [Unit]
 Description=TLS Pie lidar scanner controller
 Documentation=file:/home/lipi/TLS-Pie/MICROVIEW_REMOVAL.md
-After=network-online.target pigpiod.service
-Wants=network-online.target
+
+# Deliberately NOT network-online.target. The panel binds 0.0.0.0, so it does
+# not need an address in order to start -- it becomes reachable the moment the
+# network turns up. Waiting for network-online would stall boot for the best
+# part of two minutes every time the Pi is switched on before the phone's
+# hotspot, which is the normal order of events on site.
+After=network.target pigpiod.service
 Requires=pigpiod.service
+
+# These belong in [Unit]. They were in [Service], where systemd IGNORES them,
+# so the guard against restarting in a tight loop while the motor is energised
+# was never actually in effect.
+StartLimitBurst=3
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -48,11 +75,10 @@ TimeoutStopSec=600
 SendSIGKILL=yes
 
 # Restart if it dies, but never in a tight loop: repeated restarts while the
-# motor is energised are worse than staying down.
+# motor is energised are worse than staying down. The burst limit that backs
+# this up is in [Unit] above, which is the only place systemd reads it.
 Restart=on-failure
 RestartSec=15
-StartLimitBurst=3
-StartLimitIntervalSec=300
 
 StandardOutput=journal
 StandardError=journal
