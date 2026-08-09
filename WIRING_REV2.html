@@ -113,6 +113,18 @@ figcaption{margin-top:11px; color:var(--ink-soft); font-size:14.5px; max-width:7
 .pnf{font-family:var(--mono); font-size:11px; fill:var(--ink-faint);}
 .net{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em;}
 .nc{fill:var(--paper); stroke:var(--ink-faint); stroke-width:1.5;}
+.pinsq{fill:var(--panel); stroke:var(--ink-faint); stroke-width:1.3;}
+.pnum{font-family:var(--mono); font-size:9px; fill:var(--ink-soft);}
+.pinlbl{font-family:var(--mono); font-size:11px; fill:var(--ink-faint);}
+.pinlbl.used{fill:var(--ink); font-weight:700;}
+.pinlbl.dead{fill:var(--danger); font-weight:700;}
+.lead{fill:none; stroke:var(--rule); stroke-width:1.4;}
+.v3f{fill:var(--panel); stroke:var(--n-3v3); stroke-width:2.4;}
+.v5f{fill:var(--panel); stroke:var(--n-5v); stroke-width:2.4;}
+.i2cf{fill:var(--panel); stroke:var(--n-i2c); stroke-width:2.4;}
+.gndf{fill:var(--panel); stroke:var(--n-gnd); stroke-width:2.4;}
+.sigf{fill:var(--panel); stroke:var(--n-sig); stroke-width:2.4;}
+.badf{fill:var(--danger-bg); stroke:var(--danger); stroke-width:2.4;}
 .batt{stroke:var(--n-batt);} .v12{stroke:var(--n-12v);} .v5{stroke:var(--n-5v);}
 .v3{stroke:var(--n-3v3);}   .gnd{stroke:var(--n-gnd);}  .sig{stroke:var(--n-sig);}
 .i2c{stroke:var(--n-i2c);}  .eth{stroke:var(--n-eth);}  .coil{stroke:var(--n-coil);}
@@ -197,7 +209,7 @@ li strong{color:var(--ink); font-weight:620;}
     <span>Supersedes</span><b>1.1 — 2022-09-12</b>
     <span>Date</span><b>2026-08-09</b>
     <span>Status</span><b>not yet built</b>
-    <span>Sheets</span><b>3</b>
+    <span>Sheets</span><b>4</b>
   </div>
 </header>
 
@@ -208,6 +220,10 @@ li strong{color:var(--ink); font-weight:620;}
     schematic. Every device is a labelled block with its real silkscreen pin names on the edges,
     because the silkscreen is what you read with a wire in your hand. Only the parts you actually
     fit as discrete components — the fuse, the switches, the four resistors — are drawn as symbols.</p>
+    <p class="prose">Sheets 1–3 are grouped by subsystem: <strong>power</strong>, <strong>the motor
+    chain</strong>, <strong>the capture path</strong>. <strong>Sheet 4 is that same wiring seen from
+    the header</strong> — pin 1 at the bottom, laid out the way the connector sits in front of you.
+    Use 1–3 to understand the rig, and 4 to wire it.</p>
     <div class="note">
       <span class="hd">Two conventions</span>
       A <strong>filled dot</strong> where wires meet is a connection. Wires that cross
@@ -354,7 +370,7 @@ li strong{color:var(--ink); font-weight:620;}
         <div><b>FIG 1</b></div>
         <div>Power distribution</div>
         <div>TLS Pie · <b>Rev 2.0</b></div>
-        <div>Sheet <b>1</b> of 3</div>
+        <div>Sheet <b>1</b> of 4</div>
       </div>
     </div>
     <figcaption>F1 protects everything. S1 and S2 hang off the fuse <em>in parallel</em>, so S1 does
@@ -501,7 +517,7 @@ li strong{color:var(--ink); font-weight:620;}
         <div><b>FIG 2</b></div>
         <div>Motor chain</div>
         <div>TLS Pie · <b>Rev 2.0</b></div>
-        <div>Sheet <b>2</b> of 3</div>
+        <div>Sheet <b>2</b> of 4</div>
       </div>
     </div>
     <figcaption>Three signals, one return, four coil wires. Everything else on the driver is left
@@ -624,7 +640,7 @@ li strong{color:var(--ink); font-weight:620;}
         <div><b>FIG 3</b></div>
         <div>Capture path, clock, cooling</div>
         <div>TLS Pie · <b>Rev 2.0</b></div>
-        <div>Sheet <b>3</b> of 3</div>
+        <div>Sheet <b>3</b> of 4</div>
       </div>
     </div>
     <figcaption>The sensor never touches the GPIO header — it is Ethernet the whole way, which is why
@@ -654,36 +670,276 @@ li strong{color:var(--ink); font-weight:620;}
 
 <!-- ============================ HEADER MAP ============================ -->
 <section>
-  <h2><span class="n">04</span> JP1 — every pin on the 40-way header</h2>
+  <h2><span class="n">04</span> JP1 &#8212; the header as you hold it</h2>
   <div class="stack">
-    <p class="prose">Drawn as the connector sits: <strong>pin 1 top-left</strong>, odd numbers down
-    the left column, even down the right, with the Ethernet jack at the bottom of the board. Six pins
-    carry wires. One is damaged. The other thirty-three are free.</p>
+    <p class="prose">Drawn in the orientation of your pinout card: <strong>pin 1 at the bottom</strong>, odd numbers up the right column, even numbers up the left, the header running down the
+    board&#8217;s left edge. <strong>Eleven pins carry wires</strong> &#8212; 1, 2, 3, 4, 5, 6, 9,
+    33, 35, 37 and 39. One is damaged. The other twenty-eight are free, and stay free.</p>
+
+  <figure>
+    <div class="plate">
+      <div class="draw">
+<svg viewBox="0 0 1300 720" role="img" aria-label="The Pi 40-pin header drawn in the orientation of the user's pinout card: pin 1 at the bottom right, odd-numbered pins running up the right column and even-numbered pins up the left. Pins 1, 3, 5 and 9 run right to the DS3231 clock. Pins 33, 35, 37 and 39 run right to the Big Easy Driver, the three signal lines each through a 1 kilohm resistor, with a 10 kilohm pull-up from ENABLE to the driver VCC. Pins 2 and 4 run left to the 5 volt converter and pins 4 and 6 to the fan. Pin 13, GPIO27, is marked damaged.">
+  <defs><g id="gnd4"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g></defs>
+  <rect class="bx" x="470" y="46" width="70" height="560" rx="3"/>
+  <text class="pnf" x="505" y="36" text-anchor="middle">JP1</text>
+  <path class="lead" d="M523 606 V614"/>
+  <text class="pnf" x="523" y="628" text-anchor="middle">pin 1</text>
+  <rect class="pinsq v5f" x="479.5" y="584.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="595.2" text-anchor="middle">2</text>
+  <text class="pinlbl used" x="455" y="586" text-anchor="end">5V power</text>
+  <rect class="pinsq v3f" x="515.5" y="584.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="595.2" text-anchor="middle">1</text>
+  <text class="pinlbl used" x="555" y="586">3V3 power</text>
+  <rect class="pinsq v5f" x="479.5" y="556.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="567.2" text-anchor="middle">4</text>
+  <text class="pinlbl used" x="455" y="558" text-anchor="end">5V power</text>
+  <rect class="pinsq i2cf" x="515.5" y="556.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="567.2" text-anchor="middle">3</text>
+  <text class="pinlbl used" x="555" y="558">GPIO 2 (SDA)</text>
+  <rect class="pinsq gndf" x="479.5" y="528.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="539.2" text-anchor="middle">6</text>
+  <text class="pinlbl used" x="455" y="530" text-anchor="end">Ground</text>
+  <rect class="pinsq i2cf" x="515.5" y="528.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="539.2" text-anchor="middle">5</text>
+  <text class="pinlbl used" x="555" y="530">GPIO 3 (SCL)</text>
+  <rect class="pinsq" x="479.5" y="500.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="511.2" text-anchor="middle">8</text>
+  <text class="pinlbl" x="455" y="502" text-anchor="end">GPIO 14 (TXD)</text>
+  <path class="lead" d="M470 508 H462"/>
+  <rect class="pinsq" x="515.5" y="500.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="511.2" text-anchor="middle">7</text>
+  <text class="pinlbl" x="555" y="502">GPIO 4 (GPCLK0)</text>
+  <path class="lead" d="M540 508 H548"/>
+  <rect class="pinsq" x="479.5" y="472.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="483.2" text-anchor="middle">10</text>
+  <text class="pinlbl" x="455" y="474" text-anchor="end">GPIO 15 (RXD)</text>
+  <path class="lead" d="M470 480 H462"/>
+  <rect class="pinsq gndf" x="515.5" y="472.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="483.2" text-anchor="middle">9</text>
+  <text class="pinlbl used" x="555" y="474">Ground</text>
+  <rect class="pinsq" x="479.5" y="444.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="455.2" text-anchor="middle">12</text>
+  <text class="pinlbl" x="455" y="446" text-anchor="end">GPIO 18 (PCM_CLK)</text>
+  <path class="lead" d="M470 452 H462"/>
+  <rect class="pinsq" x="515.5" y="444.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="455.2" text-anchor="middle">11</text>
+  <text class="pinlbl" x="555" y="446">GPIO 17</text>
+  <path class="lead" d="M540 452 H548"/>
+  <rect class="pinsq" x="479.5" y="416.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="427.2" text-anchor="middle">14</text>
+  <text class="pinlbl" x="455" y="418" text-anchor="end">Ground</text>
+  <path class="lead" d="M470 424 H462"/>
+  <rect class="pinsq badf" x="515.5" y="416.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="427.2" text-anchor="middle">13</text>
+  <text class="pinlbl dead" x="555" y="418">GPIO 27</text>
+  <path class="lead" d="M540 424 H548"/>
+  <rect class="pinsq" x="479.5" y="388.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="399.2" text-anchor="middle">16</text>
+  <text class="pinlbl" x="455" y="390" text-anchor="end">GPIO 23</text>
+  <path class="lead" d="M470 396 H462"/>
+  <rect class="pinsq" x="515.5" y="388.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="399.2" text-anchor="middle">15</text>
+  <text class="pinlbl" x="555" y="390">GPIO 22</text>
+  <path class="lead" d="M540 396 H548"/>
+  <rect class="pinsq" x="479.5" y="360.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="371.2" text-anchor="middle">18</text>
+  <text class="pinlbl" x="455" y="362" text-anchor="end">GPIO 24</text>
+  <path class="lead" d="M470 368 H462"/>
+  <rect class="pinsq" x="515.5" y="360.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="371.2" text-anchor="middle">17</text>
+  <text class="pinlbl" x="555" y="362">3V3 power</text>
+  <path class="lead" d="M540 368 H548"/>
+  <rect class="pinsq" x="479.5" y="332.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="343.2" text-anchor="middle">20</text>
+  <text class="pinlbl" x="455" y="334" text-anchor="end">Ground</text>
+  <path class="lead" d="M470 340 H462"/>
+  <rect class="pinsq" x="515.5" y="332.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="343.2" text-anchor="middle">19</text>
+  <text class="pinlbl" x="555" y="334">GPIO 10 (MOSI)</text>
+  <path class="lead" d="M540 340 H548"/>
+  <rect class="pinsq" x="479.5" y="304.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="315.2" text-anchor="middle">22</text>
+  <text class="pinlbl" x="455" y="306" text-anchor="end">GPIO 25</text>
+  <path class="lead" d="M470 312 H462"/>
+  <rect class="pinsq" x="515.5" y="304.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="315.2" text-anchor="middle">21</text>
+  <text class="pinlbl" x="555" y="306">GPIO 9 (MISO)</text>
+  <path class="lead" d="M540 312 H548"/>
+  <rect class="pinsq" x="479.5" y="276.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="287.2" text-anchor="middle">24</text>
+  <text class="pinlbl" x="455" y="278" text-anchor="end">GPIO 8 (CE0)</text>
+  <path class="lead" d="M470 284 H462"/>
+  <rect class="pinsq" x="515.5" y="276.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="287.2" text-anchor="middle">23</text>
+  <text class="pinlbl" x="555" y="278">GPIO 11 (SCLK)</text>
+  <path class="lead" d="M540 284 H548"/>
+  <rect class="pinsq" x="479.5" y="248.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="259.2" text-anchor="middle">26</text>
+  <text class="pinlbl" x="455" y="250" text-anchor="end">GPIO 7 (CE1)</text>
+  <path class="lead" d="M470 256 H462"/>
+  <rect class="pinsq" x="515.5" y="248.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="259.2" text-anchor="middle">25</text>
+  <text class="pinlbl" x="555" y="250">Ground</text>
+  <path class="lead" d="M540 256 H548"/>
+  <rect class="pinsq" x="479.5" y="220.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="231.2" text-anchor="middle">28</text>
+  <text class="pinlbl" x="455" y="222" text-anchor="end">GPIO 1 (ID_SC)</text>
+  <path class="lead" d="M470 228 H462"/>
+  <rect class="pinsq" x="515.5" y="220.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="231.2" text-anchor="middle">27</text>
+  <text class="pinlbl" x="555" y="222">GPIO 0 (ID_SD)</text>
+  <path class="lead" d="M540 228 H548"/>
+  <rect class="pinsq" x="479.5" y="192.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="203.2" text-anchor="middle">30</text>
+  <text class="pinlbl" x="455" y="194" text-anchor="end">Ground</text>
+  <path class="lead" d="M470 200 H462"/>
+  <rect class="pinsq" x="515.5" y="192.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="203.2" text-anchor="middle">29</text>
+  <text class="pinlbl" x="555" y="194">GPIO 5</text>
+  <path class="lead" d="M540 200 H548"/>
+  <rect class="pinsq" x="479.5" y="164.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="175.2" text-anchor="middle">32</text>
+  <text class="pinlbl" x="455" y="166" text-anchor="end">GPIO 12 (PWM0)</text>
+  <path class="lead" d="M470 172 H462"/>
+  <rect class="pinsq" x="515.5" y="164.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="175.2" text-anchor="middle">31</text>
+  <text class="pinlbl" x="555" y="166">GPIO 6</text>
+  <path class="lead" d="M540 172 H548"/>
+  <rect class="pinsq" x="479.5" y="136.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="147.2" text-anchor="middle">34</text>
+  <text class="pinlbl" x="455" y="138" text-anchor="end">Ground</text>
+  <path class="lead" d="M470 144 H462"/>
+  <rect class="pinsq sigf" x="515.5" y="136.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="147.2" text-anchor="middle">33</text>
+  <text class="pinlbl used" x="555" y="138">GPIO 13 (PWM1)</text>
+  <rect class="pinsq" x="479.5" y="108.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="119.2" text-anchor="middle">36</text>
+  <text class="pinlbl" x="455" y="110" text-anchor="end">GPIO 16</text>
+  <path class="lead" d="M470 116 H462"/>
+  <rect class="pinsq sigf" x="515.5" y="108.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="119.2" text-anchor="middle">35</text>
+  <text class="pinlbl used" x="555" y="110">GPIO 19 (PCM_FS)</text>
+  <rect class="pinsq" x="479.5" y="80.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="91.2" text-anchor="middle">38</text>
+  <text class="pinlbl" x="455" y="82" text-anchor="end">GPIO 20 (PCM_DIN)</text>
+  <path class="lead" d="M470 88 H462"/>
+  <rect class="pinsq sigf" x="515.5" y="80.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="91.2" text-anchor="middle">37</text>
+  <text class="pinlbl used" x="555" y="82">GPIO 26</text>
+  <rect class="pinsq" x="479.5" y="52.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="487" y="63.2" text-anchor="middle">40</text>
+  <text class="pinlbl" x="455" y="54" text-anchor="end">GPIO 21 (PCM_DOUT)</text>
+  <path class="lead" d="M470 60 H462"/>
+  <rect class="pinsq gndf" x="515.5" y="52.5" width="15" height="15" rx="2"/>
+  <text class="pnum" x="523" y="63.2" text-anchor="middle">39</text>
+  <text class="pinlbl used" x="555" y="54">Ground</text>
+  <text class="pinlbl dead" x="640" y="418">✗ DAMAGED — output-only, never an input</text>
+  <path class="w gnd" d="M540 60 H900"/>
+  <path class="w sig" d="M540 88 H760 M830 88 H900"/>
+  <rect class="bxn" x="760" y="77" width="70" height="22"/>
+  <text class="pnum" x="795" y="92" text-anchor="middle">R_DR  1 k</text>
+  <path class="w sig" d="M540 116 H760 M830 116 H900"/>
+  <rect class="bxn" x="760" y="105" width="70" height="22"/>
+  <text class="pnum" x="795" y="120" text-anchor="middle">R_ST  1 k</text>
+  <path class="w sig" d="M540 144 H760 M830 144 H900"/>
+  <rect class="bxn" x="760" y="133" width="70" height="22"/>
+  <text class="pnum" x="795" y="148" text-anchor="middle">R_EN  1 k</text>
+  <circle class="t-sig" cx="868" cy="144" r="4.5"/>
+  <path class="w v3" d="M868 144 V166 M868 194 V210 H900"/>
+  <rect class="bxn" x="857" y="166" width="22" height="28"/>
+  <text class="pnf" x="848" y="184" text-anchor="end">R_PU 10 k</text>
+  <rect class="bx" x="900" y="42" width="290" height="200"/>
+  <text class="pn" x="908" y="64">GND</text>
+  <text class="pn" x="908" y="92">DIR</text>
+  <text class="pn" x="908" y="120">STEP</text>
+  <text class="pn" x="908" y="148">ENABLE</text>
+  <text class="pn" x="908" y="214">VCC</text>
+  <text class="ref" x="1090" y="96" text-anchor="middle">U4 · Big Easy Driver</text>
+  <text class="dsc" x="1090" y="118" text-anchor="middle">M+, the coils and the</text>
+  <text class="dsc" x="1090" y="134" text-anchor="middle">open MS/RST/SLP pins</text>
+  <text class="dsc" x="1090" y="150" text-anchor="middle">are on Figure 2</text>
+  <text class="dsc" x="1090" y="200" text-anchor="middle">APWR jumper at 3.3 V;</text>
+  <text class="dsc" x="1090" y="216" text-anchor="middle">measure VCC first</text>
+  <path class="w gnd" d="M540 480 H900"/>
+  <path class="w i2c" d="M540 536 H900 M540 564 H900"/>
+  <path class="w v3"  d="M540 592 H900"/>
+  <rect class="bx" x="900" y="458" width="290" height="156"/>
+  <text class="pn" x="908" y="484">5 GND</text>
+  <text class="pnf" x="908" y="512">4 NC</text>
+  <text class="pn" x="908" y="540">3 SCL</text>
+  <text class="pn" x="908" y="568">2 SDA</text>
+  <text class="pn" x="908" y="596">1 VCC</text>
+  <path class="lead" d="M900 508 H868"/>
+  <circle class="nc" cx="863" cy="508" r="4"/>
+  <text class="pnf" x="850" y="512" text-anchor="end">n/c</text>
+  <text class="ref" x="1085" y="494" text-anchor="middle">U1 · DS3231</text>
+  <text class="dsc" x="1085" y="516" text-anchor="middle">real-time clock</text>
+  <text class="dsc" x="1085" y="532" text-anchor="middle">I²C address 0x68</text>
+  <path class="w v5"  d="M280 564 H470"/>
+  <path class="w gnd" d="M280 536 H470"/>
+  <path class="w v5"  d="M280 620 H310 V564"/>
+  <path class="w v5"  d="M310 592 H470"/>
+  <circle class="t-5v" cx="310" cy="564" r="4.5"/>
+  <circle class="t-5v" cx="310" cy="592" r="4.5"/>
+  <rect class="bx" x="60" y="518" width="220" height="62"/>
+  <text class="pn" x="272" y="540" text-anchor="end">–</text>
+  <text class="pn" x="272" y="568" text-anchor="end">+</text>
+  <text class="ref" x="150" y="544" text-anchor="middle">U10</text>
+  <text class="dsc" x="150" y="562" text-anchor="middle">fan, 5 V</text>
+  <rect class="bx" x="60" y="596" width="220" height="72"/>
+  <text class="pn" x="272" y="616" text-anchor="end">OUT+</text>
+  <text class="pn" x="272" y="648" text-anchor="end">OUT–</text>
+  <text class="ref" x="140" y="626" text-anchor="middle">U3</text>
+  <text class="dsc" x="140" y="644" text-anchor="middle">5 V converter</text>
+  <path class="w gnd" d="M280 652 H330 V682"/>
+  <use href="#gnd4" class="w gnd" x="330" y="684"/>
+</svg>
+      </div>
+      <div class="titleblock">
+        <div><b>FIG 4</b></div>
+        <div>JP1 in the board&#8217;s own orientation</div>
+        <div>TLS Pie &#183; <b>Rev 2.0</b></div>
+        <div>Sheet <b>4</b> of 4</div>
+      </div>
+    </div>
+    <figcaption>The same eleven conductors as Figures 1&#8211;3, arranged the way the connector
+    sits in front of you. A coloured outline marks a pin that carries a wire; a grey stub marks one
+    that does not.</figcaption>
+  </figure>
+
+  <div class="note">
+    <span class="hd">Which end is pin 1</span>
+    Pin 1 is the corner of the header nearest the <b>USB-C power and micro-HDMI edge</b> of the
+    board. In this orientation that puts it at the <b>bottom</b>, 3V3 on the right of the pair and
+    5 V on the left. Count up in twos from there and the header cannot end up reversed &#8212;
+    which is the mistake that destroyed the MicroView.
+  </div>
     <div class="scroll">
       <table class="hdr">
-        <caption>JP1 · Raspberry Pi 4B GPIO header · Rev 2.0 assignment</caption>
-        <thead><tr><th class="lft" colspan="2">odd column</th><th class="mid"></th><th colspan="2">even column</th></tr></thead>
+        <caption>JP1 &#183; Raspberry Pi 4B &#183; Rev 2.0 assignment &#183; pin 1 at the bottom</caption>
+        <thead><tr><th class="lft" colspan="2">even pins &#183; left column</th><th class="mid"></th><th colspan="2">odd pins &#183; right column</th></tr></thead>
         <tbody>
-          <tr><td class="lft pw3">3V3 &nbsp;<span class="free">spare</span></td><td class="pn">1</td><td class="mid"></td><td class="pn">2</td><td class="pw5">5V &nbsp;<span class="u">← U3 OUT+</span></td></tr>
-          <tr><td class="lft u">GPIO2 SDA → U1 SDA</td><td class="pn">3</td><td class="mid"></td><td class="pn">4</td><td class="pw5">5V &nbsp;<span class="u">← U3 OUT+ · → U10 fan +</span></td></tr>
-          <tr><td class="lft u">GPIO3 SCL → U1 SCL</td><td class="pn">5</td><td class="mid"></td><td class="pn">6</td><td class="pwg">GND &nbsp;<span class="u">→ U10 fan –</span></td></tr>
-          <tr><td class="lft free">GPIO4</td><td class="pn">7</td><td class="mid"></td><td class="pn">8</td><td class="free">GPIO14 TXD &nbsp;<span style="color:var(--ok)">tested OK</span></td></tr>
-          <tr><td class="lft pwg">GND &nbsp;<span class="u">→ U1 GND</span></td><td class="pn">9</td><td class="mid"></td><td class="pn">10</td><td class="free">GPIO15 RXD &nbsp;<span style="color:var(--ok)">tested OK</span></td></tr>
-          <tr><td class="lft free">GPIO17</td><td class="pn">11</td><td class="mid"></td><td class="pn">12</td><td class="free">GPIO18</td></tr>
-          <tr><td class="lft bad">GPIO27 — DAMAGED, output-only</td><td class="pn">13</td><td class="mid"></td><td class="pn">14</td><td class="pwg free">GND</td></tr>
-          <tr><td class="lft free">GPIO22</td><td class="pn">15</td><td class="mid"></td><td class="pn">16</td><td class="free">GPIO23</td></tr>
-          <tr><td class="lft pw3">3V3 &nbsp;<span class="free">spare</span></td><td class="pn">17</td><td class="mid"></td><td class="pn">18</td><td class="free">GPIO24</td></tr>
-          <tr><td class="lft free">GPIO10 MOSI</td><td class="pn">19</td><td class="mid"></td><td class="pn">20</td><td class="pwg free">GND</td></tr>
-          <tr><td class="lft free">GPIO9 MISO</td><td class="pn">21</td><td class="mid"></td><td class="pn">22</td><td class="free">GPIO25</td></tr>
-          <tr><td class="lft free">GPIO11 SCLK</td><td class="pn">23</td><td class="mid"></td><td class="pn">24</td><td class="free">GPIO8 CE0</td></tr>
-          <tr><td class="lft pwg free">GND</td><td class="pn">25</td><td class="mid"></td><td class="pn">26</td><td class="free">GPIO7 CE1</td></tr>
-          <tr><td class="lft free">ID_SD — reserved, HAT EEPROM</td><td class="pn">27</td><td class="mid"></td><td class="pn">28</td><td class="free">ID_SC — reserved</td></tr>
-          <tr><td class="lft free">GPIO5</td><td class="pn">29</td><td class="mid"></td><td class="pn">30</td><td class="pwg free">GND</td></tr>
-          <tr><td class="lft free">GPIO6</td><td class="pn">31</td><td class="mid"></td><td class="pn">32</td><td class="free">GPIO12</td></tr>
-          <tr><td class="lft u">GPIO13 → R_EN → U4 ENABLE</td><td class="pn">33</td><td class="mid"></td><td class="pn">34</td><td class="pwg free">GND</td></tr>
-          <tr><td class="lft u">GPIO19 → R_ST → U4 STEP</td><td class="pn">35</td><td class="mid"></td><td class="pn">36</td><td class="free">GPIO16</td></tr>
-          <tr><td class="lft u">GPIO26 → R_DR → U4 DIR</td><td class="pn">37</td><td class="mid"></td><td class="pn">38</td><td class="free">GPIO20</td></tr>
-          <tr><td class="lft pwg">GND &nbsp;<span class="u">→ U4 GND (logic)</span></td><td class="pn">39</td><td class="mid"></td><td class="pn">40</td><td class="free">GPIO21</td></tr>
+          <tr><td class="lft free">GPIO21</td><td class="pn">40</td><td class="mid"></td><td class="pn">39</td><td class="pwg">GND &nbsp;<span class="u">&#8594; U4 GND (logic)</span></td></tr>
+          <tr><td class="lft free">GPIO20</td><td class="pn">38</td><td class="mid"></td><td class="pn">37</td><td class="u">GPIO26 &nbsp;&#8594; R_DR &#8594; U4 DIR</td></tr>
+          <tr><td class="lft free">GPIO16</td><td class="pn">36</td><td class="mid"></td><td class="pn">35</td><td class="u">GPIO19 &nbsp;&#8594; R_ST &#8594; U4 STEP</td></tr>
+          <tr><td class="lft pwg free">GND</td><td class="pn">34</td><td class="mid"></td><td class="pn">33</td><td class="u">GPIO13 &nbsp;&#8594; R_EN &#8594; U4 ENABLE</td></tr>
+          <tr><td class="lft free">GPIO12</td><td class="pn">32</td><td class="mid"></td><td class="pn">31</td><td class="free">GPIO6</td></tr>
+          <tr><td class="lft pwg free">GND</td><td class="pn">30</td><td class="mid"></td><td class="pn">29</td><td class="free">GPIO5</td></tr>
+          <tr><td class="lft free">ID_SC &nbsp;&#8212; reserved, HAT EEPROM</td><td class="pn">28</td><td class="mid"></td><td class="pn">27</td><td class="free">ID_SD &nbsp;&#8212; reserved</td></tr>
+          <tr><td class="lft free">GPIO7 CE1</td><td class="pn">26</td><td class="mid"></td><td class="pn">25</td><td class="pwg free">GND</td></tr>
+          <tr><td class="lft free">GPIO8 CE0</td><td class="pn">24</td><td class="mid"></td><td class="pn">23</td><td class="free">GPIO11 SCLK</td></tr>
+          <tr><td class="lft free">GPIO25</td><td class="pn">22</td><td class="mid"></td><td class="pn">21</td><td class="free">GPIO9 MISO</td></tr>
+          <tr><td class="lft pwg free">GND</td><td class="pn">20</td><td class="mid"></td><td class="pn">19</td><td class="free">GPIO10 MOSI</td></tr>
+          <tr><td class="lft free">GPIO24</td><td class="pn">18</td><td class="mid"></td><td class="pn">17</td><td class="pw3">3V3 &nbsp;<span class="free">spare</span></td></tr>
+          <tr><td class="lft free">GPIO23</td><td class="pn">16</td><td class="mid"></td><td class="pn">15</td><td class="free">GPIO22</td></tr>
+          <tr><td class="lft pwg free">GND</td><td class="pn">14</td><td class="mid"></td><td class="pn">13</td><td class="bad">GPIO27 &nbsp;&#8212; DAMAGED, output-only</td></tr>
+          <tr><td class="lft free">GPIO18</td><td class="pn">12</td><td class="mid"></td><td class="pn">11</td><td class="free">GPIO17</td></tr>
+          <tr><td class="lft free">GPIO15 RXD &nbsp;<span style="color:var(--ok)">tested OK</span></td><td class="pn">10</td><td class="mid"></td><td class="pn">9</td><td class="pwg">GND &nbsp;<span class="u">&#8594; U1 GND</span></td></tr>
+          <tr><td class="lft free">GPIO14 TXD &nbsp;<span style="color:var(--ok)">tested OK</span></td><td class="pn">8</td><td class="mid"></td><td class="pn">7</td><td class="free">GPIO4</td></tr>
+          <tr><td class="lft pwg">GND &nbsp;<span class="u">&#8594; U10 fan &#8211;</span></td><td class="pn">6</td><td class="mid"></td><td class="pn">5</td><td class="u">GPIO3 SCL &nbsp;&#8594; U1 SCL</td></tr>
+          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+ &#183; &#8594; U10 fan +</span></td><td class="pn">4</td><td class="mid"></td><td class="pn">3</td><td class="u">GPIO2 SDA &nbsp;&#8594; U1 SDA</td></tr>
+          <tr><td class="lft pw5">5V &nbsp;<span class="u">&#8592; U3 OUT+</span></td><td class="pn">2</td><td class="mid"></td><td class="pn">1</td><td class="pw3">3V3 &nbsp;<span class="u">&#8594; U1 VCC</span></td></tr>
         </tbody>
       </table>
     </div>
