@@ -65,7 +65,10 @@ import sys
 import time
 from datetime import datetime
 
+import json
+
 import tls_cloud
+import tls_geometry
 import tls_stepper
 import tls_web
 from tls_stepper import Stepper
@@ -221,7 +224,7 @@ def preflight():
 
 # --- Capture --------------------------------------------------------------
 def start_capture():
-    """Start tcpdump and confirm it survived. Returns (process, path)."""
+    """Start tcpdump and confirm it survived. Returns (process, path, epoch)."""
     os.makedirs(DUMPDIR, exist_ok=True)
     timestamp = datetime.now().strftime("%y_%m_%d_%H_%M_%S")
     capture_file = os.path.join(DUMPDIR, "TLS_%s.pcap" % timestamp)
@@ -235,6 +238,7 @@ def start_capture():
     print("Capture filter: %s" % (CAPTURE_FILTER or "<none>"))
 
     proc = subprocess.Popen(cmd)
+    started = time.time()
 
     # Confirm capture is genuinely live before the motor turns. Starting the
     # sweep first would silently lose the opening slice of the rotation.
@@ -242,7 +246,7 @@ def start_capture():
     if proc.poll() is not None:
         raise ScanAborted("TCPDUMP_ERROR",
                           "tcpdump exited immediately (code %s)" % proc.returncode)
-    return proc, capture_file
+    return proc, capture_file, started
 
 
 def _terminate(proc):
@@ -253,6 +257,85 @@ def _terminate(proc):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+def meta_path_for(capture_file):
+    return os.path.splitext(capture_file)[0] + ".json"
+
+
+def write_scan_meta(capture_file, profile_name, profile, stepper,
+                    capture_started):
+    """
+    Write the sidecar that turns a recording into a scan.
+
+    A few kilobytes next to a 360 MB pcap, and without it that pcap is close to
+    useless: it holds where every point was relative to the SENSOR, and only
+    this process knows where the sensor was pointing at each instant. Decode
+    the capture on its own and every static surface comes out smeared around
+    the whole circle the head turned through.
+
+    Must be called BEFORE the return leg, which overwrites the stepper's record
+    of the last move with its own.
+
+    Never raises. A sidecar that cannot be written is a real loss, but losing
+    the scan on top of it would be worse -- so it reports and returns.
+    """
+    try:
+        segments = stepper.last_move_segments or []
+        track = tls_geometry.PanTrack.from_segments(
+            segments, tls_stepper.STEPS_PER_REV,
+            forward=stepper.last_move_forward)
+
+        meta = {
+            "format": "tls-scan-meta",
+            "version": 1,
+            "scan": {
+                "profile": profile_name,
+                "label": profile["label"],
+                "sweep_deg": profile["sweep_deg"],
+                "deg_per_s": profile["deg_per_s"],
+                "return_deg": profile["return_deg"],
+            },
+            "capture": {
+                "file": os.path.basename(capture_file),
+                "started_epoch": capture_started,
+                "interface": ETH_INTERFACE,
+                "lidar_ip": LIDAR_IP,
+                "filter": CAPTURE_FILTER,
+            },
+            "sweep": {
+                "started_epoch": stepper.last_move_started_at,
+                "forward": stepper.last_move_forward,
+                "steps_per_rev": tls_stepper.STEPS_PER_REV,
+                "planned_deg": track.total_deg,
+                "planned_seconds": track.duration_s,
+                # Piecewise linear, one breakpoint per motion segment. The step
+                # rate is constant inside a segment, so interpolating between
+                # these is exact rather than approximate.
+                "track": [[round(t, 6), round(d, 6)]
+                          for t, d in track.as_breakpoints()],
+            },
+            "mount": tls_geometry.Frame().as_dict(),
+            "zero": {
+                "provenance": stepper.zero_provenance,
+                "position_known": stepper.position_known,
+            },
+            # Filled in by the phone panel once scans are aligned to each
+            # other, so the workstation inherits that alignment for free.
+            "alignment": None,
+        }
+
+        path = meta_path_for(capture_file)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as handle:
+            json.dump(meta, handle, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+        return path
+    except (OSError, ValueError, AttributeError) as exc:
+        print("WARNING: could not write the scan sidecar (%s). The capture is "
+              "intact but has no pan track, so it will only decode into the "
+              "sensor frame." % exc, flush=True)
+        return None
 
 
 def stop_capture(proc, capture_file):
@@ -355,10 +438,11 @@ def run_scan(pi, stepper, profile_name, record=True):
 
     proc = None
     capture_file = None
+    capture_started = None
     try:
         if record:
             preflight()
-            proc, capture_file = start_capture()
+            proc, capture_file, capture_started = start_capture()
             _state.set(capture_file=capture_file)
             status_update("RECORDING", "tcpdump started — sweeping")
         else:
@@ -378,6 +462,10 @@ def run_scan(pi, stepper, profile_name, record=True):
         if record:
             stop_capture(proc, capture_file)
             proc = None
+            # Before the return leg: that move overwrites the stepper's record
+            # of the sweep, which is what the pan track is built from.
+            write_scan_meta(capture_file, profile_name, profile, stepper,
+                            capture_started)
             _state.set(last_capture=capture_file)
             status_update("RETURNING", "Captured %s — returning to start"
                           % os.path.basename(capture_file))

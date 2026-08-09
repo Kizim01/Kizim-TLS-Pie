@@ -6,8 +6,14 @@
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
-system: a pan stepper on a 50:1 harmonic drive sweeping a Velodyne VLP-16, with a Raspberry Pi 4
+system: a pan stepper on a harmonic drive sweeping a Velodyne VLP-16, with a Raspberry Pi 4
 capturing the packet stream to `.pcap`.
+
+**The VLP-16 is mounted on its SIDE**, spin axis horizontal, so its own rotation sweeps a vertical
+fan and the pan axis swings that fan around — giving full dome coverage rather than the ±15° band an
+upright puck is limited to. Measured from `captures/driveway.pcap`, not assumed: see "Mount
+orientation". The reduction ratio is stated as 50:1 in older documents but the measured
+`STEPS_PER_REV` of 640,000 does not fit that with a 1/16 driver — treat the ratio as **unconfirmed**.
 
 It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
 handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
@@ -201,23 +207,65 @@ wanted in practice. Verified by `tls_stepper.py --plan` against **320,000 steps/
 Both overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
 back off 18° to finish square with the start.
 
-### RESOLVED 2026-08-09: it is an A4983/A4988, and the old constant was wrong
+### SETTLED 2026-08-09 BY MEASUREMENT: `STEPS_PER_REV` is 640,000
 
-A photograph of the fitted board shows the chip marked **`4983ET`** — an Allegro A4983/A4988, which
-is what the SparkFun Big Easy Driver uses. **Its maximum is 1/16 microstepping.** Only the DRV8825
-does 1/32, and that is not what is on the board. The board also carries `8–30 V DC` on M+/GND, so
-the 12 V rail is in range.
+Earlier the same day this was "corrected" 640,000 → 320,000 from a photograph of the driver board.
+**That correction was wrong and has been reverted.** A real capture says so.
 
-    400 steps × 16 microsteps × 50:1  =  320,000   ← correct
-    400 steps × 32 microsteps × 50:1  =  640,000   ← what the firmware used
+`captures/driveway.pcap` is a 380.9 s scan made in 2022 with the MicroView firmware, which commanded
+378° at 1 °/s *through the 640,000 constant*. Cross-correlating the scene's range-versus-azimuth
+signature against itself over time shows it repeating with a period of **362.9 s** — one full turn:
 
-The firmware's 640,000 commanded **twice the steps a revolution actually takes**, and because the
-step rate is derived from the same constant, the speed was doubled too. A nominal "360° at 1 °/s
-over 6 minutes" scan was really about **756° at 2 °/s**. Corrected in `tls_stepper.py`.
+| | sweep | rate |
+|---|---|---|
+| commanded | 378.0° | 1.000 °/s |
+| **measured** | **377.9°** | **0.9921 °/s** |
 
-**Still verify empirically.** Arithmetic from a photograph is a hypothesis, not a calibration.
-Command 90° on an uncoupled motor, mark the shaft, measure. Also confirm MS1/MS2/MS3 are actually
-set for 1/16 — the Big Easy Driver defaults there, but check rather than assume.
+A match to 0.03%. Had 320,000 been right, the same command would have produced 756° at 2 °/s and the
+period would have been ~181 s. It was not, and the difference is not subtle — the correlation curve
+peaks at half a turn and collapses to a sharp minimum at a full one, 93% contrast.
+
+**Where the photograph's reasoning failed.** The chip really is a `4983ET` and really does max out
+at 1/16, so the error is elsewhere in the drivetrain — the reduction is most likely 100:1 rather
+than the 50:1 in this document, or the motor is 0.45°/step:
+
+    400 × 16 × 100:1  =  640,000      either fits the measurement
+    800 × 16 ×  50:1  =  640,000
+    400 × 16 ×  50:1  =  320,000      ← what the photograph implied, contradicted by data
+
+**Still verify mechanically.** This now rests on one capture from one rig on one day in 2022 and
+assumes the drivetrain is unchanged since. Command 90° on an uncoupled motor, mark the shaft,
+measure. That is far stronger evidence than arithmetic from a photograph and still not a calibration.
+
+**Method note worth keeping.** The estimator needs no sidecar, no encoder and no assumption about
+mount orientation, because it works on the sensor's own reported azimuth. Any capture can be asked
+how far it turned. Scratch scripts: `measure_rotation.py`, `refine_period.py`.
+
+### Mount orientation — MEASURED 2026-08-09, after getting it wrong twice from pictures
+
+The VLP-16 is **on its side, laid the `roll +90` way.** Established from the data, after a CAD
+render and then a photograph produced two opposite and both-unreliable readings.
+
+Rotating `captures/driveway.pcap` by each candidate and histogramming the resulting height shows
+where the ground went:
+
+| mount roll | densest plane | verdict |
+|---|---|---|
+| 0° (upright) | none — a symmetric spread | no ground plane exists, so not upright |
+| **+90°** | **56.3% of all returns at −1.5 m** | the driveway, at tripod height below the sensor |
+| −90° | the same plane at **+1.5 m** | a ceiling 1.5 m above a driveway; impossible |
+
+So one histogram fixes three things at once: that the puck is on its side, which way round it is
+laid, and that the instrument stood 1.5 m above the ground.
+
+**What this means for coverage.** A full-circle fan needs only 180° of pan to reach every direction,
+so the 378° sweep covers everything **twice, from opposite sides of the fan**. That is not waste —
+it is what fills the shadows cast by the rig's own enclosures, because a direction blocked by
+hardware at one pan angle is clear half a turn later.
+
+The orientation lives in `tls_geometry.MOUNT_ROLL_DEG` (env `TLSPIE_MOUNT_ROLL_DEG`) and is written
+into every scan's sidecar, so a re-mount is a config change and old captures keep decoding under the
+geometry they were actually taken with.
 
 **Also from the board photo:** the driver's `VCC` pin is an **output**, fed by the on-board
 regulator and selected by the `3/5V APWR` jumper. Do not drive it from the Pi. The four pins that
@@ -321,6 +369,37 @@ on, run a scan, check for lost steps. If the head drifts, turn it off.
 The preview is in the *sensor* frame and does not account for the pan axis turning underneath, so
 it smears into the sweep. That is what makes it useful for judging coverage and exactly why it is
 not survey data. The pcap remains the product.
+
+### Post-scan cloud build — pcap → viewable cloud (added 2026-08-09)
+
+The answer to "did I miss a spot". It runs **after** a scan, motor stopped and `tcpdump` closed, so
+it costs the scan nothing — deliberately independent of the unresolved live-preview load question.
+
+| file | role |
+|---|---|
+| [tls_geometry.py](Raspberry%20Pie4/TLS-Pie/tls_geometry.py) | mount rotation, lever arm, and `PanTrack` — pan angle as a function of time, built from the motion planner's own segments |
+| [tls_pcap.py](Raspberry%20Pie4/TLS-Pie/tls_pcap.py) | stdlib pcap reader; both byte orders, µs and ns timestamps, Ethernet and Linux cooked, VLAN, truncated files |
+| [tls_cloudbuild.py](Raspberry%20Pie4/TLS-Pie/tls_cloudbuild.py) | the pipeline, the `.cloud` container, and a CLI |
+| [test_cloud_registration.py](Raspberry%20Pie4/TLS-Pie/test_cloud_registration.py) | 67 checks, synthetic capture, no hardware |
+
+**Each scan now writes a sidecar.** `TLS_*.json` next to the pcap, a few kB, holding the pan track,
+the mount geometry, and where the head's zero came from. Without it a 360 MB pcap decodes into the
+sensor frame and every static surface smears around the whole circle the head turned through — only
+the controller knows where the sensor was pointing, because it drove the motor. Written *before* the
+return leg, since that move overwrites the stepper's record of the sweep.
+
+**Zero provenance matters and is recorded.** After an abort the head's zero is wherever the operator
+aligned it by hand, so scans either side of an abort do not share an origin. Anything overlaying two
+scans has to be able to see that rather than assume a common frame.
+
+**The Pi builds only the preview cloud (~150k points, ~1 MB); full resolution happens on a
+workstation.** A 6½ minute scan is ~360 MB of pcap holding ~113 million points, because each packet
+packs 384 points into 1206 bytes — about 3 bytes a point. The same points as LAS are ~2.3 GB.
+Decoding on the Pi would spend minutes and gigabytes of SD to produce something *larger* than the
+input, which then has to cross the same wire anyway.
+
+Verified against `captures/driveway.pcap`: registered, the scan opens to 143 × 153 m as a full-circle
+scan should; unregistered it collapses to 154 × 39 m, narrow across the sensor's spin axis.
 
 ### Superseded but retained
 Kept deliberately: the Pi path has never run, and deleting these before it does would leave no
@@ -507,8 +586,10 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    and ENABLE is active-low, so without it the driver can sit energised with nothing in control.
 2. **Remove SW1–SW5 and R1–R5.** All push buttons are gone from the design; R1–R5 pulled to 5 V,
    which a Pi GPIO must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches.
-3. **Confirm MS1/MS2/MS3 are set for 1/16**, then measure a commanded 90° on an uncoupled motor
-   before trusting `STEPS_PER_REV = 320000`.
+3. **Measure a commanded 90° on an uncoupled motor** to confirm `STEPS_PER_REV = 640000`. The
+   driveway capture already agrees with it to 0.03%, so this is confirmation rather than discovery —
+   but it also settles whether the reduction is 100:1 or the motor is 0.45°/step, which the scan
+   cannot distinguish.
 4. **Check S1's DC rating** if it carries motor current — it is the emergency stop, and breaking a DC
    inductive load can slowly weld an under-rated switch shut.
 5. **Confirm the Pi's `192.168.1.100`** against the VLP-16's own configuration. This number was never

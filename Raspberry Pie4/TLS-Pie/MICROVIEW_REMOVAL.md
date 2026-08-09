@@ -292,7 +292,8 @@ Everything is environment-overridable, in the style of the existing scripts.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TLSPIE_STEPS_PER_REV` | 320000 | 400 × 16 microsteps × 50:1 |
+| `TLSPIE_STEPS_PER_REV` | 640000 | measured from a real scan — see below |
+| `TLSPIE_MOUNT_ROLL_DEG` | 90 | puck on its side; 0 = upright |
 | `TLSPIE_RETURN_DEG_PER_S` | 7.0 | speed of the return leg |
 | `TLSPIE_DIR_FORWARD` | 1 | flip if rotation is reversed |
 | `TLSPIE_MAX_STEP_RATE_HZ` | 40000 | guard against a bad config |
@@ -300,18 +301,27 @@ Everything is environment-overridable, in the style of the existing scripts.
 | `LIDAR_IP` | 192.168.1.201 | capture filter and ping check |
 | `DUMPDIR` | /home/lipi/velodyne | pcap output |
 
-## ⚠ STEPS_PER_REV was wrong by 2× — resolved, but verify on the bench
+## STEPS_PER_REV is 640,000 — settled by measurement, not by photograph
 
-The fitted driver is marked **`4983ET`** — an Allegro A4983/A4988 on a SparkFun
-Big Easy Driver, whose maximum is **1/16** microstepping. The schematic's
-"DRV8825" label was wrong; those are different chips and only the DRV8825 does
-1/32.
+On 2026-08-09 this was changed 640,000 → 320,000 from a photo of the driver
+board, and then changed back the same day when a real capture contradicted it.
 
-So the correct constant is 400 × 16 × 50 = **320,000**, not the 640,000 this
-project used for its whole life. Because the step *rate* derives from the same
-constant, both distance and speed were doubled: a nominal "360° at 1°/s" scan
-actually swept about 756° at 2°/s. **Every scan this rig has ever produced is
-affected**, and the error came across unchanged from the MicroView firmware.
+The chip really is a **`4983ET`** (Allegro A4983/A4988, SparkFun Big Easy
+Driver, maximum **1/16** microstepping) — the schematic's "DRV8825" label is
+still wrong. But `400 × 16 × 50:1 = 320,000` also needs the 50:1 to be right,
+and that is the term that fails.
 
-The code is corrected. Confirm it physically before trusting a scan: command a
-90° move with the head uncoupled and measure what you get.
+`captures/driveway.pcap` is a 380.9 s scan taken with the MicroView firmware,
+which commanded 378° at 1°/s *through the 640,000 constant*. Cross-correlating
+the scene's range-versus-azimuth signature against itself over time shows it
+repeating every **362.9 s** — one full turn:
+
+    commanded   378.0° at 1.0000°/s
+    measured    377.9° at 0.9921°/s      ← 0.03% apart
+
+Under 320,000 the same command would have swept 756° at 2°/s and repeated
+every ~181 s. It did not. So the drivetrain is most likely 100:1 rather than
+50:1, or the motor is 0.45°/step — both give 640,000.
+
+**Confirm physically anyway:** command a 90° move with the head uncoupled and
+measure it. That also separates the two explanations, which the scan cannot.

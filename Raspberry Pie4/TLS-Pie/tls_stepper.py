@@ -60,21 +60,39 @@ except ImportError:  # allows --plan to run off-Pi for checking the step maths
 #
 # 400 motor steps/rev * 16 microsteps * 50:1 harmonic drive = 320,000.
 #
-# CORRECTED 2026-08-09. This was 640,000, which assumed 1/32 microstepping.
-# A photograph of the fitted board shows an Allegro A4983/A4988 (chip marked
-# 4983ET) -- the SparkFun Big Easy Driver -- whose maximum is 1/16. Only the
-# DRV8825 does 1/32, and that is not what is on the board. The old value made
-# every move run twice as far as commanded: a "360 deg at 1 deg/s" scan was
-# really ~756 deg at 2 deg/s.
+# RESTORED TO 640,000 ON 2026-08-09, ON EVIDENCE, AFTER A WRONG "CORRECTION".
 #
-# VERIFY THIS EMPIRICALLY before trusting a scan. Command 90 degrees with
-# `--scan` on an uncoupled motor, mark the shaft, and measure what you get.
-# Arithmetic from a photograph is a good hypothesis, not a calibration.
+# Earlier the same day this was changed 640,000 -> 320,000 by arithmetic from a
+# photograph: the board is an Allegro A4983/A4988 (chip marked 4983ET), whose
+# maximum is 1/16, so 400 steps * 16 * 50:1 = 320,000. That reasoning is only
+# as good as its weakest term, and it was wrong.
 #
-# Also confirm MS1/MS2/MS3 are actually set for 1/16 on the board -- the Big
-# Easy Driver pulls them high by default, which is 1/16, but check rather than
-# assume. Any other setting scales this constant proportionally.
-STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "320000"))
+# MEASURED FROM A REAL SCAN. captures/driveway.pcap is a 380.9 s capture made
+# with the MicroView firmware, which commanded 378 deg at 1 deg/s THROUGH THE
+# 640,000 CONSTANT. Cross-correlating the scene's range-vs-azimuth signature
+# against itself over time shows it repeating with a period of 362.9 s -- one
+# full turn -- which is:
+#
+#     0.9921 deg/s, 377.9 deg total     measured
+#     1.0    deg/s, 378.0 deg total     commanded
+#
+# a match to 0.03%. Had the true figure been 320,000, that same command would
+# have produced 756 deg at 2 deg/s and the period would have been ~181 s. It
+# was not. See scratch analysis `measure_rotation.py` / `refine_period.py`.
+#
+# So the driver is 1/16 as the photograph says, and the factor of two lives
+# somewhere else in the drivetrain -- most likely the reduction is 100:1 rather
+# than the 50:1 in the documentation, or the motor is 0.45 deg/step:
+#
+#     400 * 16 * 100:1  =  640,000       either of these fits
+#     800 * 16 *  50:1  =  640,000
+#
+# STILL VERIFY MECHANICALLY. Command 90 deg on an uncoupled motor, mark the
+# shaft, measure. This constant now rests on one capture from one rig on one
+# day in 2022, and it assumes the drivetrain has not been altered since. That
+# is much stronger than arithmetic from a photograph and still not a
+# calibration.
+STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "640000"))
 
 # --- Motor pins (BCM numbering) -------------------------------------------
 PIN_STEP = int(os.environ.get("TLSPIE_STEP_PIN", "19"))
@@ -202,6 +220,21 @@ class Stepper:
         self.position_steps = 0
         self.position_known = True
 
+        # Last move's motion record, for the pan track that registers a scan.
+        # `last_move_started_at` is taken the instant the DMA engine is handed
+        # the chain -- NOT when the move was requested. Building the chain
+        # creates hundreds of waves and takes real time, and a pan track that
+        # starts a few hundred milliseconds early rotates the whole cloud.
+        self.last_move_started_at = None
+        self.last_move_segments = None
+        self.last_move_forward = True
+
+        # Where the head's zero came from. Scans either side of an abort do NOT
+        # share an origin -- after one, zero is wherever the operator aligned
+        # the head by hand -- so any tool that overlays two scans has to be
+        # able to see that rather than assume a common frame.
+        self.zero_provenance = "commanded"
+
         for pin in (self.step_pin, self.dir_pin, self.enable_pin):
             self.pi.set_mode(pin, pigpio.OUTPUT)
 
@@ -315,6 +348,12 @@ class Stepper:
         try:
             chain = self._build_chain(segments)
             self.pi.wave_chain(chain)
+            # Motion starts here, not at `started` above: `started` deliberately
+            # includes chain construction so the watchdog stays conservative,
+            # but the pan track needs the moment the head actually moved.
+            self.last_move_started_at = time.time()
+            self.last_move_segments = list(segments)
+            self.last_move_forward = bool(forward)
 
             while self.pi.wave_tx_busy():
                 if should_abort is not None and should_abort():
@@ -359,6 +398,7 @@ class Stepper:
         """
         self.position_steps = 0
         self.position_known = True
+        self.zero_provenance = "hand-aligned"
 
     def stop_and_release(self):
         try:
