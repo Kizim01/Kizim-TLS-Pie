@@ -433,6 +433,16 @@ MIT, aarch64 wheels) is the next step and needs the manual nudge as its starting
 returns an answer, including a confidently wrong one, so it will have to report match quality and
 offer Undo rather than silently moving anything.
 
+**The Layers panel is deliberately narrow (60vw) and translucent.** Its main job is nudging one scan
+onto another, and a panel that hides the cloud you are lining up against makes that impossible. Narrow
+also leaves enough canvas to orbit without dismissing it, so checking an alignment from another angle
+does not mean reopening the panel each time. It carries its own Done button.
+
+**A scan is listed if EITHER its capture or its cloud is present.** Keying off the pcap alone made a
+scan disappear the moment its capture was offloaded — the normal end of a capture's life, and the
+whole reason clouds are small enough to keep. Offloaded scans show `capture offloaded` in place of a
+size and stay fully viewable.
+
 **Two bugs the tests caught, both invisible to inspection.** Python ate the backslashes in `\'`
 inside the page string, silently breaking two generated handlers while every "does the page contain
 X" check still passed — fixed by delegating handlers onto containers so no JS string is ever nested
@@ -618,6 +628,23 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
   machine ran with no motor attached: both scans, live progress, Stop mid-scan, the re-home prompt,
   Restart, Full screen, and Add to Home screen. All working.
 - Test suites: `test_stepper_watchdog.py` 17/17, `test_web_install.py` 49/49, both on the Pi.
+- **The cloud pipeline and the 3D viewer are deployed and running on the Pi**, confirmed from the
+  phone. All `*.py` are at `~/TLS-Pie`; `driveway.cloud` + `.json` are in `~/velodyne` so there is a
+  real 146,824-point scan to open. Started as a transient unit, so it dies on reboot and leaves
+  `tls-scan.service` disabled:
+
+      sudo systemd-run --unit=tls-demo --working-directory=/home/lipi/TLS-Pie \
+          /usr/bin/python3 /home/lipi/TLS-Pie/tls_scan.py --no-record
+      sudo systemctl stop tls-demo
+
+  Panel at `http://tlspie.local:8080/` (was `10.153.229.165` on the hotspot). Suites on the Pi:
+  `test_viewer.py` 76/80 — the four it skips are the `node --check` of the panel JavaScript, which
+  needs node the Pi does not have. **Run the viewer suite on the laptop before shipping UI changes.**
+- **Two viewer bugs found only by using it on the phone**, neither visible to any test that existed
+  at the time: the Layers panel covered most of the screen and was opaque, so it hid the very cloud
+  you nudge a scan against; and `list_scans` keyed off the `.pcap`, so a scan **vanished from the
+  library the moment its capture was offloaded** — backwards from the documented intent that
+  captures get pruned and clouds stay. Both fixed and now covered.
 
 ### Still to do — nothing below has been done
 
