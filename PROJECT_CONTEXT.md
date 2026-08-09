@@ -11,9 +11,16 @@ capturing the packet stream to `.pcap`.
 
 **The VLP-16 is mounted on its SIDE**, spin axis horizontal, so its own rotation sweeps a vertical
 fan and the pan axis swings that fan around — giving full dome coverage rather than the ±15° band an
-upright puck is limited to. Measured from `captures/driveway.pcap`, not assumed: see "Mount
-orientation". The reduction ratio is stated as 50:1 in older documents but the measured
-`STEPS_PER_REV` of 640,000 does not fit that with a 1/16 driver — treat the ratio as **unconfirmed**.
+upright puck is limited to. *That the puck is on its side is confirmed by the user directly.*
+
+> ### ⛔ `captures/driveway.pcap` IS FROM A DIFFERENT RIG
+>
+> Established 2026-08-09 by the user, **after** a full day of conclusions had been drawn from it.
+> That capture was made with an earlier machine. It is **not evidence about the drivetrain or the
+> geometry of the rig on the bench now**, and every finding derived from it has to be re-earned on a
+> capture from this rig. Two "SETTLED BY MEASUREMENT" conclusions fall with it — `STEPS_PER_REV`
+> and the mount roll sign / instrument height. The *methods* are still good; only their subject was
+> wrong. Details in "Scan geometry".
 
 It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
 handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
@@ -284,18 +291,32 @@ left alone.
 No `dtparam`/`dtoverlay` change needed a reboot to *test*: `sudo dtparam i2c_arm=on` and
 `sudo dtoverlay i2c-rtc ds3231` both apply at runtime. The reboot was only to prove persistence.
 
-### ⚠ The Pi's 5 V converter may be the wrong topology — check before it is ever connected
+### ✅ RESOLVED: the converters are LM2596 bucks, not XL6009 boosts
 
-Raised 2026-08-09 while drawing Rev 2.0, from the Rev 1.0 schematic itself. **U3 is labelled
-`XL6009`, and the XL6009 is a step-*up* converter.** It cannot make 5 V from a 12 V input. If U3 is
-a genuine boost-only module it will pass roughly the input voltage straight to the Pi's 5 V rail and
-destroy the Pi. Either the modules are buck-boost variants or the Rev 1.0 label is wrong — the 2022
-rig demonstrably worked, so one of those is true, but which has never been checked.
+Raised 2026-08-09 while drawing Rev 2.0: the Rev 1.0 schematic labels U3 and U6 `XL6009`, which is a
+step-**up** converter and therefore cannot make 5 V from 12 V. **The Rev 1.0 label is simply wrong.**
+A photograph of the actual hardware reads **`LM2596S-ADJ`** on the IC — the standard blue adjustable
+buck module, 220 µF input cap, 100 µF/50 V output cap, `103` (10 kΩ) multiturn trimmer. Two such
+modules are stacked in the enclosure.
 
-**Measure U3's output on the bench, loaded, with no Pi connected**, and confirm it holds 5.1 V from
-the real pack. Two related cautions on the same leg: feeding the Pi through header pins 2 and 4
-bypasses the USB-C jack's polyfuse and e-fuse, so there is no protection left; and S2 hands the
-VLP-16 raw battery volts, which is outside the sensor's input range on a 24 V pack.
+The LM2596S-ADJ is a **step-down** regulator: 4.5–40 V in, 1.23–37 V out, **3 A absolute maximum**
+and realistically ~2 A continuous on a bare module with no heatsink. So 5 V from 12 V is exactly
+what it is for, and the Pi's rail is not in danger from the topology.
+
+**Two cautions survive, and one new one arrives:**
+
+1. Feeding the Pi through header pins 2 and 4 still bypasses the USB-C jack's polyfuse and e-fuse.
+2. S2 still hands the VLP-16 raw battery volts, outside the sensor's range on a 24 V pack.
+3. **A buck cannot make 12 V from a 12 V battery.** It needs headroom — roughly 1.5 V of dropout —
+   so if U6 is set to 12 V on a 12 V nominal pack it is not regulating at all and the motor rail
+   sits below the battery and sags under load. **Measure M+ while the motor is actually turning.**
+
+**Recommendation: delete U6 and feed the driver's M+ from the switched battery directly.** The Big
+Easy Driver takes 8–35 V on M+, so the whole 12–24 V range is in spec with margin. U6 existed to run
+the monitor, and the monitor is gone — regulating a motor supply buys nothing, costs a 3 A ceiling
+in front of a 2 A motor, and puts an LM2596's mediocre transient response between a chopper driver
+and its bulk capacitance. Removing it gives the motor the full pack voltage, which is exactly what
+buys torque, and removes a component from the path that is currently losing steps.
 
 ---
 
@@ -312,7 +333,81 @@ wanted in practice. Verified by `tls_stepper.py --plan` against **320,000 steps/
 Both overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
 back off 18° to finish square with the start.
 
-### SETTLED 2026-08-09 BY MEASUREMENT: `STEPS_PER_REV` is 640,000
+### ⛔ OVERTURNED THE SAME DAY BY THE FIRST REAL MOTION: 640,000 IS IMPOSSIBLE
+
+**Read this before the section below it.** The section that follows argued 640,000 from
+`captures/driveway.pcap`. The first bench run on real hardware, 2026-08-09, contradicts it outright,
+and the bench beats the inference.
+
+A stepper **cannot advance more than one microstep per STEP pulse.** So the number of pulses
+emitted puts a hard ceiling on `STEPS_PER_REV`, and any step loss only pushes the true value lower.
+
+| run | pulses emitted | head actually moved | implies ≤ |
+|---|---|---|---|
+| aborted sweep, 71.774 s at 1777.8 Hz | 127,600 | 90° | 510,399 |
+| **completed `bench_move.py 360 1.0`** | **640,000** | **550°** (360 + 190 over the mark) | **418,909** |
+
+640,000 pulses producing 550° of head rotation requires ≤ 418,909 steps/rev **with zero step loss**.
+The configured constant is therefore **at least 53% too big**, and 512,000 (the 80:1 harmonic-drive
+candidate) is ruled out too.
+
+**`400 × 16 × 50:1 = 320,000` is consistent with both runs** — which is exactly the value the driver
+photograph implied, and which was wrongly "reverted" earlier the same day.
+
+**Why there was never really a conflict.** `captures/driveway.pcap` **is from a different rig** —
+the user said so once the contradiction surfaced. It measured that machine's drivetrain correctly
+and says nothing about this one. There is no discrepancy to reconcile: the bench number is the only
+evidence about the rig on the table, and it is the one to use.
+
+**A methodological caveat worth keeping anyway**, because it nearly became the explanation:
+autocorrelation peaks at *every multiple* of the true period, so a scene repeating every 181.4 s
+also correlates strongly at 362.9 s. **A rotation measured by correlation needs its harmonics
+excluded before the first large peak can be called the fundamental.** That was not the bug here, but
+it is a live trap in that estimator.
+
+**The exact value is still not pinned, because the rig is not yet repeatable.** The two runs
+disagree with each other by 21.8% in steps-per-actual-degree (1417.8 vs 1163.6), and the motor
+clicks loudly throughout — it is losing steps. Under `S = 320,000` the two runs achieved 62.7% and
+76.4% of their commanded angle. **Fix the step loss before trusting any calibration number**: set
+the current limit on the `ADJ PWR` pot, confirm MS1/MS2/MS3 really are 1/16, then re-run
+`bench_move.py` at a much lower rate. If a slower command produces *more* rotation, it was stalling;
+if it produces the same, the ratio is real.
+
+**Consequence if 320,000 holds:** every scan this rig has ever run swept **twice** as far and fast as
+commanded, which is precisely the failure the duration watchdog in `move_steps()` was written for.
+
+#### The motor, and why the error is exactly 2×
+
+Identified by the user 2026-08-09 as a **StepperOnline NEMA 17, 59 Ncm, 2 A, 48 mm, 4-wire** — the
+`17HS19-2004S1` class of part. The number that matters is the one nobody wrote down: **1.8°/step,
+so 200 steps/rev, not 400.**
+
+    200 × 16 × 100:1  =  320,000     ← 1.8°/step motor, consistent with the bench bound
+    400 × 16 × 100:1  =  640,000     ← what is configured; assumes a 0.9°/step motor
+
+**The configured constant assumed a half-step-angle motor that is not on this rig.** That single
+substitution explains the whole 2× discrepancy, the "swept twice as far" symptom, and why the
+reduction argument (50:1 vs 100:1) never resolved — the ratio was probably 100:1 all along and the
+error was in the motor term. Falsifiable prediction: with the step loss cured, commanding 90°
+through the present 640,000 config must produce **exactly 180°** of head rotation.
+
+#### Current limit is the prime suspect for the step loss
+
+A stepper on a chopper driver is a **current** device, not a voltage one. This motor's "rated
+voltage" of about 2.8 V is just I × R and is not a supply spec — the 12 V rail is deliberately far
+above it so the driver can force current into the coil inductance quickly. **The number to set is
+2 A per phase**, on the driver's `ADJ PWR` pot.
+
+The Big Easy Driver ships set well below that. A 59 Ncm motor run at roughly a third of its rated
+current makes roughly a third of its torque, and a harmonic drive has real friction and preload to
+overcome — which is a textbook cause of exactly what this rig is doing: audible clicking and a
+quarter to a third of the commanded steps going missing.
+
+**Target ~1.2–1.5 A rather than the full 2 A** unless the driver has a heatsink and airflow; the
+board's own limit is 2 A/phase and it gets hot near it. **Never disconnect the motor while the
+driver is powered** — an open coil with the chopper running can destroy the driver.
+
+### The superseded argument for 640,000 — kept for the method, not the conclusion
 
 Earlier the same day this was "corrected" 640,000 → 320,000 from a photograph of the driver board.
 **That correction was wrong and has been reverted.** A real capture says so.
@@ -346,7 +441,19 @@ measure. That is far stronger evidence than arithmetic from a photograph and sti
 mount orientation, because it works on the sensor's own reported azimuth. Any capture can be asked
 how far it turned. Scratch scripts: `measure_rotation.py`, `refine_period.py`.
 
-### Mount orientation — MEASURED 2026-08-09, after getting it wrong twice from pictures
+### Mount orientation — the METHOD is proven, the ANSWER belongs to another rig
+
+**⚠ Re-read this whole section knowing that `captures/driveway.pcap` came from a different
+machine** (established 2026-08-09, after the analysis was done). What survives:
+
+- **That the puck is on its side is not in doubt** — the user confirmed it directly about this rig.
+- **The roll SIGN (+90 vs −90) and the 1.5 m instrument height do NOT transfer.** They were read off
+  the other rig's ground plane. `MOUNT_ROLL_DEG` and the lever arm are therefore **unverified for
+  this rig** and must be re-derived from its first real capture, by exactly the histogram below.
+- **The histogram method itself is sound and cheap to repeat.** One capture, three candidate rolls,
+  look at where the ground lands. Do it on the first scan this rig records.
+
+The original analysis, correct about the machine it was run on, follows.
 
 The VLP-16 is **on its side, laid the `roll +90` way.** Established from the data, after a CAD
 render and then a photograph produced two opposite and both-unreliable readings.

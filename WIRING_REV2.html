@@ -303,8 +303,8 @@ li strong{color:var(--ink); font-weight:620;}
 
   <!-- U3 -->
   <rect class="bx" x="600" y="35" width="190" height="90"/>
-  <text class="ref" x="695" y="66" text-anchor="middle">U3 · XL6009</text>
-  <text class="dsc" x="695" y="84" text-anchor="middle">converter module</text>
+  <text class="ref" x="695" y="66" text-anchor="middle">U3 · LM2596S-ADJ</text>
+  <text class="dsc" x="695" y="84" text-anchor="middle">buck module</text>
   <text class="dsc" x="695" y="100" text-anchor="middle">→ 5.1 V, ≥3 A</text>
   <text class="pn" x="606" y="56">4 IN+</text>
   <text class="pn" x="606" y="114">3 IN–</text>
@@ -317,8 +317,8 @@ li strong{color:var(--ink); font-weight:620;}
 
   <!-- U6 -->
   <rect class="bx" x="600" y="170" width="190" height="90"/>
-  <text class="ref" x="695" y="197" text-anchor="middle">U6 · XL6009</text>
-  <text class="dsc" x="695" y="215" text-anchor="middle">converter module</text>
+  <text class="ref" x="695" y="197" text-anchor="middle">U6 · LM2596S-ADJ</text>
+  <text class="dsc" x="695" y="215" text-anchor="middle">buck — CONSIDER DELETING</text>
   <text class="dsc" x="695" y="231" text-anchor="middle">→ 12 V motor rail</text>
   <text class="pn" x="606" y="191">4 IN+</text>
   <text class="pn" x="606" y="249">3 IN–</text>
@@ -390,11 +390,16 @@ li strong{color:var(--ink); font-weight:620;}
   <div class="warnbox">
     <span class="hd">Three things to settle before this is energised</span>
     <ul>
-      <li><strong>The XL6009 is a step-<em>up</em> converter.</strong> A plain XL6009 module cannot
-        make 5 V from a 12 V input — it can only boost. If U3 is a genuine boost-only module it will
-        pass roughly the input voltage straight through to the Pi's 5 V rail and destroy it. Measure
-        U3's output <b>on the bench, with no Pi connected</b>, and confirm it holds 5.1 V from a 12 V
-        input. If it does not, U3 must be replaced with a buck or buck-boost module.</li>
+      <li><strong>RESOLVED — they are LM2596 bucks, not XL6009 boosts.</strong> The Rev 1.0 label was
+        wrong. A photograph of the hardware reads <span class="m">LM2596S-ADJ</span>: a step-<em>down</em>
+        regulator, 4.5–40 V in, 3 A absolute maximum, ~2 A realistically on a bare module. Making 5 V
+        from 12 V is exactly what it is for, so the Pi's rail was never in danger from the topology.</li>
+      <li><strong>But a buck cannot make 12 V from a 12 V battery.</strong> It needs ~1.5 V of
+        headroom. If U6 is set to 12 V on a 12 V nominal pack it is not regulating at all and the
+        motor rail sags under load. <b>Delete U6 and take M+ from the switched battery instead</b> —
+        the driver accepts 8–35 V, U6 only ever existed to run the monitor that is now gone, and
+        regulating a motor supply buys nothing while costing a 3 A ceiling and an LM2596's transient
+        response in front of a chopper driver. Measure M+ <em>while the motor is turning</em>.</li>
       <li><strong>Feeding the Pi through JP1 pins 2 and 4 bypasses its input protection.</strong>
         The USB-C jack has a polyfuse and an e-fuse behind it; the header pins have neither. The
         supply must be accurate (5.1 V) and current-limited, and its polarity is unforgiving.</li>
