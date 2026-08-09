@@ -91,13 +91,20 @@ except ImportError:
 # surface and the network carrying it. If the phone sleeps, crashes, goes flat
 # or walks out of range, there is no software abort left at all.
 #
-# A LATCHING E-STOP IN SERIES WITH THE DRIVER'S ENABLE IS NOW THE ONLY
-# HARDWARE ABORT. It was advisable when there was a stop button; it is
-# mandatory now. It is also strictly better than any button, because it still
-# works when the Pi has crashed with pigpio's DMA engine clocking step pulses
-# -- the one failure no software stop can ever cover.
+# THE HARDWARE ABORT IS S1, THE MAIN POWER SWITCH (decided 2026-08-09).
+# Cutting it stops rotation either way the supply is arranged: if S1 feeds the
+# driver the coils de-energise, and if it only feeds the Pi's 5 V converter
+# then STEP stops toggling and the motor stops turning regardless. That is
+# more complete than a switch in series with ENABLE -- it removes the energy
+# rather than asking the driver to stand down -- and it cannot be defeated by
+# a crashed Pi with the DMA engine still clocking pulses.
 #
-# See also: run_scan()'s duration guard, which is the software half of this.
+# Use the panel's Stop for normal aborts and S1 only when something is wrong:
+# a hard power cut truncates the pcap and, repeated, will eventually damage
+# the SD card. See MICROVIEW_REMOVAL.md for the switch's DC rating caveat.
+#
+# See also: the duration watchdog in tls_stepper.move_steps(), the software
+# half of this, which needs no network but cannot survive this process dying.
 
 # --- Capture --------------------------------------------------------------
 DUMPDIR = os.environ.get("DUMPDIR", "/home/lipi/velodyne")

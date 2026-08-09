@@ -79,24 +79,41 @@ open. That hazard now disappears with the buttons.
 Nothing but the motor lines remains on the header. GPIO5, 6, 12, 17, 22 and 27
 are all free.
 
-### ⚠ The E-stop is no longer optional
+### The emergency stop is S1, the main power switch
 
-With no stop button, **the phone panel is the only software abort** — and the
-Pi reaches the phone over the phone's own hotspot, so one device is both the
-control surface and the network carrying it. A phone that sleeps, crashes,
-goes flat or walks out of range takes the abort with it.
+**Decided 2026-08-09.** With no stop button, the phone panel is the only
+*software* abort — and the Pi reaches the phone over the phone's own hotspot,
+so one device is both the control surface and the network carrying it. A phone
+that sleeps, crashes, goes flat or walks out of range takes that abort with
+it. Something has to exist below software.
 
-**Fit a latching E-stop in series with the driver's ENABLE before the rig runs
-again.** It is also strictly better than the button it replaces: it still
-works when the Pi has crashed with pigpio's DMA engine clocking step pulses,
-which is the one failure no software stop can ever cover.
+**S1 (Main) is that something.** Cutting it stops rotation whichever way the
+supply is arranged:
 
-The software half of this is the **duration watchdog** in `tls_stepper.py`: a
-move that runs past `expected × 1.25 + 3 s` is stopped and raises
-`MoveOverran`. That catches a wrong `STEPS_PER_REV` or a malformed chain
-without needing any network — but it runs *inside* the controller, so it
-cannot help if the controller itself dies. Only the E-stop covers that.
-Tested by `test_stepper_watchdog.py` (17 checks, no hardware).
+* if S1 feeds the driver, the coils de-energise;
+* if S1 only feeds the Pi's 5 V converter, the STEP line stops toggling and
+  the motor stops turning even with the coils still live.
+
+It is more complete than a switch in series with ENABLE, because it removes
+the energy rather than asking the driver to stand down — and it cannot be
+defeated by a crashed Pi with pigpio's DMA engine still clocking pulses, which
+is the one failure no software stop can cover.
+
+**Use the phone's Stop for normal aborts, and S1 only when something is
+actually wrong.** Three consequences of that split:
+
+| | |
+|---|---|
+| **Check S1's DC rating** | if it carries motor current it is breaking a DC inductive load. DC arcs do not self-extinguish the way AC ones do, and an under-rated switch can slowly weld its contacts. A welded E-stop looks fine until the moment it is needed. |
+| **Expect SD wear** | pulling power from a running Linux box mid-write is how filesystems get damaged. ext4's journal makes it survivable most times, not every time. Emergency action, not routine shutdown. |
+| **The scan is lost** | `tcpdump` is writing continuously, so the pcap truncates. The right trade in an emergency. |
+
+The software half is the **duration watchdog** in `tls_stepper.py`: a move
+running past `expected × 1.25 + 3 s` is stopped and raises `MoveOverran`. It
+catches a wrong `STEPS_PER_REV` or a malformed chain and needs no network —
+but it runs *inside* the controller, so it cannot help if the controller
+itself dies. That case is S1's job. Tested by `test_stepper_watchdog.py`
+(17 checks, no hardware).
 
 ## Install
 

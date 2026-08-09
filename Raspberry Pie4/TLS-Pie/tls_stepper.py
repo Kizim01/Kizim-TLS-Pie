@@ -299,7 +299,8 @@ class Stepper:
         # carried over the phone's own hotspot, so if the phone is gone, so is
         # the panel; this backstop needs no network.
         #
-        # It is NOT a substitute for the hardware E-stop. It runs inside this
+        # It is NOT a substitute for S1, the main power switch, which is the
+        # hardware emergency stop. This guard runs inside this
         # process, so it cannot help in the one case that most needs it: the
         # process dying while the DMA engine keeps clocking steps on its own.
         expected_s = sum(n / r for n, r in segments if r > 0)
