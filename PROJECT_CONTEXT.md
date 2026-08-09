@@ -224,6 +224,7 @@ before the motor turns under load.
 - [Raspberry Pie4/TLS-Pie/tls_cloud.py](Raspberry%20Pie4/TLS-Pie/tls_cloud.py) — VLP-16 decoder + live preview buffer (opt-in)
 - [Raspberry Pie4/TLS-Pie/tls-scan.service](Raspberry%20Pie4/TLS-Pie/tls-scan.service) — systemd unit
 - [Raspberry Pie4/TLS-Pie/gpio_selftest.py](Raspberry%20Pie4/TLS-Pie/gpio_selftest.py) — GPIO damage check
+- [Raspberry Pie4/TLS-Pie/test_web_install.py](Raspberry%20Pie4/TLS-Pie/test_web_install.py) — HTTP tests for the panel's install surface (no hardware needed)
 - [Raspberry Pie4/TLS-Pie/MICROVIEW_REMOVAL.md](Raspberry%20Pie4/TLS-Pie/MICROVIEW_REMOVAL.md) — wiring, install, staged bench test
 - [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh) — still current
 
@@ -242,6 +243,27 @@ network.
 
 **Never launch a scan from a foreground SSH session.** WiFi drops, SSH sends SIGHUP, and the
 controller dies mid-scan while pigpio's DMA keeps clocking steps. Use the systemd unit, or `tmux`.
+
+**Putting it on the phone's home screen.** There is nothing to install from a store — the server
+offers a web app manifest and a PNG icon generated at runtime (`render_icon()`, stdlib `zlib` +
+`struct`; the rig has no Pillow and a binary blob in git is unreviewable), so Android's *Add to
+Home screen* gives a named icon rather than a page thumbnail. **A true standalone install is not
+achievable here: Chrome requires a secure origin with a valid certificate, and this is plain HTTP
+on a hotspot — a self-signed certificate does not qualify.** The page therefore carries its own
+*Full screen* button using the Fullscreen API, which does work over HTTP, and that is what actually
+removes the address bar. A screen wake lock is requested while a scan runs, best effort.
+
+The manifest and icon routes are deliberately **exempt from the token check** — the browser fetches
+them with no query string of its own, so requiring a token would break the install for precisely
+the person holding it. They carry no state and expose no controls; `/api/*` stays protected.
+[Raspberry Pie4/TLS-Pie/test_web_install.py](Raspberry%20Pie4/TLS-Pie/test_web_install.py) drives
+the real server over loopback and asserts both halves of that pairing (49 checks, no hardware).
+
+On startup the panel now prints the **address a phone can actually reach** — `lan_address()` asks
+the kernel which local address it would route from — instead of the `0.0.0.0` it binds to. The
+token is deliberately *not* printed; it would land in journald, and whoever set it knows it.
+DHCP means the Pi's address can change between sessions, which presents as a saved home-screen icon
+that suddenly loads nothing.
 
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.

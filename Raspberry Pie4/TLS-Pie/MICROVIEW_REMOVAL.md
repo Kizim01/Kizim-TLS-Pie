@@ -24,7 +24,7 @@ does not break out.
 | `VLPwaitbutton.py` (GPIO27 stop-in) | stop button read directly |
 | `VLPstatussignal.py` (GPIO22 pulse codes) | `ScanAborted` in-process |
 | `VLPrecord.sh` | `tls_scan.py` (checks ported verbatim) |
-| MicroView OLED | the HDMI monitor (U9) already in the rig |
+| MicroView OLED | the phone control panel (`tls_web.py`) — the monitor came out too |
 
 `VLPselfcheck.sh` is unaffected and still useful.
 
@@ -106,6 +106,53 @@ page served by the Pi. Open it on a phone on the same network:
 ```
 http://raspberrypi.local:8080/
 ```
+
+### Putting it on the phone's home screen
+
+There is nothing to install from a store — the Pi serves the page, the phone
+just opens it. But a bare bookmark is a poor field instrument, so the server
+offers a web app manifest and a generated icon, and the page has its own
+**Full screen** button.
+
+**On the Pi**, start the scanner and read the address it prints:
+
+```
+$ ./tls_scan.py
+Control panel:
+  http://192.168.43.12:8080/
+  http://raspberrypi.local:8080/
+```
+
+The first line is the one to type — it is the address the Pi would use to
+reach off-box, i.e. its WiFi address, not the `0.0.0.0` it binds to.
+`raspberrypi.local` needs mDNS, which Android resolves unreliably; prefer
+the IP.
+
+**On the phone** (Chrome or Samsung Internet): open that address → menu →
+**Add to Home screen**. You get the scanner icon and a name, not a page
+thumbnail.
+
+**Full screen.** Android will *not* give a true standalone install over plain
+HTTP — Chrome requires a valid certificate for that, and a self-signed one
+does not qualify. The page therefore carries its own Full screen button, which
+uses the Fullscreen API and works fine over HTTP. Tap it and the address bar
+goes away; the result is what you actually wanted from an "app".
+
+**Screen wake.** While a scan is running the page asks the phone to keep the
+screen on, so a 6½-minute slow scan does not black out halfway. Best effort —
+the browser drops the lock whenever the page is backgrounded. A phone that
+sleeps does not stop the scan; the Pi owns that.
+
+**The address changes.** Phone hotspots hand out addresses by DHCP, so the
+Pi's address can differ between sessions and the saved icon then points at
+nothing. If it fails to load, re-read the address from the Pi (or from the
+hotspot's connected-devices list) and re-add. A DHCP reservation on the
+hotspot, where the phone allows one, makes the icon permanent.
+
+Run `./test_web_install.py` to check this surface after any change to
+`tls_web.py` — it drives the real server over HTTP, needs no hardware, and
+specifically guards that the icons stay reachable without a token while
+`/api/*` stays protected.
 
 It shows live phase, elapsed and remaining time, a progress bar, the capture
 filename and its growing size, and gives you the three scan buttons plus a
@@ -211,7 +258,7 @@ Everything is environment-overridable, in the style of the existing scripts.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TLSPIE_STEPS_PER_REV` | 640000 | 400 × 32 microsteps × 50:1 |
+| `TLSPIE_STEPS_PER_REV` | 320000 | 400 × 16 microsteps × 50:1 |
 | `TLSPIE_RETURN_DEG_PER_S` | 7.0 | speed of the return leg |
 | `TLSPIE_DIR_FORWARD` | 1 | flip if rotation is reversed |
 | `TLSPIE_MAX_STEP_RATE_HZ` | 40000 | guard against a bad config |
@@ -219,10 +266,18 @@ Everything is environment-overridable, in the style of the existing scripts.
 | `LIDAR_IP` | 192.168.1.201 | capture filter and ping check |
 | `DUMPDIR` | /home/lipi/velodyne | pcap output |
 
-## ⚠ Confirm the microstep setting
+## ⚠ STEPS_PER_REV was wrong by 2× — resolved, but verify on the bench
 
-`STEPS_PER_REV = 640000` assumes 1/32 microstepping, which **only the DRV8825
-can do**. The A4988-based SparkFun Big Easy Driver tops out at 1/16, which
-would make it 320,000. The schematic labels U4 "BigEasyDriver" but gives the
-part as DRV8825; those are different chips. Check which is fitted — every scan
-angle depends on this constant.
+The fitted driver is marked **`4983ET`** — an Allegro A4983/A4988 on a SparkFun
+Big Easy Driver, whose maximum is **1/16** microstepping. The schematic's
+"DRV8825" label was wrong; those are different chips and only the DRV8825 does
+1/32.
+
+So the correct constant is 400 × 16 × 50 = **320,000**, not the 640,000 this
+project used for its whole life. Because the step *rate* derives from the same
+constant, both distance and speed were doubled: a nominal "360° at 1°/s" scan
+actually swept about 756° at 2°/s. **Every scan this rig has ever produced is
+affected**, and the error came across unchanged from the MicroView firmware.
+
+The code is corrected. Confirm it physically before trusting a scan: command a
+90° move with the head uncoupled and measure what you get.

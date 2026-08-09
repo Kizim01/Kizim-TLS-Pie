@@ -42,9 +42,13 @@ series with the driver's ENABLE covers that.
 """
 
 import json
+import math
 import os
+import socket
+import struct
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -190,6 +194,141 @@ class ScannerState:
             }
 
 
+# ---------------------------------------------------------------------------
+# Home-screen icon and web app manifest
+# ---------------------------------------------------------------------------
+# Without these, Android's "Add to Home screen" gives you a browser bookmark
+# wearing a thumbnail of the page. With them you get a named icon that opens
+# straight into the panel.
+#
+# Both are generated at runtime rather than committed as files: the rig has no
+# Pillow, and a binary blob in git is a thing nobody can review or diff.
+#
+# NOTE ON FULL SCREEN. A true standalone install -- own icon, own entry in the
+# recents list, no address bar -- additionally requires a SECURE ORIGIN, and
+# this server is plain HTTP on a hotspot. A self-signed certificate does not
+# help; Chrome wants a valid one. So the manifest gets you the icon and the
+# name, and the page's own "Full screen" button (Fullscreen API, which does
+# work over HTTP) gets you the chrome-free display. Between them the result is
+# indistinguishable in use from an installed app.
+
+ICON_BG = (0x05, 0x06, 0x0A)      # matches the page background and theme-color
+ICON_ACCENT = (0x0A, 0x84, 0xFF)  # matches --blue
+
+_icon_cache = {}
+_icon_lock = threading.Lock()
+
+
+def _png_chunk(tag, data):
+    return (struct.pack(">I", len(data)) + tag + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+
+def render_icon(size):
+    """
+    Draw the launcher icon as a PNG: three concentric range rings and a sweep
+    spoke on a dark ground -- a plan view of what the instrument does, and the
+    same thing the preview canvas draws.
+
+    Everything stays inside the central 72% so Android can mask the icon to a
+    circle, a squircle or a teardrop without clipping anything that matters.
+
+    Pure stdlib. The pixel loop is skipped entirely outside the artwork disc,
+    which is most of the image, and the result is cached -- it runs once per
+    size for the life of the process.
+    """
+    centre = (size - 1) / 2.0
+    rings = ((0.150, 1.00), (0.245, 0.62), (0.340, 0.34))  # radius frac, alpha
+    half = size * 0.011               # half the ring line thickness
+    dot = size * 0.038                # centre marker
+    spoke_from, spoke_to = size * 0.055, size * 0.352
+    spoke_half = size * 0.010
+    limit = size * 0.368              # nothing is drawn beyond this radius
+
+    bg_row = bytes(ICON_BG) * size
+    raw = bytearray()
+
+    for y in range(size):
+        raw.append(0)                 # PNG filter type 0 for this scanline
+        dy = y - centre
+        if abs(dy) > limit:
+            raw.extend(bg_row)        # fast path: this row is entirely ground
+            continue
+
+        row = bytearray(bg_row)
+        span = math.sqrt(limit * limit - dy * dy)
+        for x in range(max(0, int(centre - span)),
+                       min(size, int(centre + span) + 2)):
+            dx = x - centre
+            r = math.hypot(dx, dy)
+
+            cover = 0.0
+            for frac, alpha in rings:
+                # 1px feather either side, so the curves are not stepped
+                a = alpha * min(max(1.0 - (abs(r - frac * size) - half), 0.0), 1.0)
+                if a > cover:
+                    cover = a
+
+            # the sweep spoke, up and to the right at 45 degrees
+            proj = (dx - dy) * 0.70710678
+            if spoke_from <= proj <= spoke_to:
+                a = min(max(1.0 - (abs(dx + dy) * 0.70710678 - spoke_half),
+                            0.0), 1.0)
+                if a > cover:
+                    cover = a
+
+            px = [int(ICON_BG[i] + (ICON_ACCENT[i] - ICON_BG[i]) * cover + 0.5)
+                  for i in range(3)]
+
+            white = min(max(1.0 - (r - dot), 0.0), 1.0)
+            if white > 0.0:
+                px = [int(px[i] + (255 - px[i]) * white + 0.5) for i in range(3)]
+
+            row[3 * x:3 * x + 3] = bytes(px)
+
+        raw.extend(row)
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)  # 8-bit RGB
+    return (b"\x89PNG\r\n\x1a\n"
+            + _png_chunk(b"IHDR", header)
+            + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + _png_chunk(b"IEND", b""))
+
+
+def icon(size):
+    """Cached render_icon. First call for a size costs about a second on a Pi."""
+    with _icon_lock:
+        if size not in _icon_cache:
+            _icon_cache[size] = render_icon(size)
+        return _icon_cache[size]
+
+
+def manifest():
+    """
+    The web app manifest. start_url carries the token if one is set, otherwise
+    the home-screen icon would open a page that answers 403.
+    """
+    return {
+        "name": "TLS Scanner",
+        "short_name": "TLS",
+        "description": "Control panel for the TLS Pie terrestrial laser scanner",
+        "start_url": ("/?t=" + WEB_TOKEN) if WEB_TOKEN else "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait",
+        "background_color": "#05060a",
+        "theme_color": "#05060a",
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    }
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -197,6 +336,11 @@ PAGE = """<!doctype html>
 <meta name="theme-color" content="#05060a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="TLS Scanner">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
 <title>TLS Scanner</title>
 <style>
   :root{
@@ -230,11 +374,16 @@ PAGE = """<!doctype html>
   }
 
   .hdr{display:flex;align-items:baseline;justify-content:space-between;
-    margin:2px 2px 18px}
+    margin:2px 2px 18px;gap:12px}
   .hdr h1{font-size:30px;font-weight:700;letter-spacing:-.024em;margin:0;
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif}
+  .hdrend{display:flex;align-items:baseline;gap:10px;flex:none}
   .hdr .rev{font-size:12px;color:var(--faint);letter-spacing:.02em;
     font-variant-numeric:tabular-nums}
+  .hdr .fs{appearance:none;-webkit-appearance:none;font:inherit;font-size:12px;
+    color:var(--dim);background:var(--glass);border:1px solid var(--edge);
+    border-radius:9px;padding:5px 10px;letter-spacing:.01em;white-space:nowrap}
+  .hdr .fs:active{background:var(--hi)}
 
   .card{
     background:var(--glass);
@@ -320,7 +469,10 @@ PAGE = """<!doctype html>
     margin-top:22px;line-height:1.6;padding:0 8px}
 </style></head><body>
 
-<div class="hdr"><h1>TLS Scanner</h1><span class="rev" id="rev">Rev 2.0</span></div>
+<div class="hdr"><h1>TLS Scanner</h1><span class="hdrend">
+  <span class="rev" id="rev">Rev 2.0</span>
+  <button class="fs" id="fs" hidden>Full screen</button>
+</span></div>
 
 <div class="card">
   <div class="statusline"><div class="dot" id="dot"></div>
@@ -441,6 +593,8 @@ async function poll(){
 
     document.getElementById('previewCard').style.display = s.preview ? 'block':'none';
     if(s.preview) pollCloud();
+
+    keepAwake(s.busy);
   }catch(e){
     document.getElementById('phase').textContent = 'OFFLINE';
     document.getElementById('phase').style.color = '#FF453A';
@@ -516,11 +670,53 @@ async function cmd(what, profile){
   poll();
 }
 
+// Full screen. Plain HTTP cannot get a standalone PWA install, but the
+// Fullscreen API works anywhere, and it is what actually matters on a rig you
+// operate at arm's length: no address bar eating the top of the screen.
+// Hidden entirely where the API is missing, rather than offering a dead button.
+const fsb = document.getElementById('fs');
+if (document.documentElement.requestFullscreen){
+  fsb.hidden = false;
+  fsb.onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(()=>{});
+  };
+  document.addEventListener('fullscreenchange', () => {
+    fsb.textContent = document.fullscreenElement ? 'Exit full screen'
+                                                 : 'Full screen';
+  });
+}
+
+// Keep the screen awake while a scan runs. A phone that sleeps mid-scan does
+// not stop the scan -- the Pi owns that -- but you lose sight of it, and the
+// reflex is to grab the rig. Best effort: unsupported on older browsers, and
+// the lock is dropped by the browser whenever the tab is backgrounded.
+let wakeLock = null;
+async function keepAwake(want){
+  if (!('wakeLock' in navigator)) return;
+  try{
+    if (want && !wakeLock){
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!want && wakeLock){
+      await wakeLock.release(); wakeLock = null;
+    }
+  }catch(e){ wakeLock = null; }
+}
+
 poll();
 setInterval(poll, 1000);
 </script>
 </body></html>
 """
+
+
+_ICON_ROUTES = {
+    "/icon-192.png": 192,   # Android launcher
+    "/icon-512.png": 512,   # Android splash and the maskable entry
+    "/icon-180.png": 180,   # apple-touch-icon
+    "/favicon.ico": 64,     # browsers ask for this unprompted; a PNG is fine
+}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -550,9 +746,34 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj), "application/json")
 
+    def _send_bytes(self, code, payload, content_type, cache="no-store"):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         url = urlparse(self.path)
         query = parse_qs(url.query)
+
+        # The manifest and the icons are deliberately outside the token check.
+        # The browser fetches them by URL with no query string of its own, so
+        # requiring a token would break the home-screen install for exactly the
+        # person holding the token. They carry no state and expose no controls.
+        if url.path == "/manifest.webmanifest":
+            self._send_bytes(200, json.dumps(manifest()).encode("utf-8"),
+                             "application/manifest+json")
+            return
+        if url.path in _ICON_ROUTES:
+            self._send_bytes(200, icon(_ICON_ROUTES[url.path]), "image/png",
+                             cache="public, max-age=86400")
+            return
+
         if not self._authorised(query):
             self._send(403, "Forbidden", "text/plain")
             return
@@ -591,6 +812,27 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200 if ok else 409, {"ok": ok, "message": message})
 
 
+def lan_address():
+    """
+    The address a phone should actually be typing.
+
+    Printing the bind address is useless to an operator: 0.0.0.0 is not
+    something you can put in a browser. Ask the kernel which local address it
+    would use to reach off-box, which on the rig is the WiFi interface -- no
+    packet is sent, connect() on UDP only picks a route. Returns None rather
+    than guessing if there is no route, which is what a Pi with WiFi down and
+    only the lidar on eth0 looks like.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.0.2.1", 9))   # TEST-NET-1, deliberately unroutable
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
 def start(state, host=WEB_HOST, port=WEB_PORT):
     """
     Start the control panel on a daemon thread. Returns the server, or None if
@@ -605,8 +847,21 @@ def start(state, host=WEB_HOST, port=WEB_PORT):
         return None
 
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print("Control panel on http://%s:%d/%s"
-          % (host, port, "?t=<token>" if WEB_TOKEN else ""))
+
+    bound = httpd.server_address[1]
+    # The token is deliberately NOT printed. It would end up in journald, and
+    # whoever set it already knows it.
+    suffix = "/?t=<your token>" if WEB_TOKEN else "/"
+    print("Control panel:")
+    if host in ("0.0.0.0", "::"):
+        address = lan_address()
+        if address:
+            print("  http://%s:%d%s" % (address, bound, suffix))
+        else:
+            print("  no network address yet -- is WiFi up?")
+        print("  http://%s.local:%d%s" % (socket.gethostname(), bound, suffix))
+    else:
+        print("  http://%s:%d%s" % (host, bound, suffix))
     if not WEB_TOKEN:
-        print("  No token set — anyone on this network can start the motor.")
+        print("  No token set - anyone on this network can start the motor.")
     return httpd
