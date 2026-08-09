@@ -107,7 +107,24 @@ check("a saved alignment comes back",
 check("bounds come from the cloud header",
       by_name["TLS_A"]["bounds"] == [[-1.0, -2.0, -1.5], [3.0, 4.0, 2.5]])
 check("an in-flight build is flagged",
-      tls_scanstore.list_scans(tmp, building="TLS_A")[2]["building"] is True)
+      [s for s in tls_scanstore.list_scans(tmp, building="TLS_A")
+       if s["name"] == "TLS_A"][0]["building"] is True)
+check("a capture still present is marked as such",
+      by_name["TLS_A"]["hasCapture"] is True)
+
+# The normal end of a capture's life is being offloaded to a workstation and
+# deleted -- that is the whole reason the clouds are small enough to keep. A
+# scan must not disappear from the list when that happens.
+os.remove(os.path.join(tmp, "TLS_A.pcap"))
+after = {s["name"]: s for s in tls_scanstore.list_scans(tmp)}
+check("a scan survives its capture being offloaded", "TLS_A" in after,
+      sorted(after))
+check("and is still viewable", after.get("TLS_A", {}).get("hasCloud") is True)
+check("and knows the capture has gone",
+      after.get("TLS_A", {}).get("hasCapture") is False)
+check("and still has a date to sort by",
+      after.get("TLS_A", {}).get("epoch") is not None)
+make_scan("TLS_A", CLOUD_A, 1_700_000_000.0)     # put it back for later checks
 
 header = tls_cloudbuild.read_cloud_header(os.path.join(tmp, "TLS_A.cloud"))
 check("the header can be read without the points", header["count"] == 3)
@@ -299,8 +316,20 @@ for needle, why in (
         ("/api/scanfile", "the viewer fetches clouds"),
         ("/api/align", "alignment can be saved"),
         ("coverage checking only", "the alignment caveat is stated"),
+        ('id="lback"', "a way back out of the Layers panel"),
 ):
     check("page has %s" % why, needle in page)
+
+# The Layers panel sits over the cloud you are lining a scan up against, so it
+# has to be narrow enough to leave that cloud visible and see-through where it
+# does cover it. Both were wrong on first use.
+css = page.split("<style>")[1].split("</style>")[0]
+layers_css = css.split(".layers{")[1].split("}")[0]
+check("the Layers panel leaves most of the screen free",
+      "60vw" in layers_css, layers_css[:90])
+check("and is translucent rather than solid",
+      "rgba(10,12,18,.55)" in layers_css and "backdrop-filter" in layers_css,
+      layers_css[:160])
 
 check("the page never reaches off the Pi for a library",
       "//cdn" not in page and "https://" not in page.split("</style>")[1])

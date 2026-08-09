@@ -522,13 +522,27 @@ PAGE = """<!doctype html>
     font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;
     text-shadow:0 1px 4px #000;pointer-events:none;line-height:1.5}
 
-  .layers{position:absolute;top:0;right:0;bottom:0;width:min(330px,88vw);
-    background:rgba(10,12,18,.96);
-    -webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px);
+  /* Narrow and see-through on purpose: nudging a scan is pointless if the
+     panel hides the cloud you are lining it up against. The blur keeps the
+     text readable over whatever is behind it. */
+  .layers{position:absolute;top:0;right:0;bottom:0;width:min(248px,60vw);
+    background:rgba(10,12,18,.55);
+    -webkit-backdrop-filter:blur(36px) saturate(180%);
+    backdrop-filter:blur(36px) saturate(180%);
     border-left:.5px solid var(--edge);overflow-y:auto;z-index:2;
     transform:translateX(101%);transition:transform .22s ease;
-    padding:calc(env(safe-area-inset-top,0px) + 16px) 16px 24px}
+    padding:0 14px calc(env(safe-area-inset-bottom,0px) + 20px);
+    text-shadow:0 1px 3px rgba(0,0,0,.55)}
   .layers.on{transform:none}
+  .lhead{position:sticky;top:0;z-index:1;display:flex;align-items:center;
+    gap:10px;margin:0 -14px 4px;padding:calc(env(safe-area-inset-top,0px)
+    + 12px) 14px 11px;
+    background:linear-gradient(180deg,rgba(10,12,18,.72),rgba(10,12,18,0));
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+  .lhead .sechead{margin:0;flex:1}
+  .lback{padding:8px 13px;border-radius:11px;font-size:13.5px;font-weight:600;
+    border:.5px solid var(--edge);background:rgba(255,255,255,.10);
+    color:var(--text)}
   .lrow{display:flex;align-items:center;gap:11px;padding:12px 0;
     border-bottom:.5px solid rgba(255,255,255,.09)}
   .sw{width:15px;height:15px;border-radius:5px;flex:none;
@@ -627,7 +641,10 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="layers" id="layers">
-    <p class="sechead">Layers</p>
+    <div class="lhead">
+      <p class="sechead">Layers</p>
+      <button class="lback" id="lback">Done</button>
+    </div>
     <div id="layerlist"></div>
     <div id="nudgebox"></div>
     <p class="note" id="viewnote"></p>
@@ -877,15 +894,19 @@ async function refreshLibrary(){
     const d = dayName(s.epoch);
     if(d !== day){ day = d; html += '<div class="daygroup">'+d+'</div>'; }
 
-    let chip = '<span class="chip">no preview</span>';
+    let chip = '<span class="chip">tap to build</span>';
     if(s.building) chip = '<span class="chip busy">building…</span>';
     else if(s.hasCloud && s.registered === false)
       chip = '<span class="chip warn">unregistered</span>';
     else if(s.hasCloud) chip = '<span class="chip ok">' +
       (s.points/1000).toFixed(0) + 'k pts</span>';
+    else if(!s.hasCapture) chip = '<span class="chip warn">no data</span>';
 
-    const det = [clock(s.epoch), s.label || '',
-                 (s.pcapBytes/1048576).toFixed(0)+' MB'].filter(Boolean).join(' · ');
+    // The capture is offloaded and pruned in normal use; the cloud stays. So
+    // the size is only shown while there is still a capture to size.
+    const size = s.hasCapture ? (s.pcapBytes/1048576).toFixed(0)+' MB'
+                              : 'capture offloaded';
+    const det = [clock(s.epoch), s.label || '', size].filter(Boolean).join(' · ');
     html += '<button class="srow" data-scan="'+s.name+'" ' +
             'data-ready="'+(s.hasCloud?1:0)+'">' +
             '<span class="nm"><span class="t">'+(s.label||s.name)+'</span>' +
@@ -1182,6 +1203,10 @@ function cycleColor(){
 function toggleLayers(){
   document.getElementById('layers').classList.toggle('on');
 }
+function closeLayers(){
+  document.getElementById('layers').classList.remove('on');
+}
+document.getElementById('lback').addEventListener('click', closeLayers);
 
 /* ---- layers panel ---- */
 function renderLayers(){

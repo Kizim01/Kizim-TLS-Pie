@@ -51,24 +51,33 @@ def list_scans(dumpdir, building=None):
     except OSError:
         return out
 
-    for name in names:
-        if not name.endswith(".pcap"):
-            continue
-        stem = _basename(name)
-        pcap = os.path.join(dumpdir, name)
+    # A scan is listed if EITHER its capture or its cloud is present. Keying
+    # only off the pcap would make a scan vanish the moment its capture was
+    # offloaded -- which is the normal end of a capture's life here, and the
+    # whole reason the clouds are small enough to keep forever. The list is the
+    # visual history; losing an entry because the raw data went to a
+    # workstation would defeat it.
+    stems = sorted({_basename(n) for n in names
+                    if n.endswith(".pcap") or n.endswith(".cloud")})
+
+    for stem in stems:
+        pcap = os.path.join(dumpdir, stem + ".pcap")
         cloud = os.path.join(dumpdir, stem + ".cloud")
         meta_path = os.path.join(dumpdir, stem + ".json")
 
+        pcap_bytes = None
+        epoch = None
         try:
             pcap_bytes = os.path.getsize(pcap)
             epoch = os.path.getmtime(pcap)
         except OSError:
-            continue
+            pass                      # capture offloaded; the cloud remains
 
         entry = {
             "name": stem,
             "epoch": epoch,
             "pcapBytes": pcap_bytes,
+            "hasCapture": pcap_bytes is not None,
             "hasCloud": False,
             "building": (stem == building),
             "label": None,
@@ -95,6 +104,23 @@ def list_scans(dumpdir, building=None):
             entry["bounds"] = header.get("bounds_m")
             entry["built"] = header.get("built_epoch")
             entry["label"] = entry["label"] or (header.get("scan") or {}).get("label")
+            if entry["epoch"] is None:
+                # No capture left to date it by, so fall back to when the cloud
+                # was built, then to the cloud file's own mtime.
+                entry["epoch"] = header.get("built_epoch")
+
+        if not entry["hasCapture"] and not entry["hasCloud"]:
+            # No capture to build from and no readable cloud to draw. A stray
+            # or truncated file, most likely from a build that was cut off.
+            # There is nothing here to show and nothing the operator could do
+            # with it, so listing it would only be noise.
+            continue
+
+        if entry["epoch"] is None:
+            try:
+                entry["epoch"] = os.path.getmtime(cloud)
+            except OSError:
+                continue
 
         out.append(entry)
 
