@@ -906,6 +906,40 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ## Restart pointer — do these in order
 
+### ▶ NEXT SESSION STARTS HERE
+
+**One action is blocking everything else: set the motor current limit.**
+
+    # on the Pi
+    sudo systemctl stop tls-scan
+    cd ~/TLS-Pie && ./bench_move.py 90 2.0      # 45 s, should give EXACTLY a quarter turn
+    sudo systemctl start tls-scan               # when finished bench testing
+
+Mark the head first. **Baseline to beat, 2026-08-09: 45° of the commanded 90°, 50% of steps kept,
+still clicking, `CUR ADJ PWR` trimmer never touched.** Nudge the trimmer toward `+`, re-run, repeat
+until the angle stops improving — that plateau is the setting, and it needs no ammeter. If it
+plateaus well short of a quarter turn the fault is mechanical, not electrical: with the driver
+disabled, turn the head by hand and feel for a tight spot or preload in the harmonic drive.
+
+Everything else in this project is downstream of that. No scan has ever completed.
+
+### Where this project's session memory lives
+
+Claude Code keys its memory to the directory it is launched from. On 2026-08-09 these memories were
+moved **out** of the trading-bot namespace, where they had been accumulating only because that is
+where sessions happened to be started, and into their own:
+
+    ~/.claude/projects/C--Users-sunun-Documents-GitHub-Kizim-TLS-Pie/memory/
+
+**So start Claude Code from this repo's directory**, not from `trading-bot`, or the session begins
+with no pointer to this project at all. The namespace name is derived from the path and has not yet
+been confirmed against a real session launched here — if the memories do not load, look for an
+empty sibling directory next to that one and rename.
+
+**None of this is load-bearing.** This file is the real record; the memory files are pointers and
+lessons. Anything essential belongs here, in the repo, where a clone gets it.
+
+
 ### Done on hardware 2026-08-09 ✅
 
 > ## ⭐ THE MOTOR HAS NOW TURNED. Read this block first.
