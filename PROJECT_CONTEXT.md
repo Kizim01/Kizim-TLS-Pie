@@ -180,10 +180,17 @@ button there. **GPIO14/15 both PASS**, which was the open damage question — th
 
 ### Two hardware requirements that are not optional
 
-1. **10 kΩ pull-up from the driver's ENABLE to +3V3.** Every Pi GPIO floats as an input for the
-   ~30 s of boot, and ENABLE is active-low, so the driver can sit energised with nothing in
-   control of it. The firmware handled this in `setup()`; on a Pi no software exists during that
-   window.
+1. **10 kΩ pull-up on the driver's ENABLE.** Every Pi GPIO floats as an input for the ~30 s of boot,
+   and ENABLE is active-low, so the driver can sit energised with nothing in control of it. The
+   firmware handled this in `setup()`; on a Pi no software exists during that window.
+
+   **Settled 2026-08-09 while drawing Rev 2.0:** this file used to say pull up to the Pi's +3V3 and
+   `MICROVIEW_REMOVAL.md` said pull up to the driver's VCC. **Pull up to the driver's VCC with the
+   `3/5V APWR` jumper set to 3.3 V.** That version also covers "Pi off, driver on", which the +3V3
+   version does not, and it puts no 5 V path onto GPIO13. Two placement details decide whether the
+   resistor works at all: it goes on the **driver side** of the 1 kΩ series resistor, at the ENABLE
+   pin itself, and VCC must be **measured** first — it is an output of the driver's on-board
+   regulator, not an input.
 2. **Remove SW1–SW5 and the R1–R5 pull-ups.** The buttons are gone from the design entirely. R1–R5
    pull to **5 V**, and Pi GPIOs are not 5 V tolerant. **Keep S1 (Main) and S2 (Lidar)** — those are
    the power switches after the battery, not buttons.
@@ -191,6 +198,19 @@ button there. **GPIO14/15 both PASS**, which was the open damage question — th
 Recommended alongside: **1 kΩ series resistors** on STEP/DIR/ENABLE. The driver's inputs are
 high-impedance so this costs nothing electrically, but it limits fault current into the Pi's clamp
 diodes to under 10 mA at 12 V.
+
+### ⚠ The Pi's 5 V converter may be the wrong topology — check before it is ever connected
+
+Raised 2026-08-09 while drawing Rev 2.0, from the Rev 1.0 schematic itself. **U3 is labelled
+`XL6009`, and the XL6009 is a step-*up* converter.** It cannot make 5 V from a 12 V input. If U3 is
+a genuine boost-only module it will pass roughly the input voltage straight to the Pi's 5 V rail and
+destroy the Pi. Either the modules are buck-boost variants or the Rev 1.0 label is wrong — the 2022
+rig demonstrably worked, so one of those is true, but which has never been checked.
+
+**Measure U3's output on the bench, loaded, with no Pi connected**, and confirm it holds 5.1 V from
+the real pack. Two related cautions on the same leg: feeding the Pi through header pins 2 and 4
+bypasses the USB-C jack's polyfuse and e-fuse, so there is no protection left; and S2 hands the
+VLP-16 raw battery volts, which is outside the sensor's input range on a 24 V pack.
 
 ---
 
@@ -457,6 +477,11 @@ working system.
 - [Raspberry Pie4/TLS-Pie/VLPrecord.sh](Raspberry%20Pie4/TLS-Pie/VLPrecord.sh), `VLPbuttons.py`, `VLPwaitbutton.py`, `VLPstatussignal.py`
 
 ### Reference
+- **[WIRING_REV2.html](WIRING_REV2.html) — the Rev 2.0 wiring schematic.** Every conductor in the
+  rig, named at both ends: three sheets (power / motor chain / capture path), the full 40-pin header
+  map, per-device pinouts and a master netlist. Open it in a browser. This is the drawing to build
+  from; `Schematic_TLS Mircoview.png` below is the superseded Rev 1.0 and still shows the MicroView,
+  the level shifter and the five buttons.
 - [CHANGELOG_AND_TEST_GUIDE.md](CHANGELOG_AND_TEST_GUIDE.md)
 - [BENCH_TEST_README.md](BENCH_TEST_README.md)
 - [AI_HANDOFF_CHANGELOG.md](AI_HANDOFF_CHANGELOG.md) / [AI_HANDOFF_CHECKLIST.md](AI_HANDOFF_CHECKLIST.md)

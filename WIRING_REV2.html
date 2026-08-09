@@ -1,0 +1,853 @@
+<title>TLS Pie — Rev 2.0 wiring schematic</title>
+
+<style>
+:root{
+  --paper:#fcfcfd; --panel:#f2f5f8; --panel2:#e8edf3;
+  --ink:#0f141b; --ink-soft:#4d5966; --ink-faint:#7a8794;
+  --rule:#c6cfd9; --rule-soft:#e2e8ef;
+  --accent:#0b5cad;
+  --danger:#a8261d; --danger-bg:#fdf0ee;
+  --warn:#8a5a08;  --warn-bg:#fdf6e6;
+  --ok:#186b45;    --ok-bg:#eef7f2;
+  --n-batt:#a8118c; --n-12v:#c26a06; --n-5v:#bf2626; --n-3v3:#8a6508;
+  --n-gnd:#227a33;  --n-sig:#134fb0; --n-i2c:#0b6f86; --n-eth:#5f27c4;
+  --n-coil:#3d4c5c;
+  --sans:-apple-system,"Segoe UI Variable Text","Segoe UI",Roboto,system-ui,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0c1117; --panel:#151c25; --panel2:#1d2733;
+    --ink:#e7edf4; --ink-soft:#9dabbb; --ink-faint:#78889a;
+    --rule:#2e3a47; --rule-soft:#1e2833;
+    --accent:#78b0f2;
+    --danger:#ef8279; --danger-bg:#2a1614;
+    --warn:#e0b24d;  --warn-bg:#241d0e;
+    --ok:#5cc78d;    --ok-bg:#0f2118;
+    --n-batt:#f06fd4; --n-12v:#f0a33f; --n-5v:#f4736c; --n-3v3:#e0b544;
+    --n-gnd:#4fc673;  --n-sig:#79a7ff; --n-i2c:#3fc6e0; --n-eth:#b48cf7;
+    --n-coil:#a6b4c4;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0c1117; --panel:#151c25; --panel2:#1d2733;
+  --ink:#e7edf4; --ink-soft:#9dabbb; --ink-faint:#78889a;
+  --rule:#2e3a47; --rule-soft:#1e2833;
+  --accent:#78b0f2;
+  --danger:#ef8279; --danger-bg:#2a1614;
+  --warn:#e0b24d;  --warn-bg:#241d0e;
+  --ok:#5cc78d;    --ok-bg:#0f2118;
+  --n-batt:#f06fd4; --n-12v:#f0a33f; --n-5v:#f4736c; --n-3v3:#e0b544;
+  --n-gnd:#4fc673;  --n-sig:#79a7ff; --n-i2c:#3fc6e0; --n-eth:#b48cf7;
+  --n-coil:#a6b4c4;
+}
+
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.6;
+  margin:0; padding:0 20px 96px;
+  -webkit-text-size-adjust:100%;
+}
+.wrap{max-width:1180px; margin:0 auto;}
+h1,h2,h3{text-wrap:balance; margin:0; line-height:1.22;}
+h1{font-size:clamp(26px,4.4vw,40px); letter-spacing:-.02em; font-weight:680;}
+h2{font-size:clamp(19px,2.6vw,25px); letter-spacing:-.01em; font-weight:660;}
+h3{font-size:16px; font-weight:660; letter-spacing:.01em;}
+p{margin:0;}
+a{color:var(--accent);}
+code,.m{font-family:var(--mono); font-size:.9em;}
+
+/* ---- sheet header ---- */
+.sheet-head{
+  border-top:3px solid var(--ink); border-bottom:1px solid var(--rule);
+  padding:26px 0 18px; margin-bottom:34px;
+  display:flex; flex-wrap:wrap; gap:22px 40px; align-items:flex-end; justify-content:space-between;
+}
+.sheet-head .meta{
+  display:grid; grid-template-columns:auto auto; gap:2px 16px;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-soft);
+  text-transform:uppercase; letter-spacing:.06em;
+}
+.sheet-head .meta b{color:var(--ink); font-weight:600;}
+.eyebrow{
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ink-faint); margin-bottom:9px;
+}
+.lede{color:var(--ink-soft); max-width:70ch; margin-top:12px;}
+
+section{margin:0 0 52px;}
+section > h2{
+  padding-bottom:8px; border-bottom:1px solid var(--rule); margin-bottom:20px;
+  display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+}
+section > h2 .n{
+  font-family:var(--mono); font-size:12px; color:var(--ink-faint);
+  letter-spacing:.1em; font-weight:500;
+}
+.stack{display:flex; flex-direction:column; gap:16px;}
+.prose{max-width:74ch; color:var(--ink-soft);}
+.prose strong{color:var(--ink); font-weight:620;}
+
+/* ---- figures ---- */
+figure{margin:0;}
+.plate{border:1px solid var(--rule); background:var(--panel);}
+.plate .draw{overflow-x:auto; padding:14px;}
+.plate svg{display:block; min-width:760px; width:100%; height:auto; color:var(--ink);}
+.titleblock{
+  border-top:1px solid var(--rule); background:var(--panel2);
+  display:flex; flex-wrap:wrap; align-items:center; gap:0;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-soft);
+}
+.titleblock div{padding:9px 14px; border-right:1px solid var(--rule);}
+.titleblock div:last-child{border-right:0;}
+.titleblock b{color:var(--ink); font-weight:600; letter-spacing:.02em;}
+figcaption{margin-top:11px; color:var(--ink-soft); font-size:14.5px; max-width:78ch;}
+
+/* svg primitives */
+.w{fill:none; stroke-width:2.3; stroke-linecap:round; stroke-linejoin:round;}
+.bx{fill:var(--panel2); stroke:currentColor; stroke-width:1.5;}
+.bxn{fill:none; stroke:currentColor; stroke-width:1.5;}
+.ref{font-family:var(--mono); font-size:12.5px; font-weight:600; fill:currentColor;}
+.dsc{font-family:var(--sans); font-size:11.5px; fill:var(--ink-soft);}
+.pn{font-family:var(--mono); font-size:11px; fill:var(--ink);}
+.pnf{font-family:var(--mono); font-size:11px; fill:var(--ink-faint);}
+.net{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em;}
+.nc{fill:var(--paper); stroke:var(--ink-faint); stroke-width:1.5;}
+.batt{stroke:var(--n-batt);} .v12{stroke:var(--n-12v);} .v5{stroke:var(--n-5v);}
+.v3{stroke:var(--n-3v3);}   .gnd{stroke:var(--n-gnd);}  .sig{stroke:var(--n-sig);}
+.i2c{stroke:var(--n-i2c);}  .eth{stroke:var(--n-eth);}  .coil{stroke:var(--n-coil);}
+.t-batt{fill:var(--n-batt);} .t-12v{fill:var(--n-12v);} .t-5v{fill:var(--n-5v);}
+.t-v3{fill:var(--n-3v3);} .t-gnd{fill:var(--n-gnd);} .t-sig{fill:var(--n-sig);}
+.t-i2c{fill:var(--n-i2c);} .t-eth{fill:var(--n-eth);} .t-coil{fill:var(--n-coil);}
+
+/* ---- key ---- */
+.key{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(214px,1fr));
+  gap:10px 26px; border:1px solid var(--rule); background:var(--panel);
+  padding:16px 18px;
+}
+.key div{display:flex; align-items:center; gap:10px; font-size:13.5px; color:var(--ink-soft);}
+.key i{width:26px; height:0; border-top:3px solid; flex:none; border-radius:2px;}
+.key b{color:var(--ink); font-family:var(--mono); font-size:12px; font-weight:600;}
+
+/* ---- tables ---- */
+.scroll{overflow-x:auto; border:1px solid var(--rule);}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--panel); min-width:560px;}
+caption{
+  text-align:left; padding:11px 14px; background:var(--panel2);
+  border-bottom:1px solid var(--rule); font-family:var(--mono); font-size:11.5px;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft);
+}
+th,td{padding:8px 13px; text-align:left; border-bottom:1px solid var(--rule-soft); vertical-align:top;}
+th{
+  font-family:var(--mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--ink-faint); font-weight:600; background:var(--panel2);
+  border-bottom:1px solid var(--rule); white-space:nowrap;
+}
+td.m,td .m{font-variant-numeric:tabular-nums;}
+tbody tr:last-child td{border-bottom:0;}
+tr.grp td{background:var(--panel2); font-family:var(--mono); font-size:11px;
+  letter-spacing:.07em; text-transform:uppercase; color:var(--ink-soft);}
+
+/* header map */
+.hdr{min-width:640px;}
+.hdr td{padding:5px 10px; font-family:var(--mono); font-size:12.5px;}
+.hdr td.pn{text-align:center; width:38px; background:var(--panel2); color:var(--ink-faint);
+  font-weight:600; font-variant-numeric:tabular-nums;}
+.hdr td.lft{text-align:right;}
+.hdr tr td.mid{width:16px; background:var(--panel2); padding:0;}
+.u{color:var(--ink); font-weight:600;}
+.free{color:var(--ink-faint);}
+.pw5{color:var(--n-5v); font-weight:600;}
+.pw3{color:var(--n-3v3); font-weight:600;}
+.pwg{color:var(--n-gnd); font-weight:600;}
+.bad{color:var(--danger); font-weight:600;}
+
+/* callouts */
+.note{border:1px solid var(--rule); border-left:4px solid var(--accent);
+  background:var(--panel); padding:14px 17px; font-size:14.5px; color:var(--ink-soft);}
+.note b, .stop b, .warnbox b{color:var(--ink); font-weight:640;}
+.stop{border:1px solid var(--danger); border-left:4px solid var(--danger);
+  background:var(--danger-bg); padding:14px 17px; font-size:14.5px; color:var(--ink-soft);}
+.warnbox{border:1px solid var(--rule); border-left:4px solid var(--warn);
+  background:var(--warn-bg); padding:14px 17px; font-size:14.5px; color:var(--ink-soft);}
+.stop .hd,.warnbox .hd,.note .hd{
+  display:block; font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+  text-transform:uppercase; margin-bottom:6px;}
+.stop .hd{color:var(--danger);} .warnbox .hd{color:var(--warn);} .note .hd{color:var(--accent);}
+ol,ul{margin:0; padding-left:22px; color:var(--ink-soft);}
+li{margin:5px 0;}
+li strong{color:var(--ink); font-weight:620;}
+.footer{border-top:1px solid var(--rule); padding-top:18px; margin-top:56px;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); letter-spacing:.04em;}
+</style>
+
+<div class="wrap">
+
+<header class="sheet-head">
+  <div>
+    <div class="eyebrow">Kizim Robotics · TLS Pie</div>
+    <h1>Rev 2.0 wiring schematic</h1>
+    <p class="lede">Every conductor in the rig, endpoint to endpoint, named at both ends. This is the
+    Pi-only architecture: the MicroView, the level shifter, the five push buttons and the monitor are
+    all gone.</p>
+  </div>
+  <div class="meta">
+    <span>Rev</span><b>2.0</b>
+    <span>Supersedes</span><b>1.1 — 2022-09-12</b>
+    <span>Date</span><b>2026-08-09</b>
+    <span>Status</span><b>not yet built</b>
+    <span>Sheets</span><b>3</b>
+  </div>
+</header>
+
+<section>
+  <h2><span class="n">00</span> How to read this</h2>
+  <div class="stack">
+    <p class="prose">This is an <strong>interconnect diagram</strong>, not a circuit-analysis
+    schematic. Every device is a labelled block with its real silkscreen pin names on the edges,
+    because the silkscreen is what you read with a wire in your hand. Only the parts you actually
+    fit as discrete components — the fuse, the switches, the four resistors — are drawn as symbols.</p>
+    <div class="note">
+      <span class="hd">Two conventions</span>
+      A <strong>filled dot</strong> where wires meet is a connection. Wires that cross
+      <strong>without</strong> a dot are not connected. Every ground symbol <span class="m">⏚</span>
+      is the same single net — see the star-point note under Figure 1.
+    </div>
+    <div class="key">
+      <div><i style="border-color:var(--n-batt)"></i><span><b>+VBATT</b> 12–24 V unregulated</span></div>
+      <div><i style="border-color:var(--n-12v)"></i><span><b>+12 V</b> motor supply</span></div>
+      <div><i style="border-color:var(--n-5v)"></i><span><b>+5 V</b> Pi supply</span></div>
+      <div><i style="border-color:var(--n-3v3)"></i><span><b>+3V3</b> from the Pi</span></div>
+      <div><i style="border-color:var(--n-gnd)"></i><span><b>GND</b> one common net</span></div>
+      <div><i style="border-color:var(--n-sig)"></i><span><b>STEP / DIR / ENABLE</b></span></div>
+      <div><i style="border-color:var(--n-i2c)"></i><span><b>I²C</b> SDA / SCL</span></div>
+      <div><i style="border-color:var(--n-eth)"></i><span><b>Ethernet</b> capture path</span></div>
+      <div><i style="border-color:var(--n-coil)"></i><span><b>Motor coils</b> A and B</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ FIGURE 1 ============================ -->
+<section>
+  <h2><span class="n">01</span> Power distribution</h2>
+  <div class="stack">
+  <figure>
+    <div class="plate">
+      <div class="draw">
+<svg viewBox="0 0 1270 440" role="img" aria-label="Power tree: a 12 to 24 volt battery through a 6 amp fuse F1 splits to two switches. S1 Main feeds two XL6009 converters, one producing 5 volts for the Raspberry Pi and one producing 12 volts for the Big Easy Driver motor supply. S2 Lidar feeds the Velodyne interface box 12 volt input directly. Every negative return goes to one common ground.">
+  <defs>
+    <g id="gnd"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g>
+  </defs>
+
+  <!-- battery -->
+  <rect class="bx" x="50" y="120" width="110" height="90"/>
+  <text class="ref" x="105" y="152" text-anchor="middle">BT1</text>
+  <text class="dsc" x="105" y="170" text-anchor="middle">battery</text>
+  <text class="dsc" x="105" y="186" text-anchor="middle">12–24 VDC</text>
+  <text class="pn" x="166" y="139">+</text>
+  <text class="pn" x="166" y="186">–</text>
+
+  <!-- battery + through fuse -->
+  <path class="w batt" d="M160 145 H205"/>
+  <rect class="bxn" x="205" y="133" width="70" height="24"/>
+  <path class="w batt" d="M205 145 H275"/>
+  <text class="ref" x="240" y="126" text-anchor="middle">F1</text>
+  <text class="dsc" x="240" y="173" text-anchor="middle">6 A</text>
+  <path class="w batt" d="M275 145 H320"/>
+  <path class="w batt" d="M320 60 V300"/>
+  <circle class="t-batt" cx="320" cy="145" r="4.5"/>
+
+  <!-- battery - to ground -->
+  <path class="w gnd" d="M160 195 H190 V232"/>
+  <use href="#gnd" class="w gnd" x="190" y="234"/>
+  <text class="net t-gnd" x="190" y="266" text-anchor="middle">STAR POINT</text>
+
+  <!-- S1 -->
+  <path class="w batt" d="M320 60 H358"/>
+  <circle class="nc" cx="362" cy="60" r="3.6"/>
+  <path class="w batt" d="M364 58 L424 42"/>
+  <circle class="nc" cx="428" cy="60" r="3.6"/>
+  <path class="w batt" d="M432 60 H520"/>
+  <text class="ref" x="395" y="90" text-anchor="middle">S1</text>
+  <text class="dsc" x="395" y="106" text-anchor="middle">MAIN — the E-stop</text>
+
+  <!-- S2 -->
+  <path class="w batt" d="M320 300 H358"/>
+  <circle class="nc" cx="362" cy="300" r="3.6"/>
+  <path class="w batt" d="M364 298 L424 282"/>
+  <circle class="nc" cx="428" cy="300" r="3.6"/>
+  <path class="w batt" d="M432 300 H960"/>
+  <text class="ref" x="395" y="330" text-anchor="middle">S2</text>
+  <text class="dsc" x="395" y="346" text-anchor="middle">LIDAR</text>
+
+  <!-- split to both converters -->
+  <path class="w batt" d="M520 60 V195 M520 60 H600 M520 195 H600"/>
+  <circle class="t-batt" cx="520" cy="60" r="4.5"/>
+
+  <!-- U3 -->
+  <rect class="bx" x="600" y="35" width="190" height="90"/>
+  <text class="ref" x="695" y="66" text-anchor="middle">U3 · XL6009</text>
+  <text class="dsc" x="695" y="84" text-anchor="middle">converter module</text>
+  <text class="dsc" x="695" y="100" text-anchor="middle">→ 5.1 V, ≥3 A</text>
+  <text class="pn" x="606" y="56">4 IN+</text>
+  <text class="pn" x="606" y="114">3 IN–</text>
+  <text class="pn" x="784" y="56" text-anchor="end">OUT+ 1</text>
+  <text class="pn" x="784" y="114" text-anchor="end">OUT– 2</text>
+  <path class="w gnd" d="M600 110 H575 V138"/>
+  <use href="#gnd" class="w gnd" x="575" y="140"/>
+  <path class="w gnd" d="M790 110 H815 V138"/>
+  <use href="#gnd" class="w gnd" x="815" y="140"/>
+
+  <!-- U6 -->
+  <rect class="bx" x="600" y="170" width="190" height="90"/>
+  <text class="ref" x="695" y="197" text-anchor="middle">U6 · XL6009</text>
+  <text class="dsc" x="695" y="215" text-anchor="middle">converter module</text>
+  <text class="dsc" x="695" y="231" text-anchor="middle">→ 12 V motor rail</text>
+  <text class="pn" x="606" y="191">4 IN+</text>
+  <text class="pn" x="606" y="249">3 IN–</text>
+  <text class="pn" x="784" y="191" text-anchor="end">OUT+ 1</text>
+  <text class="pn" x="784" y="249" text-anchor="end">OUT– 2</text>
+  <path class="w gnd" d="M600 245 H575 V273"/>
+  <use href="#gnd" class="w gnd" x="575" y="275"/>
+  <path class="w gnd" d="M790 245 H815 V273"/>
+  <use href="#gnd" class="w gnd" x="815" y="275"/>
+
+  <!-- 5V to Pi -->
+  <path class="w v5" d="M790 60 H960 M900 60 V95 H960"/>
+  <circle class="t-5v" cx="900" cy="60" r="4.5"/>
+  <rect class="bx" x="960" y="35" width="290" height="110"/>
+  <text class="ref" x="1130" y="64" text-anchor="middle">Raspberry Pi 4B</text>
+  <text class="dsc" x="1130" y="84" text-anchor="middle">fed through JP1 pins 2 and 4,</text>
+  <text class="dsc" x="1130" y="100" text-anchor="middle">not the USB-C jack</text>
+  <text class="pn" x="966" y="56">pin 2</text>
+  <text class="pn" x="966" y="91">pin 4</text>
+  <text class="pn" x="966" y="121">pin 39</text>
+  <path class="w gnd" d="M960 125 H930 V163"/>
+  <use href="#gnd" class="w gnd" x="930" y="165"/>
+
+  <!-- 12V to driver -->
+  <path class="w v12" d="M790 195 H960"/>
+  <rect class="bx" x="960" y="170" width="290" height="90"/>
+  <text class="ref" x="1140" y="199" text-anchor="middle">U4 · Big Easy Driver</text>
+  <text class="dsc" x="1140" y="219" text-anchor="middle">motor supply only —</text>
+  <text class="dsc" x="1140" y="235" text-anchor="middle">its logic is on Figure 2</text>
+  <text class="pn" x="966" y="191">M+</text>
+  <text class="pn" x="966" y="244">GND</text>
+  <path class="w gnd" d="M960 240 H930 V278"/>
+  <use href="#gnd" class="w gnd" x="930" y="280"/>
+
+  <!-- interface box -->
+  <rect class="bx" x="960" y="278" width="290" height="90"/>
+  <text class="ref" x="1145" y="307" text-anchor="middle">U7 · Velodyne interface box</text>
+  <text class="dsc" x="1145" y="327" text-anchor="middle">power in on J2, the</text>
+  <text class="dsc" x="1145" y="343" text-anchor="middle">barrel jack (PJ-102A)</text>
+  <text class="pn" x="966" y="296">J2·1 +12 V</text>
+  <text class="pn" x="966" y="344">J2·2 GND</text>
+  <path class="w gnd" d="M960 340 H930 V378"/>
+  <use href="#gnd" class="w gnd" x="930" y="380"/>
+
+  <text class="net t-batt" x="700" y="322" text-anchor="middle">RAW BATTERY VOLTS, UNREGULATED — SEE CAUTION BELOW</text>
+</svg>
+      </div>
+      <div class="titleblock">
+        <div><b>FIG 1</b></div>
+        <div>Power distribution</div>
+        <div>TLS Pie · <b>Rev 2.0</b></div>
+        <div>Sheet <b>1</b> of 3</div>
+      </div>
+    </div>
+    <figcaption>F1 protects everything. S1 and S2 hang off the fuse <em>in parallel</em>, so S1 does
+    not switch the lidar — cutting S1 kills the Pi and the motor rail and leaves the VLP-16
+    spinning on S2.</figcaption>
+  </figure>
+
+  <div class="note">
+    <span class="hd">The star point</span>
+    Every <span class="m">⏚</span> on all three sheets is <b>one net</b>. Land them all at the
+    battery negative terminal — that is the star point. Nine conductors arrive there: BT1(–),
+    U3 IN–, U3 OUT–, U6 IN–, U6 OUT–, U4 GND (power side), U7 J2 pin 2, and the Pi's ground, which
+    reaches the star through U3 OUT–. <b>The Pi's ground and the driver's ground must be common or
+    STEP and DIR have no return path</b> — that is what the red note on Rev 1.1 was about.
+  </div>
+
+  <div class="warnbox">
+    <span class="hd">Three things to settle before this is energised</span>
+    <ul>
+      <li><strong>The XL6009 is a step-<em>up</em> converter.</strong> A plain XL6009 module cannot
+        make 5 V from a 12 V input — it can only boost. If U3 is a genuine boost-only module it will
+        pass roughly the input voltage straight through to the Pi's 5 V rail and destroy it. Measure
+        U3's output <b>on the bench, with no Pi connected</b>, and confirm it holds 5.1 V from a 12 V
+        input. If it does not, U3 must be replaced with a buck or buck-boost module.</li>
+      <li><strong>Feeding the Pi through JP1 pins 2 and 4 bypasses its input protection.</strong>
+        The USB-C jack has a polyfuse and an e-fuse behind it; the header pins have neither. The
+        supply must be accurate (5.1 V) and current-limited, and its polarity is unforgiving.</li>
+      <li><strong>The VLP-16 wants 12 V nominal.</strong> S2 hands it raw battery volts. On a 24 V
+        pack that is outside the sensor's input range — check the pack's actual voltage before S2 is
+        closed, or put a regulator in that leg.</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ============================ FIGURE 2 ============================ -->
+<section>
+  <h2><span class="n">02</span> Motor chain — Pi header to driver to motor</h2>
+  <div class="stack">
+  <figure>
+    <div class="plate">
+      <div class="draw">
+<svg viewBox="0 0 1140 580" role="img" aria-label="Motor signal chain. Raspberry Pi header pin 39 ground, pin 37 GPIO26 to DIR, pin 35 GPIO19 to STEP and pin 33 GPIO13 to ENABLE, each signal through a 1 kilohm series resistor, into the Big Easy Driver. A 10 kilohm pull-up resistor ties ENABLE to the driver's own VCC on the driver side of the series resistor. Driver outputs A1 A2 to motor coil A and B1 B2 to motor coil B. MS1, MS2, MS3, RST and SLP are left unconnected.">
+  <defs>
+    <g id="gnd2"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g>
+  </defs>
+
+  <!-- header -->
+  <rect class="bx" x="50" y="70" width="170" height="260"/>
+  <text class="ref" x="135" y="96" text-anchor="middle">JP1</text>
+  <text class="dsc" x="135" y="120" text-anchor="middle">Pi 4B 40-pin header</text>
+  <text class="dsc" x="135" y="136" text-anchor="middle">(4 pins used here)</text>
+  <text class="pn" x="214" y="106" text-anchor="end">39 GND</text>
+  <text class="pn" x="214" y="161" text-anchor="end">37 GPIO26</text>
+  <text class="pn" x="214" y="216" text-anchor="end">35 GPIO19</text>
+  <text class="pn" x="214" y="271" text-anchor="end">33 GPIO13</text>
+
+  <!-- ground straight through -->
+  <path class="w gnd" d="M220 110 H620"/>
+  <text class="net t-gnd" x="420" y="102" text-anchor="middle">SIGNAL RETURN</text>
+
+  <!-- DIR -->
+  <path class="w sig" d="M220 165 H320 M400 165 H620"/>
+  <rect class="bxn" x="320" y="153" width="80" height="24"/>
+  <text class="pn" x="360" y="170" text-anchor="middle">1 k</text>
+  <text class="pnf" x="360" y="146" text-anchor="middle">R_DR</text>
+  <text class="net t-sig" x="510" y="158" text-anchor="middle">M.DIR</text>
+
+  <!-- STEP -->
+  <path class="w sig" d="M220 220 H320 M400 220 H620"/>
+  <rect class="bxn" x="320" y="208" width="80" height="24"/>
+  <text class="pn" x="360" y="225" text-anchor="middle">1 k</text>
+  <text class="pnf" x="360" y="201" text-anchor="middle">R_ST</text>
+  <text class="net t-sig" x="510" y="213" text-anchor="middle">M.STEP</text>
+
+  <!-- ENABLE -->
+  <path class="w sig" d="M220 275 H320 M400 275 H620"/>
+  <rect class="bxn" x="320" y="263" width="80" height="24"/>
+  <text class="pn" x="360" y="280" text-anchor="middle">1 k</text>
+  <text class="pnf" x="360" y="256" text-anchor="middle">R_EN</text>
+  <text class="net t-sig" x="558" y="268" text-anchor="middle">M.ENABLE</text>
+
+  <!-- pull-up -->
+  <circle class="t-sig" cx="500" cy="275" r="4.5"/>
+  <path class="w v3" d="M500 275 V340 H530 M610 340 H620"/>
+  <rect class="bxn" x="530" y="328" width="80" height="24"/>
+  <text class="pn" x="570" y="345" text-anchor="middle">10 k</text>
+  <text class="pnf" x="612" y="368" text-anchor="end">R_PU — the boot guard</text>
+
+  <!-- driver -->
+  <rect class="bx" x="620" y="60" width="240" height="470"/>
+  <text class="ref" x="740" y="90" text-anchor="middle">U4 · Big Easy Driver</text>
+  <text class="dsc" x="740" y="440" text-anchor="middle">A4983/A4988 class</text>
+  <text class="dsc" x="740" y="456" text-anchor="middle">MS pins open = 1/16 step</text>
+  <text class="pn" x="628" y="106">GND</text>
+  <text class="pn" x="628" y="161">DIR</text>
+  <text class="pn" x="628" y="216">STEP</text>
+  <text class="pn" x="628" y="271">ENABLE</text>
+  <text class="pn" x="628" y="336">VCC</text>
+  <text class="pnf" x="628" y="394">MS1</text>
+  <text class="pnf" x="628" y="424">MS2</text>
+  <text class="pnf" x="628" y="454">MS3</text>
+  <text class="pnf" x="628" y="494">RST</text>
+  <text class="pnf" x="628" y="524">SLP</text>
+  <text class="pn" x="852" y="106" text-anchor="end">M+</text>
+  <text class="pn" x="852" y="161" text-anchor="end">GND</text>
+  <text class="pn" x="852" y="246" text-anchor="end">A1</text>
+  <text class="pn" x="852" y="286" text-anchor="end">A2</text>
+  <text class="pn" x="852" y="356" text-anchor="end">B1</text>
+  <text class="pn" x="852" y="396" text-anchor="end">B2</text>
+
+  <!-- n/c stubs -->
+  <path class="w" style="stroke:var(--ink-faint)" d="M620 390 H588 M620 420 H588 M620 450 H588 M620 490 H588 M620 520 H588"/>
+  <circle class="nc" cx="583" cy="390" r="4"/><circle class="nc" cx="583" cy="420" r="4"/>
+  <circle class="nc" cx="583" cy="450" r="4"/><circle class="nc" cx="583" cy="490" r="4"/>
+  <circle class="nc" cx="583" cy="520" r="4"/>
+  <text class="pnf" x="570" y="394" text-anchor="end">n/c</text>
+  <text class="pnf" x="570" y="424" text-anchor="end">n/c</text>
+  <text class="pnf" x="570" y="454" text-anchor="end">n/c</text>
+  <text class="pnf" x="570" y="494" text-anchor="end">n/c</text>
+  <text class="pnf" x="570" y="524" text-anchor="end">n/c</text>
+
+  <!-- power in -->
+  <path class="w v12" d="M860 110 H950"/>
+  <text class="net t-12v" x="955" y="106">+12 V from U6 · Fig 1</text>
+  <path class="w gnd" d="M860 165 H930 V203"/>
+  <use href="#gnd2" class="w gnd" x="930" y="205"/>
+
+  <!-- motor -->
+  <path class="w coil" d="M860 250 H990 M860 290 H990 M860 360 H990 M860 400 H990"/>
+  <rect class="bx" x="990" y="225" width="120" height="200"/>
+  <text class="ref" x="1050" y="205" text-anchor="middle">M1</text>
+  <text class="dsc" x="1050" y="325" text-anchor="middle">stepper</text>
+  <text class="dsc" x="1050" y="341" text-anchor="middle">bipolar, 4-wire</text>
+  <text class="pn" x="998" y="246">A+</text>
+  <text class="pn" x="998" y="286">A–</text>
+  <text class="pn" x="998" y="356">B+</text>
+  <text class="pn" x="998" y="396">B–</text>
+  <text class="net t-coil" x="925" y="242" text-anchor="middle">COIL A</text>
+  <text class="net t-coil" x="925" y="352" text-anchor="middle">COIL B</text>
+</svg>
+      </div>
+      <div class="titleblock">
+        <div><b>FIG 2</b></div>
+        <div>Motor chain</div>
+        <div>TLS Pie · <b>Rev 2.0</b></div>
+        <div>Sheet <b>2</b> of 3</div>
+      </div>
+    </div>
+    <figcaption>Three signals, one return, four coil wires. Everything else on the driver is left
+    open on purpose.</figcaption>
+  </figure>
+
+  <div class="stop">
+    <span class="hd">R_PU is the gating item — nothing turns until it is fitted</span>
+    Every Pi GPIO floats as an input for the ~30 s the Pi takes to boot, and ENABLE is
+    <b>active-low</b>. Without the pull-up the driver can sit energised through the whole of boot
+    with nothing in control of it. Two details decide whether the resistor actually does its job:
+    <ul>
+      <li><strong>It goes on the driver side of R_EN</strong> — at the ENABLE pin itself, as drawn.
+        Put it on the Pi side and it stops holding ENABLE high the moment the Pi is unplugged.</li>
+      <li><strong>It pulls up to the driver's own VCC, not the Pi's 3V3.</strong> VCC is an
+        <b>output</b> from the driver's on-board regulator, selected by the <span class="m">3/5V
+        APWR</span> jumper. Set that jumper to <b>3.3 V</b> and measure VCC before wiring anything to
+        it. Then ENABLE is held disabled whenever the driver has power, whether the Pi is running,
+        booting or absent — and no 5 V can ever reach GPIO13.</li>
+    </ul>
+    <em>Note:</em> <span class="m">PROJECT_CONTEXT.md</span> says pull up to +3V3 and
+    <span class="m">MICROVIEW_REMOVAL.md</span> says pull up to the driver's VCC. They disagree.
+    VCC at 3.3 V is the version that also covers "Pi off, driver on", so that is what is drawn here.
+  </div>
+
+  <div class="warnbox">
+    <span class="hd">Coil pairing is the one motor mistake that matters</span>
+    <b>A1/A2 must be the two ends of the same coil</b>, and B1/B2 the two ends of the other. Get a
+    wire from coil A onto a B output and the motor will buzz, heat and not turn. Which way round the
+    two ends of a coil go only reverses the direction — and direction is a software setting
+    (<span class="m">TLSPIE_DIR_FORWARD=0</span>), so do not chase it with a soldering iron.
+    <br><br>
+    Find the pairs with a multimeter on continuity, motor disconnected: the two wires of one coil
+    read a few ohms to each other and open circuit to the other pair.
+  </div>
+  </div>
+</section>
+
+<!-- ============================ FIGURE 3 ============================ -->
+<section>
+  <h2><span class="n">03</span> Capture path, clock and cooling</h2>
+  <div class="stack">
+  <figure>
+    <div class="plate">
+      <div class="draw">
+<svg viewBox="0 0 1140 560" role="img" aria-label="Data path. Raspberry Pi header pin 1 3V3, pin 3 GPIO2 SDA, pin 5 GPIO3 SCL and pin 9 GND go to the DS3231 real time clock. Header pins 4 and 6 power the fan. The Pi's Ethernet jack runs to the Velodyne interface box RJ45, and the interface box terminal block TB1 runs the factory cable to the VLP-16. The GPS connector J1 is unused.">
+  <defs>
+    <g id="gnd3"><line x1="-11" y1="0" x2="11" y2="0"/><line x1="-7" y1="5" x2="7" y2="5"/><line x1="-3" y1="10" x2="3" y2="10"/></g>
+  </defs>
+
+  <rect class="bx" x="50" y="60" width="190" height="360"/>
+  <text class="ref" x="145" y="84" text-anchor="middle">Raspberry Pi 4B</text>
+  <text class="dsc" x="58" y="216">JP1 header,</text>
+  <text class="dsc" x="58" y="232">odd column;</text>
+  <text class="dsc" x="58" y="290">RJ-45 is on</text>
+  <text class="dsc" x="58" y="306">the board</text>
+  <text class="pn" x="234" y="104" text-anchor="end">1 · 3V3</text>
+  <text class="pn" x="234" y="144" text-anchor="end">3 · GPIO2 SDA</text>
+  <text class="pn" x="234" y="184" text-anchor="end">5 · GPIO3 SCL</text>
+  <text class="pn" x="234" y="254" text-anchor="end">9 · GND</text>
+  <text class="pn" x="234" y="319" text-anchor="end">4 · 5V</text>
+  <text class="pn" x="234" y="354" text-anchor="end">6 · GND</text>
+  <text class="pn" x="234" y="399" text-anchor="end">eth0 RJ-45</text>
+
+  <!-- RTC -->
+  <path class="w v3"  d="M240 100 H460"/>
+  <path class="w i2c" d="M240 140 H460 M240 180 H460"/>
+  <path class="w gnd" d="M240 250 H460"/>
+  <rect class="bx" x="460" y="75" width="180" height="185"/>
+  <text class="ref" x="580" y="118" text-anchor="middle">U1 · DS3231</text>
+  <text class="dsc" x="580" y="136" text-anchor="middle">real-time clock</text>
+  <text class="dsc" x="580" y="152" text-anchor="middle">I²C addr 0x68</text>
+  <text class="pn" x="468" y="104">1 VCC</text>
+  <text class="pn" x="468" y="144">2 SDA</text>
+  <text class="pn" x="468" y="184">3 SCL</text>
+  <text class="pnf" x="468" y="219">4 NC</text>
+  <text class="pn" x="468" y="254">5 GND</text>
+  <path class="w" style="stroke:var(--ink-faint)" d="M460 215 H428"/>
+  <circle class="nc" cx="423" cy="215" r="4"/>
+  <text class="pnf" x="410" y="219" text-anchor="end">n/c</text>
+
+  <!-- fan -->
+  <path class="w v5"  d="M240 315 H500"/>
+  <path class="w gnd" d="M240 350 H500"/>
+  <rect class="bx" x="500" y="298" width="110" height="70"/>
+  <text class="ref" x="555" y="330" text-anchor="middle">U10</text>
+  <text class="dsc" x="555" y="348" text-anchor="middle">fan, 5 V</text>
+  <text class="pn" x="506" y="312">+</text>
+  <text class="pn" x="506" y="354">–</text>
+
+  <!-- ethernet -->
+  <path class="w eth" d="M240 395 H690 V430 H780"/>
+  <text class="net t-eth" x="450" y="387" text-anchor="middle">Cat5e · eth0 192.168.1.100 ⇄ VLP-16 192.168.1.201</text>
+
+  <rect class="bx" x="780" y="300" width="220" height="180"/>
+  <text class="ref" x="890" y="330" text-anchor="middle">U7</text>
+  <text class="dsc" x="890" y="455" text-anchor="middle">Velodyne interface box</text>
+  <text class="pn" x="788" y="344">J2·1 +12 V</text>
+  <text class="pn" x="788" y="379">J2·2 GND</text>
+  <text class="pn" x="788" y="426">J3 RJ-45</text>
+  <text class="pn" x="992" y="386" text-anchor="end">TB1 (9-way)</text>
+
+  <path class="w batt" d="M780 340 H700"/>
+  <text class="net t-batt" x="776" y="330" text-anchor="end">from S2 · Fig 1</text>
+  <path class="w gnd" d="M780 375 H748 V403"/>
+  <use href="#gnd3" class="w gnd" x="748" y="405"/>
+
+  <path class="w" style="stroke:var(--ink-faint)" d="M890 480 V508"/>
+  <circle class="nc" cx="890" cy="513" r="4"/>
+  <text class="pnf" x="902" y="517">J1 GPS — n/c</text>
+
+  <path class="w eth" style="stroke-width:5" d="M1000 390 H1032"/>
+  <rect class="bx" x="1032" y="330" width="95" height="120"/>
+  <text class="ref" x="1079" y="382" text-anchor="middle">VLP-16</text>
+  <text class="dsc" x="1079" y="400" text-anchor="middle">factory</text>
+  <text class="dsc" x="1079" y="416" text-anchor="middle">cable</text>
+</svg>
+      </div>
+      <div class="titleblock">
+        <div><b>FIG 3</b></div>
+        <div>Capture path, clock, cooling</div>
+        <div>TLS Pie · <b>Rev 2.0</b></div>
+        <div>Sheet <b>3</b> of 3</div>
+      </div>
+    </div>
+    <figcaption>The sensor never touches the GPIO header — it is Ethernet the whole way, which is why
+    <span class="m">eth0</span> must stay on <span class="m">192.168.1.x</span> and the phone hotspot
+    must not.</figcaption>
+  </figure>
+
+  <div class="note">
+    <span class="hd">TB1 — the nine-way terminal block inside U7</span>
+    Nothing here is hand-wired: the VLP-16's factory cable lands on TB1 in this order. Listed so a
+    disturbed terminal can be put back.
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>TB1</th><th>Function</th><th>TB1</th><th>Function</th></tr></thead>
+        <tbody>
+          <tr><td class="m">1</td><td>Gnd / Shield</td><td class="m">6</td><td>Ethernet TX–</td></tr>
+          <tr><td class="m">2</td><td>+12 Vdc</td><td class="m">7</td><td>Ethernet RX+</td></tr>
+          <tr><td class="m">3</td><td>GPS_Pulse_CNT</td><td class="m">8</td><td>Ethernet RX–</td></tr>
+          <tr><td class="m">4</td><td>GPS_RX_CNT</td><td class="m">9</td><td>GPS return</td></tr>
+          <tr><td class="m">5</td><td>Ethernet TX+</td><td class="m">—</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  </div>
+</section>
+
+<!-- ============================ HEADER MAP ============================ -->
+<section>
+  <h2><span class="n">04</span> JP1 — every pin on the 40-way header</h2>
+  <div class="stack">
+    <p class="prose">Drawn as the connector sits: <strong>pin 1 top-left</strong>, odd numbers down
+    the left column, even down the right, with the Ethernet jack at the bottom of the board. Six pins
+    carry wires. One is damaged. The other thirty-three are free.</p>
+    <div class="scroll">
+      <table class="hdr">
+        <caption>JP1 · Raspberry Pi 4B GPIO header · Rev 2.0 assignment</caption>
+        <thead><tr><th class="lft" colspan="2">odd column</th><th class="mid"></th><th colspan="2">even column</th></tr></thead>
+        <tbody>
+          <tr><td class="lft pw3">3V3 &nbsp;<span class="free">spare</span></td><td class="pn">1</td><td class="mid"></td><td class="pn">2</td><td class="pw5">5V &nbsp;<span class="u">← U3 OUT+</span></td></tr>
+          <tr><td class="lft u">GPIO2 SDA → U1 SDA</td><td class="pn">3</td><td class="mid"></td><td class="pn">4</td><td class="pw5">5V &nbsp;<span class="u">← U3 OUT+ · → U10 fan +</span></td></tr>
+          <tr><td class="lft u">GPIO3 SCL → U1 SCL</td><td class="pn">5</td><td class="mid"></td><td class="pn">6</td><td class="pwg">GND &nbsp;<span class="u">→ U10 fan –</span></td></tr>
+          <tr><td class="lft free">GPIO4</td><td class="pn">7</td><td class="mid"></td><td class="pn">8</td><td class="free">GPIO14 TXD &nbsp;<span style="color:var(--ok)">tested OK</span></td></tr>
+          <tr><td class="lft pwg">GND &nbsp;<span class="u">→ U1 GND</span></td><td class="pn">9</td><td class="mid"></td><td class="pn">10</td><td class="free">GPIO15 RXD &nbsp;<span style="color:var(--ok)">tested OK</span></td></tr>
+          <tr><td class="lft free">GPIO17</td><td class="pn">11</td><td class="mid"></td><td class="pn">12</td><td class="free">GPIO18</td></tr>
+          <tr><td class="lft bad">GPIO27 — DAMAGED, output-only</td><td class="pn">13</td><td class="mid"></td><td class="pn">14</td><td class="pwg free">GND</td></tr>
+          <tr><td class="lft free">GPIO22</td><td class="pn">15</td><td class="mid"></td><td class="pn">16</td><td class="free">GPIO23</td></tr>
+          <tr><td class="lft pw3">3V3 &nbsp;<span class="free">spare</span></td><td class="pn">17</td><td class="mid"></td><td class="pn">18</td><td class="free">GPIO24</td></tr>
+          <tr><td class="lft free">GPIO10 MOSI</td><td class="pn">19</td><td class="mid"></td><td class="pn">20</td><td class="pwg free">GND</td></tr>
+          <tr><td class="lft free">GPIO9 MISO</td><td class="pn">21</td><td class="mid"></td><td class="pn">22</td><td class="free">GPIO25</td></tr>
+          <tr><td class="lft free">GPIO11 SCLK</td><td class="pn">23</td><td class="mid"></td><td class="pn">24</td><td class="free">GPIO8 CE0</td></tr>
+          <tr><td class="lft pwg free">GND</td><td class="pn">25</td><td class="mid"></td><td class="pn">26</td><td class="free">GPIO7 CE1</td></tr>
+          <tr><td class="lft free">ID_SD — reserved, HAT EEPROM</td><td class="pn">27</td><td class="mid"></td><td class="pn">28</td><td class="free">ID_SC — reserved</td></tr>
+          <tr><td class="lft free">GPIO5</td><td class="pn">29</td><td class="mid"></td><td class="pn">30</td><td class="pwg free">GND</td></tr>
+          <tr><td class="lft free">GPIO6</td><td class="pn">31</td><td class="mid"></td><td class="pn">32</td><td class="free">GPIO12</td></tr>
+          <tr><td class="lft u">GPIO13 → R_EN → U4 ENABLE</td><td class="pn">33</td><td class="mid"></td><td class="pn">34</td><td class="pwg free">GND</td></tr>
+          <tr><td class="lft u">GPIO19 → R_ST → U4 STEP</td><td class="pn">35</td><td class="mid"></td><td class="pn">36</td><td class="free">GPIO16</td></tr>
+          <tr><td class="lft u">GPIO26 → R_DR → U4 DIR</td><td class="pn">37</td><td class="mid"></td><td class="pn">38</td><td class="free">GPIO20</td></tr>
+          <tr><td class="lft pwg">GND &nbsp;<span class="u">→ U4 GND (logic)</span></td><td class="pn">39</td><td class="mid"></td><td class="pn">40</td><td class="free">GPIO21</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="warnbox">
+      <span class="hd">Pin 13 · GPIO27</span>
+      Confirmed damaged by <span class="m">gpio_selftest.py</span> on 2026-08-09 — it drives both
+      rails but its internal pull-up no longer holds it high as an input, consistent with the 12 V
+      incident. It was the old RECORDSTOP line. <b>Nothing in Rev 2.0 uses it. Never put an input
+      there.</b> GPIO14 and GPIO15, the two pins that ran to the destroyed harness, both pass.
+    </div>
+    <p class="prose">Ground pins are electrically identical, so pins 6, 9 and 39 were chosen for
+    tidiness rather than function: 6 sits next to the fan's 5 V on pin 4, 9 next to the I²C pair, and
+    39 next to the three motor signals at the far end. Keep the motor's return on 39 —
+    it keeps the driver's ground wire away from the I²C pair.</p>
+  </div>
+</section>
+
+<!-- ============================ NETLIST ============================ -->
+<section>
+  <h2><span class="n">05</span> Master netlist</h2>
+  <div class="stack">
+    <p class="prose">One row per conductor. If a wire is not on this list it should not be in the
+    rig. Colours follow the Rev 1.0 harness so old and new wiring read the same.</p>
+    <div class="scroll">
+      <table>
+        <caption>Every conductor, endpoint to endpoint</caption>
+        <thead><tr><th>Net</th><th>From</th><th>To</th><th>Wire</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr class="grp"><td colspan="5">Power — Figure 1</td></tr>
+          <tr><td class="m">+VBATT</td><td class="m">BT1 (+)</td><td class="m">F1 · terminal 1</td><td>pink</td><td>size for the full load, not just the motor</td></tr>
+          <tr><td class="m">+VBATT</td><td class="m">F1 · terminal 2</td><td class="m">S1 · pole</td><td>pink</td><td>S1 and S2 tap the same fused node</td></tr>
+          <tr><td class="m">+VBATT</td><td class="m">F1 · terminal 2</td><td class="m">S2 · pole</td><td>pink</td><td>S1 does <em>not</em> switch this leg</td></tr>
+          <tr><td class="m">+VSW1</td><td class="m">S1 · throw</td><td class="m">U3 · IN+ (4)</td><td>pink</td><td></td></tr>
+          <tr><td class="m">+VSW1</td><td class="m">S1 · throw</td><td class="m">U6 · IN+ (4)</td><td>pink</td><td></td></tr>
+          <tr><td class="m">+VSW2</td><td class="m">S2 · throw</td><td class="m">U7 · J2 pin 1</td><td>pink</td><td>barrel jack, centre positive</td></tr>
+          <tr><td class="m">+5V</td><td class="m">U3 · OUT+ (1)</td><td class="m">JP1 pin 2</td><td>red</td><td>set U3 to 5.1 V loaded</td></tr>
+          <tr><td class="m">+5V</td><td class="m">U3 · OUT+ (1)</td><td class="m">JP1 pin 4</td><td>red</td><td>second conductor, shares the current</td></tr>
+          <tr><td class="m">+12V</td><td class="m">U6 · OUT+ (1)</td><td class="m">U4 · M+</td><td>yellow</td><td>add 100 µF electrolytic at U4 if this run is long</td></tr>
+          <tr class="grp"><td colspan="5">Ground — one net, star-connected at BT1 (–)</td></tr>
+          <tr><td class="m">GND</td><td class="m">BT1 (–)</td><td class="m">star point</td><td>green</td><td>the reference for everything</td></tr>
+          <tr><td class="m">GND</td><td class="m">U3 · IN– (3)</td><td class="m">star point</td><td>green</td><td></td></tr>
+          <tr><td class="m">GND</td><td class="m">U3 · OUT– (2)</td><td class="m">star point</td><td>green</td><td>this is also the Pi's ground path</td></tr>
+          <tr><td class="m">GND</td><td class="m">U6 · IN– (3)</td><td class="m">star point</td><td>green</td><td></td></tr>
+          <tr><td class="m">GND</td><td class="m">U6 · OUT– (2)</td><td class="m">star point</td><td>green</td><td></td></tr>
+          <tr><td class="m">GND</td><td class="m">U4 · GND (power side, by M+)</td><td class="m">star point</td><td>green</td><td>carries coil current — keep it thick and short</td></tr>
+          <tr><td class="m">GND</td><td class="m">U7 · J2 pin 2</td><td class="m">star point</td><td>green</td><td></td></tr>
+          <tr class="grp"><td colspan="5">Motor chain — Figure 2</td></tr>
+          <tr><td class="m">M.ENABLE</td><td class="m">JP1 pin 33 · GPIO13</td><td class="m">R_EN → U4 · ENABLE</td><td>blue</td><td>active-low</td></tr>
+          <tr><td class="m">M.ENABLE</td><td class="m">U4 · ENABLE</td><td class="m">R_PU → U4 · VCC</td><td>blue</td><td>10 kΩ; driver side of R_EN</td></tr>
+          <tr><td class="m">M.STEP</td><td class="m">JP1 pin 35 · GPIO19</td><td class="m">R_ST → U4 · STEP</td><td>blue</td><td>pigpio DMA waveform</td></tr>
+          <tr><td class="m">M.DIR</td><td class="m">JP1 pin 37 · GPIO26</td><td class="m">R_DR → U4 · DIR</td><td>blue</td><td></td></tr>
+          <tr><td class="m">GND</td><td class="m">JP1 pin 39</td><td class="m">U4 · GND (logic side, by VCC)</td><td>green</td><td>signal return — mandatory</td></tr>
+          <tr><td class="m">COIL A</td><td class="m">U4 · A1</td><td class="m">M1 · A+</td><td>motor lead</td><td rowspan="4">pairing matters, polarity does not</td></tr>
+          <tr><td class="m">COIL A</td><td class="m">U4 · A2</td><td class="m">M1 · A–</td><td>motor lead</td></tr>
+          <tr><td class="m">COIL B</td><td class="m">U4 · B1</td><td class="m">M1 · B+</td><td>motor lead</td></tr>
+          <tr><td class="m">COIL B</td><td class="m">U4 · B2</td><td class="m">M1 · B–</td><td>motor lead</td></tr>
+          <tr class="grp"><td colspan="5">Clock, cooling, capture — Figure 3</td></tr>
+          <tr><td class="m">+3V3</td><td class="m">JP1 pin 1</td><td class="m">U1 · VCC (1)</td><td>red/thin</td><td>from the Pi's regulator</td></tr>
+          <tr><td class="m">SDA</td><td class="m">JP1 pin 3 · GPIO2</td><td class="m">U1 · SDA (2)</td><td>cyan</td><td>1.8 kΩ pull-up already on the Pi board</td></tr>
+          <tr><td class="m">SCL</td><td class="m">JP1 pin 5 · GPIO3</td><td class="m">U1 · SCL (3)</td><td>cyan</td><td>likewise</td></tr>
+          <tr><td class="m">GND</td><td class="m">JP1 pin 9</td><td class="m">U1 · GND (5)</td><td>green</td><td>U1 pin 4 stays open</td></tr>
+          <tr><td class="m">+5V</td><td class="m">JP1 pin 4</td><td class="m">U10 · fan (+)</td><td>red</td><td></td></tr>
+          <tr><td class="m">GND</td><td class="m">JP1 pin 6</td><td class="m">U10 · fan (–)</td><td>green</td><td></td></tr>
+          <tr><td class="m">ETH</td><td class="m">Pi on-board RJ-45 (eth0)</td><td class="m">U7 · J3 RJ-45</td><td>Cat5e</td><td>not on the header — the capture path</td></tr>
+          <tr><td class="m">SENSOR</td><td class="m">U7 · TB1 1–9</td><td class="m">VLP-16</td><td>factory cable</td><td>see the TB1 table above</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ PARTS + REMOVALS ============================ -->
+<section>
+  <h2><span class="n">06</span> What to add and what to take off</h2>
+  <div class="stack">
+    <div class="scroll">
+      <table>
+        <caption>Components added in Rev 2.0</caption>
+        <thead><tr><th>Ref</th><th>Value</th><th>Sits between</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td class="m">R_PU</td><td class="m">10 kΩ</td><td>U4 ENABLE → U4 VCC</td><td><strong>Mandatory.</strong> Holds the driver disabled through the Pi's ~30 s boot, when no software exists</td></tr>
+          <tr><td class="m">R_EN</td><td class="m">1 kΩ</td><td>JP1 pin 33 → U4 ENABLE</td><td rowspan="3">The driver's inputs are high-impedance, so these cost nothing electrically. They cap fault current into the Pi's clamp diodes at under 10 mA even with 12 V on the line</td></tr>
+          <tr><td class="m">R_ST</td><td class="m">1 kΩ</td><td>JP1 pin 35 → U4 STEP</td></tr>
+          <tr><td class="m">R_DR</td><td class="m">1 kΩ</td><td>JP1 pin 37 → U4 DIR</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="scroll">
+      <table>
+        <caption>Removed from Rev 1.1 — do not re-fit</caption>
+        <thead><tr><th>Ref</th><th>Was</th><th>Replaced by</th></tr></thead>
+        <tbody>
+          <tr><td class="m">P1</td><td>MicroView — motor control + OLED</td><td>The Pi, in one process</td></tr>
+          <tr><td class="m">U2</td><td>4-channel logic level shifter</td><td>Nothing. No 5 V logic remains</td></tr>
+          <tr><td class="m">U9</td><td>HDMI monitor on the 12 V rail</td><td>The phone panel</td></tr>
+          <tr><td class="m">SW1–SW5</td><td>Reset, Scan 1/2/3, Stop</td><td>The phone panel</td></tr>
+          <tr><td class="m">R1–R5</td><td>10 kΩ button pull-ups <strong>to 5 V</strong></td><td>Nothing — and they were a live hazard: a 10 kΩ to 5 V on a Pi GPIO puts 5 V on a pin that is not 5 V tolerant every time the button is open</td></tr>
+          <tr><td class="m">R5 (1 kΩ)</td><td>series resistor on the Stop button</td><td>Nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <span class="hd">Keep</span>
+      <b>S1 (Main)</b> and <b>S2 (Lidar)</b> are power switches, not buttons. S1 is the rig's
+      emergency stop: it cuts both the Pi's converter and the motor rail, so the coils de-energise
+      and STEP stops toggling — and unlike a switch in series with ENABLE, a crashed Pi with the DMA
+      engine still clocking pulses cannot defeat it. <b>Check S1's DC rating</b> before trusting it:
+      it breaks a DC inductive load, DC arcs do not self-extinguish the way AC ones do, and an
+      under-rated switch slowly welds its contacts. A welded E-stop looks fine right up until it is
+      needed.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ COMMISSIONING ============================ -->
+<section>
+  <h2><span class="n">07</span> Bring-up order</h2>
+  <div class="stack">
+    <p class="prose">No motor has ever turned on this rig. Build the wiring in this order and each
+    step is provable before the next one can hurt anything.</p>
+    <ol>
+      <li><strong>Header disconnected</strong> — run <span class="m">./gpio_selftest.py</span>.
+        Expect 25 of 26 pins healthy and GPIO27 output-only.</li>
+      <li><strong>Converters on the bench, no loads.</strong> Confirm U3 holds 5.1 V and U6 holds
+        12 V from the real pack. This is where a boost-only XL6009 shows itself.</li>
+      <li><strong>Ground first.</strong> Star-point every return, then check continuity from the
+        Pi's pin 39 to the battery negative before any supply is connected.</li>
+      <li><strong>Power the Pi only.</strong> Panel reachable at
+        <span class="m">http://tlspie.local:8080/</span>, nothing else wired.</li>
+      <li><strong>Fit R_PU, then the three series resistors, then the signal wires.</strong> With
+        the driver powered and the Pi off, measure ENABLE — it must sit at VCC, not near zero.</li>
+      <li><strong>Motor uncoupled from the head.</strong>
+        <span class="m">./tls_scan.py --scan scan3 --no-record</span>, then press Stop mid-move and
+        confirm the motor halts.</li>
+      <li><strong>Command 90° and measure it</strong> with the shaft marked. This is the outstanding
+        question: 640,000 steps/rev is measured and solid, but whether that comes from a 100:1
+        reduction or a 0.45°/step motor is still unsettled.</li>
+      <li><strong>Full scan with capture.</strong> Watch for lost steps <em>while tcpdump runs</em> —
+        DMA and capture contend for memory bandwidth, and that is the one real open performance
+        question.</li>
+    </ol>
+    <div class="warnbox">
+      <span class="hd">Before the first move, verify on the board itself</span>
+      <ul>
+        <li><strong>MS1/MS2/MS3 open = 1/16 microstep</strong> on a Big Easy Driver, via its
+          on-board pull-ups. The measured 640,000 steps/rev assumes 1/16 — if a jumper has been
+          moved, the geometry constant is wrong.</li>
+        <li><strong>RST and SLP</strong> are tied together on the board on a genuine Big Easy Driver,
+          so both may be left open. Put a meter across them and confirm continuity. If they are
+          <em>not</em> tied, jumper RST to SLP or the driver never leaves reset and the motor will
+          simply never move.</li>
+        <li><strong>Set the current limit on the ADJ PWR pot</strong> before the motor sees load.</li>
+        <li><strong>Confirm the Pi really is 192.168.1.100</strong> against the VLP-16's own
+          configuration. That number was never verified against the sensor.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="footer">
+  TLS Pie · Rev 2.0 · drawn 2026-08-09 · supersedes Rev 1.1 of 2022-09-12 ·
+  source of truth for pin assignments is <span class="m">tls_stepper.py</span>
+  (<span class="m">TLSPIE_STEP_PIN</span> / <span class="m">TLSPIE_DIR_PIN</span> /
+  <span class="m">TLSPIE_ENABLE_PIN</span>) — this sheet documents the defaults
+</div>
+
+</div>
