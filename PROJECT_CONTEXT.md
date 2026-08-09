@@ -224,11 +224,43 @@ Adafruit's board has **no battery-charging circuit** (unlike the ZS-042 clones, 
 a non-rechargeable cell), so a plain coin cell in the holder on the underside is correct.
 
 **Wiring it is half the job.** Raspberry Pi OS keeps time with `fake-hwclock` until the kernel
-driver is bound: enable I²C, confirm `sudo i2cdetect -y 1` shows `68`, add
-`dtoverlay=i2c-rtc,ds3231` to `/boot/firmware/config.txt`, reboot, confirm `68` has become `UU`,
-then remove `fake-hwclock` and `sudo hwclock -w` once while online. This matters here because the
-rig runs off a phone hotspot with no guaranteed internet and **every capture is timestamped** —
-without the RTC a cold boot in the field dates scans from whenever the Pi was last switched off.
+driver is bound. This matters here because the rig runs off a phone hotspot with no guaranteed
+internet and **every capture is timestamped** — without the RTC a cold boot in the field dates
+scans from whenever the Pi was last switched off.
+
+#### ✅ DONE AND VERIFIED ON THE REAL PI, 2026-08-09
+
+The user wired it and it answered on the first probe — `0x68` present, nothing at `0x57` (which is
+the AT24C32 EEPROM the ZS-042 clones carry, so the bus itself confirms which board this is).
+
+What was changed on the Pi:
+
+| | |
+|---|---|
+| `/boot/firmware/config.txt` line 6 | `#dtparam=i2c_arm=on` → uncommented |
+| `/boot/firmware/config.txt` end of `[all]` | `dtoverlay=i2c-rtc,ds3231` + a comment recording the pin map |
+| `/etc/modules` | `i2c-dev` added |
+| packages | `i2c-tools` installed, `fake-hwclock` removed and disabled |
+| backup | `/boot/firmware/config.txt.bak-preI2C` |
+
+**The line that proves it works**, from `dmesg` after a reboot:
+
+    [    1.245110] rtc-ds1307 1-0068: setting system clock to 2026-08-09T12:04:23 UTC
+
+At 1.2 s into boot, long before any network, the kernel read the DS3231 and set the clock. The
+driver is `rtc-ds1307` — that is correct, the DS3231 is handled by the ds1307-family driver, so do
+not go looking for a "ds3231" module. Confirmed alongside it: `timedatectl` showed the right time
+with `System clock synchronized: no`, i.e. the time came from the chip and not from NTP.
+
+**Two traps worth remembering.** `dtparam=i2c_arm=on` alone does *not* create `/dev/i2c-1` at boot —
+`raspi-config` normally also adds `i2c-dev` to `/etc/modules`, and editing `config.txt` by hand
+misses that, so `i2cdetect` works until the first reboot and then stops. And the widely-copied
+Adafruit step of commenting out the `/run/systemd/system` check in `/lib/udev/hwclock-set` is
+**stale on Bookworm** — systemd owns the clock there and the script's early exit is correct. It was
+left alone.
+
+No `dtparam`/`dtoverlay` change needed a reboot to *test*: `sudo dtparam i2c_arm=on` and
+`sudo dtoverlay i2c-rtc ds3231` both apply at runtime. The reboot was only to prove persistence.
 
 ### ⚠ The Pi's 5 V converter may be the wrong topology — check before it is ever connected
 
