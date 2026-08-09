@@ -58,13 +58,23 @@ except ImportError:  # allows --plan to run off-Pi for checking the step maths
 
 # --- Geometry -------------------------------------------------------------
 #
-# 400 motor steps/rev * 32 microsteps * 50:1 harmonic drive = 640,000.
+# 400 motor steps/rev * 16 microsteps * 50:1 harmonic drive = 320,000.
 #
-# NOTE: 1/32 microstepping requires a DRV8825. The A4988-based SparkFun Big
-# Easy Driver tops out at 1/16, which would make this 320,000. Confirm which
-# chip is actually fitted -- the schematic labels U4 "BigEasyDriver" but gives
-# the part as DRV8825, and the two disagree.
-STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "640000"))
+# CORRECTED 2026-08-09. This was 640,000, which assumed 1/32 microstepping.
+# A photograph of the fitted board shows an Allegro A4983/A4988 (chip marked
+# 4983ET) -- the SparkFun Big Easy Driver -- whose maximum is 1/16. Only the
+# DRV8825 does 1/32, and that is not what is on the board. The old value made
+# every move run twice as far as commanded: a "360 deg at 1 deg/s" scan was
+# really ~756 deg at 2 deg/s.
+#
+# VERIFY THIS EMPIRICALLY before trusting a scan. Command 90 degrees with
+# `--scan` on an uncoupled motor, mark the shaft, and measure what you get.
+# Arithmetic from a photograph is a good hypothesis, not a calibration.
+#
+# Also confirm MS1/MS2/MS3 are actually set for 1/16 on the board -- the Big
+# Easy Driver pulls them high by default, which is 1/16, but check rather than
+# assume. Any other setting scales this constant proportionally.
+STEPS_PER_REV = int(os.environ.get("TLSPIE_STEPS_PER_REV", "320000"))
 
 # --- Motor pins (BCM numbering) -------------------------------------------
 PIN_STEP = int(os.environ.get("TLSPIE_STEP_PIN", "19"))

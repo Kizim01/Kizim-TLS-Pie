@@ -74,8 +74,23 @@ the entire start/stop/status handshake come out.
 | `VLPwaitbutton.py` (GPIO27 stop-in) | stop button read directly |
 | `VLPstatussignal.py` (GPIO22 pulse codes) | `ScanAborted` exception in-process |
 | `VLPrecord.sh` | `tls_scan.py` (its preflight checks ported verbatim) |
-| MicroView OLED | the HDMI monitor (U9) already in the rig |
 | U2 4-channel level shifter | nothing — no 5 V logic remains |
+| U9 monitor, U6 (12 V boost), U10 fan | nothing — not fitted |
+| MicroView OLED | **nothing. See below.** |
+
+### ⚠ The rig is now fully headless
+
+Dropping the MicroView's OLED was originally justified on the grounds that the HDMI monitor was
+already in the rig. **As of 2026-08-09 the monitor is removed too**, so that justification no
+longer holds. There is no READY screen, no SCANNING indicator, no abort reason — nothing at the
+rig tells the operator what it is doing.
+
+State is still written to `/tmp/tlspie/VLPrecord.status` and to stdout, so SSH shows everything.
+But in the field you press a button and watch the motor to know it worked. Decide whether a
+couple of status LEDs on spare GPIOs are wanted before this goes out. `NOTIFY_DESKTOP` /
+`notify-send` in `tls_scan.py` is now pointless and should be dropped.
+
+The fan is also gone — watch Pi temperature under sustained capture.
 
 `VLPselfcheck.sh` is unaffected and still useful.
 
@@ -159,7 +174,7 @@ diodes to under 10 mA at 12 V.
 ## Scan geometry
 
 Carried over unchanged from the firmware. Verified by `tls_stepper.py --plan` against
-640,000 steps/rev.
+**320,000 steps/rev**.
 
 | Profile | Sweep | Return | Rate | Duration |
 |---|---|---|---|---|
@@ -170,13 +185,28 @@ Carried over unchanged from the firmware. Verified by `tls_stepper.py --plan` ag
 The 360° scans overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed
 live, then back off 18° to finish square with the start. The 180° scan carries 10.8° of overlap.
 
-### ⚠ Open question: DRV8825 or A4988?
+### RESOLVED 2026-08-09: it is an A4983/A4988, and the old constant was wrong
 
-`STEPS_PER_REV = 640000` assumes 400 steps × **1/32** microstepping × 50:1. Only the DRV8825 does
-1/32. The A4988-based SparkFun Big Easy Driver tops out at 1/16, which makes it 320,000 — and
-would run every move **twice as far as commanded**. The Rev 1.0 schematic labels U4
-"BigEasyDriver" but gives the part as DRV8825; those are different chips. **Settle this before the
-first coupled run.**
+A photograph of the fitted board shows the chip marked **`4983ET`** — an Allegro A4983/A4988, which
+is what the SparkFun Big Easy Driver uses. **Its maximum is 1/16 microstepping.** Only the DRV8825
+does 1/32, and that is not what is on the board. The board also carries `8–30 V DC` on M+/GND, so
+the 12 V rail is in range.
+
+    400 steps × 16 microsteps × 50:1  =  320,000   ← correct
+    400 steps × 32 microsteps × 50:1  =  640,000   ← what the firmware used
+
+The firmware's 640,000 commanded **twice the steps a revolution actually takes**, and because the
+step rate is derived from the same constant, the speed was doubled too. A nominal "360° at 1 °/s
+over 6 minutes" scan was really about **756° at 2 °/s**. Corrected in `tls_stepper.py`.
+
+**Still verify empirically.** Arithmetic from a photograph is a hypothesis, not a calibration.
+Command 90° on an uncoupled motor, mark the shaft, measure. Also confirm MS1/MS2/MS3 are actually
+set for 1/16 — the Big Easy Driver defaults there, but check rather than assume.
+
+**Also from the board photo:** the driver's `VCC` pin is an **output**, fed by the on-board
+regulator and selected by the `3/5V APWR` jumper. Do not drive it from the Pi. The four pins that
+go to the Pi are `ENABLE`, `STEP`, `DIR` and `GND`. Set the motor current on the `ADJ PWR` pot
+before the motor turns under load.
 
 ---
 
