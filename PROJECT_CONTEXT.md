@@ -162,7 +162,7 @@ All of these are overridable by environment variable — nothing is hard-coded.
 | M.STEP | GPIO19 | 35 | via 1 kΩ series resistor |
 | M.DIR | GPIO26 | 37 | via 1 kΩ series resistor |
 | M.ENABLE | GPIO13 | 33 | via 1 kΩ series resistor |
-| SDA / SCL | GPIO2 / GPIO3 | 3 / 5 | DS3231 RTC |
+| SDA / SCL | GPIO2 / GPIO3 | 3 / 5 | DS3231 RTC — see below |
 | 3V3 / 5V / GND | — | 1 / 2,4 / 6,9,39 | |
 
 **Three motor lines and the RTC. That is the whole header now.** All push buttons were removed on
@@ -198,6 +198,37 @@ button there. **GPIO14/15 both PASS**, which was the open damage question — th
 Recommended alongside: **1 kΩ series resistors** on STEP/DIR/ENABLE. The driver's inputs are
 high-impedance so this costs nothing electrically, but it limits fault current into the Pi's clamp
 diodes to under 10 mA at 12 V.
+
+### The RTC is an Adafruit DS3231 breakout — 8 pins, and Vin must be 3V3
+
+Identified from a photo of the actual board on 2026-08-09. Earlier drawings carried a generic
+5-pin module (`VCC/SDA/SCL/NC/GND`) inherited from the Rev 1.0 schematic. **That is the wrong
+board.** Adafruit's Precision RTC breakout has eight pins in the order
+**`Vin · GND · SCL · SDA · BAT · 32K · SQW · RST`**, which is not the order the header hands the
+four wires over in — two of the four cross.
+
+| breakout pin | to |
+|---|---|
+| 1 `Vin` | header **pin 1 (3V3)** |
+| 2 `GND` | header pin 9 |
+| 3 `SCL` | header pin 5, GPIO3 |
+| 4 `SDA` | header pin 3, GPIO2 |
+| 5–8 `BAT` `32K` `SQW` `RST` | nothing |
+
+**`Vin` must not be 5 V.** The board's I²C pull-ups reference `Vin`, so `Vin` sets the idle bus
+voltage — 5 V there puts 5 V on GPIO2/GPIO3, which are not 5 V tolerant. The DS3231 runs from
+2.3 V and draws microamps, so 3V3 costs nothing. Check by powering the board from pin 1 with the
+I²C wires not yet fitted and measuring SDA to GND: it must read ~3.3 V.
+
+Adafruit's board has **no battery-charging circuit** (unlike the ZS-042 clones, which slowly cook
+a non-rechargeable cell), so a plain coin cell in the holder on the underside is correct.
+
+**Wiring it is half the job.** Raspberry Pi OS keeps time with `fake-hwclock` until the kernel
+driver is bound: enable I²C, confirm `sudo i2cdetect -y 1` shows `68`, add
+`dtoverlay=i2c-rtc,ds3231` to `/boot/firmware/config.txt`, reboot, confirm `68` has become `UU`,
+then remove `fake-hwclock` and `sudo hwclock -w` once while online. This matters here because the
+rig runs off a phone hotspot with no guaranteed internet and **every capture is timestamped** —
+without the RTC a cold boot in the field dates scans from whenever the Pi was last switched off.
 
 ### ⚠ The Pi's 5 V converter may be the wrong topology — check before it is ever connected
 
