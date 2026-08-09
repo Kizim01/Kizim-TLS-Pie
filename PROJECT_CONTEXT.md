@@ -1,6 +1,7 @@
 # TLS_Pie / Kizim Robotics project context
 
-> **Last updated: 2026-08-09.** This file was rewritten in full on that date. Everything it
+> **Last updated: 2026-08-09 (evening).** This file was rewritten in full on that date and then
+> substantially corrected after the motor ran for the first time — see the restart pointer. Everything it
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
@@ -26,7 +27,8 @@ It was originally built around a SparkFun MicroView (ATmega328P) that drove the 
 handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
 entirely** and the Pi takes over motion and capture in a single process, operated from the phone.
 The Pi was built and proven on 2026-08-09 — see "Restart pointer" for exactly what is and is not
-verified. **No motor has turned yet.**
+verified. **The motor first turned on 2026-08-09**, and the session that followed overturned four
+things this file used to assert; the restart pointer opens with them.
 
 The wider concept has evolved into a fully autonomous decentralized lidar mapping swarm platform
 (see "Funding / company direction").
@@ -383,12 +385,16 @@ table written in deg/s is a trap; this one is in RPM.
 |---|---|---|---|---|
 | 8.3 | 27.8 | clicks | — | 0.25 °/s @ old constant |
 | 33.3 | 111 | clicks | **34%** | 1 °/s @ old constant |
+| **16.7 — the `fast` profile** | 55.6 | clicks | **50%** | 2 °/s @ new constant |
 | 58.3 | 194 | clicks | **56%** | 7 °/s @ new constant |
 | 133 | 444 | silent | — | 4 °/s @ old constant |
 | **233** | **778** | **silent** | **100%** | 7 °/s @ old constant — the calibration run |
 
 The threshold sits somewhere between **58 and 133 RPM**. Below it the motor clicks, the noise
-builds over the first couple of seconds, and it keeps between a third and a half of its steps.
+builds over the first couple of seconds, and it keeps roughly a third to a half of its steps —
+**and the fraction lost is fairly flat across 8–58 RPM rather than peaking at one speed.** That
+argues against a narrow resonance and toward a broad torque deficit or a stick-slip regime, which
+points even harder at the current limit.
 
 **This is backwards from ordinary stepper behaviour** — a motor short of torque fails at *high*
 speed, where back-EMF eats its margin. Failing only at *low* speed is the signature of **low-speed
@@ -776,8 +782,10 @@ motor attached.
 - the whole HTTP surface: status, start, stop, restart, busy-rejection, progress maths, token auth,
   404s, and that the served page makes no external requests
 
-**Not verified — no motor has turned.** Nothing has been driven by an actual stepper, no pcap has
-been written, and no lidar packet has been decoded from a real sensor. The motion code has been
+**Partly verified as of 2026-08-09 evening — the motor HAS now turned.** A real stepper has been
+driven, the panel's Stop has halted it mid-sweep, and `STEPS_PER_REV` has been measured on this rig.
+Still not done: **no pcap has been written and no lidar packet has been decoded from a real sensor**,
+and no scan has ever completed — the motor sheds a third to a half of its steps at scan speeds. The motion code has been
 executed end to end against pins with nothing attached, which proves the software and nothing about
 the mechanism. The MicroView firmware had years of field use behind it; this code has none.
 
@@ -900,6 +908,55 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### Done on hardware 2026-08-09 ✅
 
+> ## ⭐ THE MOTOR HAS NOW TURNED. Read this block first.
+>
+> The line that stood in this file all day — *"No motor has turned yet"* — is no longer true. On the
+> afternoon of 2026-08-09 the rig moved for the first time, and the session that followed overturned
+> four things this document had asserted. In order of how badly they would mislead you:
+>
+> 1. **`STEPS_PER_REV` is 160,000, not 640,000** — measured on this rig by counting whole turns
+>    against a mark. The old value was wrong by 4×. Every scan this rig ever ran swept four times
+>    too far, four times too fast.
+> 2. **`captures/driveway.pcap` is from a DIFFERENT RIG.** Everything derived from it is void here,
+>    including the mount roll sign and the 1.5 m instrument height.
+> 3. **The converters are LM2596 bucks, not XL6009 boosts** — the Rev 1.0 schematic label was wrong.
+>    M+ has since been moved off the 12 V buck onto the switched battery.
+> 4. **`_build_chain()` could not build a chain for any fast move.** The return leg of every scan
+>    would have raised `too many chain counters`. Fixed, with regression tests.
+>
+> **One blocker remains and it stops everything: the motor sheds a third to a half of its steps
+> anywhere below ~100 RPM, which is where both scan profiles live. The current-limit trimmer has
+> never been touched.** See "THE BLOCKER" in Scan geometry.
+
+**What ran, in order, and what it proved:**
+
+- **First motion ever.** `tls_scan.py --scan slow --no-record`. Motor turned; **the panel's Stop
+  halted it** and logged `[ABORTED] INTERRUPTED: Stop pressed during the sweep` — so the only
+  software abort on the rig is real, not theoretical.
+- **The ENABLE pull-up was measured, not believed.** GPIO13 released to INPUT read HIGH against the
+  internal pull-down *and* the internal pull-up, 40/40 samples each — a signature only an external
+  pull-up on a live supply produces. The gating safety item is genuinely closed.
+- **The RTC is live.** `0x68` first probe, nothing at `0x57` (so it is the Adafruit board, not a
+  ZS-042). I²C enabled, `dtoverlay=i2c-rtc,ds3231`, `i2c-dev` in `/etc/modules`, `fake-hwclock`
+  removed. Proof: `rtc-ds1307 1-0068: setting system clock` **1.2 s into boot**, before any network.
+- **`bench_move.py` written** — commands one exact move through the tested `move_degrees` path.
+  It is the instrument the rig had been missing; three eyeballed angles had failed to settle what
+  one return-to-mark run settled in 51 seconds.
+- **M+ moved to the switched battery**, deleting the 12 V buck from the motor path. Pi rail stayed
+  clean throughout: `vcgencmd get_throttled` = `0x0`, no undervoltage.
+- Test suites now **23/23** (`test_stepper_watchdog.py`, six of them new) and 49/49
+  (`test_web_install.py`).
+
+**Three method lessons this session earned, all cheap to reuse:**
+
+- **Count whole turns against a mark; never read an angle.** No instrument, no reading error. It
+  turned a 4× calibration error into an unmistakable "exactly four turns".
+- **Never calibrate at a speed where the mechanism is audibly complaining.** A measurement taken
+  while losing steps measures the loss, not the gearing.
+- **Key mechanical behaviour to motor RPM, never to commanded deg/s.** Step rate scales with
+  `STEPS_PER_REV`, so a table in deg/s silently becomes wrong the moment the constant is corrected —
+  which nearly happened here.
+
 The Pi is built, provisioned and proven as far as it can be without the rig attached.
 
 - **Fresh SD card, Raspberry Pi OS Bookworm 64-bit Lite**, hostname `tlspie`, user `lipi`, on the
@@ -914,7 +971,7 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 - **Phone panel tested end to end from the phone**, using `--no-record` so the real motion state
   machine ran with no motor attached: both scans, live progress, Stop mid-scan, the re-home prompt,
   Restart, Full screen, and Add to Home screen. All working.
-- Test suites: `test_stepper_watchdog.py` 17/17, `test_web_install.py` 49/49, both on the Pi.
+- Test suites: `test_stepper_watchdog.py` **23/23**, `test_web_install.py` 49/49, both on the Pi.
 - **The cloud pipeline and the 3D viewer are deployed and running on the Pi**, confirmed from the
   phone. All `*.py` are at `~/TLS-Pie`; `driveway.cloud` + `.json` are in `~/velodyne` so there is a
   real 146,824-point scan to open.
@@ -949,26 +1006,32 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
   library the moment its capture was offloaded** — backwards from the documented intent that
   captures get pruned and clouds stay. Both fixed and now covered.
 
-### Still to do — nothing below has been done
+### Still to do — in order
 
-1. ~~Fit the 10 kΩ ENABLE pull-up~~ — **done and verified 2026-08-09.**
-2. **Remove SW1–SW5 and R1–R5.** All push buttons are gone from the design; R1–R5 pulled to 5 V,
-   which a Pi GPIO must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches.
-3. **Measure a commanded 90° on an uncoupled motor** to confirm `STEPS_PER_REV = 640000`. The
-   driveway capture already agrees with it to 0.03%, so this is confirmation rather than discovery —
-   but it also settles whether the reduction is 100:1 or the motor is 0.45°/step, which the scan
-   cannot distinguish.
-4. **Check S1's DC rating** if it carries motor current — it is the emergency stop, and breaking a DC
-   inductive load can slowly weld an under-rated switch shut.
-5. **Confirm the Pi's `192.168.1.100`** against the VLP-16's own configuration. This number was never
-   recorded anywhere in the project and is currently an assumption; a mismatch presents as a capture
-   fault, not a network one.
-6. **Bench test uncoupled**, per `MICROVIEW_REMOVAL.md`: `--plan`, `--check`, `--scan slow
-   --no-record`, then a full scan. Confirm the panel's Stop halts it.
-7. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps — the open
-   performance question is step-timing jitter under load.
-8. Once a full cycle passes, enable `tls-scan.service`, then prune the superseded MicroView files and
-   regenerate the setup bundles, which still describe the old architecture.
+1. **⛔ SET THE MOTOR CURRENT LIMIT. Everything waits behind this.** The `CUR ADJ PWR` trimmer has
+   never been touched. At its factory setting the rig keeps only 34–56% of its steps anywhere below
+   ~100 RPM at the motor, which is where both scan profiles live. Use the plateau method — no
+   ammeter needed — and iterate with `bench_move.py 90 2.0`, which takes 45 s and should produce
+   exactly a quarter turn. **Baseline before any adjustment: 45° of 90°, 50% kept, still clicking.**
+   If it plateaus well short of a quarter turn, the fault is mechanical: with the driver disabled,
+   turn the head by hand and feel for a tight spot or heavy preload in the harmonic drive.
+2. **Then re-run the full bench sequence**, which has never completed: `--plan`, `--check`,
+   `--scan slow --no-record`, then a full scan **including its return leg** — that leg has never
+   run once in the life of this project and only became possible today.
+3. **Re-derive the mount geometry on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m instrument height
+   came from `captures/driveway.pcap`, which is a different machine. Take the first real capture
+   from this rig and re-run the ground-plane histogram. Until then the sign of the roll is unknown.
+4. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
+   must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
+5. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
+   under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.
+6. **Confirm the Pi's `192.168.1.100`** against the VLP-16's own configuration — never verified, and
+   a mismatch presents as a capture fault rather than a network one.
+7. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps under capture load.
+8. **Consider deleting U6 entirely** — the 12 V buck is now unloaded, M+ having been moved to the
+   switched battery.
+9. Prune the superseded MicroView files and regenerate the setup bundles, which still describe the
+   old architecture.
 
 The two pieces of work offered on 2026-08-08 are now **done**: the duration watchdog is in
 `tls_stepper.move_steps()` with tests, and the normally-closed stop button is moot — the buttons
