@@ -343,10 +343,9 @@ def run_scan(pi, stepper, profile_name, record=True):
     profile = SCAN_PROFILES[profile_name]
 
     def should_abort():
-        # One abort path for all three control surfaces.
-        # One abort path. The phone panel's stop button and SIGTERM both
-        # land here; the physical stop button that used to be a third source
-        # was removed with the rest of the buttons on 2026-08-09.
+        # One abort path. The phone panel's stop button and SIGTERM both land
+        # here; the physical stop button that used to be a third source was
+        # removed with the rest of the buttons on 2026-08-09.
         return _shutdown or _state.stop_requested()
 
     _state.begin_scan(profile_name, estimate_duration(profile))

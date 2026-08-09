@@ -414,24 +414,44 @@ Materials:
 
 ## Restart pointer — do these in order
 
-Everything below is unstarted. All code is committed and pushed; nothing has run on hardware.
+### Done on hardware 2026-08-09 ✅
 
-1. **`./gpio_selftest.py`** with the header disconnected. Settles whether the Pi survived the 12 V.
-   GPIO14/15 are the ones at risk.
-2. **Confirm MS1/MS2/MS3 are set for 1/16**, then measure a commanded 90° on an uncoupled motor
+The Pi is built, provisioned and proven as far as it can be without the rig attached.
+
+- **Fresh SD card, Raspberry Pi OS Bookworm 64-bit Lite**, hostname `tlspie`, user `lipi`, on the
+  phone hotspot, public-key SSH. `ssh tlspie` from the laptop. **It must be Bookworm** — Trixie has
+  no `pigpiod` at all, and `lgpio` has no `wave_chain`. See the Bookworm note in "Key files".
+- **`gpio_selftest.py` run — the Pi survived.** GPIO14/15 both PASS, which was the open question.
+  25 of 26 pins healthy. GPIO27 is output-only (its internal pull-up no longer holds); it was the old
+  RECORDSTOP handshake line and nothing in the current design uses it.
+- **`first_boot_setup.sh` run**: pigpio 1.79, `pigpiod` active, tcpdump capability set, capture
+  directory, static `eth0` profile for the lidar, `tls-scan.service` installed **and deliberately
+  left disabled**.
+- **Phone panel tested end to end from the phone**, using `--no-record` so the real motion state
+  machine ran with no motor attached: both scans, live progress, Stop mid-scan, the re-home prompt,
+  Restart, Full screen, and Add to Home screen. All working.
+- Test suites: `test_stepper_watchdog.py` 17/17, `test_web_install.py` 49/49, both on the Pi.
+
+### Still to do — nothing below has been done
+
+1. **Fit the 10 kΩ ENABLE pull-up.** This is the gating item. Pi GPIOs float for the ~30 s of boot
+   and ENABLE is active-low, so without it the driver can sit energised with nothing in control.
+2. **Remove SW1–SW5 and R1–R5.** All push buttons are gone from the design; R1–R5 pulled to 5 V,
+   which a Pi GPIO must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches.
+3. **Confirm MS1/MS2/MS3 are set for 1/16**, then measure a commanded 90° on an uncoupled motor
    before trusting `STEPS_PER_REV = 320000`.
-3. **Before any power-up:** fit the 10 kΩ ENABLE pull-up; remove the old R1–R5 5 V button pull-ups;
-   set motor current on the driver's `ADJ PWR` pot.
-4. **Rewire** to the Rev 2.0 map — the three Pi-handshake signals move to pins that exist, and the
-   buttons are now Slow / Quick / Restart / Stop.
-5. **Bench test uncoupled**, in the order in `MICROVIEW_REMOVAL.md`: `--plan`, `--check`,
-   `--scan slow --no-record`, then a full scan. Confirm the stop button halts it.
-6. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps — that is the open
-   performance question.
-7. Once a full cycle passes, prune the superseded MicroView files and regenerate the setup bundles,
-   which still describe the old architecture.
+4. **Check S1's DC rating** if it carries motor current — it is the emergency stop, and breaking a DC
+   inductive load can slowly weld an under-rated switch shut.
+5. **Confirm the Pi's `192.168.1.100`** against the VLP-16's own configuration. This number was never
+   recorded anywhere in the project and is currently an assumption; a mismatch presents as a capture
+   fault, not a network one.
+6. **Bench test uncoupled**, per `MICROVIEW_REMOVAL.md`: `--plan`, `--check`, `--scan slow
+   --no-record`, then a full scan. Confirm the panel's Stop halts it.
+7. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps — the open
+   performance question is step-timing jitter under load.
+8. Once a full cycle passes, enable `tls-scan.service`, then prune the superseded MicroView files and
+   regenerate the setup bundles, which still describe the old architecture.
 
-Two small pieces of work were offered and not yet done: the **normally-closed stop button** (a
-broken wire currently fails silent, which is the wrong way round) and the **maximum-duration
-watchdog** (~10 lines; catches a bad step constant or a malformed wave chain). Both are testable
-without the motor.
+The two pieces of work offered on 2026-08-08 are now **done**: the duration watchdog is in
+`tls_stepper.move_steps()` with tests, and the normally-closed stop button is moot — the buttons
+were removed entirely and S1 is the emergency stop.
