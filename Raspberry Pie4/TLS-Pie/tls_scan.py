@@ -69,6 +69,7 @@ import json
 
 import tls_cloud
 import tls_geometry
+import tls_scanstore
 import tls_stepper
 import tls_web
 from tls_stepper import Stepper
@@ -144,6 +145,7 @@ STATUSFILE = os.path.join(TMPDIR, "VLPrecord.status")
 
 _shutdown = False
 _state = None
+_builder = None
 
 
 class ScanAborted(Exception):
@@ -358,12 +360,23 @@ def wait_for_trigger(pi):
     status_update("IDLE", "Ready — use the phone panel")
     while not _shutdown:
         if _state.take_restart_request():
+            _abandon_build("a restart")
             return ("restart", None)
         requested = _state.take_start_request()
         if requested:
+            # A scan always wins. A cloud build is optional work and the
+            # scanner must never be busy with optional work when the operator
+            # wants the thing it exists for. The half-built cloud is discarded
+            # and can be rebuilt from the panel afterwards.
+            _abandon_build("a scan")
             return ("scan", requested)
         time.sleep(0.02)
     return None
+
+
+def _abandon_build(reason):
+    if _builder is not None and _builder.abort():
+        status_update("IDLE", "Abandoning the 3D view build for %s" % reason)
 
 
 def do_restart(pi, stepper):
@@ -482,6 +495,14 @@ def run_scan(pi, stepper, profile_name, record=True):
                       "Scan complete: %s"
                       % (os.path.basename(capture_file) if capture_file
                          else "no capture"))
+
+        # Build the 3D view now, automatically, while the operator is still on
+        # site. Making it a button you have to remember to press means skipping
+        # it exactly when a missed corner would have mattered. The motor is
+        # stopped and tcpdump is closed, so this competes with nothing -- and a
+        # scan request abandons it instantly (see wait_for_trigger).
+        if capture_file and _builder is not None:
+            _builder.request(capture_file)
         return True
 
     except tls_stepper.MoveOverran as exc:
@@ -519,7 +540,7 @@ def _handle_signal(signum, frame):
 
 
 def main():
-    global _state
+    global _state, _builder
     import argparse
 
     parser = argparse.ArgumentParser(description="TLS Pie scanner controller")
@@ -558,7 +579,9 @@ def main():
     signal.signal(signal.SIGTERM, _handle_signal)
 
     cloud = tls_cloud.create()          # None unless TLSPIE_PREVIEW=1
-    _state = tls_web.ScannerState(SCAN_PROFILES, cloud=cloud)
+    _builder = tls_scanstore.CloudBuilder(DUMPDIR)
+    _state = tls_web.ScannerState(SCAN_PROFILES, cloud=cloud,
+                                  builder=_builder, dumpdir=DUMPDIR)
 
     pi = pigpio.pi()
     if not pi.connected:

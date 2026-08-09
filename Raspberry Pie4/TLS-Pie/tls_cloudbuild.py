@@ -136,6 +136,29 @@ def _clamp_cm(value):
     return cm
 
 
+def read_cloud_header(path):
+    """
+    Just the header of a .cloud, without touching the points.
+
+    The scan list reads one of these per stored scan every time the panel
+    polls, so it must not pull a megabyte off the SD card to learn a point
+    count. Returns None for anything unreadable -- a half-written file from an
+    interrupted build is a normal thing to meet, not an error.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(12)
+            if len(head) < 12 or head[:6] != CLOUD_MAGIC:
+                return None
+            header_len = struct.unpack_from("<I", head, 8)[0]
+            if header_len > 1 << 20:
+                return None
+            blob = handle.read(header_len)
+        return json.loads(blob.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+
+
 def read_cloud(path):
     """(header, [(x, y, z, intensity), ...]) in metres. For tests and tooling."""
     with open(path, "rb") as handle:

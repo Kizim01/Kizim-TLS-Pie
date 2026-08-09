@@ -401,6 +401,45 @@ input, which then has to cross the same wire anyway.
 Verified against `captures/driveway.pcap`: registered, the scan opens to 143 × 153 m as a full-circle
 scan should; unregistered it collapses to 154 × 39 m, narrow across the sensor's spin axis.
 
+### The 3D viewer — coverage checking on the phone (added 2026-08-09)
+
+A **Scans** card lists every capture, grouped by day. Tap a finished one and a full-screen WebGL
+view opens: **one finger orbits, pinch zooms, two fingers pan.** Colour cycles between height, scan
+and intensity. Layers slides in from the right to overlay other scans, each in its own colour.
+
+Files: [tls_scanstore.py](Raspberry%20Pie4/TLS-Pie/tls_scanstore.py) (library, alignment,
+preemptible builder) and [test_viewer.py](Raspberry%20Pie4/TLS-Pie/test_viewer.py) (72 checks). New
+routes: `GET /api/scans`, `GET /api/scanfile?name=`, `POST /api/align`, `POST /api/build`.
+
+**Hand-written WebGL, no library.** The Pi serves this offline on a phone hotspot, so every byte
+comes from the Pi. A point cloud is one buffer and one draw call; three.js would be most of a
+megabyte to save about eighty lines of matrix maths. Positions go to the GPU as `int16` centimetres
+and are scaled in the shader — half the transfer of float32 and below what the sensor resolves.
+
+**The build runs automatically when a scan finishes, and a scan request abandons it instantly.**
+Making it a button you have to remember to press means skipping it exactly when a missed corner
+mattered — but a scanner busy with *optional* work when you want the thing it exists for is worse
+than one with no preview. A half-built cloud is discarded and can be rebuilt from the panel.
+
+**Stop is reachable from inside the viewer.** The viewer covers the whole screen and the panel is
+the only software abort on this rig, so the button follows you in rather than being a navigation
+away.
+
+**Alignment is honest about what it is.** Scans from the same tripod position stack exactly. Move
+the tripod and they will not, so the layers panel offers X / Y / Z / twist sliders and says in plain
+words: *rough alignment — for coverage checking only.* Saved alignments go into the scan's sidecar,
+so a workstation inherits them instead of the job being aligned twice. Auto-align (`small_gicp`,
+MIT, aarch64 wheels) is the next step and needs the manual nudge as its starting guess — ICP always
+returns an answer, including a confidently wrong one, so it will have to report match quality and
+offer Undo rather than silently moving anything.
+
+**Two bugs the tests caught, both invisible to inspection.** Python ate the backslashes in `\'`
+inside the page string, silently breaking two generated handlers while every "does the page contain
+X" check still passed — fixed by delegating handlers onto containers so no JS string is ever nested
+in an HTML attribute in a Python string, and the suite now parses the emitted JavaScript with
+`node --check`. And `setNudge` re-rendered the panel on every input event, destroying the slider
+under the operator's finger; the readout is now updated in place.
+
 ### Superseded but retained
 Kept deliberately: the Pi path has never run, and deleting these before it does would leave no
 working system.
