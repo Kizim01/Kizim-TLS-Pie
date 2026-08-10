@@ -1,2 +1,35 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Anything that RUNS ON THE PI must be checked out with LF, always.
+#
+# This repo is edited on Windows with core.autocrlf=true, so without these
+# rules every script here gets CRLF on checkout. They are then scp'd to the Pi,
+# where the shebang reads `#!/bin/bash\r` and Linux reports:
+#
+#     bash: ./setup_kiosk.sh: /bin/bash^M: bad interpreter: No such file or directory
+#
+# The `^M` is easy to miss and the error does not say "line endings". Python is
+# just as exposed: `./bench_move.py` and `./burst_probe.py` are executed
+# directly, so their shebangs matter too, even though the interpreter would
+# otherwise tolerate CRLF.
+#
+# Added 2026-08-10, after `git add` warned it was about to do exactly this to
+# the newly written kiosk scripts.
+# ─────────────────────────────────────────────────────────────────────────────
+*.sh        text eol=lf
+*.py        text eol=lf
+*.service   text eol=lf
+*.ino       text eol=lf
+*.conf      text eol=lf
+*.txt       text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+
+# Binary -- never touch these.
+*.png       binary
+*.jpg       binary
+*.pcap      binary
+*.ply       binary
+*.bin       binary
