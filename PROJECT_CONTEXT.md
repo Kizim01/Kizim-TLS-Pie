@@ -701,8 +701,32 @@ counting does, which needs a smart BMS. **This pack's BMS has no Bluetooth**, so
 Address `0x40`, no clash with the DS3231 at `0x68`. Current is derived as `V_shunt / SHUNT_OHMS`
 rather than via the chip's calibration register — that skips a configuration write on every boot and
 one more thing to get silently wrong. `python3 tls_power.py` prints the raw reading. Tests:
-`test_power.py`, 21/21, and they run anywhere because the module's most important property is
+`test_power.py`, **32/32**, and they run anywhere because the module's most important property is
 degrading to "I cannot see the pack" instead of taking the panel down.
+
+> #### ⛔ It must never guess which monitor is fitted
+>
+> The INA226, INA238 and INA219 have **incompatible register maps** — `VBUS` is `0x02` at
+> 1.25 mV/LSB on the INA226 and `0x05` at 3.125 mV/LSB on the INA238. Read one as the other and you
+> do not get an error, you get a **plausible wrong voltage on a battery gauge**.
+>
+> The first version of this shipped with exactly that bug: it compared register `0xFE` against
+> `0x2260`, but `0xFE` is the *manufacturer* id (`0x5449`) and `0x2260` is the *die* id at `0xFF`.
+> **No INA226 would ever have matched**, and every one would have been read with INA219 scaling —
+> 12.60 V reported as 5.04 V. Caught 2026-08-10 only because the question "why not the INA238?" sent
+> someone back to the register maps.
+>
+> Detection is now **positive or nothing**: the INA226 and INA238/237 are identified from their ID
+> registers, anything unrecognised reports `inaNote` and no reading, and the **INA219 — which has no
+> ID register at all — is reachable only by setting `TLSPIE_INA_CHIP=ina219` by hand.** "No reading"
+> is recoverable; a wrong reading is not.
+>
+> **Why the INA226 and not the INA238:** the INA238's headline advantage is 0–85 V common mode
+> against the INA226's 0–36 V, which is irrelevant on a 12 V pack (and still ample if this ever
+> moves to the 24 V a Miranda servo would need). Both are 16-bit. The INA226 module is ubiquitous at
+> ~£1.23 where an INA238 breakout is rare and several times the price. Both are supported anyway,
+> because the cost of supporting one is a register table and the cost of confusing them is silent
+> wrong numbers.
 
 ### Local touch panel — 5.5" Waveshare HDMI AMOLED (built 2026-08-10, NOT yet fitted)
 

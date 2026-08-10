@@ -63,6 +63,13 @@ SHUNT_OHMS = float(os.environ.get("TLSPIE_SHUNT_OHMS", "0.1"))
 INA_ADDR = int(os.environ.get("TLSPIE_INA_ADDR", "0x40"), 0)
 I2C_BUS = int(os.environ.get("TLSPIE_I2C_BUS", "1"))
 
+# Which monitor is fitted. "auto" identifies the INA226 and the INA238/INA237
+# from their ID registers. The INA219 has NO identification register at all, so
+# it can only be selected explicitly -- see _read_ina() for why guessing it is
+# the one thing this module must not do.
+#   auto (default) | ina226 | ina238 | ina219
+INA_CHIP = os.environ.get("TLSPIE_INA_CHIP", "auto").strip().lower()
+
 # vcgencmd is a subprocess. The panel polls once a second; re-running it that
 # often is wasteful and pointless, since rail state does not change meaningfully
 # inside two seconds.
@@ -151,10 +158,23 @@ def _read_ina():
     """
     Bus and shunt voltage straight from the registers.
 
-    Deliberately does NOT use the chip's calibration register: current is
-    derived as V_shunt / SHUNT_OHMS instead. That skips a configuration write
-    on every boot and one more thing to get silently wrong, at the cost of a
-    multiply we were doing anyway.
+    ⛔ IT MUST NEVER GUESS WHICH CHIP IS FITTED.
+    These parts have INCOMPATIBLE register maps. VBUS is 0x02 at 1.25 mV/LSB on
+    the INA226 and 0x05 at 3.125 mV/LSB on the INA238; read one as the other and
+    you do not get an error, you get a plausible wrong voltage on a battery
+    gauge. An earlier version of this function compared register 0xFE against
+    0x2260 -- but 0xFE is the MANUFACTURER id (0x5449) and 0x2260 is the DIE id
+    at 0xFF, so no INA226 ever matched and every one of them was silently read
+    with INA219 scaling. That bug is the reason this function now identifies
+    positively and gives up when it cannot.
+
+    The INA219 has no identification register whatsoever, so it is reachable
+    only by setting TLSPIE_INA_CHIP=ina219 by hand. Refusing to fall back to it
+    is deliberate: "no reading" is recoverable, a wrong reading is not.
+
+    Deliberately does NOT use any chip's calibration register: current is
+    derived as V_shunt / SHUNT_OHMS. That skips a configuration write on every
+    boot and one more thing to get silently wrong.
     """
     try:
         from smbus2 import SMBus
@@ -171,18 +191,48 @@ def _read_ina():
                 v = r16(reg)
                 return v - 65536 if v & 0x8000 else v
 
-            die = r16(0xFE)
-            if die == 0x2260:                     # INA226
-                bus_v = r16(0x02) * 1.25e-3       # 1.25 mV/LSB
-                shunt_v = s16(0x01) * 2.5e-6      # 2.5 uV/LSB
-                chip = "INA226"
-            else:                                 # assume INA219
-                bus_v = (r16(0x02) >> 3) * 4e-3   # 4 mV/LSB, 3-bit shift
-                shunt_v = s16(0x01) * 10e-6       # 10 uV/LSB
-                chip = "INA219"
+            chip = INA_CHIP
+            if chip == "auto":
+                chip = None
+                # INA226: manufacturer 0x5449 at 0xFE, die 0x2260 at 0xFF.
+                try:
+                    if r16(0xFE) == 0x5449 and (r16(0xFF) >> 4) == 0x226:
+                        chip = "ina226"
+                except OSError:
+                    pass
+                # INA238/INA237: manufacturer 0x5449 at 0x3E, die 0x238 in the
+                # top 12 bits of 0x3F.
+                if chip is None:
+                    try:
+                        if r16(0x3E) == 0x5449 and (r16(0x3F) >> 4) == 0x238:
+                            chip = "ina238"
+                    except OSError:
+                        pass
+                if chip is None:
+                    # Something is at this address but it will not identify
+                    # itself. Say so rather than inventing a reading.
+                    return {"chip": None,
+                            "inaNote": "unidentified device at 0x%02x -- set "
+                                       "TLSPIE_INA_CHIP" % INA_ADDR}
+
+            if chip == "ina226":
+                bus_v = r16(0x02) * 1.25e-3        # 1.25 mV/LSB
+                shunt_v = s16(0x01) * 2.5e-6       # 2.5 uV/LSB
+                label = "INA226"
+            elif chip == "ina238":
+                bus_v = r16(0x05) * 3.125e-3       # 3.125 mV/LSB
+                shunt_v = s16(0x04) * 5e-6         # 5 uV/LSB at ADCRANGE=0
+                label = "INA238"
+            elif chip == "ina219":
+                bus_v = (r16(0x02) >> 3) * 4e-3    # 4 mV/LSB, 3-bit shift
+                shunt_v = s16(0x01) * 10e-6        # 10 uV/LSB
+                label = "INA219"
+            else:
+                return {"chip": None,
+                        "inaNote": "unknown TLSPIE_INA_CHIP=%r" % INA_CHIP}
 
         amps = shunt_v / SHUNT_OHMS if SHUNT_OHMS else None
-        return {"chip": chip, "packV": round(bus_v, 3),
+        return {"chip": label, "packV": round(bus_v, 3),
                 "amps": round(amps, 3) if amps is not None else None}
     except Exception:
         # No chip, no bus, wrong address -- all mean the same thing here: fall
@@ -229,6 +279,11 @@ def read(force=False):
         if cell_v:
             out["percent"] = _percent_from_cell_v(cell_v)
             out["cellV"] = round(cell_v, 3)
+    elif ina.get("inaNote"):
+        # A monitor is wired but could not be identified. That is a wiring or
+        # configuration problem the operator can fix, and it is invisible unless
+        # it is said out loud -- otherwise it looks identical to no chip fitted.
+        out["inaNote"] = ina["inaNote"]
 
     # Severity, worst wins. The sticky "ever" flags are a warning and not a
     # fault: they may be describing something that happened hours ago.
