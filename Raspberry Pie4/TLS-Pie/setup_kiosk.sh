@@ -151,6 +151,52 @@ do_install() {
     done
     ok "$USER_NAME added to video/render/input/seat groups"
 
+    # cage will not start without XDG_RUNTIME_DIR, and with no login session
+    # nothing creates /run/user/1000. Lingering makes systemd create it at boot.
+    # This replaces the PAMName=login + TTYPath trick most kiosk guides use,
+    # which failed here because getty@tty1 already owns that TTY -- see the
+    # comment in tls-kiosk.service.
+    sudo loginctl enable-linger "$USER_NAME" >/dev/null 2>&1 || true
+    if [ -d "/run/user/$(id -u "$USER_NAME")" ]; then
+        ok "lingering enabled, /run/user/$(id -u "$USER_NAME") exists"
+    else
+        warn "lingering enabled but /run/user/$(id -u "$USER_NAME") not created yet"
+    fi
+
+    say "Blank cursor theme"
+    # There is no mouse on this rig, so the compositor's default pointer just
+    # sits in the middle of the screen forever. cage cannot be told to hide it
+    # (options are only -d -h -m -s -v) and XCURSOR_SIZE=1 was not enough, so
+    # this builds a theme whose cursor is one fully transparent pixel.
+    #
+    # Written directly rather than with xcursorgen, which would pull in an X11
+    # toolchain onto a Wayland-only box for one 40-byte file. The Xcursor
+    # format is a 16-byte header, a 12-byte table of contents and a 36-byte
+    # image header followed by ARGB pixels -- all little-endian uint32.
+    HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+    CURSORS="$HOME_DIR/.icons/tlspie-blank/cursors"
+    sudo -u "$USER_NAME" mkdir -p "$CURSORS"
+    sudo -u "$USER_NAME" python3 - "$CURSORS/left_ptr" <<'PYEOF'
+import struct, sys
+SIZE = 1
+img = struct.pack('<9I', 36, 0xfffd0002, SIZE, 1, 1, 1, 0, 0, 0) + b'\0\0\0\0'
+hdr = struct.pack('<4I', 0x72756358, 16, 0x00010000, 1)   # "Xcur", v1.0, 1 entry
+toc = struct.pack('<3I', 0xfffd0002, SIZE, 16 + 12)       # image chunk at 28
+open(sys.argv[1], 'wb').write(hdr + toc + img)
+PYEOF
+    # Every name a client might ask for has to resolve, or the theme falls back
+    # to the visible default for that one shape.
+    for n in default pointer arrow top_left_arrow left_ptr_watch watch text \
+             xterm hand hand1 hand2 grab grabbing; do
+        sudo -u "$USER_NAME" ln -sf left_ptr "$CURSORS/$n"
+    done
+    sudo -u "$USER_NAME" tee "$HOME_DIR/.icons/tlspie-blank/index.theme" >/dev/null <<'EOF'
+[Icon Theme]
+Name=tlspie-blank
+Comment=One transparent pixel. There is no mouse on this rig.
+EOF
+    ok "blank cursor theme at $CURSORS"
+
     say "Installing the unit"
     chmod +x "$HERE/tls_kiosk_launch.sh"
     sudo cp "$HERE/$UNIT" "/etc/systemd/system/$UNIT"

@@ -395,11 +395,36 @@ A hot chip alone looks like thermal shutdown, but thermal shutdown needs minutes
 in one second. So the heat was not the failure mechanism — it was evidence that current was too
 high, which was the failure mechanism.
 
-**A flat battery was a second, independent cause of step loss.** `M+` is soldered straight to the
-battery terminal at the kill switch, so **motor supply is unregulated** — a 3S pack runs 12.6 V
-down to ~9 V and the A4983 quits at 8 V. Mid-session the pack drained far enough to brown out and
-**reboot the Pi during a move**. Any measurement taken on a draining pack measures the pack. Keep
-it on charge for every bench test; one experiment was lost to this before it was noticed.
+~~**A flat battery was a second, independent cause of step loss.**~~ **CORRECTED 2026-08-11 — the
+pack was never flat. See "The BMS is the wrong one" below.** `M+` is soldered straight to the
+battery terminal at the kill switch, so **motor supply is unregulated**, and the supply really was
+collapsing under load — but the cause was the BMS strangling a healthy pack, not a drained one.
+The operational lesson survives unchanged: any measurement taken while the supply is sagging
+measures the supply, and one experiment was lost to this before it was noticed.
+
+#### ⛔ The BMS is the wrong one: a 4S BMS on a 3S12P pack
+
+Diagnosed 2026-08-11 from three measurements: pack **12.22 V**, and `C-` and `P-` both sitting at
+**~0.55 V** relative to `B-`. That 0.55 V is a MOSFET **body-diode drop** — the signature of a BMS
+holding both its FETs off while current leaks through the diodes.
+
+**12.22 V across 3S is 4.07 V per cell — a healthy, nearly full pack.** A 4S BMS looks for a fourth
+cell, sees 0 V, and latches under-voltage protection permanently. It cannot be reset and is not
+faulty; it is doing exactly what it is designed to do with a cell missing.
+
+That explains the whole evening: through a body diode you lose ~0.6 V and can pass only a trickle,
+which is fine at idle and collapses the moment the motor pulls current. **Both brownouts, and the
+reboot mid-move, were the wrong BMS.** A 3S12P pack is ~30 Ah / ~330 Wh — it could not possibly
+have "run out" powering this rig for an evening, which was the clue that the flat-battery story
+never really fitted.
+
+**Fix: a 3S BMS** (DollaTek 3S 40 A ordered). Do not try to make the 4S board work — bridging the
+top balance taps still presents the IC with a 0 V cell. **Check the replacement is the Li-ion 4.2 V
+variant, not LiFePO4**, or the pack is capped at 3.65 V/cell and loses a third of its capacity.
+
+**Also confirm the charger.** A 3S pack charges to **12.6 V**. A "12 V" supply reading 13.8–14.4 V
+is a lead-acid charger and would push 4.6–4.8 V per cell — and with the BMS latched off, nothing has
+been protecting these cells. Measure it open-circuit before connecting it again.
 
 **Things that did NOT work — do not retry them:**
 
@@ -660,10 +685,11 @@ that suddenly loads nothing.
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 
-### Scan storage — `tls_storage.py` (built 2026-08-10, NOT yet deployed)
+### Scan storage — `tls_storage.py` ✅ DEPLOYED 2026-08-11
 
-Scans record to a **USB stick whenever one is usable**, and to the SD card otherwise. Built and
-tested (26/26) but **never run on the rig** — the Pi was off the network when it was finished.
+Scans record to a **USB stick whenever one is usable**, and to the SD card otherwise. Deployed and
+verified on the rig: 26/26 on the Pi, correctly reporting no stick and falling back to the SD card.
+**No USB drive has been plugged in yet**, so the USB path itself is still unexercised on hardware.
 
 **Why bother:** a `slow` scan is ~340 MB, so a busy day is ~7 GB written to the SD card. SD cards die
 from write wear, and a dead boot card takes the whole rig down until it is re-flashed and
@@ -776,10 +802,55 @@ degrading to "I cannot see the pack" instead of taking the panel down.
 > because the cost of supporting one is a register table and the cost of confusing them is silent
 > wrong numbers.
 
-### Local touch panel — 5.5" Waveshare HDMI AMOLED (built 2026-08-10, NOT yet fitted)
+### Local touch panel — 5.5" Waveshare HDMI AMOLED ✅ FITTED AND WORKING 2026-08-11
 
 A permanent touch interface on the rig itself, so it can be driven with no phone and no network.
-**Built and committed; the panel has never been plugged in.** Nothing below is verified on hardware.
+**Fitted, deployed and running.** The panel shows the control interface full-screen in portrait.
+
+> **The display needed NO configuration at all.** It supplies EDID and offers 1080x1920 natively, so
+> KMS set the mode on its own — rung 1 of the ladder below. Every `hdmi_timings` instruction in the
+> Waveshare documentation turned out to be not merely wrong for Bookworm but unnecessary.
+> Touch is USB HID and appeared by itself as `WaveShare WaveShare`.
+
+#### ⛔ Four things that broke it, all fixed — do not reintroduce them
+
+1. **`PAMName=login` + `TTYPath=/dev/tty1` in the unit.** The pattern every kiosk guide recommends.
+   `getty@tty1` is active on this rig, so `StandardInput=tty-fail` could not claim the TTY and the
+   unit exited 1 five seconds after every start — with nothing in the log but *"Deactivated
+   successfully"* on a loop, which reads like a clean exit rather than a failure. **`loginctl
+   enable-linger lipi` plus seatd works with no TTY at all**, and leaves the console login on tty1
+   intact — the only way into this machine if the network is down.
+2. **`--force-device-scale-factor`.** Meant to make controls finger-sized at ~400 PPI. It instead
+   shrank chromium's **Wayland surface** to exactly one third: a `360x640` DRM plane in the top-left
+   of a 1080x1920 screen, rest black. Removing it gave `crtc-pos=1080x1920+0+0` immediately.
+   Zoom is now a **CSS zoom the page applies itself** from `?zoom=`, which changes layout without
+   touching the window.
+3. **`--app=<url>` together with `--kiosk`.** `--app` opens an app-style window that `--kiosk` does
+   not fullscreen. **The URL is positional.**
+4. **`--window-size`,** added as belt-and-braces against (2), which made it worse. Under Wayland,
+   let the compositor size the surface.
+
+#### The panel was slow, and it was the CSS, not the Pi
+
+The design uses **nine `backdrop-filter: blur(30px) saturate(180%)` rules**. Each re-blurs the
+region behind it *every frame*, and the 1 Hz status poll triggers repaints constantly. A phone GPU
+absorbs that; the Pi 4's VideoCore driving 2 megapixels in portrait does not. **Disabling
+backdrop-filter for the kiosk was the single biggest responsiveness win** — well ahead of the tap
+delay below. All of it is scoped to a `.kiosk` class, so the phone keeps the design it was built for.
+
+Second cause: the page carries a mobile viewport meta, **but desktop chromium ignores it** — and the
+kiosk *is* desktop chromium. Every tap was held ~300 ms waiting to become a double-tap-zoom.
+`touch-action: manipulation` is honoured on desktop and fixes it. Also dropped in kiosk mode: CSS
+transitions, text selection on long-press, and the scrollbar.
+
+#### The cursor took three attempts
+
+With no mouse ever moving, chromium **never receives a pointer-enter event**, so it never sets a
+cursor and the compositor keeps drawing its own default where it started. CSS `cursor:none` cannot
+reach that, and `XCURSOR_SIZE=1` alone did not either. The fix is a cursor **theme** whose image is
+one transparent pixel — `setup_kiosk.sh` writes the 68-byte Xcursor file directly rather than
+installing an X11 toolchain onto a Wayland-only box, and symlinks every cursor name a client might
+ask for, since one unmapped shape falls back to a visible arrow.
 
 **It renders the phone panel, it is not a second UI.** `tls-kiosk.service` runs a kiosk browser on
 the Pi pointed at `http://localhost:8080/` — the same web app the phone loads, from the same
@@ -1154,8 +1225,20 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**The motion blocker is CLOSED (2026-08-10). The next milestone is the first complete scan —
-that has still never happened.**
+**Two blockers closed on 2026-08-10/11. One new one opened, and it is electrical.**
+
+| | |
+|---|---|
+| ✅ **Motion** | `CUR ADJ PWR` turned **DOWN**. Silent and lossless at every speed, 1–28 °/s. |
+| ✅ **Local screen** | 5.5" panel fitted and working full-screen. Needed **no display config at all**. |
+| ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
+| ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
+
+Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
+pack look flat — which sent an hour of debugging down the wrong path. A 3S BMS is ordered. See
+"The BMS is the wrong one" in Scan geometry for the measurements and the reasoning.
+
+**The next milestone is still the first complete scan — that has never happened.**
 
     # on the Pi
     sudo systemctl start tls-scan     # panel self-starts at boot too
@@ -1319,10 +1402,12 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 ### Still to do — in order
 
-1. ~~**SET THE MOTOR CURRENT LIMIT.**~~ **DONE 2026-08-10 — turned DOWN, not up.** Do not disturb
-   `CUR ADJ PWR`. There is no ammeter on this project, so the setting exists only as that trimmer's
-   physical position. Recovery if it is ever moved: turn it DOWN until a commanded 360° starts
-   falling short of the mark, then back off slightly.
+1. ⛔ **FIT THE 3S BMS. Nothing on battery is trustworthy until this is done.** The rig currently
+   has a **4S BMS on a 3S12P pack**, latched into protection and passing current through MOSFET body
+   diodes — that is what caused both brownouts and the reboot mid-move, and what made a healthy pack
+   look flat. See "The BMS is the wrong one" in Scan geometry. Check the replacement is the **Li-ion
+   4.2 V** variant, not LiFePO4. **Measure the charger open-circuit first** — 13.8–14.4 V means it is
+   a lead-acid charger and must not go near this pack.
 2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
    `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
    never run once in the life of this project. The motion is no longer the obstacle; the capture
@@ -1330,31 +1415,28 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 3. **Re-derive the mount geometry on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m instrument height
    came from `captures/driveway.pcap`, which is a different machine. Take the first real capture
    from this rig and re-run the ground-plane histogram. Until then the sign of the roll is unknown.
-4. **Fit the 5.5" local touch panel** (planned for the week of 2026-08-10). Code is written,
-   committed and unverified — no display has ever been attached. Order of work: plug the panel in,
-   run `./setup_kiosk.sh --probe` **before changing any config**, then `./setup_kiosk.sh`. Ignore
-   every Waveshare `hdmi_timings` instruction — see "Local touch panel" under Key files for why they
-   are silently ignored on Bookworm KMS, and for the ladder that replaces them.
-5. **Deploy `tls_storage.py` and the files it touches.** Written and tested off-hardware (26/26) but
-   **never run on the rig**. `scp tls_storage.py test_storage.py tls_scan.py tls_web.py
-   tls_scanstore.py tlspie:~/TLS-Pie/`, then on the Pi: `python3 test_storage.py`,
-   `python3 tls_storage.py` (should report no USB), `sudo systemctl restart tls-scan`. Then
-   `sudo apt install exfatprogs`, plug in an exFAT stick, press **Check for USB** and run a scan —
-   the panel should say *recording to USB*. `tls_power.py` was deployed and verified on
-   2026-08-10; this is the batch that was not.
-6. **Fit the INA226** (ordered 2026-08-10, ~£1.23). **3V3 only, never 5 V** — its I²C pull-ups
-   reference its own VCC. Check whether the shunt is `R100` or `R002` and set `TLSPIE_SHUNT_OHMS`
-   to match. See "Power telemetry" under Key files.
+4. **Explain the three unexplained reboots** of 2026-08-10 (23:41, 23:50, 23:51), which began when
+   the screen was connected and stopped afterwards. The display has its own charger so it is not
+   loading the Pi's rail. **Find out what is powering the Pi and what it is rated** — a 5 V/2 A phone
+   charger under sustained chromium compositing is the classic version of this. Persistent journald
+   is enabled now, so the next one leaves evidence.
+5. **Exercise the USB scan path.** `tls_storage.py` is deployed and passing on the rig, but no stick
+   has ever been plugged in. `sudo apt install exfatprogs`, format a stick exFAT, press **Check for
+   USB**, run a scan and confirm the panel says *recording to USB*.
+6. **Fit the INA226** (ordered, ~£1.23) for real pack volts and amps on the panel. **3V3 only, never
+   5 V** — its I²C pull-ups reference its own VCC. Check whether the shunt is `R100` or `R002` and
+   set `TLSPIE_SHUNT_OHMS` to match; wrong value is a silent 50× error.
 7. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
    must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
-5. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
+8. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
    under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.
-6. **Confirm the Pi's `192.168.1.100`** against the VLP-16's own configuration — never verified, and
-   a mismatch presents as a capture fault rather than a network one.
-7. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps under capture load.
-8. **Consider deleting U6 entirely** — the 12 V buck is now unloaded, M+ having been moved to the
+9. **Confirm the VLP-16 addressing on hardware.** Rotoslider's own setup notes say the puck is
+   `192.168.1.201` and the Pi's `eth0` is `192.168.1.222`; this document previously claimed
+   `192.168.1.100` for the Pi, unverified. A mismatch presents as a capture fault, not a network one.
+10. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps under capture load.
+11. **Consider deleting U6 entirely** — the 12 V buck is now unloaded, M+ having been moved to the
    switched battery.
-9. Prune the superseded MicroView files and regenerate the setup bundles, which still describe the
+12. Prune the superseded MicroView files and regenerate the setup bundles, which still describe the
    old architecture.
 
 The two pieces of work offered on 2026-08-08 are now **done**: the duration watchdog is in

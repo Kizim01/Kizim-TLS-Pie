@@ -48,20 +48,43 @@ User=lipi
 WorkingDirectory=/home/lipi/TLS-Pie
 
 # cage is a wlroots kiosk compositor: one fullscreen client, no desktop, no
-# window manager, nothing to accidentally swipe away. It needs a real login
-# session to be granted the seat (the GPU and the input devices), which is what
-# PAMName=login plus a TTY provides. Without those two lines cage aborts with
-# "Could not create backend" and the cause is not obvious from the message.
-PAMName=login
-TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-StandardInput=tty-fail
+# window manager, nothing to accidentally swipe away. It needs access to the
+# seat -- the GPU and the input devices -- which comes from seatd plus
+# membership of video/render/input. setup_kiosk.sh arranges both.
+#
+# ⛔ DO NOT ADD PAMName=login + TTYPath=/dev/tty1 HERE.
+# That is the pattern most kiosk guides use, and it FAILED ON THIS RIG
+# (2026-08-10): getty@tty1 is active, so StandardInput=tty-fail could not claim
+# the TTY and the unit exited 1 five seconds after every start, with no message
+# explaining why -- just "Deactivated successfully" on a loop. Running cage as
+# lipi with seatd works without a TTY at all, so the whole mechanism was
+# unnecessary. Avoiding it also leaves the console login on tty1 intact, which
+# is the only way into this machine if the network is down.
+#
+# XDG_RUNTIME_DIR must exist for cage to start, and without a login session
+# nothing creates it. `loginctl enable-linger lipi` makes systemd create
+# /run/user/1000 at boot; setup_kiosk.sh enables it.
 StandardOutput=journal
 StandardError=journal
 
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XDG_SESSION_TYPE=wayland
+Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
+
+# Kill the mouse pointer. There is no mouse on this rig, so it is an arrow
+# parked in the middle of the screen forever.
+#
+# Why it appears at all: with no pointer device ever moving, chromium never
+# gets a pointer-enter event and never sets a cursor, so the COMPOSITOR keeps
+# drawing its default one where it started. CSS cursor:none in the page cannot
+# reach it, and XCURSOR_SIZE=1 alone did not work either.
+#
+# cage has no hide-cursor option -- its whole option list is -d -h -m -s -v --
+# so the lever is a cursor theme whose images are a single transparent pixel.
+# setup_kiosk.sh generates it at ~/.icons/tlspie-blank.
+Environment=XCURSOR_SIZE=1
+Environment=XCURSOR_THEME=tlspie-blank
+Environment=XCURSOR_PATH=/home/lipi/.icons
 
 # --- the two knobs worth tuning ---------------------------------------------
 #
@@ -69,14 +92,17 @@ Environment=XDG_SESSION_TYPE=wayland
 #   If TLSPIE_WEB_TOKEN is set on tls-scan.service, the panel requires a token
 #   and this URL must carry it:  http://localhost:8080/?t=<token>
 #
-# TLSPIE_KIOSK_SCALE
-#   The panel is 1080x1920 across 5.5 inches -- about 400 PPI. Rendered 1:1
-#   every control would be a third the size of the same control on a phone, so
-#   the browser is told to scale. 2.5 gives a 432x768 CSS viewport, close to a
-#   phone's. Raise it for bigger targets, lower it to fit more on screen.
-#   Tune this with the panel in front of you; it is guesswork from a desk.
+# TLSPIE_KIOSK_ZOOM
+#   Page zoom as a percentage. The panel is 1080x1920 across 5.5 inches --
+#   about 400 PPI -- so rendered 1:1 every control is roughly a third the size
+#   of the same control on a phone. 250 gives a ~432 CSS-pixel viewport, close
+#   to a phone's. Raise for bigger targets, lower to fit more on screen.
+#
+#   ⛔ This is a CSS zoom, NOT --force-device-scale-factor. That flag was tried
+#   on 2026-08-10 and shrank chromium's Wayland surface to exactly one third:
+#   a 360x640 plane in the top-left of a 1080x1920 screen, rest black.
 Environment=TLSPIE_KIOSK_URL=http://localhost:8080/
-Environment=TLSPIE_KIOSK_SCALE=2.5
+Environment=TLSPIE_KIOSK_ZOOM=250
 
 ExecStart=/usr/bin/cage -- /home/lipi/TLS-Pie/tls_kiosk_launch.sh
 

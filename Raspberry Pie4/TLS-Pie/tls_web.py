@@ -609,7 +609,85 @@ PAGE = """<!doctype html>
     margin:9px 0 5px;font-variant-numeric:tabular-nums}
   .nudge input[type=range]{width:100%;accent-color:var(--blue)}
   .note{font-size:12px;color:var(--faint);line-height:1.5;margin:11px 0 0}
+
+  /* --- Local touch panel only. Scoped to .kiosk so the phone and any desktop
+         browser are completely unaffected. --------------------------------- */
+
+  /* There is no mouse on the rig, so the pointer is an arrow parked on the
+     screen forever. The compositor draws its own hardware cursor as well --
+     XCURSOR_SIZE=1 in tls-kiosk.service deals with that half. */
+  html.kiosk, html.kiosk *{cursor:none !important}
+
+  /* THE TAP DELAY. This page carries a mobile viewport meta, but DESKTOP
+     chromium ignores it -- and the kiosk is desktop chromium. So every tap was
+     being held for ~300ms waiting to see if it became a double-tap-to-zoom,
+     which is what made the panel feel unresponsive on the 5.5" screen.
+     touch-action:manipulation opts out of double-tap zoom and is honoured on
+     desktop, so taps register immediately.
+
+     NOT applied to the 3D viewer's canvas, which sets touch-action:none and
+     does its own pinch and drag handling. */
+  html.kiosk body, html.kiosk button, html.kiosk .card,
+  html.kiosk .banner, html.kiosk .scan{touch-action:manipulation}
+
+  /* Long-pressing a control on a touchscreen otherwise starts a text
+     selection, complete with handles, over the scan buttons. */
+  html.kiosk{-webkit-user-select:none;user-select:none}
+  html.kiosk input, html.kiosk textarea{-webkit-user-select:auto;user-select:auto}
+
+  /* ⛔ THE PERFORMANCE FIX. This is what made the local screen feel slow.
+     The panel's frosted-glass look is NINE backdrop-filter blur(30px)
+     saturate(180%) rules. Each one re-blurs the region behind it EVERY FRAME.
+     A phone GPU eats that for breakfast; the Pi 4's VideoCore, driving
+     1080x1920, does not -- and it is paid on every repaint, which the 1 Hz
+     status poll triggers constantly.
+
+     Dropped for the kiosk only, so the phone keeps the look it was designed
+     with. --glass is only rgba(255,255,255,.07), which relies on the blur to
+     read as a surface, so the cards get an opaque background instead of
+     turning into faint rectangles. */
+  html.kiosk *{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
+  html.kiosk .card{background:rgba(32,32,40,.92)}
+  html.kiosk .banner{background:rgba(38,32,26,.92)}
+  html.kiosk .hdr{background:rgba(18,18,24,.94)}
+
+  /* Transitions on a device that is already working hard read as lag rather
+     than polish. Taps should land instantly. */
+  html.kiosk *{transition-duration:0s !important}
+
+  /* No mouse means the scrollbar is not a control, just a bright strip down
+     the right-hand edge. Touch scrolling is unaffected. */
+  html.kiosk::-webkit-scrollbar, html.kiosk *::-webkit-scrollbar{
+    width:0;height:0;display:none}
+  html.kiosk{scrollbar-width:none;-ms-overflow-style:none}
 </style></head><body>
+<script>
+/*
+  Two things the rig's own 5.5" panel needs and the phone does not. Both come
+  from query parameters, so this stays ONE page serving both surfaces.
+
+  zoom -- the panel is 1080x1920 across 5.5 inches, about 400 PPI. Rendered 1:1
+  the CSS viewport is 1080px wide while body is max-width:560px, so the layout
+  sits as a narrow strip down the middle with dead space either side. That is
+  exactly what the first fit on hardware looked like. Zoom 250% makes the CSS
+  viewport 432px, so the phone layout fills the screen at phone-sized targets.
+
+  ⛔ Deliberately NOT chromium's --force-device-scale-factor. Tried 2026-08-10:
+  it shrank chromium's Wayland SURFACE to exactly one third -- a 360x640 plane
+  in the top-left of a 1080x1920 screen. Zoom changes the layout; that flag
+  changed the window.
+
+  Runs before first paint, so there is no flash of the unzoomed layout.
+*/
+(function(){
+  try{
+    var p = new URLSearchParams(location.search);
+    var z = parseFloat(p.get('zoom'));
+    if(z > 0) document.documentElement.style.zoom = z / 100;
+    if(p.get('kiosk') === '1') document.documentElement.classList.add('kiosk');
+  }catch(e){}
+})();
+</script>
 
 <div class="hdr"><h1>TLS Scanner</h1><span class="hdrend">
   <span class="rev" id="rev">Rev 2.0</span>
