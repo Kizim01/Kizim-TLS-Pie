@@ -194,9 +194,21 @@ def _read_ina():
             chip = INA_CHIP
             if chip == "auto":
                 chip = None
-                # INA226: manufacturer 0x5449 at 0xFE, die 0x2260 at 0xFF.
+                # An empty address and a device that will not identify itself
+                # are DIFFERENT PROBLEMS and must not produce the same message.
+                # Nothing fitted is the normal state of this rig; a monitor that
+                # answers but does not match is a wiring or config fault someone
+                # needs to go and fix. Telling the operator to "set
+                # TLSPIE_INA_CHIP" when there is simply no chip in the machine
+                # sends them looking for a fault that does not exist.
+                responded = False
+
+                # INA226: manufacturer 0x5449 at 0xFE, die 0x226 in the top 12
+                # bits of 0xFF.
                 try:
-                    if r16(0xFE) == 0x5449 and (r16(0xFF) >> 4) == 0x226:
+                    mfg = r16(0xFE)
+                    responded = True
+                    if mfg == 0x5449 and (r16(0xFF) >> 4) == 0x226:
                         chip = "ina226"
                 except OSError:
                     pass
@@ -204,16 +216,21 @@ def _read_ina():
                 # top 12 bits of 0x3F.
                 if chip is None:
                     try:
-                        if r16(0x3E) == 0x5449 and (r16(0x3F) >> 4) == 0x238:
+                        mfg = r16(0x3E)
+                        responded = True
+                        if mfg == 0x5449 and (r16(0x3F) >> 4) == 0x238:
                             chip = "ina238"
                     except OSError:
                         pass
                 if chip is None:
-                    # Something is at this address but it will not identify
-                    # itself. Say so rather than inventing a reading.
+                    if not responded:
+                        # Silence on the bus. No chip fitted -- say nothing and
+                        # let the panel fall back to the SoC rail source.
+                        return {}
                     return {"chip": None,
-                            "inaNote": "unidentified device at 0x%02x -- set "
-                                       "TLSPIE_INA_CHIP" % INA_ADDR}
+                            "inaNote": "device at 0x%02x will not identify "
+                                       "itself -- set TLSPIE_INA_CHIP"
+                                       % INA_ADDR}
 
             if chip == "ina226":
                 bus_v = r16(0x02) * 1.25e-3        # 1.25 mV/LSB

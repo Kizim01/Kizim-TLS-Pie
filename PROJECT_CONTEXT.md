@@ -701,7 +701,7 @@ counting does, which needs a smart BMS. **This pack's BMS has no Bluetooth**, so
 Address `0x40`, no clash with the DS3231 at `0x68`. Current is derived as `V_shunt / SHUNT_OHMS`
 rather than via the chip's calibration register — that skips a configuration write on every boot and
 one more thing to get silently wrong. `python3 tls_power.py` prints the raw reading. Tests:
-`test_power.py`, **32/32**, and they run anywhere because the module's most important property is
+`test_power.py`, **33/33**, and they run anywhere because the module's most important property is
 degrading to "I cannot see the pack" instead of taking the panel down.
 
 > #### ⛔ It must never guess which monitor is fitted

@@ -201,12 +201,24 @@ check("INA238 is identified", r.get("chip") == "INA238", r)
 check("INA238 voltage is right, not INA226-scaled",
       r.get("packV") is not None and abs(r["packV"] - 12.60) < 0.01, r)
 
-# Something is there, but it will not say what it is.
-r = with_bus({0x00: 0x1234})
+# Something is there, but it will not say what it is. A real device that is not
+# an INA still ACKs its address and hands back whatever is at that register --
+# it does not go silent. Modelling it as "raises on every read" would make it
+# indistinguishable from an empty address, which is the very thing this pair of
+# tests exists to separate.
+r = with_bus({0xFE: 0xFFFF, 0x3E: 0xFFFF, 0x00: 0x1234})
 check("an unidentified device yields NO reading",
       r.get("packV") is None, r)
 check("and says so, rather than looking like an empty socket",
       bool(r.get("inaNote")), r)
+
+# ...but an EMPTY address is a different problem and must not produce the same
+# message. Caught on the Pi 2026-08-10: with no chip fitted at all, every probe
+# read raised OSError, which was reported as "unidentified device at 0x40" --
+# sending the operator to look for a wiring fault on a rig that simply has no
+# monitor in it yet. Nothing fitted is this rig's NORMAL state.
+r = with_bus({})
+check("an empty address reports nothing at all, not a fault", r == {}, r)
 
 # INA219 has no ID register at all, so auto must never land on it...
 r = with_bus({0x02: 10080, 0x01: 0})
