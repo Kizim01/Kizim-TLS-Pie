@@ -86,6 +86,38 @@ probe_display() {
         ls /dev/input/event* 2>/dev/null | sed 's/^/  /' || echo "  none"
         echo "  (install libinput-tools for a readable list)"
     fi
+
+    # A cursor is only drawn when the seat has a POINTER. If the panel that is
+    # meant to be touch-only also presents a mouse interface -- plenty of HID
+    # touchscreens do -- that is where the arrow on screen comes from, and it
+    # is worth knowing before blaming the cursor theme.
+    say "Pointer devices (why a cursor appears at all)"
+    if command -v libinput >/dev/null 2>&1; then
+        if libinput list-devices 2>/dev/null | grep -q 'pointer'; then
+            libinput list-devices 2>/dev/null \
+                | awk '/^Device:/{d=$0} /Capabilities:.*pointer/{print "  " d}'
+            warn "something presents a POINTER. The blank theme is what hides it."
+        else
+            ok "no pointer device -- any cursor on screen is the compositor's default"
+        fi
+    else
+        echo "  (install libinput-tools to check)"
+    fi
+
+    say "Blank cursor theme"
+    local hd
+    hd="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+    # "default" is the load-bearing one: cage passes a NULL theme name and
+    # wlroots substitutes "default". A theme installed only as tlspie-blank
+    # looks correct here and does nothing on screen.
+    if [ -s "$hd/.icons/default/cursors/left_ptr" ]; then
+        ok "$hd/.icons/default/cursors/left_ptr present (this is the one cage uses)"
+    else
+        bad "no 'default' cursor theme -- run the installer; the arrow will stay"
+    fi
+    [ -s "$hd/.icons/tlspie-blank/cursors/left_ptr" ] \
+        && ok "tlspie-blank present too (for chromium, which does read XCURSOR_THEME)" \
+        || warn "tlspie-blank missing"
 }
 
 show_display_advice() {
@@ -166,36 +198,22 @@ do_install() {
     say "Blank cursor theme"
     # There is no mouse on this rig, so the compositor's default pointer just
     # sits in the middle of the screen forever. cage cannot be told to hide it
-    # (options are only -d -h -m -s -v) and XCURSOR_SIZE=1 was not enough, so
-    # this builds a theme whose cursor is one fully transparent pixel.
+    # (its whole option list is -d -h -m -s -v), so the lever is a cursor theme
+    # whose images are fully transparent.
     #
-    # Written directly rather than with xcursorgen, which would pull in an X11
-    # toolchain onto a Wayland-only box for one 40-byte file. The Xcursor
-    # format is a 16-byte header, a 12-byte table of contents and a 36-byte
-    # image header followed by ARGB pixels -- all little-endian uint32.
+    # ⛔ The theme MUST be installed as "default". The first attempt installed
+    # only "tlspie-blank" and pointed XCURSOR_THEME at it, and nothing changed,
+    # because cage never reads XCURSOR_THEME -- it passes a NULL theme name to
+    # wlroots, which substitutes the literal string "default". tls_blankcursor
+    # writes both names for that reason; see its docstring for the evidence.
     HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
-    CURSORS="$HOME_DIR/.icons/tlspie-blank/cursors"
-    sudo -u "$USER_NAME" mkdir -p "$CURSORS"
-    sudo -u "$USER_NAME" python3 - "$CURSORS/left_ptr" <<'PYEOF'
-import struct, sys
-SIZE = 1
-img = struct.pack('<9I', 36, 0xfffd0002, SIZE, 1, 1, 1, 0, 0, 0) + b'\0\0\0\0'
-hdr = struct.pack('<4I', 0x72756358, 16, 0x00010000, 1)   # "Xcur", v1.0, 1 entry
-toc = struct.pack('<3I', 0xfffd0002, SIZE, 16 + 12)       # image chunk at 28
-open(sys.argv[1], 'wb').write(hdr + toc + img)
-PYEOF
-    # Every name a client might ask for has to resolve, or the theme falls back
-    # to the visible default for that one shape.
-    for n in default pointer arrow top_left_arrow left_ptr_watch watch text \
-             xterm hand hand1 hand2 grab grabbing; do
-        sudo -u "$USER_NAME" ln -sf left_ptr "$CURSORS/$n"
-    done
-    sudo -u "$USER_NAME" tee "$HOME_DIR/.icons/tlspie-blank/index.theme" >/dev/null <<'EOF'
-[Icon Theme]
-Name=tlspie-blank
-Comment=One transparent pixel. There is no mouse on this rig.
-EOF
-    ok "blank cursor theme at $CURSORS"
+    sudo -u "$USER_NAME" python3 "$HERE/tls_blankcursor.py" "$HOME_DIR/.icons" \
+        | sed 's/^/  /'
+    if [ -s "$HOME_DIR/.icons/default/cursors/left_ptr" ]; then
+        ok "blank cursor theme at $HOME_DIR/.icons (default + tlspie-blank)"
+    else
+        bad "blank cursor theme was not written -- the pointer will stay visible"
+    fi
 
     say "Installing the unit"
     chmod +x "$HERE/tls_kiosk_launch.sh"

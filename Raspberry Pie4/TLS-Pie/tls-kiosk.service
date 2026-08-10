@@ -77,14 +77,30 @@ Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
 # Why it appears at all: with no pointer device ever moving, chromium never
 # gets a pointer-enter event and never sets a cursor, so the COMPOSITOR keeps
 # drawing its default one where it started. CSS cursor:none in the page cannot
-# reach it, and XCURSOR_SIZE=1 alone did not work either.
+# reach a cursor the compositor draws. cage has no hide-cursor option either --
+# its whole option list is -d -h -m -s -v -- so the only lever is to give it a
+# cursor image that happens to be transparent.
 #
-# cage has no hide-cursor option -- its whole option list is -d -h -m -s -v --
-# so the lever is a cursor theme whose images are a single transparent pixel.
-# setup_kiosk.sh generates it at ~/.icons/tlspie-blank.
+# ⛔ THE VARIABLES BELOW DO NOT CONTROL CAGE. Setting XCURSOR_THEME=tlspie-blank
+# and XCURSOR_SIZE=1 was tried on 2026-08-10 and changed NOTHING, because cage
+# creates its cursor manager as
+#
+#     wlr_xcursor_manager_create(NULL, XCURSOR_SIZE)
+#
+# with a NULL theme name and a compile-time size. wlroots turns that NULL into
+# the literal string "default". The size being ignored is the tell: XCURSOR_SIZE=1
+# did not shrink the arrow either.
+#
+# So the fix is the theme NAMED "default" that tls_blankcursor.py installs in
+# ~/.icons. These variables are kept because chromium DOES honour them, and it
+# is the other thing on screen that can draw a cursor.
+#
+# XCURSOR_PATH has to list /usr/share/icons as well: setting it at all REPLACES
+# the default search path, and stripping the system themes out would leave
+# chromium with nothing to fall back to for a shape our theme happens to miss.
 Environment=XCURSOR_SIZE=1
 Environment=XCURSOR_THEME=tlspie-blank
-Environment=XCURSOR_PATH=/home/lipi/.icons
+Environment=XCURSOR_PATH=/home/lipi/.icons:/usr/share/icons
 
 # --- the two knobs worth tuning ---------------------------------------------
 #

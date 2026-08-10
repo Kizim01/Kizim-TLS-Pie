@@ -109,6 +109,37 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "Shutdown permission"
+# The panel's Shut down button runs `sudo -n systemctl poweroff` as
+# $TARGET_USER. Without this rule sudo asks for a password nobody can type --
+# the scanner is a background service with no terminal -- and the button fails
+# with "a password is required".
+#
+# Narrow on purpose: ONE command, no wildcard, no ALL. Raspberry Pi OS usually
+# ships blanket NOPASSWD for the first user, but that is a default someone may
+# reasonably remove, and this must keep working if they do.
+#
+# Written via a temp file and validated with `visudo -c` before it goes live.
+# A syntactically bad file in /etc/sudoers.d does not break one rule, it breaks
+# SUDO -- on a headless machine reached only over SSH, that is unrecoverable
+# without pulling the card.
+SUDOERS=/etc/sudoers.d/030-tlspie-poweroff
+SYSTEMCTL="$(command -v systemctl || echo /usr/bin/systemctl)"
+TMP_SUDOERS="$(mktemp)"
+cat > "$TMP_SUDOERS" <<EOF
+# Installed by first_boot_setup.sh. Lets the TLS Pie control panel power the
+# machine down cleanly, so scans are never lost to a pulled plug.
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL poweroff
+EOF
+if visudo -cqf "$TMP_SUDOERS" 2>/dev/null; then
+    install -m 0440 -o root -g root "$TMP_SUDOERS" "$SUDOERS"
+    ok "$TARGET_USER may run '$SYSTEMCTL poweroff' without a password"
+else
+    warn "sudoers snippet failed validation -- NOT installed, shutdown button will not work"
+fi
+rm -f "$TMP_SUDOERS"
+
+# ---------------------------------------------------------------------------
 say "Lidar network ($ETH_INTERFACE)"
 # eth0 is a point-to-point link to the sensor: static, no gateway, no DNS. It
 # must never become the default route or WiFi traffic would try to leave down a

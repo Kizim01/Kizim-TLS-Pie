@@ -46,6 +46,7 @@ import math
 import os
 import socket
 import struct
+import subprocess
 import threading
 import time
 import zlib
@@ -497,6 +498,19 @@ PAGE = """<!doctype html>
   .restart{text-align:center}
   .restart .lbl{font-size:17px}
 
+  /* Shut down. Deliberately QUIETER than .stop, which is filled red and 23px:
+     STOP is the safety control and has to be the loudest thing on the screen,
+     and a power button that shouts just as loudly next to it is a hazard
+     under time pressure. This one is outlined, and buys its safety from a
+     second tap rather than from size. Arming it fills it in, so "one more tap
+     and the rig goes off" is visible from arm's length. */
+  .power{text-align:center;background:rgba(255,69,58,.10);
+    border-color:rgba(255,69,58,.40)}
+  .power .lbl{font-size:17px;color:#FF9A93}
+  .power.armed{background:rgba(255,69,58,.34);
+    border-color:rgba(255,69,58,.78)}
+  .power.armed .lbl{color:#fff}
+
   .kv{display:flex;justify-content:space-between;gap:14px;font-size:14.5px;
     padding:11px 0;border-bottom:.5px solid rgba(255,255,255,.09)}
   .kv:last-child{border-bottom:0;padding-bottom:0}
@@ -628,7 +642,7 @@ PAGE = """<!doctype html>
      NOT applied to the 3D viewer's canvas, which sets touch-action:none and
      does its own pinch and drag handling. */
   html.kiosk body, html.kiosk button, html.kiosk .card,
-  html.kiosk .banner, html.kiosk .scan{touch-action:manipulation}
+  html.kiosk .banner, html.kiosk .scan, html.kiosk .power{touch-action:manipulation}
 
   /* Long-pressing a control on a touchscreen otherwise starts a text
      selection, complete with handles, over the scan buttons. */
@@ -810,6 +824,20 @@ PAGE = """<!doctype html>
   is the only thing that stops the motor if the controller dies.
 </div>
 
+<!--
+  Shut down, at the very bottom of the page on purpose: it is the last thing
+  you do, it is irreversible, and nothing above it should ever be reached by a
+  thumb aiming here. Pulling the plug instead risks the scan library, because
+  exFAT has no journal and loses the directory rather than the last file.
+-->
+<div class="card" id="powerCard">
+  <p class="sechead">Power</p>
+  <button class="power" id="pwrbtn" onclick="armShutdown()">
+    <span class="lbl">Shut down the Pi</span>
+    <span class="det" id="pwrdet">ejects the USB stick first, then powers off</span>
+  </button>
+</div>
+
 <script>
 const T = new URLSearchParams(location.search).get('t');
 const q = p => T ? p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(T) : p;
@@ -915,6 +943,9 @@ function renderStorage(s){
 }
 
 async function poll(){
+  // Once the Pi is on its way down there is nothing left to ask it, and the
+  // OFFLINE banner would read as a fault rather than as the expected outcome.
+  if(shuttingDown) return;
   try{
     const s = await (await fetch(q('/api/status'),{cache:'no-store'})).json();
     if(!built) buildScans(s);
@@ -942,6 +973,7 @@ async function poll(){
     document.getElementById('rehome').style.display = s.positionKnown ? 'none':'block';
     renderPower(s.power);
     renderStorage(s);
+    renderShutdown(s);
 
     document.getElementById('stop').disabled = !s.busy || s.stopPending;
     document.getElementById('restart').disabled = s.busy;
@@ -1042,6 +1074,84 @@ function drawCloud(d){
   document.getElementById('cvmeta').textContent =
     d.count.toLocaleString() + ' pts · ' + spanM + ' m across · ' +
     d.packetsUsed.toLocaleString() + '/' + d.packetsSeen.toLocaleString() + ' pkts';
+}
+
+// --- shut down ------------------------------------------------------------
+// Two taps, not a dialog. This button lives on a touchscreen bolted to a
+// tripod, so a brushed sleeve must not end the session -- but a modal is worse
+// on a 5.5" panel in daylight than a button that changes what it says. The arm
+// expires by itself, so walking away is the same as cancelling.
+const PWR_REST = 'ejects the USB stick first, then powers off';
+let armTimer = null;
+let shuttingDown = false;
+
+function pwrLabel(lbl, det){
+  document.getElementById('pwrbtn').querySelector('.lbl').textContent = lbl;
+  document.getElementById('pwrdet').textContent = det;
+}
+
+function disarmShutdown(){
+  clearTimeout(armTimer); armTimer = null;
+  document.getElementById('pwrbtn').classList.remove('armed');
+  pwrLabel('Shut down the Pi', PWR_REST);
+}
+
+async function armShutdown(){
+  const b = document.getElementById('pwrbtn');
+  if(!b.classList.contains('armed')){
+    b.classList.add('armed');
+    pwrLabel('Tap again to shut down', 'cancels itself in 5 seconds');
+    armTimer = setTimeout(disarmShutdown, 5000);
+    return;
+  }
+  clearTimeout(armTimer); armTimer = null;
+  b.disabled = true;
+  pwrLabel('Shutting down…', 'flushing the USB stick');
+
+  let ok = false, message = '';
+  try{
+    const r = await fetch(q('/api/shutdown?confirm=yes'), {method:'POST'});
+    const j = await r.json();
+    ok = j.ok; message = j.message;
+  }catch(e){
+    // The machine going dark before the reply arrives looks EXACTLY like this,
+    // and is the successful case. Treating a dropped connection as a failure
+    // would tell the operator the shutdown had not happened while the rig was
+    // already powering off -- so the only honest reading is that it worked.
+    ok = true;
+    message = 'Shutting down — wait for the green LED to stop before cutting power';
+  }
+
+  if(ok){
+    shuttingDown = true;             // stop polling; OFFLINE would be alarming
+    disarmShutdown();
+    document.getElementById('phase').textContent = 'SHUTTING DOWN';
+    document.getElementById('phase').style.color = '#FF9F0A';
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('dot').style.background = '#FF9F0A';
+    document.getElementById('msg').textContent = message;
+    pwrLabel('Shutting down…', 'safe to cut power once the LED is off');
+    return;
+  }
+  // Refused, or it could not run. Say why, right under the button.
+  b.disabled = false;
+  b.classList.remove('armed');
+  pwrLabel('Shut down the Pi', message);
+}
+
+function renderShutdown(s){
+  if(shuttingDown) return;
+  const b = document.getElementById('pwrbtn');
+  if(s.busy){
+    if(b.classList.contains('armed')) disarmShutdown();
+    b.disabled = true;
+    document.getElementById('pwrdet').textContent = 'stop the scan first';
+  } else if(b.disabled){
+    // Only on the transition back, so a refusal message stays readable
+    // instead of being wiped by the next 1 Hz poll.
+    b.disabled = false;
+    disarmShutdown();
+  }
 }
 
 async function cmd(what, profile){
@@ -1584,7 +1694,8 @@ window.addEventListener('popstate', closeViewer);
 poll();
 refreshLibrary();
 setInterval(poll, 1000);
-setInterval(() => { if(!document.getElementById('viewer').classList.contains('on'))
+setInterval(() => { if(!shuttingDown &&
+                       !document.getElementById('viewer').classList.contains('on'))
                       refreshLibrary(); }, 5000);
 </script>
 </body></html>
@@ -1732,6 +1843,8 @@ class _Handler(BaseHTTPRequestHandler):
             ok, message = self._request_build(query)
         elif url.path == "/api/usb":
             ok, message = self._usb(query.get("action", [""])[0])
+        elif url.path == "/api/shutdown":
+            ok, message = self._shutdown(query.get("confirm", [""])[0])
         else:
             self._json(404, {"ok": False, "message": "Not found"})
             return
@@ -1770,6 +1883,78 @@ class _Handler(BaseHTTPRequestHandler):
                               % tls_storage.human(st.get("usbFree")))
             return False, message
         return False, "Unknown action %r" % action
+
+    # Tried in order. The first is the one that works on this rig; the second
+    # is there for a machine where polkit lets a local session power down
+    # without sudo, so a missing sudoers rule is not automatically fatal.
+    _POWEROFF = (
+        ["sudo", "-n", "systemctl", "poweroff"],
+        ["systemctl", "poweroff"],
+    )
+
+    def _shutdown(self, confirm):
+        """
+        Power the Pi down from the panel.
+
+        This exists because the alternative is pulling the plug, and the Pi
+        writes scans to a filesystem with no journal. exFAT does not survive
+        losing power with a dirty cache: the loss is the DIRECTORY, not just
+        the last file, so scans that appeared to record fine are simply not
+        there when the stick reaches a computer.
+
+        Three things guard it, in order:
+
+        1. `confirm=yes`. The panel asks twice. A shutdown button on a
+           touchscreen mounted on a tripod in a field is one brushed sleeve
+           away from ending the session, and there is no undo.
+        2. REFUSED while a scan is running. Stopping mid-capture would leave a
+           truncated pcap and a head at an unknown angle, and the operator
+           already has a STOP button that ends a scan properly.
+        3. The USB stick is flushed and unmounted FIRST, and a failure to
+           unmount aborts the whole thing. Powering down over a mounted exFAT
+           volume is exactly the data loss this is meant to prevent.
+
+        The motor is not this method's problem: systemd sends tls-scan SIGTERM
+        on the way down and its signal handler releases ENABLE in a finally.
+
+        Runs the command SYNCHRONOUSLY rather than on a timer. The reply may
+        well lose the race with the machine going dark -- which is harmless,
+        the screen going off is its own confirmation -- but the case that
+        matters is failure, and this is the only way the operator hears about
+        it instead of watching a rig that stays on with no explanation.
+        """
+        if confirm != "yes":
+            return False, "Shutdown needs confirming"
+
+        snap = self.state.snapshot()
+        if snap.get("busy"):
+            return False, "Not while a scan is running — press STOP first"
+
+        if tls_storage is not None:
+            ok, message = tls_storage.eject()
+            if not ok:
+                return False, ("Not shutting down: the USB stick would not "
+                               "unmount (%s). Pulling power over a mounted "
+                               "exFAT volume can lose the whole drive." % message)
+
+        errors = []
+        for cmd in self._POWEROFF:
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True,
+                                     timeout=15)
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append("%s: %s" % (cmd[0], exc))
+                continue
+            if res.returncode == 0:
+                return True, "Shutting down — wait for the green LED to stop before cutting power"
+            errors.append((res.stderr or res.stdout or "").strip()
+                          or "%s exited %d" % (cmd[0], res.returncode))
+
+        # Almost always a missing sudoers rule, so name the fix rather than
+        # echoing "a password is required" at someone holding a phone.
+        return False, ("Could not power down: %s. Needs a NOPASSWD sudoers rule "
+                       "for `systemctl poweroff` — see first_boot_setup.sh."
+                       % "; ".join(errors))
 
     def _read_body(self, limit=8192):
         try:

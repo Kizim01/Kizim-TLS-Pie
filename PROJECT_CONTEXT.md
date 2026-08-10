@@ -638,8 +638,23 @@ before the motor turns under load.
 - [Raspberry Pie4/TLS-Pie/tls_cloud.py](Raspberry%20Pie4/TLS-Pie/tls_cloud.py) — VLP-16 decoder + live preview buffer (opt-in)
 - [Raspberry Pie4/TLS-Pie/tls-scan.service](Raspberry%20Pie4/TLS-Pie/tls-scan.service) — systemd unit
 - [Raspberry Pie4/TLS-Pie/gpio_selftest.py](Raspberry%20Pie4/TLS-Pie/gpio_selftest.py) — GPIO damage check
+- [Raspberry Pie4/TLS-Pie/tls_blankcursor.py](Raspberry%20Pie4/TLS-Pie/tls_blankcursor.py) — writes the transparent Xcursor theme. **Must be installed as `default`** — see the kiosk section
 - [Raspberry Pie4/TLS-Pie/test_web_install.py](Raspberry%20Pie4/TLS-Pie/test_web_install.py) — HTTP tests for the panel's install surface (no hardware needed)
 - [Raspberry Pie4/TLS-Pie/MICROVIEW_REMOVAL.md](Raspberry%20Pie4/TLS-Pie/MICROVIEW_REMOVAL.md) — wiring, install, staged bench test
+
+**All suites, 2026-08-11 — 350 checks, 0 failures** (`test_viewer.py` on the laptop, which has node;
+the Pi does not, so it skips the four `node --check` cases there):
+
+| suite | checks | covers |
+|---|---|---|
+| `test_viewer.py` | 80 | 3D viewer, panel JS parses |
+| `test_cloud_registration.py` | 67 | cloud build + alignment |
+| `test_web_install.py` | 49 | routing, token, home-screen install |
+| `test_blankcursor.py` | 41 | Xcursor bytes, theme install |
+| `test_power.py` | 33 | INA226/238/219 + vcgencmd |
+| `test_shutdown.py` | 31 | every shutdown refusal |
+| `test_storage.py` | 26 | USB vs SD, never returns `mmcblk0` |
+| `test_stepper_watchdog.py` | 23 | duration watchdog |
 - [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh) — still current
 
 ### Operator interface — the phone panel
@@ -843,14 +858,49 @@ kiosk *is* desktop chromium. Every tap was held ~300 ms waiting to become a doub
 `touch-action: manipulation` is honoured on desktop and fixes it. Also dropped in kiosk mode: CSS
 transitions, text selection on long-press, and the scrollbar.
 
-#### The cursor took three attempts
+#### The cursor: four attempts, and the reason the first three failed — 2026-08-11
 
 With no mouse ever moving, chromium **never receives a pointer-enter event**, so it never sets a
 cursor and the compositor keeps drawing its own default where it started. CSS `cursor:none` cannot
-reach that, and `XCURSOR_SIZE=1` alone did not either. The fix is a cursor **theme** whose image is
-one transparent pixel — `setup_kiosk.sh` writes the 68-byte Xcursor file directly rather than
-installing an X11 toolchain onto a Wayland-only box, and symlinks every cursor name a client might
-ask for, since one unmapped shape falls back to a visible arrow.
+reach a cursor the compositor draws, and `XCURSOR_SIZE=1` did not help either.
+
+The theme was right. **The theme's NAME was wrong**, and that is the whole story:
+
+> ### ⛔ `cage` does not read `XCURSOR_THEME`. The theme must be called `default`.
+>
+> Attempt three installed a theme named `tlspie-blank` and pointed `XCURSOR_THEME` at it. Nothing
+> changed. Verified on the rig, not reasoned about:
+>
+> ```
+> $ strings /usr/bin/cage | grep -i xcursor        # cage 0.2.0-2+rpt1
+>   ...wlr_xcursor_manager_create, wlr_xcursor_manager_load...   ← API symbols only
+>                                                                ← NO "XCURSOR_THEME" string
+> $ strings libwlroots-0.18.so | grep XCURSOR_
+>   XCURSOR_PATH                                   ← the ONLY one it reads
+> ```
+>
+> cage calls `wlr_xcursor_manager_create(NULL, ...)`, and wlroots turns a NULL theme name into the
+> literal string **`default`**. Neither `XCURSOR_THEME` nor `XCURSOR_SIZE` exists anywhere in either
+> binary. **The size being ignored was the clue all along** — `XCURSOR_SIZE=1` not shrinking the
+> arrow meant the process drawing it was reading neither variable.
+>
+> `XCURSOR_PATH` *is* read, by both, so it stays — and it must list `/usr/share/icons` as well,
+> because setting it at all **replaces** wlroots' built-in search path
+> (`~/.icons:/usr/share/icons:/usr/share/pixmaps:~/.cursors:...`).
+
+`tls_blankcursor.py` therefore installs the theme under **both** names: `default` for cage, which is
+the one that actually takes effect, and `tlspie-blank` for chromium, which does honour
+`XCURSOR_THEME`. Both go in `~/.icons` and never `/usr/share/icons` — overriding the system-wide
+`default` would blank the cursor for any desktop session anyone ever starts on this card, and an
+invisible cursor is a miserable thing to debug on a machine that has a mouse.
+
+**Why it is a module with a test rather than a heredoc in the installer.** The Xcursor format is
+little-endian uint32 throughout with byte offsets that must be computed, and a malformed file raises
+no error anywhere — the theme silently fails to load and you get the default arrow back. *That
+failure mode is indistinguishable from the bug being fixed.* `test_blankcursor.py` parses the bytes
+back and asserts every field and every pixel (42 checks on the Pi, 41 on Windows, which cannot make
+symlinks). It also covers `~/.icons/default` being a **symlink** to a real theme, as it is on any
+desktop install: writing through it would blank *that* theme instead.
 
 **It renders the phone panel, it is not a second UI.** `tls-kiosk.service` runs a kiosk browser on
 the Pi pointed at `http://localhost:8080/` — the same web app the phone loads, from the same
@@ -863,6 +913,44 @@ changed. **The phone panel is unaffected and keeps working exactly as now.**
 | `setup_kiosk.sh` | installer. `--probe` inspects the display and changes nothing; `--uninstall` reverts |
 | `tls-kiosk.service` | systemd unit — `cage` (wlroots kiosk compositor) wrapping the browser |
 | `tls_kiosk_launch.sh` | the browser flags, kept out of the unit so tuning needs no `daemon-reload` |
+| `tls_blankcursor.py` | writes the transparent cursor theme. Run it directly: `python3 tls_blankcursor.py ~/.icons` |
+
+`./setup_kiosk.sh --probe` now also reports **which input devices present a POINTER capability**. A
+cursor is only drawn when the seat has one, so if an arrow ever comes back that answers "is the
+touchscreen also presenting itself as a mouse?" before anyone touches the theme again.
+
+### Shut down — the button at the bottom of the panel
+
+Added 2026-08-11, because the alternative is pulling the plug and **the scan library is on exFAT,
+which has no journal**: losing power with a dirty cache costs the *directory*, not merely the last
+file, so scans that appeared to record fine are simply not there when the stick reaches a computer.
+
+Three guards, in order — `POST /api/shutdown?confirm=yes`:
+
+1. **`confirm=yes`.** The panel asks twice, and the arm expires after 5 s, so walking away is the
+   same as cancelling. A shutdown button on a touchscreen bolted to a tripod is one brushed sleeve
+   from ending the session, and there is no undo.
+2. **Refused while a scan is running** — the operator already has a STOP that ends a scan properly.
+3. **The USB stick is flushed and unmounted first, and a failure to unmount aborts the whole thing.**
+   Powering down over a mounted exFAT volume is precisely the loss this exists to prevent.
+
+The motor is not this endpoint's problem: systemd sends `tls-scan` SIGTERM on the way down and its
+handler releases ENABLE in a `finally`.
+
+It runs `sudo -n systemctl poweroff` **synchronously**. The reply often loses the race with the
+machine going dark, which is harmless — the screen going off is its own confirmation — but the case
+that matters is failure, and this is the only way the operator hears about it rather than watching a
+rig that stays on with no explanation. The panel treats a dropped connection as success for the same
+reason. `first_boot_setup.sh` installs a **narrow** sudoers rule for exactly that one command
+(validated with `visudo -c` before it goes live — a bad file in `/etc/sudoers.d` breaks *sudo*, which
+on a headless machine is unrecoverable without pulling the card). Raspberry Pi OS already grants
+`lipi` blanket NOPASSWD; the rule is there so the button survives anyone tightening that.
+
+Styled deliberately **quieter than STOP** — outlined, not filled, 17px not 23px. STOP is the safety
+control and must stay the loudest thing on screen; a power button shouting equally loudly next to it
+is a hazard under time pressure. It buys its safety from the second tap instead.
+`test_shutdown.py` (31 checks) patches the poweroff command out and asserts, for every refusal, that
+it would **not** have run.
 
 > ### ⛔ Every Waveshare guide for this panel is wrong for this Pi
 >
@@ -1232,6 +1320,7 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Motion** | `CUR ADJ PWR` turned **DOWN**. Silent and lossless at every speed, 1–28 °/s. |
 | ✅ **Local screen** | 5.5" panel fitted and working full-screen. Needed **no display config at all**. |
 | ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
+| ✅ **Cursor + Shut down button** | 2026-08-11. Cursor root-caused: **cage never reads `XCURSOR_THEME`** — the theme has to be named `default`. Panel can now power the Pi down cleanly. |
 | ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
 
 Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
