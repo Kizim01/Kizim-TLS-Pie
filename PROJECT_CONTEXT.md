@@ -660,6 +660,54 @@ that suddenly loads nothing.
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 
+### Scan storage — `tls_storage.py` (built 2026-08-10, NOT yet deployed)
+
+Scans record to a **USB stick whenever one is usable**, and to the SD card otherwise. Built and
+tested (26/26) but **never run on the rig** — the Pi was off the network when it was finished.
+
+**Why bother:** a `slow` scan is ~340 MB, so a busy day is ~7 GB written to the SD card. SD cards die
+from write wear, and a dead boot card takes the whole rig down until it is re-flashed and
+reconfigured. A dead £5 stick is an inconvenience. It also means data leaves the rig by being picked
+up rather than squeezed through a hotspot that has dropped this Pi repeatedly.
+
+**The rule: a missing stick must never stop a scan.** `choose_dumpdir()` is called **once**, at
+`PREFLIGHT`, and falls back to the SD card whenever the stick is absent, unwritable, or under 1 GB
+free. It is deliberately not consulted again — a destination that can change while `tcpdump` is
+running is a destination that can vanish while `tcpdump` is running. USB always wins when usable,
+and the panel names the destination on every scan.
+
+> #### ⚠ Pulling the stick mid-scan loses that scan
+> `tcpdump` gets I/O errors on a vanished mount and there is no recovering it. `stop_capture()`
+> already notices a missing or zero-byte file and reports honestly rather than claiming success, but
+> the data is gone. Mitigation is visibility, not cleverness: the panel shows the live destination,
+> and **Eject is refused while a scan is running**.
+
+> #### ⛔ This code can only ever touch `/dev/sd*`
+> On a Pi the boot card is always `mmcblk0` and USB mass storage is always `sd*` — a structural
+> guarantee, not a heuristic, and the reason this can mount as root without a class of accident where
+> it unmounts the filesystem it is running from. Devices are *additionally* checked for a `usb`
+> segment in their sysfs path (as a path segment, so a vendor string containing "usb" cannot pass).
+> **Nothing here writes to, formats, or partitions anything.** `test_storage.py` puts `mmcblk0` in a
+> fake `/sys/block` and asserts it is never returned — including when no USB is present at all.
+
+**Eject is a real eject:** `sync`, unmount, *then* report safe to remove. This matters more than
+usual because **exFAT has no journal** — pulling a stick with dirty cache can cost the directory
+structure, not merely the last file, so files that appeared to copy fine simply are not there.
+
+**The library reads both roots.** `list_scans()` / `cloud_path()` / `save_alignment()` accept a list
+of directories and union across them, so pulling the stick still shows the SD card's scans and
+plugging it in shows both. Resolved per call, not cached: a stick can appear or leave between two
+page loads. Basenames are `TLS_<timestamp>`, so collisions are not a practical concern.
+`.pcap`, `.cloud` and `.json` always stay together, so grabbing the stick gets whole scans.
+
+**Format the stick exFAT** so Windows reads it directly; the Pi needs `exfatprogs`. Mount point is
+`/media/tlsusb`. Panel gains **Check for USB** (mounts one just plugged in) and **Eject USB**, both
+disabled during a scan. `python3 tls_storage.py` prints what it can see.
+
+**Speed note:** the Pi 4's USB-C port is **USB 2.0**, not USB 3 — only the two blue Type-A ports are
+USB 3.0. And for everything except USB-C and WiFi the **microSD read speed is the real ceiling**
+(~40–90 MB/s), so a USB 3.0 stick and Gigabit Ethernet land in the same place.
+
 ### Power telemetry — `tls_power.py` (built 2026-08-10)
 
 Shows the supply state on the panel, which means on the phone **and** the rig's screen, because
@@ -1287,10 +1335,13 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    run `./setup_kiosk.sh --probe` **before changing any config**, then `./setup_kiosk.sh`. Ignore
    every Waveshare `hdmi_timings` instruction — see "Local touch panel" under Key files for why they
    are silently ignored on Bookworm KMS, and for the ladder that replaces them.
-5. **Deploy `tls_power.py` + the updated `tls_web.py` to the Pi.** Written and tested off-hardware
-   (21/21) but **never copied to the rig** — the Pi kept dropping off the hotspot the night it was
-   built. `scp tls_power.py tls_web.py test_power.py tlspie:~/TLS-Pie/`, run `python3 test_power.py`
-   and `python3 tls_power.py` there, then `sudo systemctl restart tls-scan`.
+5. **Deploy `tls_storage.py` and the files it touches.** Written and tested off-hardware (26/26) but
+   **never run on the rig**. `scp tls_storage.py test_storage.py tls_scan.py tls_web.py
+   tls_scanstore.py tlspie:~/TLS-Pie/`, then on the Pi: `python3 test_storage.py`,
+   `python3 tls_storage.py` (should report no USB), `sudo systemctl restart tls-scan`. Then
+   `sudo apt install exfatprogs`, plug in an exFAT stick, press **Check for USB** and run a scan —
+   the panel should say *recording to USB*. `tls_power.py` was deployed and verified on
+   2026-08-10; this is the batch that was not.
 6. **Fit the INA226** (ordered 2026-08-10, ~£1.23). **3V3 only, never 5 V** — its I²C pull-ups
    reference its own VCC. Check whether the shunt is `R100` or `R002` and set `TLSPIE_SHUNT_OHMS`
    to match. See "Power telemetry" under Key files.

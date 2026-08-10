@@ -71,6 +71,7 @@ import tls_cloud
 import tls_geometry
 import tls_scanstore
 import tls_stepper
+import tls_storage
 import tls_web
 from tls_stepper import Stepper
 
@@ -225,11 +226,19 @@ def preflight():
 
 
 # --- Capture --------------------------------------------------------------
-def start_capture():
-    """Start tcpdump and confirm it survived. Returns (process, path, epoch)."""
-    os.makedirs(DUMPDIR, exist_ok=True)
+def start_capture(dumpdir=None):
+    """
+    Start tcpdump and confirm it survived. Returns (process, path, epoch).
+
+    `dumpdir` is decided ONCE, at PREFLIGHT, by tls_storage.choose_dumpdir().
+    It is passed in rather than looked up here on purpose: a destination that
+    can change while tcpdump is running is a destination that can vanish while
+    tcpdump is running.
+    """
+    dumpdir = dumpdir or DUMPDIR
+    os.makedirs(dumpdir, exist_ok=True)
     timestamp = datetime.now().strftime("%y_%m_%d_%H_%M_%S")
-    capture_file = os.path.join(DUMPDIR, "TLS_%s.pcap" % timestamp)
+    capture_file = os.path.join(dumpdir, "TLS_%s.pcap" % timestamp)
 
     cmd = ["tcpdump", "-U", "-w", capture_file, "-i", ETH_INTERFACE]
     if CAPTURE_FILTER:
@@ -455,9 +464,18 @@ def run_scan(pi, stepper, profile_name, record=True):
     try:
         if record:
             preflight()
-            proc, capture_file, capture_started = start_capture()
-            _state.set(capture_file=capture_file)
-            status_update("RECORDING", "tcpdump started — sweeping")
+            # Where this scan records is decided here and nowhere else. USB
+            # always wins when it is usable -- that is the point of plugging it
+            # in -- but a missing stick must never stop a scan, so this falls
+            # back to the SD card and says so on the panel.
+            dumpdir, on_usb, note = tls_storage.choose_dumpdir(
+                sd_dumpdir=DUMPDIR)
+            if note:
+                status_update("PREFLIGHT", note)
+            proc, capture_file, capture_started = start_capture(dumpdir)
+            _state.set(capture_file=capture_file, recording_to_usb=on_usb)
+            status_update("RECORDING", "tcpdump started — sweeping%s"
+                          % (" (USB)" if on_usb else ""))
         else:
             status_update("RECORDING", "capture skipped (--no-record)")
 

@@ -60,6 +60,14 @@ try:
 except Exception:                                            # pragma: no cover
     tls_power = None
 
+# Scan storage. Same defensive import for the same reason: the panel is the
+# only software abort on this rig and must come up even if a USB stick is
+# behaving badly.
+try:
+    import tls_storage
+except Exception:                                            # pragma: no cover
+    tls_storage = None
+
 WEB_HOST = os.environ.get("TLSPIE_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("TLSPIE_WEB_PORT", "8080"))
 WEB_TOKEN = os.environ.get("TLSPIE_WEB_TOKEN", "")
@@ -84,6 +92,9 @@ class ScannerState:
 
         self.phase = "IDLE"            # IDLE PREFLIGHT RECORDING SCANNING
                                        # RETURNING COMPLETE ABORTED HOMING
+        # Set at PREFLIGHT by tls_storage.choose_dumpdir(). Needs a default
+        # here so snapshot() can read it before the first scan.
+        self.recording_to_usb = False
         self.message = "Waiting"
         self.profile = None
         self.started_at = None
@@ -163,6 +174,28 @@ class ScannerState:
             return True, "Restarting"
 
     # --- read by the web thread ---------------------------------------
+    def scan_roots(self):
+        """
+        Every directory the scan library should read.
+
+        Scans live wherever the drive was at the time, so this is the SD card
+        plus the USB stick when one is mounted. Resolved per call rather than
+        cached: a stick can be plugged in or ejected between two page loads, and
+        a library that needed a restart to notice would be worse than no USB
+        support at all.
+
+        Deliberately takes no lock -- it only reads self.dumpdir, which is set
+        once at construction, and it shells out to the filesystem. Holding the
+        state lock across a mount check would let a slow stick stall the scan
+        loop.
+        """
+        if tls_storage is None or self.dumpdir is None:
+            return self.dumpdir
+        try:
+            return tls_storage.roots(sd_dumpdir=self.dumpdir)
+        except Exception:                                    # pragma: no cover
+            return self.dumpdir
+
     def snapshot(self):
         with self._lock:
             elapsed = progress = remaining = None
@@ -205,6 +238,9 @@ class ScannerState:
                 # caches for 2 s and never raises, so the cost here is a dict
                 # lookup on all but one poll in two.
                 "power": (tls_power.read() if tls_power is not None else None),
+                "storage": (tls_storage.status(sd_dumpdir=self.dumpdir)
+                            if tls_storage is not None else None),
+                "recordingToUsb": self.recording_to_usb,
                 "scans": [
                     {"id": key, "label": value["label"], "detail": value["detail"]}
                     for key, value in sorted(
@@ -630,6 +666,25 @@ PAGE = """<!doctype html>
   </button>
 </div>
 
+<!--
+  Storage. Scans record to the USB stick whenever one is usable and to the SD
+  card otherwise -- a missing stick must never stop a scan. Eject is disabled
+  during a scan because unmounting the filesystem tcpdump is writing to loses
+  the capture, and exFAT has no journal to recover it from.
+-->
+<div class="card" id="usbCard">
+  <p class="sechead">Storage</p>
+  <div class="prof" id="usbline">&mdash;</div>
+  <button class="restart" id="usbcheck" onclick="cmd('usb?action=check')">
+    <span class="lbl">Check for USB</span>
+    <span class="det">mount a drive you have just plugged in</span>
+  </button>
+  <button class="restart" id="usbeject" onclick="cmd('usb?action=eject')">
+    <span class="lbl">Eject USB</span>
+    <span class="det">flush and unmount, then it is safe to pull out</span>
+  </button>
+</div>
+
 <div class="card" id="libCard" style="display:none">
   <p class="sechead">Scans</p>
   <div id="buildnote" class="banner warn" style="display:none"></div>
@@ -746,6 +801,41 @@ function renderPower(p){
                                              : 'rgba(255,159,10,.13)';
 }
 
+// Storage. Says WHERE the next scan will record, because that is the thing an
+// operator needs to know before walking over and pulling the stick out.
+// Scales all the way to TB, unlike mb() above which stops at MB -- fine for a
+// capture file, useless for a 64 GB stick's free space.
+function sz(n){
+  if(n == null) return '?';
+  const u = ['B','kB','MB','GB','TB'];
+  let i = 0, v = n;
+  while(v >= 1024 && i < u.length-1){ v /= 1024; i++; }
+  return v.toFixed(0) + ' ' + u[i];
+}
+
+function renderStorage(s){
+  const st = s.storage;
+  const line = document.getElementById('usbline');
+  const chk  = document.getElementById('usbcheck');
+  const ej   = document.getElementById('usbeject');
+  if(!st){ document.getElementById('usbCard').style.display = 'none'; return; }
+
+  let txt;
+  if(st.targetIsUsb){
+    txt = 'Recording to USB · ' + sz(st.usbFree) + ' free';
+  } else if(st.usbPresent && !st.usbMounted){
+    txt = 'USB drive found but not mounted — press Check for USB';
+  } else {
+    txt = 'Recording to the SD card · ' + sz(st.sdFree) + ' free';
+  }
+  if(st.note) txt += ' · ' + st.note;
+  line.textContent = txt;
+
+  // Both actions touch the filesystem tcpdump may be writing to.
+  chk.disabled = s.busy;
+  ej.disabled  = s.busy || !st.usbMounted;
+}
+
 async function poll(){
   try{
     const s = await (await fetch(q('/api/status'),{cache:'no-store'})).json();
@@ -773,6 +863,7 @@ async function poll(){
     document.getElementById('last').textContent = s.lastCapture || '—';
     document.getElementById('rehome').style.display = s.positionKnown ? 'none':'block';
     renderPower(s.power);
+    renderStorage(s);
 
     document.getElementById('stop').disabled = !s.busy || s.stopPending;
     document.getElementById('restart').disabled = s.busy;
@@ -1514,7 +1605,7 @@ class _Handler(BaseHTTPRequestHandler):
         building = None
         if self.state.builder is not None:
             building = self.state.builder.status().get("building")
-        return tls_scanstore.list_scans(self.state.dumpdir, building=building)
+        return tls_scanstore.list_scans(self.state.scan_roots(), building=building)
 
     def _send_scanfile(self, name):
         """
@@ -1530,7 +1621,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, "No scan library on this rig", "text/plain")
             return
         import tls_scanstore
-        path = tls_scanstore.cloud_path(self.state.dumpdir, name)
+        path = tls_scanstore.cloud_path(self.state.scan_roots(), name)
         if path is None:
             self._send(404, "No such scan", "text/plain")
             return
@@ -1561,11 +1652,46 @@ class _Handler(BaseHTTPRequestHandler):
             ok, message = self._save_alignment(query)
         elif url.path == "/api/build":
             ok, message = self._request_build(query)
+        elif url.path == "/api/usb":
+            ok, message = self._usb(query.get("action", [""])[0])
         else:
             self._json(404, {"ok": False, "message": "Not found"})
             return
 
         self._json(200 if ok else 409, {"ok": ok, "message": message})
+
+    def _usb(self, action):
+        """
+        "check" mounts a stick that has been plugged in; "eject" flushes and
+        unmounts one.
+
+        Eject is REFUSED during a scan, and that refusal is the safety feature
+        here: unmounting the filesystem tcpdump is writing to loses the scan.
+        Check is refused too -- mounting mid-capture is a needless risk for a
+        convenience nobody needs while the head is turning.
+        """
+        if tls_storage is None:
+            return False, "Storage support is not available"
+        snap = self.state.snapshot()
+        if snap.get("busy"):
+            return False, "Not while a scan is running"
+
+        if action == "eject":
+            ok, message = tls_storage.eject()
+            # Say "safe to remove" only after the unmount has actually
+            # returned. exFAT has no journal: a stick pulled on the strength of
+            # an optimistic message can lose its directory, not just its last
+            # file.
+            return ok, ("USB ejected — safe to remove" if ok
+                        else "Could not eject: %s" % message)
+        if action == "check":
+            ok, message = tls_storage.mount()
+            if ok:
+                st = tls_storage.status(sd_dumpdir=self.state.dumpdir)
+                return True, ("USB ready — %s free"
+                              % tls_storage.human(st.get("usbFree")))
+            return False, message
+        return False, "Unknown action %r" % action
 
     def _read_body(self, limit=8192):
         try:
@@ -1587,7 +1713,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             return False, "Bad request body"
         return tls_scanstore.save_alignment(
-            self.state.dumpdir, query.get("name", [""])[0],
+            self.state.scan_roots(), query.get("name", [""])[0],
             body.get("alignment"))
 
     def _request_build(self, query):

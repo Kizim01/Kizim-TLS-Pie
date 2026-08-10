@@ -36,19 +36,54 @@ def _basename(path):
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def as_roots(dumpdir):
+    """
+    Accept either one directory or a list of them.
+
+    Scans live on the SD card OR on a USB stick, depending on what was plugged
+    in at the time. Both have to be listed: pulling the stick must still show
+    the card's scans, and plugging it in must show both. Callers that only ever
+    had one directory keep working unchanged.
+    """
+    if dumpdir is None:
+        return []
+    if isinstance(dumpdir, (list, tuple)):
+        return [d for d in dumpdir if d]
+    return [dumpdir]
+
+
 def list_scans(dumpdir, building=None):
     """
     Stored scans, newest first.
+
+    `dumpdir` may be one directory or a list of them -- see as_roots().
 
     A scan appears as soon as its capture exists, whether or not the cloud has
     been built -- the list is the record of what you captured, and hiding a
     scan because its preview is still rendering would be the wrong answer to
     "did that scan happen?".
     """
+    roots = as_roots(dumpdir)
+    if len(roots) > 1:
+        # Union across roots. Basenames are TLS_<timestamp>, so a collision
+        # between two drives is not a practical concern; if one ever happens the
+        # earlier root wins, which is the mounted USB stick -- the drive the
+        # operator just chose to plug in.
+        seen, merged = set(), []
+        for root in roots:
+            for entry in list_scans(root, building=building):
+                if entry["name"] in seen:
+                    continue
+                seen.add(entry["name"])
+                merged.append(entry)
+        merged.sort(key=lambda e: (e.get("epoch") or 0), reverse=True)
+        return merged
+
+    dumpdir = roots[0] if roots else None
     out = []
     try:
         names = os.listdir(dumpdir)
-    except OSError:
+    except (OSError, TypeError):
         return out
 
     # A scan is listed if EITHER its capture or its cloud is present. Keying
@@ -141,10 +176,14 @@ def cloud_path(dumpdir, name):
         return None
     if os.path.basename(name) != name:
         return None
-    path = os.path.join(dumpdir, name + ".cloud")
-    if not os.path.exists(path):
-        return None
-    return path
+    # Search every root -- the scan may be on the USB stick or on the SD card.
+    # The traversal check above has already run, so joining against more than
+    # one root does not widen what a caller can reach.
+    for root in as_roots(dumpdir):
+        path = os.path.join(root, name + ".cloud")
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def save_alignment(dumpdir, name, alignment):
@@ -158,7 +197,15 @@ def save_alignment(dumpdir, name, alignment):
     """
     if not name or os.path.basename(name) != name:
         return False, "bad scan name"
-    path = os.path.join(dumpdir, name + ".json")
+    # The sidecar lives beside its capture, which may be on either drive.
+    path = None
+    for root in as_roots(dumpdir):
+        candidate = os.path.join(root, name + ".json")
+        if os.path.exists(candidate):
+            path = candidate
+            break
+    if path is None:
+        return False, "no sidecar for that scan"
     meta = tls_cloudbuild.load_meta(path)
     if meta is None:
         return False, "no sidecar for that scan"
