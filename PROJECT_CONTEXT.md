@@ -374,7 +374,47 @@ Two lessons, both cheap to reuse: **count whole turns against a mark rather than
 is audibly complaining**, because a measurement taken while losing steps measures the loss, not the
 gearing.
 
-### ⛔ THE BLOCKER: it sheds steps below roughly 100 RPM at the motor
+### ✅ RESOLVED 2026-08-10: the current limit was set TOO HIGH. Turn it DOWN.
+
+**The fix was an eighth of a turn on `CUR ADJ PWR`, AWAY from `+`.** After it, every speed on the
+rig is silent and lossless — including 1 °/s, which had never once worked. A full 360° at 1 °/s
+lands exactly on the mark, as does 2 °/s, 7 °/s and 12 °/s. **The blocker is closed and no part
+needed buying.**
+
+> ⛔ **The direction was DOWN, and everyone predicted UP.** This document said "the standard cure is
+> more phase current" and the assistant said the same. Both were wrong, and the reasoning below is
+> preserved unedited so the error stays visible. Excess current does not politely go unused: with
+> 1/16 microstepping through a 50:1 reduction there was roughly **29 Nm at the output for a head
+> that needs a fraction of one**, and all that surplus went into slamming the rotor into each
+> microstep position instead of letting it settle. The vibration built over seconds until the rotor
+> lost sync. Hence the clicking, the lost steps, and the hot chip — one cause, three symptoms.
+
+**What actually turned the diagnosis around: the chip was hot AND a run started clean while hot.**
+A hot chip alone looks like thermal shutdown, but thermal shutdown needs minutes to recover, and a
+20° run launched with *no cooling gap* after a 90° run still started clean. Nothing thermal resets
+in one second. So the heat was not the failure mechanism — it was evidence that current was too
+high, which was the failure mechanism.
+
+**A flat battery was a second, independent cause of step loss.** `M+` is soldered straight to the
+battery terminal at the kill switch, so **motor supply is unregulated** — a 3S pack runs 12.6 V
+down to ~9 V and the A4983 quits at 8 V. Mid-session the pack drained far enough to brown out and
+**reboot the Pi during a move**. Any measurement taken on a draining pack measures the pack. Keep
+it on charge for every bench test; one experiment was lost to this before it was noticed.
+
+**Things that did NOT work — do not retry them:**
+
+* **Burst motion** (move-dwell-move, `burst_probe.py`) made it audibly **worse**, not better. 90
+  stop/starts inject 90 acceleration transients. The script is kept because it is a good
+  measurement harness, not because the technique works.
+* **Finding a clean slow speed.** There isn't one. Bisecting 8.3 → 233 RPM showed the noise falling
+  off *monotonically* with speed, not a narrow band you can duck under. That shape is the mechanism
+  resolving individual microstep impulses at low rates and filtering them out at high ones.
+
+**Measurement technique that made this tractable:** command exactly 360°, no return leg. A full
+turn ends where it began, so a single mark reads out the loss with no protractor and no return-leg
+confound. Landing on the mark is unambiguous; an eyeballed angle is a guess.
+
+#### The original (pre-fix) evidence, preserved
 
 **Key the behaviour to MOTOR RPM, never to the commanded deg/s.** `deg_per_s_to_step_rate()`
 multiplies by `STEPS_PER_REV`, so correcting the constant 640,000 → 160,000 **divided every step
@@ -409,13 +449,21 @@ resonance or a stick-slip limit cycle**, not of a wiring error, and the standard
 | `fast` | 2 °/s | **16.7** |
 
 There is no escaping it by changing the scan rate: 1 °/s of pan through a 50:1 reduction *is*
-8.3 RPM. **The scan profiles are unusable until this is fixed.**
+8.3 RPM. ~~**The scan profiles are unusable until this is fixed.**~~ **Both profiles now run
+clean — see the RESOLVED note at the top of this section.**
 
-**The current limit has still never been touched.** It is the one untried variable, it is the
-textbook cure for exactly this symptom, and it is free. That is the critical path — everything else
-about this rig now waits behind it. If raising it to the motor's 2 A rating does not clear the
-band, the next suspects are mechanical: check the head turns smoothly by hand with the driver
-disabled, and look for preload or a tight spot in the harmonic drive.
+~~**The current limit has still never been touched.**~~ It was the right variable and the wrong
+direction: **turning it DOWN cleared the whole band in one adjustment.** The reasoning that said to
+raise it — "a motor short of torque fails at high speed, so failing at low speed means give it more
+current" — sounds right and is exactly backwards for a geared axis with a large torque surplus.
+
+**After the fix, measured 2026-08-10 on charge:**
+
+| motor RPM | commanded | result |
+|---|---|---|
+| **8.3** — the `slow` profile | 1 °/s, full 360° | **silent, lands on the mark** |
+| **16.7** — the `fast` profile | 2 °/s, 90° out and back | **silent, perfect return** |
+| **58.3** — the return leg | 7 °/s, full 360° | **silent, lands on the mark** |
 
 **Calibration is unaffected by any of this.** The 4.000-turn measurement was taken at 233 RPM where
 the motor keeps 100% of its steps, which is precisely why that speed was chosen for it.
@@ -757,6 +805,40 @@ working system.
 > `VISUAL_SCHEMATICS.md` and `SCHEMATIC_VISUAL_REWORK.md`. **None of those files exist in the
 > repository** — the links were stale and have been removed.
 
+### The reference rig — what the original builder actually used (read 2026-08-10)
+
+This project descends from **Donny Mott's TLS_Pie**, <https://github.com/Rotoslider/TLS_Pie>. Read
+directly from his source, not from assumptions:
+
+* **His driver is a DRV8825, not a Big Easy Driver.** The Rev 1.0 schematic labels U4
+  "BigEasyDriver" but the part drawn inside the box is `DRV8825`, and his firmware sets **32
+  microsteps** — which the A4983 on a Big Easy Driver physically cannot do (it stops at 1/16). The
+  designator is a leftover; the part is the truth.
+* **His motor is 0.9° / 400 steps per rev**, ours is 1.8° / 200. Combined with microstepping that
+  is `400 × 32 = 12,800` microsteps per motor revolution against this rig's `200 × 16 = 3,200` —
+  **4× coarser here**, at the identical motor RPM. His gearbox is a **CSF-14-50 harmonic drive**
+  (zero backlash); ours is a planetary.
+* `stepper.setStepsPerRevolution(640000)` in his code is `400 × 32 × 50` **for his hardware**. It is
+  not transferable and is the origin of this project's long-running 640,000 error.
+* **He later abandoned the stepper entirely.** See `Rotoslider/Miranda-TLS`, `Miranda-Control` and
+  `miranda_tune`: a **Miranda integrated BLDC servo** by Overview
+  (<https://overview.co.uk/products/miranda-integrated-servo-motor/>) on a Jetson Nano — direct
+  drive with no gearbox, I²C, 24 V, PID-tunable, closed loop, **0.05–720 °/s**, repeatability
+  0.007°, ~1 kg payload against the VLP-16's 830 g. A closed-loop servo cannot lose steps and has no
+  resonance to build, so it structurally removes this project's hardest problem — at the cost of a
+  rebuild to 24 V and I²C, and an undisclosed industrial price.
+
+**If the microstep coarseness ever needs fixing** (it is a scan-quality question now, not a
+blocker): a DRV8825 at 1/32 halves the impulse and makes `STEPS_PER_REV = 320,000` (MS1/MS2/MS3 all
+HIGH). A TMC2209 is better still for low-speed smoothness. **Either way fit a 100 µF / 35 V
+electrolytic across VMOT–GND at the module** — a bare StepStick has no bulk capacitance and Pololu
+warn that LC spikes can destroy it. **This design has no bulk capacitor anywhere today**, and nor
+did Rotoslider's.
+
+**Two corrections from his setup notes**, `Raspberry Pie4/TLS Pie setup.txt`: the VLP-16 lives at
+`192.168.1.201` and the Pi's `eth0` at `192.168.1.222`. This document previously claimed
+`192.168.1.100` for the Pi, unverified.
+
 ### Setup bundles
 - [SETUP_PACKAGE_18.07.26](SETUP_PACKAGE_18.07.26) — consolidated installer. **Contains the old
   MicroView architecture and has not been updated for the Pi-only design.**
@@ -908,20 +990,30 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**One action is blocking everything else: set the motor current limit.**
+**The motion blocker is CLOSED (2026-08-10). The next milestone is the first complete scan —
+that has still never happened.**
 
     # on the Pi
-    sudo systemctl stop tls-scan
-    cd ~/TLS-Pie && ./bench_move.py 90 2.0      # 45 s, should give EXACTLY a quarter turn
-    sudo systemctl start tls-scan               # when finished bench testing
+    sudo systemctl start tls-scan     # panel self-starts at boot too
+    # then drive it from the phone panel and let a full profile run end to end
 
-Mark the head first. **Baseline to beat, 2026-08-09: 45° of the commanded 90°, 50% of steps kept,
-still clicking, `CUR ADJ PWR` trimmer never touched.** Nudge the trimmer toward `+`, re-run, repeat
-until the angle stops improving — that plateau is the setting, and it needs no ammeter. If it
-plateaus well short of a quarter turn the fault is mechanical, not electrical: with the driver
-disabled, turn the head by hand and feel for a tight spot or preload in the harmonic drive.
+**Do not touch `CUR ADJ PWR`.** It is set and the whole rig depends on it. There is no ammeter on
+this project, so the setting exists only as the physical position of that trimmer — if it is ever
+disturbed, the recovery procedure is: turn it DOWN until the head starts falling short of a
+commanded 360°, then back off slightly. **Down, not up.** See the RESOLVED note in Scan geometry
+for why every prior instinct here was backwards.
 
-Everything else in this project is downstream of that. No scan has ever completed.
+Two things to carry into the first scan:
+
+1. **The mount geometry has never been measured on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m
+   instrument height came from `captures/driveway.pcap`, which is **from a different machine**.
+   Re-run the ground-plane histogram on this rig's first real capture before trusting any cloud.
+2. **VLP-16 addressing, from Rotoslider's own setup notes:** the puck is `192.168.1.201` and the Pi's
+   `eth0` is `192.168.1.222`. This document previously said `192.168.1.100` for the Pi — that was
+   wrong and was never verified against hardware. Confirm both before blaming the capture path.
+
+Bench tests use `burst_probe.py` (see Tools). Always `sudo systemctl stop tls-scan` first — it
+refuses to run while the service holds the GPIOs — and start it again afterwards.
 
 ### Where this project's session memory lives
 
@@ -958,9 +1050,12 @@ lessons. Anything essential belongs here, in the repo, where a clone gets it.
 > 4. **`_build_chain()` could not build a chain for any fast move.** The return leg of every scan
 >    would have raised `too many chain counters`. Fixed, with regression tests.
 >
-> **One blocker remains and it stops everything: the motor sheds a third to a half of its steps
-> anywhere below ~100 RPM, which is where both scan profiles live. The current-limit trimmer has
-> never been touched.** See "THE BLOCKER" in Scan geometry.
+> ~~**One blocker remains and it stops everything: the motor sheds a third to a half of its steps
+> anywhere below ~100 RPM, which is where both scan profiles live.**~~ **CLOSED 2026-08-10 by
+> turning the current limit DOWN an eighth of a turn.** Every speed from 8.3 to 233 RPM is now
+> silent and lands on the mark. See "RESOLVED" in Scan geometry — including why "give it more
+> current" was the wrong instinct, and why a flat battery was quietly corrupting measurements
+> alongside it.
 
 **What ran, in order, and what it proved:**
 
@@ -980,6 +1075,24 @@ lessons. Anything essential belongs here, in the repo, where a clone gets it.
   clean throughout: `vcgencmd get_throttled` = `0x0`, no undervoltage.
 - Test suites now **23/23** (`test_stepper_watchdog.py`, six of them new) and 49/49
   (`test_web_install.py`).
+
+### Done on hardware 2026-08-10 ✅ — the motion blocker closed
+
+- **`CUR ADJ PWR` turned DOWN an eighth of a turn and the whole problem vanished.** Silent and
+  lossless at every speed tested: 1, 2, 7 and 12 °/s. The `slow` profile — 1 °/s, 8.3 RPM, a full
+  360° in 360.0 s — lands exactly on its mark, having never once worked before.
+- **`burst_probe.py` written** — drives a move as bursts with dwells, or continuously with
+  `--continuous`, and returns to the mark at a verified-clean 28 °/s so any offset is outbound loss
+  alone. Same safety pattern as `bench_move.py`: refuses to run while `tls-scan.service` is active,
+  releases ENABLE in a `finally` on every path. The burst *technique* failed; the harness is what
+  made the session's measurements comparable, and `--continuous 360 <rate> --no-return` is now the
+  standard step-loss test.
+- **The Pi browned out mid-move on a draining battery**, rebooting at 00:44. `M+` is soldered
+  straight to the pack, so motor supply is unregulated and falls with pack voltage toward the
+  A4983's 8 V floor. **Persistent journald enabled** (`/var/log/journal`) so the next such event
+  leaves evidence — previously the journal was volatile and the reboot left no trace at all.
+- Read the reference rig's actual source for the first time — see "The reference rig" under Key
+  files. It corrected the driver identity, the microstep ratio, and the VLP-16 addressing.
 
 **Three method lessons this session earned, all cheap to reuse:**
 
@@ -1042,16 +1155,14 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 ### Still to do — in order
 
-1. **⛔ SET THE MOTOR CURRENT LIMIT. Everything waits behind this.** The `CUR ADJ PWR` trimmer has
-   never been touched. At its factory setting the rig keeps only 34–56% of its steps anywhere below
-   ~100 RPM at the motor, which is where both scan profiles live. Use the plateau method — no
-   ammeter needed — and iterate with `bench_move.py 90 2.0`, which takes 45 s and should produce
-   exactly a quarter turn. **Baseline before any adjustment: 45° of 90°, 50% kept, still clicking.**
-   If it plateaus well short of a quarter turn, the fault is mechanical: with the driver disabled,
-   turn the head by hand and feel for a tight spot or heavy preload in the harmonic drive.
-2. **Then re-run the full bench sequence**, which has never completed: `--plan`, `--check`,
-   `--scan slow --no-record`, then a full scan **including its return leg** — that leg has never
-   run once in the life of this project and only became possible today.
+1. ~~**SET THE MOTOR CURRENT LIMIT.**~~ **DONE 2026-08-10 — turned DOWN, not up.** Do not disturb
+   `CUR ADJ PWR`. There is no ammeter on this project, so the setting exists only as that trimmer's
+   physical position. Recovery if it is ever moved: turn it DOWN until a commanded 360° starts
+   falling short of the mark, then back off slightly.
+2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
+   `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
+   never run once in the life of this project. The motion is no longer the obstacle; the capture
+   path and the geometry are now the untested parts.
 3. **Re-derive the mount geometry on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m instrument height
    came from `captures/driveway.pcap`, which is a different machine. Take the first real capture
    from this rig and re-run the ground-plane histogram. Until then the sign of the roll is unknown.
