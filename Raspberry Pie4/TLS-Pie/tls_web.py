@@ -52,6 +52,14 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+# Power telemetry. Imported defensively: a panel that will not start because a
+# battery gauge is unhappy would be a worse rig than one with no gauge at all,
+# and this is the only software abort on the machine.
+try:
+    import tls_power
+except Exception:                                            # pragma: no cover
+    tls_power = None
+
 WEB_HOST = os.environ.get("TLSPIE_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("TLSPIE_WEB_PORT", "8080"))
 WEB_TOKEN = os.environ.get("TLSPIE_WEB_TOKEN", "")
@@ -193,6 +201,10 @@ class ScannerState:
                 "library": self.dumpdir is not None,
                 "build": (self.builder.status() if self.builder is not None
                           else None),
+                # Read outside the state lock would be tidier, but tls_power
+                # caches for 2 s and never raises, so the cost here is a dict
+                # lookup on all but one poll in two.
+                "power": (tls_power.read() if tls_power is not None else None),
                 "scans": [
                     {"id": key, "label": value["label"], "detail": value["detail"]}
                     for key, value in sorted(
@@ -576,12 +588,21 @@ PAGE = """<!doctype html>
   <div class="bar"><div id="fill"></div></div>
   <div class="times"><span id="elapsed">&ndash;&ndash;:&ndash;&ndash;</span>
     <span id="remain"></span></div>
+  <div class="prof" id="pwr"></div>
 </div>
 
 <div id="rehome" class="banner warn" style="display:none">
   Position unknown after the abort. Align the head, then press Restart to set
   this as the start position.
 </div>
+
+<!--
+  Power. Hidden while the supply is healthy: a warning that is always on screen
+  stops being a warning. On 2026-08-10 a draining pack made the motor shed
+  steps and then rebooted the Pi mid-move with nothing to show for it, and the
+  measurements taken meanwhile sent a debugging session down the wrong path.
+-->
+<div id="pwrbanner" class="banner warn" style="display:none"></div>
 
 <div class="card" id="previewCard" style="display:none">
   <p class="sechead">Live preview &middot; plan view</p>
@@ -687,6 +708,44 @@ function buildScans(s){
   built = true;
 }
 
+// Power readout and warning.
+//
+// Two sources, and the UI says WHICH, because they answer different questions.
+// Without an INA226 fitted, all the Pi can report is whether its own 5 V rail
+// has sagged -- that is a health light, not a fuel gauge, and labelling it
+// "battery" would be a lie the operator would rely on.
+//
+// The percentage is hedged with a ~ for the same reason: lithium voltage
+// against charge is nonlinear and sags under load, so it reads low during a
+// scan and "recovers" afterwards. That is chemistry, not a fault.
+function renderPower(p){
+  const line = document.getElementById('pwr');
+  const ban  = document.getElementById('pwrbanner');
+  if(!p){ line.textContent = ''; ban.style.display = 'none'; return; }
+
+  const bits = [];
+  if(p.packV != null){
+    bits.push(p.packV.toFixed(2) + ' V');
+    if(p.percent != null) bits.push('~' + p.percent + '%');
+    if(p.amps != null)    bits.push(p.amps.toFixed(2) + ' A');
+  } else {
+    // Be explicit that the pack is not being measured, rather than silently
+    // showing nothing and letting it read as "fine".
+    bits.push('pack not monitored');
+  }
+  if(p.socTempC != null) bits.push(p.socTempC.toFixed(0) + '°C');
+  line.textContent = bits.join('  ·  ');
+
+  if(p.level === 'ok' || !p.note){ ban.style.display = 'none'; return; }
+  ban.textContent = p.note;
+  ban.style.display = 'block';
+  ban.style.borderColor = p.level === 'crit' ? 'rgba(255,69,58,.55)'
+                                             : 'rgba(255,159,10,.5)';
+  ban.style.color       = p.level === 'crit' ? '#FF9A93' : '#FFD08A';
+  ban.style.background  = p.level === 'crit' ? 'rgba(255,69,58,.14)'
+                                             : 'rgba(255,159,10,.13)';
+}
+
 async function poll(){
   try{
     const s = await (await fetch(q('/api/status'),{cache:'no-store'})).json();
@@ -713,6 +772,7 @@ async function poll(){
     document.getElementById('size').textContent = mb(s.captureBytes);
     document.getElementById('last').textContent = s.lastCapture || '—';
     document.getElementById('rehome').style.display = s.positionKnown ? 'none':'block';
+    renderPower(s.power);
 
     document.getElementById('stop').disabled = !s.busy || s.stopPending;
     document.getElementById('restart').disabled = s.busy;

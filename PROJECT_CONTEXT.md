@@ -660,6 +660,50 @@ that suddenly loads nothing.
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 
+### Power telemetry — `tls_power.py` (built 2026-08-10)
+
+Shows the supply state on the panel, which means on the phone **and** the rig's screen, because
+both render the same web app. Written the same night a draining pack made the motor shed steps and
+then **rebooted the Pi mid-move** with no warning at all — and, worse, made a flat battery look
+like a mechanical fault for the better part of an hour.
+
+**Two sources behind one interface.** `read()` never raises and never blocks the panel:
+
+| source | needs | gives | status |
+|---|---|---|---|
+| `vcgencmd` | nothing | 5 V rail under-voltage **now** and **ever since boot**, SoC temp | ✅ works today |
+| INA226 over I²C | ~£1.23 module | real pack volts, amps, rough state of charge | ⚠ **written, never tested — no INA has been connected** |
+
+The sticky "ever since boot" bits are the valuable ones after the fact: a brownout that reboots the
+Pi clears them, so their *absence* proves nothing about a crash you are investigating.
+
+**The `vcgencmd` source is a health light, not a fuel gauge**, and the UI says so — with no INA
+fitted the panel reads `pack not monitored` rather than showing nothing and letting silence read as
+"fine". It cannot tell you how much charge is left. It *can* tell you the supply is failing, which
+is the thing that was missing.
+
+**Any voltage-derived percentage is hedged with a `~`, deliberately.** Lithium voltage against charge
+is nonlinear and sags under load, so the gauge reads low during a scan and "recovers" when the motor
+stops. That is chemistry, not a bug, and no amount of curve-fitting removes it — only coulomb
+counting does, which needs a smart BMS. **This pack's BMS has no Bluetooth**, so Rotoslider's own
+`bms-mqtt-ha` (JBD/Xiaoxiang BLE readout, would have been free) does not apply here.
+
+**Fitting the INA226 — two traps, both already known to this project:**
+
+1. **Power it from 3V3, never 5 V.** The module's I²C pull-ups reference its own VCC, so a 5 V feed
+   puts 5 V on the Pi's SDA/SCL. Identical to the DS3231 trap documented above. The INA226 runs on
+   2.7–5.5 V, so 3V3 is comfortably in spec.
+2. **Check the shunt marking and set `TLSPIE_SHUNT_OHMS` to match.** These modules ship with either
+   `R100` (0.1 Ω, ~0.8 A) or `R002` (0.002 Ω, ~20 A). The rig pulls ~3 A with motor, Pi and VLP-16
+   together, so `R002` is the one to want — and getting this wrong scales every current reading by
+   fifty without any other symptom.
+
+Address `0x40`, no clash with the DS3231 at `0x68`. Current is derived as `V_shunt / SHUNT_OHMS`
+rather than via the chip's calibration register — that skips a configuration write on every boot and
+one more thing to get silently wrong. `python3 tls_power.py` prints the raw reading. Tests:
+`test_power.py`, 21/21, and they run anywhere because the module's most important property is
+degrading to "I cannot see the pack" instead of taking the panel down.
+
 ### Local touch panel — 5.5" Waveshare HDMI AMOLED (built 2026-08-10, NOT yet fitted)
 
 A permanent touch interface on the rig itself, so it can be driven with no phone and no network.
@@ -1219,7 +1263,14 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    run `./setup_kiosk.sh --probe` **before changing any config**, then `./setup_kiosk.sh`. Ignore
    every Waveshare `hdmi_timings` instruction — see "Local touch panel" under Key files for why they
    are silently ignored on Bookworm KMS, and for the ladder that replaces them.
-5. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
+5. **Deploy `tls_power.py` + the updated `tls_web.py` to the Pi.** Written and tested off-hardware
+   (21/21) but **never copied to the rig** — the Pi kept dropping off the hotspot the night it was
+   built. `scp tls_power.py tls_web.py test_power.py tlspie:~/TLS-Pie/`, run `python3 test_power.py`
+   and `python3 tls_power.py` there, then `sudo systemctl restart tls-scan`.
+6. **Fit the INA226** (ordered 2026-08-10, ~£1.23). **3V3 only, never 5 V** — its I²C pull-ups
+   reference its own VCC. Check whether the shunt is `R100` or `R002` and set `TLSPIE_SHUNT_OHMS`
+   to match. See "Power telemetry" under Key files.
+7. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
    must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
 5. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
    under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.
