@@ -33,3 +33,4 @@
 *.pcap      binary
 *.ply       binary
 *.bin       binary
+*.rules text eol=lf

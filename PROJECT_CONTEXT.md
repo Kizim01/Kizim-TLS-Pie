@@ -858,15 +858,56 @@ kiosk *is* desktop chromium. Every tap was held ~300 ms waiting to become a doub
 `touch-action: manipulation` is honoured on desktop and fixes it. Also dropped in kiosk mode: CSS
 transitions, text selection on long-press, and the scrollbar.
 
-#### The cursor: four attempts, and the reason the first three failed — 2026-08-11
+#### The cursor: five attempts, and the first four all fixed the wrong thing — 2026-08-11
 
-With no mouse ever moving, chromium **never receives a pointer-enter event**, so it never sets a
-cursor and the compositor keeps drawing its own default where it started. CSS `cursor:none` cannot
-reach a cursor the compositor draws, and `XCURSOR_SIZE=1` did not help either.
+**The arrow was never a theme cursor at all.** Four attempts went into transparent cursor *themes*,
+on the assumption that the compositor was drawing it. It was **chromium's own built-in pointer
+bitmap**, and the fix is a udev rule —
+[99-tlspie-no-cec-pointer.rules](Raspberry%20Pie4/TLS-Pie/99-tlspie-no-cec-pointer.rules).
 
-The theme was right. **The theme's NAME was wrong**, and that is the whole story:
+> ### ⛔ THE FIX: the HDMI CEC endpoints were pretending to be a mouse
+>
+> ```
+> $ libinput list-devices
+> Device: WaveShare WaveShare   Capabilities: touch              <- innocent, touch only
+> Device: vc4-hdmi-0            Capabilities: keyboard pointer   <- Bus=001e (BUS_CEC)
+> Device: vc4-hdmi-1            Capabilities: keyboard pointer   <- EV=100017, bit 2 = EV_REL
+> ```
+>
+> The vc4 driver registers a CEC remote-control endpoint per HDMI port. They carry `EV_REL`, so
+> libinput classifies them as **pointers**, so the seat has a pointer, so chromium draws a cursor
+> for it. There is no CEC remote on this rig. `ENV{LIBINPUT_IGNORE_DEVICE}="1"` on `vc4-hdmi-?`
+> removes them and the arrow with them — confirmed by screenshot and then on the rig itself.
+>
+> **Why CSS `cursor:none` could never have worked.** It was applied and correct the whole time.
+> chromium only recomputes the cursor for the element under the pointer when it receives a pointer
+> **event**. A phantom CEC pointer never moves: chromium set its default arrow once, at
+> pointer-enter, and had no reason to consult the page again. *A rule that is right but never
+> re-evaluated looks exactly like a rule that is wrong.*
 
-> ### ⛔ `cage` does not read `XCURSOR_THEME`. The theme must be called `default`.
+**How it was actually settled, which is the transferable part.** Four rounds of confident reasoning
+produced four wrong answers. What ended it was making the thing observable:
+
+1. **`strace -e trace=openat` on cage** proved it *did* successfully open
+   `~/.icons/default/cursors/left_ptr` — our transparent file. That killed the theory being worked
+   on at that moment, which was the one written up immediately below.
+2. **`grim` screenshots, fetched to the laptop and actually looked at.** The arrow was present in
+   the capture taken *without* `-c` — which does not overlay a cursor — so it was composited into
+   the framebuffer, and the shape was chromium's bitmap rather than any theme's.
+3. **`/proc/bus/input/devices`** then named the culprit in one line: `Bus=001e`, `EV=100017`.
+
+Screenshotting the panel costs one command, and should be the **first** move next time anything on
+that screen looks wrong, not the fifth:
+
+    XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim -c /tmp/panel.png
+
+##### The theme work, and why it stays in the tree
+
+**Belt and braces, not the fix.** If a real mouse is ever plugged in for debugging, it keeps the
+compositor's own cursor invisible. One genuine finding came out of it, kept because it will mislead
+anyone who next tries to theme a cursor on this box:
+
+> ### ⛔ `cage` does not read `XCURSOR_THEME`. A theme it loads must be called `default`.
 >
 > Attempt three installed a theme named `tlspie-blank` and pointed `XCURSOR_THEME` at it. Nothing
 > changed. Verified on the rig, not reasoned about:
@@ -881,18 +922,18 @@ The theme was right. **The theme's NAME was wrong**, and that is the whole story
 >
 > cage calls `wlr_xcursor_manager_create(NULL, ...)`, and wlroots turns a NULL theme name into the
 > literal string **`default`**. Neither `XCURSOR_THEME` nor `XCURSOR_SIZE` exists anywhere in either
-> binary. **The size being ignored was the clue all along** — `XCURSOR_SIZE=1` not shrinking the
-> arrow meant the process drawing it was reading neither variable.
+> binary. `XCURSOR_SIZE=1` not shrinking the arrow was consistent with this — though in hindsight it
+> was equally consistent with the real answer, that neither variable's owner was drawing the arrow.
 >
 > `XCURSOR_PATH` *is* read, by both, so it stays — and it must list `/usr/share/icons` as well,
 > because setting it at all **replaces** wlroots' built-in search path
 > (`~/.icons:/usr/share/icons:/usr/share/pixmaps:~/.cursors:...`).
 
-`tls_blankcursor.py` therefore installs the theme under **both** names: `default` for cage, which is
-the one that actually takes effect, and `tlspie-blank` for chromium, which does honour
-`XCURSOR_THEME`. Both go in `~/.icons` and never `/usr/share/icons` — overriding the system-wide
-`default` would blank the cursor for any desktop session anyone ever starts on this card, and an
-invisible cursor is a miserable thing to debug on a machine that has a mouse.
+`tls_blankcursor.py` therefore installs the theme under **both** names: `default` for cage and
+`tlspie-blank` for chromium, which does honour `XCURSOR_THEME`. Both go in `~/.icons` and never
+`/usr/share/icons` — overriding the system-wide `default` would blank the cursor for any desktop
+session anyone ever starts on this card, and an invisible cursor is a miserable thing to debug on a
+machine that has a mouse.
 
 **Why it is a module with a test rather than a heredoc in the installer.** The Xcursor format is
 little-endian uint32 throughout with byte offsets that must be computed, and a malformed file raises
@@ -913,11 +954,12 @@ changed. **The phone panel is unaffected and keeps working exactly as now.**
 | `setup_kiosk.sh` | installer. `--probe` inspects the display and changes nothing; `--uninstall` reverts |
 | `tls-kiosk.service` | systemd unit — `cage` (wlroots kiosk compositor) wrapping the browser |
 | `tls_kiosk_launch.sh` | the browser flags, kept out of the unit so tuning needs no `daemon-reload` |
-| `tls_blankcursor.py` | writes the transparent cursor theme. Run it directly: `python3 tls_blankcursor.py ~/.icons` |
+| `99-tlspie-no-cec-pointer.rules` | **the actual cursor fix** — stops the HDMI CEC endpoints presenting as a mouse |
+| `tls_blankcursor.py` | transparent cursor theme, belt-and-braces only. `python3 tls_blankcursor.py ~/.icons` |
 
-`./setup_kiosk.sh --probe` now also reports **which input devices present a POINTER capability**. A
-cursor is only drawn when the seat has one, so if an arrow ever comes back that answers "is the
-touchscreen also presenting itself as a mouse?" before anyone touches the theme again.
+`./setup_kiosk.sh --probe` reports **which input devices present a POINTER capability**, and fails
+loudly if any does. A cursor can only exist when the seat has a pointer, so that one line answers
+the question four rounds of theming could not.
 
 ### Shut down — the button at the bottom of the panel
 
@@ -1320,7 +1362,7 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Motion** | `CUR ADJ PWR` turned **DOWN**. Silent and lossless at every speed, 1–28 °/s. |
 | ✅ **Local screen** | 5.5" panel fitted and working full-screen. Needed **no display config at all**. |
 | ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
-| ✅ **Cursor + Shut down button** | 2026-08-11. Cursor root-caused: **cage never reads `XCURSOR_THEME`** — the theme has to be named `default`. Panel can now power the Pi down cleanly. |
+| ✅ **Cursor + Shut down button** | 2026-08-11. Cursor gone — the real cause was the **HDMI CEC endpoints presenting as a mouse**, not any cursor theme. Panel can now power the Pi down cleanly. |
 | ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
 
 Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy

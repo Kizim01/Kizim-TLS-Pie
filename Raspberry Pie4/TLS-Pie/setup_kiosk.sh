@@ -87,21 +87,33 @@ probe_display() {
         echo "  (install libinput-tools for a readable list)"
     fi
 
-    # A cursor is only drawn when the seat has a POINTER. If the panel that is
-    # meant to be touch-only also presents a mouse interface -- plenty of HID
-    # touchscreens do -- that is where the arrow on screen comes from, and it
-    # is worth knowing before blaming the cursor theme.
-    say "Pointer devices (why a cursor appears at all)"
+    # ⛔ THE CURSOR CHECK THAT MATTERS. A cursor exists because the seat has a
+    # POINTER. On this rig nothing is plugged in that should be one -- the two
+    # HDMI CEC endpoints just look like mice to libinput. If this reports a
+    # pointer, that is the arrow on the screen, and the cursor theme is a
+    # red herring. See 99-tlspie-no-cec-pointer.rules.
+    say "Pointer devices (this is why a cursor appears at all)"
     if command -v libinput >/dev/null 2>&1; then
         if libinput list-devices 2>/dev/null | grep -q 'pointer'; then
             libinput list-devices 2>/dev/null \
                 | awk '/^Device:/{d=$0} /Capabilities:.*pointer/{print "  " d}'
-            warn "something presents a POINTER. The blank theme is what hides it."
+            bad "something presents a POINTER -- chromium will draw an arrow for it"
+            echo "     If it is vc4-hdmi-0/1, the udev rule is not applied:"
+            echo "       sudo install -m 0644 99-tlspie-no-cec-pointer.rules /etc/udev/rules.d/"
+            echo "       sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=input"
         else
-            ok "no pointer device -- any cursor on screen is the compositor's default"
+            ok "no pointer device -- nothing can draw a cursor"
         fi
     else
         echo "  (install libinput-tools to check)"
+    fi
+
+    # Seeing it for yourself beats arguing about it. grim captures the composited
+    # output, cursor included -- this rig renders a software cursor, so it shows
+    # up with or without -c.
+    if command -v grim >/dev/null 2>&1; then
+        echo "  screenshot the panel:  XDG_RUNTIME_DIR=/run/user/1000 \\"
+        echo "                         WAYLAND_DISPLAY=wayland-0 grim -c /tmp/panel.png"
     fi
 
     say "Blank cursor theme"
@@ -195,7 +207,33 @@ do_install() {
         warn "lingering enabled but /run/user/$(id -u "$USER_NAME") not created yet"
     fi
 
+    say "Removing the phantom pointer"
+    # ⛔ THIS is what takes the arrow off the screen -- not the cursor theme
+    # below. The vc4 driver registers the HDMI CEC endpoints as input devices
+    # with EV_REL set, so libinput calls them mice, and chromium draws its
+    # built-in arrow for the pointer that "exists". Full reasoning is in the
+    # rules file. Without this, no amount of cursor theming helps, because
+    # chromium only re-reads CSS cursor:none on a pointer EVENT and a phantom
+    # pointer never moves.
+    if [ -f "$HERE/99-tlspie-no-cec-pointer.rules" ]; then
+        sudo install -m 0644 "$HERE/99-tlspie-no-cec-pointer.rules" /etc/udev/rules.d/
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --subsystem-match=input
+        sleep 1
+        if libinput list-devices 2>/dev/null | grep -q 'vc4-hdmi-[0-9]$'; then
+            warn "vc4-hdmi devices still present to libinput -- the arrow may remain"
+        else
+            ok "HDMI CEC devices no longer present a pointer"
+        fi
+    else
+        bad "99-tlspie-no-cec-pointer.rules missing -- the cursor WILL be visible"
+    fi
+
     say "Blank cursor theme"
+    # Belt and braces behind the udev rule above. If a real mouse is ever
+    # plugged in, or some other device starts claiming a pointer, this keeps
+    # the compositor's own cursor invisible. It is NOT what fixed the arrow.
+    #
     # There is no mouse on this rig, so the compositor's default pointer just
     # sits in the middle of the screen forever. cage cannot be told to hide it
     # (its whole option list is -d -h -m -s -v), so the lever is a cursor theme

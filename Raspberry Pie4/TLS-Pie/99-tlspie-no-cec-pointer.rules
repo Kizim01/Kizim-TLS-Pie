@@ -1,0 +1,55 @@
+# Stop the HDMI CEC devices pretending to be a mouse.
+#
+# Installed to /etc/udev/rules.d/ by setup_kiosk.sh.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS, NOT THE CURSOR THEME, IS WHAT REMOVES THE ARROW FROM THE SCREEN
+#
+# The rig has no mouse, yet an arrow sat in the dead centre of the 5.5" panel.
+# Three attempts at a transparent cursor THEME did nothing, and the reason is
+# that the arrow was never a theme cursor at all -- it was chromium's own
+# built-in pointer bitmap, drawn as a client cursor surface.
+#
+# Where the pointer came from:
+#
+#     $ cat /proc/bus/input/devices
+#     N: Name="vc4-hdmi-0"     Bus=001e (BUS_CEC)     B: EV=100017
+#     N: Name="vc4-hdmi-1"     Bus=001e (BUS_CEC)     B: EV=100017
+#
+# Those are the HDMI CEC remote-control endpoints the vc4 driver registers for
+# each HDMI port. EV=0x100017 has bit 2 set -- EV_REL, relative axes -- so
+# libinput classifies them as POINTERS:
+#
+#     $ libinput list-devices
+#     Device: WaveShare WaveShare   Capabilities: touch
+#     Device: vc4-hdmi-0            Capabilities: keyboard pointer   <-- here
+#     Device: vc4-hdmi-1            Capabilities: keyboard pointer   <-- here
+#
+# The touchscreen is touch-only and innocent. These two are the entire reason
+# a cursor exists on a machine with no mouse.
+#
+# WHY CSS cursor:none COULD NOT FIX IT
+# chromium only recomputes the cursor for the element under the pointer when it
+# receives a pointer EVENT. A phantom CEC pointer never moves: chromium set its
+# default arrow once, when the pointer entered the surface, and had no reason
+# to look at the page's `cursor:none` ever again. The rule was applied and
+# correct the whole time and could never take effect.
+#
+# So the fix is upstream of all of it -- have no pointer. With these ignored,
+# the seat has no pointer capability, chromium is never sent a pointer-enter,
+# and nothing draws a cursor.
+#
+# WHAT THIS COSTS: nothing. There is no CEC remote on this rig, and if one is
+# ever wanted, delete this file. The touchscreen is a separate USB HID device
+# and is not matched here. A real USB keyboard or mouse plugged in for
+# debugging is also unaffected -- and would then get a working cursor, which is
+# what you would want at that moment.
+#
+# VERIFY:
+#     libinput list-devices | grep -A1 vc4-hdmi     # should list neither
+#     udevadm test /sys/class/input/event1 2>&1 | grep LIBINPUT_IGNORE_DEVICE
+# ─────────────────────────────────────────────────────────────────────────────
+
+# "vc4-hdmi-?" matches vc4-hdmi-0 and vc4-hdmi-1 but NOT the separate
+# "vc4-hdmi-0 HDMI Jack" switch devices, which are harmless and left alone.
+SUBSYSTEM=="input", ATTRS{name}=="vc4-hdmi-?", ENV{LIBINPUT_IGNORE_DEVICE}="1"
