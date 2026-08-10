@@ -27,10 +27,12 @@
 #    Pi boots, and it has no token, so anyone on it can start the motor. That
 #    is fine on a private phone hotspot and NOT fine on a site network -- set
 #    TLSPIE_WEB_TOKEN below before this ever joins one.
-# 2. The 10k ENABLE pull-up is still not fitted. Every Pi GPIO floats for the
-#    ~30 s of boot and ENABLE is active-low, so the driver can sit energised
-#    with nothing in control of it. That was true before this unit was enabled
-#    and is unchanged by it, but the Pi now boots unattended more often.
+# 2. The 10k ENABLE pull-up IS fitted -- verified 2026-08-09, 40/40 reads HIGH
+#    under both internal pulls. Every Pi GPIO floats for the ~30 s of boot and
+#    ENABLE is active-low, so without that resistor the driver would sit
+#    energised with nothing in control of it. This header claimed the resistor
+#    was missing for a day after it had been fitted; if a warning here ever
+#    disagrees with the hardware, trust the hardware and fix the comment.
 
 [Unit]
 Description=TLS Pie lidar scanner controller

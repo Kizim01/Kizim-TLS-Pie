@@ -660,6 +660,54 @@ that suddenly loads nothing.
 In the field there is no router: either run the Pi as an access point (`hostapd`) or use the phone
 as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 
+### Local touch panel — 5.5" Waveshare HDMI AMOLED (built 2026-08-10, NOT yet fitted)
+
+A permanent touch interface on the rig itself, so it can be driven with no phone and no network.
+**Built and committed; the panel has never been plugged in.** Nothing below is verified on hardware.
+
+**It renders the phone panel, it is not a second UI.** `tls-kiosk.service` runs a kiosk browser on
+the Pi pointed at `http://localhost:8080/` — the same web app the phone loads, from the same
+process. One codebase, one set of controls, both surfaces always showing the same scanner state.
+A native local UI would be a second thing to keep in step, and it would drift the first time either
+changed. **The phone panel is unaffected and keeps working exactly as now.**
+
+| file | role |
+|---|---|
+| `setup_kiosk.sh` | installer. `--probe` inspects the display and changes nothing; `--uninstall` reverts |
+| `tls-kiosk.service` | systemd unit — `cage` (wlroots kiosk compositor) wrapping the browser |
+| `tls_kiosk_launch.sh` | the browser flags, kept out of the unit so tuning needs no `daemon-reload` |
+
+> ### ⛔ Every Waveshare guide for this panel is wrong for this Pi
+>
+> They all specify `hdmi_group=2`, `hdmi_mode=87`, `hdmi_timings=...`, `max_framebuffer_height`,
+> `config_hdmi_boost`. **On this rig every one of those lines is silently ignored.** They are legacy
+> firmware-display settings, and this Pi runs **Bookworm with full KMS** (`dtoverlay=vc4-kms-v3d`),
+> where the kernel sets the mode from EDID and the firmware no longer participates. Nothing warns
+> you — you get a black screen and no error term to search for. Those guides were written for Buster
+> and Bullseye.
+>
+> The KMS-era ladder, cheapest first — climb only as far as needed:
+> 1. **Do nothing.** Many of these panels supply correct EDID and simply work.
+> 2. `video=HDMI-A-1:1080x1920@60` appended to `/boot/firmware/cmdline.txt`. CVT timings.
+> 3. A custom binary EDID in `/lib/firmware/edid/` plus `drm.edid_firmware=HDMI-A-1:edid/...`.
+>    Fiddly, rarely needed.
+>
+> `./setup_kiosk.sh --probe` reports which rung you are on. Run it with the panel attached before
+> changing anything.
+
+**Mount it portrait.** The panel is natively 1080×1920 portrait and the control panel was designed
+for a phone, so portrait needs no rotation at all. Landscape would need an output transform, which
+`cage` does not expose — that means swapping the compositor for `labwc` or `sway`.
+
+**Two things to expect on first fit.** The screen is ~400 PPI, so rendered 1:1 every control would be
+a third of its size on a phone: `TLSPIE_KIOSK_SCALE` (default 2.5) exists to fix that and is pure
+guesswork until the panel is in front of you. And the AMOLED adds load to the 5 V rail on a rig that
+**browned out and rebooted the Pi on 2026-08-10** — budget the power before trusting it on battery.
+
+The unit carries `ConditionPathExists=/dev/dri/card1` so a headless boot does not restart-loop, and
+`Wants=` not `Requires=` on `tls-scan` so a scanner failure shows an error page rather than a black
+screen — from two feet away those look identical, and only one of them tells the operator anything.
+
 ### Networking — two interfaces, two jobs
 
 | Interface | Job | Notes |
@@ -1166,7 +1214,12 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 3. **Re-derive the mount geometry on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m instrument height
    came from `captures/driveway.pcap`, which is a different machine. Take the first real capture
    from this rig and re-run the ground-plane histogram. Until then the sign of the roll is unknown.
-4. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
+4. **Fit the 5.5" local touch panel** (planned for the week of 2026-08-10). Code is written,
+   committed and unverified — no display has ever been attached. Order of work: plug the panel in,
+   run `./setup_kiosk.sh --probe` **before changing any config**, then `./setup_kiosk.sh`. Ignore
+   every Waveshare `hdmi_timings` instruction — see "Local touch panel" under Key files for why they
+   are silently ignored on Bookworm KMS, and for the ladder that replaces them.
+5. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
    must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
 5. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
    under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.

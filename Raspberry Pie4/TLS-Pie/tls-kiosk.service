@@ -1,0 +1,90 @@
+# TLS Pie local touch panel -- systemd unit
+#
+# Puts the SAME control panel the phone uses onto the rig's own 5.5" Waveshare
+# HDMI AMOLED. Not a second interface -- literally the same web app, rendered
+# by a browser running on the Pi and pointed at localhost:8080.
+#
+# WHY THAT MATTERS
+# A native local UI would be a second codebase to keep in step with the phone
+# panel, and the two would drift the first time either changed. Rendering the
+# existing panel means there is exactly one UI, one set of controls, and one
+# place a bug can live. The phone keeps working unchanged, and both surfaces
+# show the same scanner state because they poll the same process.
+#
+# INSTALL
+#   Do not install this by hand -- run ./setup_kiosk.sh, which installs the
+#   packages, puts the user in the right groups, works out the display mode and
+#   then enables this unit. Installing the unit alone gives a black screen.
+#
+# WATCH IT
+#   journalctl -u tls-kiosk -f
+#
+# ⚠ THIS UNIT DOES NOT MOVE THE MOTOR. It starts a browser. Everything it can
+# do, it does by talking to tls-scan.service over HTTP, exactly as the phone
+# does. Stopping it takes the local screen away and leaves the scanner running.
+
+[Unit]
+Description=TLS Pie local touch panel (kiosk browser)
+Documentation=file:/home/lipi/TLS-Pie/PROJECT_CONTEXT.md
+
+# The panel is served by tls-scan. Wants= not Requires=: if the scanner is down
+# we still want the screen up, showing a connection error, rather than a black
+# panel that tells the operator nothing. A blank screen and a broken scanner
+# look identical from two feet away, and that is the situation this avoids.
+After=tls-scan.service systemd-user-sessions.service
+Wants=tls-scan.service
+
+# No display attached means no kiosk. Without this the unit restart-loops
+# forever on a headless boot, which is the normal state when the rig is being
+# driven from the phone alone.
+ConditionPathExists=/dev/dri/card1
+
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=lipi
+WorkingDirectory=/home/lipi/TLS-Pie
+
+# cage is a wlroots kiosk compositor: one fullscreen client, no desktop, no
+# window manager, nothing to accidentally swipe away. It needs a real login
+# session to be granted the seat (the GPU and the input devices), which is what
+# PAMName=login plus a TTY provides. Without those two lines cage aborts with
+# "Could not create backend" and the cause is not obvious from the message.
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XDG_SESSION_TYPE=wayland
+
+# --- the two knobs worth tuning ---------------------------------------------
+#
+# TLSPIE_KIOSK_URL
+#   If TLSPIE_WEB_TOKEN is set on tls-scan.service, the panel requires a token
+#   and this URL must carry it:  http://localhost:8080/?t=<token>
+#
+# TLSPIE_KIOSK_SCALE
+#   The panel is 1080x1920 across 5.5 inches -- about 400 PPI. Rendered 1:1
+#   every control would be a third the size of the same control on a phone, so
+#   the browser is told to scale. 2.5 gives a 432x768 CSS viewport, close to a
+#   phone's. Raise it for bigger targets, lower it to fit more on screen.
+#   Tune this with the panel in front of you; it is guesswork from a desk.
+Environment=TLSPIE_KIOSK_URL=http://localhost:8080/
+Environment=TLSPIE_KIOSK_SCALE=2.5
+
+ExecStart=/usr/bin/cage -- /home/lipi/TLS-Pie/tls_kiosk_launch.sh
+
+# The screen is the rig's face. If the browser dies the operator is left with
+# nothing to look at, so bring it straight back. The burst limit in [Unit]
+# stops that becoming a tight loop.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
