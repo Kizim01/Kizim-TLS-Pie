@@ -938,8 +938,26 @@ as a hotspot. Both leave `eth0` free, which matters — the Velodyne owns it.
 ### Scan storage — `tls_storage.py` ✅ DEPLOYED 2026-08-11
 
 Scans record to a **USB stick whenever one is usable**, and to the SD card otherwise. Deployed and
-verified on the rig: 26/26 on the Pi, correctly reporting no stick and falling back to the SD card.
-**No USB drive has been plugged in yet**, so the USB path itself is still unexercised on hardware.
+verified on the rig: 26/26 on the Pi.
+
+> #### ✅ EXERCISED ON A REAL STICK — 2026-08-12
+> A **SanDisk Ultra Fit 128 GB** was fitted and the whole path measured end to end: detected as
+> `/dev/sda1`, **mounts in 0.03 s**, **113 MB/s** sustained write, **123 GB free**, `usbWritable`
+> true, the record target auto-flips (`targetIsUsb: true`) and the panel reads *"Recording to USB ·
+> 115 GB free"*. **Eject** unmounts cleanly and reports safe to remove; re-mounting afterwards works.
+> The USB path is no longer theoretical.
+>
+> **The panel API action for mounting is `check`, not `mount`** — `/api/usb?action=mount` returns
+> *"Unknown action"*. Easy to get wrong from the outside; the button label is "Check for USB".
+>
+> **It is not mounted at boot, and that is correct.** There is no `fstab` entry and `udisks2` is
+> inactive, so an idle rig shows `usbMounted: false` with the note *"USB drive found but not
+> mounted"*. `choose_dumpdir()` mounts on demand at `PREFLIGHT`. **A stick that reads "not mounted"
+> at idle is not a fault** — do not go looking for one.
+>
+> **This stick is FAT32, not the exFAT recommended below**, and it works: `mount` is called without
+> `-t`, so the kernel picks the driver. The one consequence is FAT32's **4 GB single-file limit** —
+> a 6½-minute capture ran 130 MB, roughly 30× under it, so it is a footnote rather than a risk.
 
 **Why bother:** a `slow` scan is ~340 MB, so a busy day is ~7 GB written to the SD card. SD cards die
 from write wear, and a dead boot card takes the whole rig down until it is re-flashed and
@@ -1425,6 +1443,25 @@ The script's checks are the point, not the connection. **If WiFi hands out an ad
 `192.168.1.x` it collides with the lidar and packets can leave via the wrong interface — breaking
 capture quietly rather than loudly.** Samsung hotspots normally use `192.168.43.x`, which is clear,
 but the script refuses a clash outright and confirms the lidar route still points at `eth0`.
+
+#### ⛔ `ping 192.168.1.201` DOES NOT tell you the lidar is connected — measured 2026-08-12
+
+With the sensor unpowered and `eth0` showing **`carrier 0`**, a ping to the lidar came back **0 %
+loss at 27–97 ms**. Nothing was there. The packets took the `wlan0` default route to the phone
+hotspot, and the carrier's NAT answered on the sensor's behalf. **The control that proves it:
+`192.168.1.202` replies too**, and that address is nothing at all.
+
+This matters because the ping *looks* like the obvious pre-scan check, and it is the one test that
+cannot fail honestly on a rig whose control link is a hotspot. Use instead:
+
+| check | good answer |
+|---|---|
+| `cat /sys/class/net/eth0/carrier` | `1` — a cable with a live peer at the other end |
+| `ip route get 192.168.1.201` | `dev eth0`. **`via <gateway> dev wlan0` means it is leaving by the wrong door** |
+| `ip neigh` | a real MAC for `192.168.1.201`; ARP does not cross a router |
+
+Same failure this project keeps meeting: a component reporting success while the thing itself is
+absent.
 
 A phone hotspot drops when the phone sleeps or moves out of range, which is another reason the
 systemd unit matters: a dropped link must not be able to kill a scan mid-rotation. Set
