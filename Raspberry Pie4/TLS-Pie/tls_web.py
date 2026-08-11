@@ -678,8 +678,39 @@ PAGE = """<!doctype html>
      read as a surface, so the cards get an opaque background instead of
      turning into faint rectangles. */
   html.kiosk *{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
-  html.kiosk .card{background:rgba(32,32,40,.92)}
-  html.kiosk .banner{background:rgba(38,32,26,.92)}
+
+  /* ⛔ GLASS WITHOUT THE BLUR -- and it costs nothing.
+     The first version of this made the cards nearly opaque
+     (rgba(32,32,40,.92)), which killed the frosted look along with the blur.
+     It did not have to: what backdrop-filter is blurring here is the page
+     BACKGROUND, and that background is a smooth gradient with no
+     high-frequency detail in it. Blurring a smooth gradient produces very
+     nearly the same pixels as not blurring it -- so a genuinely translucent
+     card over it reads as frosted glass for free.
+
+     So: real translucency (the gradient shows through and shifts colour down
+     the page, exactly as the phone's does), a bright top edge for the lit
+     bevel, and NO per-frame blur. */
+  html.kiosk .card{
+    background:linear-gradient(180deg,rgba(66,66,84,.55),rgba(30,30,42,.50));
+    box-shadow:inset 0 .5px 0 rgba(255,255,255,.15)}
+  html.kiosk .banner{
+    background:linear-gradient(180deg,rgba(78,62,40,.55),rgba(44,34,22,.50));
+    box-shadow:inset 0 .5px 0 rgba(255,255,255,.12)}
+
+  /* TRUE backdrop-filter, opt-in only: ?aero=1 / TLSPIE_KIOSK_AERO=1.
+     ⛔ IT IS OFF BY DEFAULT AND SHOULD STAY OFF. Measured on the rig, panel
+     idle at its 1 Hz poll, summed across every chromium process:
+
+         flat cards ....... 7.0% of one core
+         backdrop-filter .. 17.1% of one core
+
+     Two and a half times the cost while nothing is happening, and it is paid
+     again on every repaint -- which is what made the panel feel laggy the one
+     time it shipped enabled. The rule above gets the same look for free. */
+  html.kiosk.aero .card{background:var(--glass);box-shadow:none;
+    -webkit-backdrop-filter:blur(30px) saturate(180%) !important;
+    backdrop-filter:blur(30px) saturate(180%) !important}
 
   /* ⛔ DO NOT give .hdr a background here. There was a
          html.kiosk .hdr{background:rgba(18,18,24,.94)}
@@ -726,6 +757,7 @@ PAGE = """<!doctype html>
     var z = parseFloat(p.get('zoom'));
     if(z > 0) document.documentElement.style.zoom = z / 100;
     if(p.get('kiosk') === '1') document.documentElement.classList.add('kiosk');
+    if(p.get('aero') === '1') document.documentElement.classList.add('aero');
   }catch(e){}
 })();
 </script>

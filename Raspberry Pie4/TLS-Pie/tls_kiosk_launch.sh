@@ -46,9 +46,23 @@ fi
 # Not --force-device-scale-factor either -- see the warning above the exec.
 # The page reads ?zoom= and ?kiosk= itself, which keeps one page serving both
 # the phone and this screen, and keeps the setting somewhere that can be tested.
+# ⛔ REAL backdrop-filter on the cards. OFF by default, and it should stay off.
+# Measured on this rig with the panel idle at its 1 Hz poll, summed over every
+# chromium process:
+#
+#     off (translucent cards, no blur) ..  7.0% of one core
+#     on  (backdrop-filter) ............. 17.1% of one core
+#
+# Two and a half times the cost with nothing happening, paid again on every
+# repaint. The panel shipped with this on once and was immediately reported as
+# "really laggy". The stylesheet gets the same frosted look for free by being
+# genuinely translucent over a smooth gradient -- see the comment there.
+AERO=""
+[ "${TLSPIE_KIOSK_AERO:-0}" = "1" ] && AERO="&aero=1"
+
 case "$URL" in
-    *\?*) URL="$URL&kiosk=1&zoom=$ZOOM" ;;
-    *)    URL="$URL?kiosk=1&zoom=$ZOOM" ;;
+    *\?*) URL="$URL&kiosk=1&zoom=$ZOOM$AERO" ;;
+    *)    URL="$URL?kiosk=1&zoom=$ZOOM$AERO" ;;
 esac
 
 # ⛔ OPEN A BOOT SHIM, NOT THE PANEL. chromium's window is WHITE from the moment
@@ -73,11 +87,26 @@ esac
 #
 # Falls back to the served shim, and then to the panel itself, so a read-only
 # or full runtime directory costs a flash and never the screen.
+# ⛔ THE SHIM HANDS OVER IMMEDIATELY. DO NOT DELAY IT SO THE PANEL LOADS
+# "BEHIND" THE INTRO.
+#
+# That was tried on 2026-08-11: hold the dark shim for 4 s so chromium
+# navigates to the panel while the intro is covering the screen, hiding the
+# moment the panel appears. It put a WHITE FLASH BACK BETWEEN THE INTRO AND THE
+# PANEL, which is the exact symptom it was meant to polish away.
+#
+# The reason is that a window covered by a fullscreen client is OCCLUDED, and
+# chromium defers painting an occluded window. The navigation did not render
+# while mpv was on top; it rendered when mpv exited, showing white first.
+#
+# So the panel must be painted BEFORE the intro covers it, not during. The cost
+# is a second or so of panel on screen ahead of the intro -- which is dark UI,
+# not a flash, and is the better of the two.
 OPEN="$URL"
 if [ -z "${TLSPIE_KIOSK_NO_SHIM:-}" ]; then
     SHIM="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-boot.html"
-    # The meta refresh is the belt to location.replace's braces: if script is
-    # ever disabled the panel still arrives, a second later instead of at once.
+    # The meta refresh is the belt to setTimeout's braces: if script is ever
+    # disabled the panel still arrives, a second later instead of at once.
     if cat > "$SHIM" 2>/dev/null <<EOF
 <!doctype html><html style="background:#12121a"><head><meta charset="utf-8">
 <title>TLS Scanner</title>
@@ -212,20 +241,77 @@ BROWSER_PID=$!
 # software STOP on this machine.
 INTRO="${TLSPIE_INTRO_VIDEO:-/home/lipi/TLS-Pie/splash/intro.mp4}"
 
-# ⛔ THE SLEEP IS LOAD-BEARING. DO NOT REMOVE IT TO "CLOSE THE BLACK GAP".
-# cage stacks toplevels in the order they are MAPPED, and the newest wins.
-# Removing this so the intro starts sooner was tried on 2026-08-11 and made
-# the video vanish: mpv mapped first, chromium mapped a few seconds later ON
-# TOP of it, and the intro played to completion underneath a panel nobody
-# could see. On screen it looked like the intro had simply stopped working.
+# ⛔ mpv MUST MAP AFTER CHROMIUM HAS PAINTED, AND A FIXED SLEEP IS NOT ENOUGH.
 #
-# Two seconds is enough for chromium to map its window (measured: its
-# "Connecting..." panel is up by then), so mpv maps afterwards and lands on
-# top. The cost is about two seconds of black between plymouth releasing the
-# screen and the intro starting, which is the lesser of the two evils.
+# cage stacks toplevels in the order they are MAPPED, newest on top. That cuts
+# both ways, and both failures have been seen on this rig:
+#
+#   mpv maps too EARLY -> chromium maps on top of it. First seen as the intro
+#     "vanishing" (it played to completion underneath the panel). Then, on a
+#     COLD boot where chromium is slower, as a WHITE FLASH BETWEEN THE END OF
+#     THE INTRO AND THE PANEL -- chromium mapping mid-video and showing its
+#     unpainted white window over it.
+#   mpv maps too LATE -> the panel is already on screen before the intro runs.
+#
+# `sleep 2` was the first attempt and it is a guess: right on a warm restart,
+# wrong on a cold boot, which is precisely the case nobody tests. So watch the
+# screen instead of guessing. chromium's window goes through three states --
+# black (nothing mapped), white (mapped, not yet painted), then the panel
+# (dark, but not black). The third one is the signal, and it is unambiguous.
 INTRO_DELAY="${TLSPIE_INTRO_DELAY:-2}"
+PROBE="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-probe.ppm"
+
+# Mean brightness of a small patch of screen, or -1 if it cannot be read.
+#
+# Deliberately od+awk and not python3: this runs in a polling loop, and every
+# millisecond of latency here is a millisecond longer that the panel sits
+# visible before the intro covers it. A python interpreter start is ~0.2 s on
+# this Pi and dominated the whole wait.
+#
+# The PPM header for an 8x8 image is exactly "P6\n8 8\n255\n" -- 11 bytes --
+# so the pixels start at byte 12. Fixed because the geometry is fixed.
+screen_mean() {
+    grim -g '0,0 8x8' -t ppm "$PROBE" 2>/dev/null || { echo -1; return; }
+    tail -c +12 "$PROBE" 2>/dev/null | od -An -tu1 -v 2>/dev/null | awk '
+        {for (i = 1; i <= NF; i++) { s += $i; n++ }}
+        END {print (n ? int(s / n) : -1)}' 2>/dev/null || echo -1
+}
+
+wait_for_panel() {
+    # Without grim there is nothing to watch, so fall back to the old guess
+    # rather than dropping the intro.
+    if ! command -v grim >/dev/null 2>&1; then
+        sleep "$INTRO_DELAY"
+        return
+    fi
+    local i m
+    for i in $(seq 1 100); do          # ~15 s ceiling
+        m="$(screen_mean)"
+        # NON-BLACK is the signal, and that is deliberately weaker than
+        # "painted". All mpv needs is to map after chromium's WINDOW exists,
+        # and the window exists the moment the screen stops being black --
+        # whether it is showing chromium's white or the painted panel.
+        #
+        # Waiting for the painted panel instead was tried and measured: it put
+        # 2.07 s of fully-drawn control panel on screen BEFORE the intro, so
+        # the operator saw the panel, then a video over it, then the panel
+        # again. Triggering on the window instead covers chromium's white
+        # sooner and leaves the panel hidden until the intro is done.
+        #
+        # Nothing else can turn the screen non-black here: cage's background is
+        # black and chromium is the only client running at this point.
+        if [ "$m" -gt 8 ]; then
+            rm -f "$PROBE"
+            return
+        fi
+        sleep 0.05
+    done
+    rm -f "$PROBE"
+    # Never settled. Go anyway: a late intro beats no panel.
+}
+
 if [ -r "$INTRO" ] && command -v mpv >/dev/null 2>&1; then
-    sleep "$INTRO_DELAY"
+    wait_for_panel
     # --no-input-terminal   there is no stdin under systemd
     # --no-input-default-bindings + --no-osc   a touchscreen must not be able to
     #                       pause the intro or summon a seek bar over it

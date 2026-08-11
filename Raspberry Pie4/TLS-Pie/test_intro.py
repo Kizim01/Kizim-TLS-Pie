@@ -133,6 +133,27 @@ def main():
     check("chromium is started BEFORE the intro",
           launch.index("BROWSER_PID=$!") < launch.index("    mpv "),
           "intro starts before the browser -- expect a black screen after it")
+    # ⛔ A fixed sleep is a guess: right on a warm restart, wrong on a cold
+    # boot, where chromium maps LATE and lands on top of the playing video --
+    # which is what put a white flash between the intro and the panel.
+    check("waits for chromium to PAINT, does not just sleep",
+          "wait_for_panel" in code and "screen_mean" in code,
+          "back to a fixed sleep")
+    # Non-black, not "painted": mpv only has to map after chromium's WINDOW
+    # exists. Waiting for the painted panel measured 2.07 s of control panel
+    # on screen before the intro, which looks like a mistake to the operator.
+    check("the wait triggers on chromium's window, not a full paint",
+          '-gt 8' in code and '-lt 200' not in code,
+          "waiting for paint again -- expect the panel to flash before the intro")
+    check("the wait gives up rather than hanging the launch",
+          "seq 1 100" in code)
+    check("falls back to a sleep when grim is unavailable",
+          'command -v grim' in code and 'sleep "$INTRO_DELAY"' in code)
+    # Every millisecond in the poll is a millisecond the panel sits visible
+    # before the intro. A python start is ~0.2 s on this Pi.
+    check("the poll uses od+awk, not a python interpreter per sample",
+          "od -An -tu1" in code and "python3 -c" not in code,
+          "python back in the polling loop")
     check("chromium is backgrounded, not exec'd",
           "BROWSER_PID=$!" in launch and 'exec "$BROWSER"' not in launch)
     check("the script waits for the browser, or cage would exit",
@@ -169,6 +190,35 @@ def main():
     check("falls back to the served shim", "boot.html" in launch)
     check("and to the panel itself if both fail", 'OPEN="$URL"' in launch)
     check("can be turned off for debugging", "TLSPIE_KIOSK_NO_SHIM" in launch)
+    # The shim holds while the intro takes over, so the panel is never seen
+    # appearing and then being covered. Zero hold when there is no intro.
+    # ⛔ Delaying the handover so the panel loads "behind" the intro put a
+    # white flash BACK between the intro and the panel: chromium defers
+    # painting an occluded window, so the navigation rendered only once mpv
+    # exited, showing white first. The shim must hand over immediately.
+    check("the shim hands over immediately, no hold",
+          "location.replace" in launch and "SHIM_HOLD_MS" not in launch,
+          "the shim delays again -- expect white after the intro")
+
+    print("\n=== aero ===")
+    check("frosted cards are switchable, not baked in",
+          "TLSPIE_KIOSK_AERO" in launch and "aero=1" in launch)
+    # ⛔ Measured 7.0% -> 17.1% of a core at idle, and reported as "really
+    # laggy" the one time it shipped on. Default must stay off.
+    check("backdrop-filter is OFF by default",
+          "TLSPIE_KIOSK_AERO:-0" in launch, "aero defaults on again")
+    # Assert the DECLARATION, not the text: the stylesheet's comment quotes the
+    # old opaque value while explaining why it was wrong, so a plain substring
+    # search matches the documentation and fails on a correct file.
+    css_card = page.split("html.kiosk .card{", 1)[1].split("}", 1)[0]
+    check("cards are translucent -- glass without the blur",
+          "linear-gradient" in css_card and "rgba(32,32,40,.92)" not in css_card,
+          css_card.strip()[:70])
+    check("and keep a lit top edge", "inset 0 .5px 0" in css_card)
+    check("the page only frosts the CARDS, not all nine blur rules",
+          "html.kiosk.aero .card" in page and "html.kiosk.aero *" not in page)
+    check("aero beats the blanket flatten rule",
+          "backdrop-filter:blur(30px) saturate(180%) !important" in page)
 
     print("\n=== token ===")
     httpd.shutdown()

@@ -187,9 +187,14 @@ do_install() {
     # <video> was measured at 4 fps on this hardware against mpv's 24, so mpv
     # is the only thing here that can play it. Missing mpv is not fatal -- the
     # launch script simply skips the intro.
+    # grim is NOT just a diagnostic any more: tls_kiosk_launch.sh uses it to
+    # watch for chromium finishing its first paint, which is what decides when
+    # the intro can safely map on top. Without it the launch falls back to a
+    # fixed sleep, which is the guess that put a white flash between the intro
+    # and the panel on cold boots.
     sudo apt-get install -y --no-install-recommends \
-        cage seatd libinput-tools chromium-browser mpv
-    ok "cage, seatd, libinput-tools, chromium-browser, mpv"
+        cage seatd libinput-tools chromium-browser mpv grim
+    ok "cage, seatd, libinput-tools, chromium-browser, mpv, grim"
 
     say "Permissions"
     sudo systemctl enable --now seatd >/dev/null 2>&1 || true

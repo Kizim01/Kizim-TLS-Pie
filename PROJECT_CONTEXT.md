@@ -1038,6 +1038,23 @@ re-checked after every edit and the original is backed up.
 > The flash sits **before** the intro video, next to plymouth's artwork — deliberately, because the
 > only alternative ordering puts it *after* the video, between the intro and the panel, where it is
 > far more conspicuous.
+>
+> **5. `sleep 2` before the intro was a race, and it lost on cold boots.** cage stacks by map order,
+> so mpv must map *after* chromium. A fixed sleep is right on a warm restart and wrong on a cold
+> boot, where chromium is slower — it then mapped **on top of the playing video**, showing its
+> unpainted white window, which is the "white between the intro and the panel" that was reported.
+> `wait_for_panel()` now polls the screen with `grim` and starts the intro once the screen stops
+> being black, i.e. once chromium's window exists. Poll uses `od`+`awk`, not `python3`: an
+> interpreter start is ~0.2 s here and dominated the wait, and every millisecond of it is a
+> millisecond the panel sits visible before the intro.
+>
+> **6. Delaying the shim so the panel loads *behind* the intro puts the white flash back.** A window
+> covered by a fullscreen client is **occluded, and chromium defers painting it** — the navigation
+> rendered only when mpv exited, showing white first. The panel must be painted *before* the intro
+> covers it. Cost: ~1.8 s of dark panel ahead of the intro, which is UI rather than a flash.
+
+Measured end state, recorded at 30 fps: `black 1.73 s → white 0.50 s → dark UI 1.83 s → video
+5.13 s → panel`, **no white after the video**.
 
 `plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
 nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —
@@ -1049,6 +1066,26 @@ property is that the texture is **vertically periodic**: the animation scrolls t
 by exactly one screen height, so a streak leaving the bottom must re-enter at the top mid-streak. Get
 it wrong and there is no error — just a seam marching up the screen once a second. `test_splash.py`
 asserts it directly.
+
+### Aero — frosted cards without the frosted-glass cost
+
+The kiosk cards are **translucent, not blurred**, and that was the whole trick: what
+`backdrop-filter` blurs here is the page background, and that background is a **smooth gradient with
+no high-frequency detail**. Blurring a smooth gradient produces nearly the same pixels as not
+blurring it, so a genuinely translucent card over it reads as frosted glass for free. A lit top edge
+(`inset 0 .5px 0`) supplies the bevel.
+
+The first attempt at removing the blur made the cards nearly opaque, which threw the look away along
+with the cost. The second shipped real `backdrop-filter` and was immediately reported as *"really
+laggy"*. Measured on the rig, panel idle at its 1 Hz poll, summed over every chromium process:
+
+| cards | CPU |
+|---|---|
+| opaque (flat) | 7.0% of one core |
+| **translucent, no blur** | **8.0%** ← current |
+| real `backdrop-filter` | 17.1% |
+
+Real blur stays available as `?aero=1` / `TLSPIE_KIOSK_AERO=1`, **off by default**.
 
 ### Shut down / Reboot — the buttons at the bottom of the panel
 
