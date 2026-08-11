@@ -455,6 +455,32 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > down, so `U12` would have reached ~14.5 V (3.6 V/cell, half a pack) and **the balancer would never
 > have started**, since it only bleeds near 4.2 V/cell.
 >
+> ### ✅ FIRST PER-GROUP MEASUREMENT, 2026-08-11 — taps correct, and the old board is exonerated
+>
+> Measured against `0V` on the flat pack: **2.98 / 6.10 / 9.18 / 12.25 V**. Ascending and evenly
+> spaced, so **the five taps are wired correctly**. Differencing them gives the four groups:
+>
+> | group | pads | volts | vs mean |
+> |---|---|---|---|
+> | 1 | `0V`→`4.2V` | **2.98** | **−0.08 — the low one** |
+> | 2 | `4.2V`→`8.4V` | 3.12 | +0.06 |
+> | 3 | `8.4V`→`12.6V` | 3.08 | +0.02 |
+> | 4 | `12.6V`→`16.8V` | 3.07 | +0.01 |
+>
+> **No cell is damaged.** Every group is above 2.98 V, well clear of the ~2.5 V where Li-ion takes
+> permanent harm. The pack is discharged, not degraded.
+>
+> **⭐ THIS CLOSES THE ORIGINAL MYSTERY.** Most 4S boards cut off around **2.8–3.0 V/cell**, and
+> group 1 sits at **2.98 V** — right on that threshold. The old board latched because one group had
+> genuinely reached its floor. It was neither faulty nor mysteriously conservative; it did exactly
+> what it was for. The new board conducts at the same voltage only because its floor is lower
+> (**2.5 V/cell**), which is a *weaker* protection, not a better board.
+>
+> **A 140 mV spread at 3.0 V/cell is not yet proof of a weak group.** The discharge curve is steep
+> down there, so a small capacity mismatch shows as a large voltage gap. **The verdict comes at full
+> charge**: all four should reach ~4.2 V and sit within 50 mV. If group 1 is still the laggard then,
+> it is genuinely weak.
+>
 > ### ✅ CHARGER SET AND VERIFIED 2026-08-11 — **16.8 V open-circuit, 1.5 A**
 >
 > **Mark both pots.** The whole chain is now set: 20 V trigger → `BCD5A` at 16.8 V / 1.5 A. Nothing
