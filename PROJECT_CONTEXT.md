@@ -519,14 +519,21 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > going down while everything looked idle. A few mA is ~1.7 Ah a week on a ~9 Ah pack, and **this
 > pack has already been flattened once by exactly this class of fault**.
 >
-> **Fix: `D1`, an `SS54` Schottky, in the charge lead between the buck and the fused node.** A
-> connector in that lead would also work and costs no volts — but it can be forgotten, and `D1`
-> cannot.
+> **✅ Fixed for now by `S3`, a charge-isolate switch — fitted and working 2026-08-11.** It must sit
+> **between the buck and the pack**, never on the USB side: unplugging the USB is what *causes* the
+> back-feed, so the break has to be on the pack side of the buck. **Open `S3` the moment a charge
+> finishes** — that habit is what this corner of the sheet now depends on.
 >
-> **Consequence: set the buck to `17.0 V`, not 16.8 V.** At taper current the Schottky drops ~0.2 V,
-> so the *pack* lands at ~16.8 V — which is what the balancer needs, since it only bleeds near
-> 4.2 V/cell and an undercharged pack never balances. If `D1` is ever bypassed, 17.0 V is
-> 4.25 V/cell and the BMS's own **4.2 V/cell over-voltage cutoff is the backstop**. That is its job.
+> **`D1` is still on order and still worth fitting: a switch can be forgotten, a diode cannot.**
+> Keep both. **`1N5822`**, or any Schottky ≥3 A and ≥30 V (`SB540`, `SR360`, `MBR340`). *Not* `SS54`
+> — that is surface-mount and this is hand-wired. *Not* a `1N400x` — silicon drops ~1 V, not ~0.2 V.
+> **Banded end towards the pack.**
+>
+> **Buck voltage: leave it at 16.8 V while `S3` is the only isolation** (a switch costs no volts).
+> **Move it to 17.0 V only when `D1` is fitted** — the Schottky drops ~0.2 V at taper so the *pack*
+> still lands at ~16.8 V, which is what the balancer needs, since it only bleeds near 4.2 V/cell and
+> an undercharged pack never balances. At 17.0 V with `D1` bypassed you would be at 4.25 V/cell, and
+> the BMS's own **4.2 V/cell cutoff is the backstop**. That is its job.
 >
 > ### ✅ CHARGER SET AND VERIFIED 2026-08-11 — **16.8 V open-circuit, 1.5 A** (before `D1`)
 >

@@ -455,7 +455,7 @@ def different_net(label: str, a, b) -> None:
 # DESIGN -- the Rev 3.1 engineering rules, checked by following copper
 # --------------------------------------------------------------------------------------
 for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11",
-            "J_USB", "U12", "PM1", "D1",
+            "J_USB", "U12", "PM1", "S3", "D1",
             "JP1", "U1", "U10", "U7", "U8",
             "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
@@ -503,7 +503,11 @@ same_net("charge return IS the star point", ("BMS1", "P-"), ("U12", "OUT-"), ("J
 # The USB-C charge chain: trigger -> CC/CV buck -> the fused node.  No series resistor:
 # the BCD5A has a current pot, so the current phase is regulated rather than burnt.
 same_net("trigger into the buck", ("J_USB", "1"), ("U12", "IN+"))
-same_net("buck out into the blocking diode", ("U12", "OUT+"), ("D1", "A"))
+same_net("buck out into the isolate switch", ("U12", "OUT+"), ("S3", "POLE"))
+same_net("isolate switch into the diode", ("S3", "THROW"), ("D1", "A"))
+# S3 must actually BREAK the charge path.  If its two sides are one node it isolates
+# nothing and the back-feed that flattened the pack walks straight through it.
+different_net("S3 really breaks the charge path", ("S3", "POLE"), ("S3", "THROW"))
 same_net("diode out onto the fused node", ("D1", "K"), ("F1", "2"))
 # D1 must be IN the charge path, not bridged across it, or the back-feed it exists to
 # stop walks straight round it and quietly drains the pack again.

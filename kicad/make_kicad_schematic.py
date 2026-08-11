@@ -630,8 +630,13 @@ def build() -> Sheet:
     # There is no series resistor any more: the BCD5A has a current pot, so the current
     # phase is done properly instead of by burning the difference in a lump of 3R3.
     sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
-    sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 17.0 V / 1.5 A")
-    sh.place("Diode", "D1", 558.8, 45.72, value="1N5822 -- BANDED END TO THE PACK")
+    sh.place("BuckCC_Module", "U12", 502.92, Y_A,
+             value="BCD5A -> 16.8 V / 1.5 A  (17.0 V once D1 is fitted)")
+    # S3 is FITTED and working as of 2026-08-11; D1 is on order.  Both belong here: the
+    # switch costs no volts, the diode cannot be forgotten.  Keep both.
+    sh.place("SW_SPST", "S3", 537.21, 30.48, value="CHARGE ISOLATE -- fitted")
+    sh.place("Diode", "D1", 558.8, 45.72, value="1N5822 -- NOT YET FITTED, link it out",
+             dnp=True)
     # Drawn here because there is room; it MOUNTS on the panel beside the BMS, and its
     # two thick leads must be SHORT and heavy -- they carry the whole rig's return.
     sh.place("PanelMeter_VA", "PM1", 549.91, Y_A, value="panel meter V+A")
@@ -716,7 +721,8 @@ def build() -> Sheet:
     # Buck out THROUGH D1 onto the fused node.  The diode is not optional decoration: with
     # the USB unplugged the pack otherwise feeds backwards through the buck's own switch
     # body diode and lights its indicator LED, which measurably drains the pack.
-    sh.route(sh.pin("U12", "1"), (524.51, 45.72), sh.pin("D1", "1"))
+    sh.route(sh.pin("U12", "1"), (524.51, 30.48))       # straight up into S3
+    sh.route(sh.pin("S3", "2"), (549.91, 45.72), sh.pin("D1", "1"))
     sh.drop("D1", "2", "+VBATT", 570.23)
     # The charge return goes to the PACK side of the shunt, not the rig side, so charging
     # never pushes current backwards through the meter.  PM1 then reads true rig draw at
@@ -836,14 +842,13 @@ def build() -> Sheet:
             "U12 IS THE CHARGER. The BCD5A has TWO pots -- voltage and current -- which\n"
             "is the whole difference between a supply and a charger, and is why the\n"
             "3R3 series resistor Rev 3.1 carried is now DELETED.\n"
-            "*** SET 17.0 V OPEN-CIRCUIT AT THE BUCK, 1.5 A. MARK THE POTS. ***\n"
-            "17.0 and not 16.8 because D1 stands between the buck and the pack. At the\n"
-            "taper current a Schottky drops ~0.2 V, so the PACK lands at ~16.8 V, which\n"
-            "is what the balancer needs -- it only bleeds near 4.2 V/cell, so an\n"
-            "undercharged pack never balances and the weak group never gets found.\n"
-            "If D1 is ever bypassed, 17.0 V is 4.25 V/cell and the BMS's own 4.2 V/cell\n"
-            "over-voltage cutoff is the backstop. That is what it is for.\n"
-            "(16.8 V was set and verified on the bench 2026-08-11, BEFORE D1 was added.)\n\n"
+            "*** SET AND VERIFIED 2026-08-11: 16.8 V OPEN-CIRCUIT, 1.5 A. MARK THE POTS. ***\n"
+            "LEAVE IT AT 16.8 V WHILE S3 IS THE ONLY ISOLATION -- a switch costs no volts.\n"
+            "MOVE IT TO 17.0 V ONLY WHEN D1 IS FITTED: a Schottky drops ~0.2 V at taper, so\n"
+            "the PACK still lands at ~16.8 V, which is what the balancer needs -- it only\n"
+            "bleeds near 4.2 V/cell, so an undercharged pack never balances and the weak\n"
+            "group never gets found. At 17.0 V with D1 bypassed you would be at 4.25 V/cell\n"
+            "and the BMS's own 4.2 V/cell cutoff is the backstop. That is what it is for.\n\n"
             "*** WHY D1 EXISTS -- MEASURED, NOT THEORETICAL ***\n"
             "With the USB unplugged, the pack feeds BACKWARDS through the buck: out of\n"
             "the pack, through the inductor, through the switch's body diode to the input\n"
@@ -853,14 +858,12 @@ def build() -> Sheet:
             "D1 IS 1N5822 OR ANY SCHOTTKY >=3 A AND >=30 V -- SB540, SR360, MBR340 all do.\n"
             "BANDED END (cathode) TOWARDS THE PACK. Backwards, nothing charges at all.\n"
             "Not a 1N400x: silicon drops ~1 V instead of ~0.2 and the sums above change.\n\n"
-            "THE FREE ALTERNATIVE is a connector or switch in this same lead -- BETWEEN\n"
-            "U12 AND THE PACK, not on the USB side. Unplugging the USB is what CAUSES the\n"
-            "back-feed; the break has to be on the pack side of the buck. It costs no\n"
-            "volts, so the buck stays at 16.8 V. It can also be forgotten, which is the\n"
-            "whole argument for D1. Fitting both is not silly.\n"
-            "UNTIL D1 ARRIVES YOU CAN STILL CHARGE: just physically disconnect U12 from\n"
-            "the BMS when the charge finishes. The drain only happens when the buck is\n"
-            "left connected to the pack with no USB power.\n\n"
+            "S3 IS THE ISOLATION AND IT IS FITTED AND WORKING (2026-08-11). It must sit\n"
+            "BETWEEN U12 AND THE PACK, never on the USB side: unplugging the USB is what\n"
+            "CAUSES the back-feed, so the break has to be on the pack side of the buck.\n"
+            "OPEN S3 THE MOMENT A CHARGE FINISHES. That is the one habit this whole\n"
+            "corner of the sheet depends on, and it is why D1 is still worth fitting --\n"
+            "a switch can be forgotten and a diode cannot. KEEP BOTH.\n\n"
             "1.5 A is ~0.2C on ~9 Ah; the BMS would allow 20 A, the cells would not\n"
             "thank you. ERR LOW ON THE VOLTS -- 16.6 V gives ~95% of capacity, 17.2 V\n"
             "is 4.3 V/cell and damages cells.\n"
