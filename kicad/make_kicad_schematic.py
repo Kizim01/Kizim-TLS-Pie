@@ -152,11 +152,13 @@ SYMBOLS: dict[str, dict] = {
     "Diode": dict(
         ref="D", value="1N5822 3A 40V", w=12.7, h=5.08,
         pins=[("1", "A", "L", 0, "passive"), ("2", "K", "R", 0, "passive")],
-        desc="Schottky blocking back-feed from the pack into the charge chain. ANY Schottky "
-             "of >=3 A and >=30 V does: 1N5822, SB540, SR360, MBR340. NOT SS54 -- that is "
-             "surface-mount, and this is hand-wired. NOT a plain silicon rectifier (1N400x) "
-             "-- ~1 V drop instead of ~0.2 V. Without it the pack powers the buck's own "
-             "indicator LED through the switch body diode -- MEASURED draining it 2026-08-11",
+        desc="Schottky blocking back-feed from the pack into the charge chain -- the same job "
+             "a solar blocking diode does at night. ANY Schottky of >=3 A and >=30 V: 1N5822, "
+             "SB540, SR360, MBR340, or 20SQ045 (20 A 45 V -- hugely overrated here, which "
+             "LOWERS its drop, and it is sold for exactly this). NOT SS54, that is "
+             "surface-mount and this is hand-wired. NOT a 1N400x -- ~1 V instead of ~0.2 V. "
+             "Without it the pack powers the buck's own indicator LED through the switch body "
+             "diode -- MEASURED draining the pack 2026-08-11",
     ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
@@ -855,9 +857,15 @@ def build() -> Sheet:
             "-- and lights the buck's own indicator LED. It was caught on 2026-08-11\n"
             "draining the pack while everything looked idle. A few mA is ~1.7 Ah a week\n"
             "on a ~9 Ah pack. THIS PACK HAS ALREADY BEEN FLATTENED ONCE.\n"
-            "D1 IS 1N5822 OR ANY SCHOTTKY >=3 A AND >=30 V -- SB540, SR360, MBR340 all do.\n"
+            "D1 IS ANY SCHOTTKY >=3 A AND >=30 V: 1N5822, SB540, SR360, MBR340, 20SQ045.\n"
+            "A big one run far below its rating (20SQ045 at 1.5 A is 7.5% of rated) has a\n"
+            "LOWER forward drop, so it costs less charge voltage, not more. Its reverse\n"
+            "leakage is a few tenths of a mA -- far below the LED drain it replaces, and\n"
+            "irrelevant with S3 also fitted. Its leads are THICK; check they fit whatever\n"
+            "you are landing them in before ordering.\n"
             "BANDED END (cathode) TOWARDS THE PACK. Backwards, nothing charges at all.\n"
-            "Not a 1N400x: silicon drops ~1 V instead of ~0.2 and the sums above change.\n\n"
+            "Not a 1N400x: silicon drops ~1 V instead of ~0.2 and the sums above change.\n"
+            "No heatsink at 1.5 A -- about half a watt.\n\n"
             "S3 IS THE ISOLATION AND IT IS FITTED AND WORKING (2026-08-11). It must sit\n"
             "BETWEEN U12 AND THE PACK, never on the USB side: unplugging the USB is what\n"
             "CAUSES the back-feed, so the break has to be on the pack side of the buck.\n"

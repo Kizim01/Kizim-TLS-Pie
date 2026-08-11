@@ -297,7 +297,7 @@
       (hide yes)
       (effects (font (size 1.27 1.27)))
     )
-    (property "Description" "Schottky blocking back-feed from the pack into the charge chain. ANY Schottky of >=3 A and >=30 V does: 1N5822, SB540, SR360, MBR340. NOT SS54 -- that is surface-mount, and this is hand-wired. NOT a plain silicon rectifier (1N400x) -- ~1 V drop instead of ~0.2 V. Without it the pack powers the buck's own indicator LED through the switch body diode -- MEASURED draining it 2026-08-11"
+    (property "Description" "Schottky blocking back-feed from the pack into the charge chain -- the same job a solar blocking diode does at night. ANY Schottky of >=3 A and >=30 V: 1N5822, SB540, SR360, MBR340, or 20SQ045 (20 A 45 V -- hugely overrated here, which LOWERS its drop, and it is sold for exactly this). NOT SS54, that is surface-mount and this is hand-wired. NOT a 1N400x -- ~1 V instead of ~0.2 V. Without it the pack powers the buck's own indicator LED through the switch body diode -- MEASURED draining the pack 2026-08-11"
       (at 0 0 0)
       (show_name no)
       (do_not_autoplace no)
