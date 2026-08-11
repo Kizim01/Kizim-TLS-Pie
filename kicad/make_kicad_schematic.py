@@ -114,34 +114,40 @@ SYMBOLS: dict[str, dict] = {
         desc="Tells ERC this rail has a source. S1 and S2 are passive contacts, so "
              "without it every load on +VSW1/+VSW2 reads as undriven",
     ),
-    # Tap names follow the BMS silkscreen, on both parts, because the silkscreen is what
-    # you read with a wire in your hand.  The vendor states the wiring as a voltage
-    # ladder -- 0 / 4.2 / 8.4 / 12.6 / 16.8 V -- and that ladder is on the sheet.
+    # Tap names are the BMS SILKSCREEN, verified against the board itself on 2026-08-11.
+    # This board names its taps by VOLTAGE -- 0V / 4.2V / 8.4V / 12.6V / 16.8V -- not
+    # B1/B2/B3, and its two output pads are marked with a circled minus and plus.  The
+    # silkscreen is what you read with a wire in your hand, so it is what the sheet shows.
+    # Those voltages are the FULL-CHARGE values, not what a flat pack measures.
     "Batt_4S3P": dict(
         ref="BT", value="4S3P Li-ion", w=30.48, h=53.34,
         pins=[
-            ("1", "B+", "R", 20.32, "power_out"),
-            ("2", "B3", "R", 10.16, "passive"),
-            ("3", "B2", "R", 0, "passive"),
-            ("4", "B1", "R", -10.16, "passive"),
-            ("5", "B-", "R", -20.32, "power_out"),
+            ("1", "16.8V", "R", 20.32, "power_out"),
+            ("2", "12.6V", "R", 10.16, "passive"),
+            ("3", "8.4V", "R", 0, "passive"),
+            ("4", "4.2V", "R", -10.16, "passive"),
+            ("5", "0V", "R", -20.32, "power_out"),
         ],
-        desc="12 cells: 4 series groups of 3 parallel. ~9 Ah / ~130 Wh. 16.8 V full, 14.8 V nominal, 12.22 V measured flat",
+        desc="12 cells: 4 series groups of 3 parallel. ~9 Ah / ~130 Wh. 16.8 V full, 14.8 V "
+             "nominal, 12.22 V measured flat. Tap names are the BMS silkscreen; 16.8V is the "
+             "pack positive (B+) and 0V the pack negative (B-)",
     ),
     "BMS_4S": dict(
         ref="BMS", value="BMS4S 40A common port + balance", w=40.64, h=63.5,
         pins=[
-            ("1", "B+", "L", 20.32, "passive"),
-            ("2", "B3", "L", 10.16, "passive"),
-            ("3", "B2", "L", 0, "passive"),
-            ("4", "B1", "L", -10.16, "passive"),
-            ("5", "B-", "L", -20.32, "passive"),
+            ("1", "16.8V", "L", 20.32, "passive"),
+            ("2", "12.6V", "L", 10.16, "passive"),
+            ("3", "8.4V", "L", 0, "passive"),
+            ("4", "4.2V", "L", -10.16, "passive"),
+            ("5", "0V", "L", -20.32, "passive"),
             ("6", "P+", "R", 20.32, "power_out"),
             ("7", "P-", "R", -20.32, "power_out"),
         ],
-        desc="Cricklewood BMS4S, 60x45 mm. COMMON PORT -- there is no C- pad, so charge and "
-             "discharge share P+/P-. 4.2 V/cell over-volt, 2.5 V/cell under-volt, 20 A charge, "
-             "40 A discharge. The FETs are in the NEGATIVE leg, so P+ is the same copper as B+",
+        desc="Cricklewood BMS4S, 60x45 mm. Pads verified 2026-08-11: five tap pads named by "
+             "voltage, plus TWO output pads marked (-) and (+) -- P- and P+ on this sheet. "
+             "COMMON PORT, no C- pad, so charge and discharge share them. 4.2 V/cell over-volt, "
+             "2.5 V/cell under-volt, 20 A charge, 40 A discharge. FETs are in the NEGATIVE leg, "
+             "so the (+) pad is the same copper as the 16.8V pad -- only the return is switched",
     ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
@@ -681,18 +687,19 @@ def build() -> Sheet:
             "leg needs a regulator -- the one place going to 4S makes things worse.",
             (196.85, 20.32), 1.5)
 
-    sh.note("CONNECT THE TAPS IN THIS ORDER:  B-  B1  B2  B3  B+\n"
-            "Measured against B-, they are the voltage ladder the vendor specifies:\n"
-            "    B- = 0 V    B1 = 4.2 V    B2 = 8.4 V    B3 = 12.6 V    B+ = 16.8 V\n"
-            "METER EACH ONE ON THE FREE CONNECTOR BEFORE PLUGGING IT IN. On a flat pack\n"
-            "they read low and evenly spaced -- what matters is the ORDER and that no two\n"
-            "are swapped.\n"
+    sh.note("CONNECT THE TAPS IN THIS ORDER:  0V  4.2V  8.4V  12.6V  16.8V\n"
+            "The board names its pads by voltage, and those are FULL-CHARGE values --\n"
+            "NOT what a flat pack measures. Against 0V at the measured 12.24 V total you\n"
+            "should read roughly:   0 / 3.06 / 6.12 / 9.18 / 12.24 V.\n"
+            "WHAT MATTERS IS THE ORDER, evenly spaced and ascending. Meter every tap on\n"
+            "the free connector BEFORE plugging it in.\n"
             "The protection ICs are powered from the taps. Out of order, one stage sees\n"
             "most of the pack across single-cell inputs and dies silently -- leaving a\n"
             "board that looks fine and protects nothing. Solder all five to the pack\n"
             "FIRST, meter the free connector, and only then plug it in.\n\n"
-            "B1/B2/B3 carry milliamps -- 22-24 AWG.  B+ and B- carry the FULL pack\n"
-            "current -- run those two thick.",
+            "4.2V/8.4V/12.6V carry milliamps -- 22-24 AWG.  16.8V (B+) and 0V (B-) carry\n"
+            "the FULL pack current -- run those two THICK. Check the 16.8V lead: it is\n"
+            "the one that looks like a balance wire and is not.",
             (34.29, 125.73), 1.5)
 
     sh.note("INA226 DNP: the pack lead runs straight through. Fitting it means CUTTING\n"
@@ -884,14 +891,16 @@ def build() -> Sheet:
             "1.  CHARGE AT 16.8 V. At 12.22 V this pack sits at 3.05 V/cell and the BMS is\n"
             "    correctly latched on under-voltage; a common-port board releases when it\n"
             "    sees charge voltage across P+/P-. Do this BEFORE judging the board.\n"
-            "2.  Four groups -- B-/B1, B1/B2, B2/B3, B3/B+ -- each ~4.2 V when full and\n"
-            "    within 50 mV of the others. THE WEAK GROUP SHOWS UP HERE, and it is the\n"
-            "    one that tripped the cutoff. Leave it on charge an hour past 16.8 V: the\n"
-            "    balancer only works at the top, and that hour is the whole point of\n"
-            "    fitting a balancing board.\n"
-            "3.  B- to P- should then read a few MILLIvolts. ~0.55 V AFTER a full charge is\n"
-            "    the board failing; ~0.55 V while flat is the board working.\n"
-            "4.  P+ to P- must equal B+ to B- within a few mV.\n"
+            "2.  Four groups -- 0V/4.2V, 4.2V/8.4V, 8.4V/12.6V, 12.6V/16.8V -- each ~4.2 V\n"
+            "    when full and within 50 mV of the others. THE WEAK GROUP SHOWS UP HERE,\n"
+            "    and it is the one that tripped the cutoff. Leave it on charge an hour past\n"
+            "    16.8 V: the balancer only works at the top, and that hour is the whole\n"
+            "    point of fitting a balancing board.\n"
+            "3.  0V to P- should read a few MILLIvolts. NOTE this board's under-volt floor\n"
+            "    is 2.5 V/cell = 10.0 V pack, so at 12.24 V it is NOT latched and P+/P-\n"
+            "    already carries full pack voltage. The ~0.55 V body-diode reading that\n"
+            "    started this investigation belonged to the OLD board's higher threshold.\n"
+            "4.  P+ to P- must equal 16.8V to 0V within a few mV.\n"
             "5.  Only then close S1, and only with the motor uncoupled from the head.",
             (429.26, 304.8), 1.4)
 

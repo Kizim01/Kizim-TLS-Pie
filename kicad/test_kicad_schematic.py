@@ -471,8 +471,8 @@ same_net("star point", ("BMS1", "P-"), ("U3", "IN-"), ("U3", "OUT-"), ("U11", "G
 
 # THE rule. A return on B- bypasses the FETs: unprotected, and it drains the pack after
 # the BMS has cut off.
-different_net("ground does NOT reach the pack's B-", ("BMS1", "P-"), ("BT1", "B-"))
-different_net("ground does NOT reach the BMS's B- either", ("BMS1", "P-"), ("BMS1", "B-"))
+different_net("ground does NOT reach the pack's B- (0V)", ("BMS1", "P-"), ("BT1", "0V"))
+different_net("ground does NOT reach the BMS's 0V pad either", ("BMS1", "P-"), ("BMS1", "0V"))
 
 # COMMON-PORT board: there is no C- pad at all, so the charger returns to the star point
 # like everything else.  This inverts Rev 3.1, where C- was asserted to be its OWN node --
@@ -492,7 +492,7 @@ check("the 3R3 series resistor is gone", "R_CHG" not in by_ref,
 same_net("the USB-C supply's ground is bonded to the rig", ("J_USB", "2"), ("BMS1", "P-"))
 
 # --- the pack side --------------------------------------------------------------------
-for tap in ("B+", "B3", "B2", "B1", "B-"):
+for tap in ("16.8V", "12.6V", "8.4V", "4.2V", "0V"):
     same_net(f"tap {tap}", ("BT1", tap), ("BMS1", tap))
     pt = pin_xy("BT1", tap)
     ws = [w for w in wires if near(w[0], pt) or near(w[1], pt)]
