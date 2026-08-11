@@ -897,6 +897,24 @@ def build() -> Sheet:
     sh.note("ZONE C   MOTOR CHAIN      M+ now sees up to 16.8 V, still inside 8-35 V",
             (60.96, 300.0), 2.5)
 
+    sh.note("NO, THE MOTOR DOES NOT NEED A 12 V BUCK. U6 STAYS DELETED.\n"
+            "A stepper's \"12 V\" rating is just I_rated x R_phase -- the volts you would\n"
+            "need with NO chopping. U4 is a current-CHOPPING driver: it PWMs the supply\n"
+            "to hold the coil at whatever CUR ADJ is set to, so the supply sets how FAST\n"
+            "current rises, not how MUCH. More volts is more torque at speed, and the\n"
+            "current limit is what protects the motor. 16.8 V is inside U4's 8-35 V.\n\n"
+            "*** BUT THE MOTOR HAS ONLY EVER RUN ON A FLAT PACK. ***\n"
+            "At 12.2 V the driver may never have reached its setpoint at speed. At\n"
+            "16.8 V it will. Expect MORE TORQUE AND A HOTTER MOTOR on the first charged\n"
+            "run even though nothing was adjusted. CHECK THE MOTOR TEMPERATURE, and run\n"
+            "it uncoupled from the head first. Do NOT touch CUR ADJ PWR to compensate.\n\n"
+            "Re-adding U6 would now half-work, which is worse than not working: at 4S it\n"
+            "regulates above ~13.5 V and drops out below, so the rig would behave one way\n"
+            "on a full pack and another on a low one. It would also throw away the torque,\n"
+            "add heat and a failure point, and put a ~2-3 A module ceiling in front of a\n"
+            "chain that draws peaks. The 16.8 V worry belongs to the VLP-16 on S2, not here.",
+            (34.29, 307.34), 1.3)
+
     sh.place("R", "R_EN", 134.62, 337.82, value="1k")
     sh.place("R", "R_ST", 153.67, 345.44, value="1k")
     sh.place("R", "R_DR", 172.72, 353.06, value="1k")

@@ -546,6 +546,22 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > Under the 3S assumption that leg never passed 12.6 V. **Check the sensor's input range before S2
 > is ever closed.**
 >
+> **The motor is NOT one of those things — `U6` stays deleted.** A stepper's "12 V" rating is just
+> I_rated × R_phase, the volts you'd need with *no* chopping. `U4` is a current-**chopping** driver:
+> it PWMs the supply to hold the coil at whatever `CUR ADJ` is set to, so the supply sets how *fast*
+> current rises, not how *much*. More volts is more torque at speed, and the **current limit** is
+> what protects the motor. 16.8 V is comfortably inside `U4`'s 8–35 V.
+>
+> **⚠ But the motor has only ever run on a flat pack.** At 12.2 V the driver may never have reached
+> its setpoint at speed; at 16.8 V it will. **Expect more torque and a hotter motor on the first
+> charged run even though nothing was adjusted** — check the motor temperature, run it uncoupled
+> from the head first, and **do not touch `CUR ADJ PWR` to compensate**.
+>
+> Re-adding `U6` would now *half*-work, which is worse than not working: at 4S it regulates above
+> ~13.5 V and drops out below, so the rig would behave one way on a full pack and another on a low
+> one. It would also throw away the torque, add heat and a failure point, and put a ~2–3 A module
+> ceiling in front of a chain that draws peaks.
+>
 > **The standing lesson:** `3S12P` was never measured — it was inherited from the written record,
 > treated as fact, and carried an entire diagnosis *and* a whole revision of the schematic with it.
 > The capacity derived from it was even used as the argument that killed the correct explanation.
