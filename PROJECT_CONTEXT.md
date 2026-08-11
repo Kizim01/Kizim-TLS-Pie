@@ -1780,31 +1780,50 @@ brief and dark rather than a mid-sequence flash. If the operator still sees a fl
 intro and the panel, that is a different fault from the one fixed — record a boot with
 `wf-recorder` before changing anything.
 
-### The next three physical jobs, in order
+### Where the electrical work actually stands — end of 2026-08-11
 
-0. ~~Set the `BCD5A` on the bench.~~ **✅ DONE 2026-08-11 — 16.8 V open-circuit, 1.5 A.** Do not
-   touch either pot again; mark them. The 20 V trigger is the reason: it would put 5.0 V/cell on
-   the pack, and `U12` is the only thing standing between them.
-1. **Fit the `BMS4S` and charge at 16.8 V.** Five conductors to the pack, connected `B-` `B1` `B2`
-   `B3` `B+` in that order — the vendor's own ladder is 0 / 4.2 / 8.4 / 12.6 / 16.8 V measured
-   against `B-`. Solder all five to the pack first, meter the free connector, and plug it in once.
-   A common-port board releases its under-voltage latch when it sees charge volts across `P+`/`P-`.
-   **Charge with `S1` and `S2` open.**
-2. **Measure the four groups and find the weak one** — `B-`/`B1`, `B1`/`B2`, `B2`/`B3`, `B3`/`B+`.
-   With only 3 cells in parallel, one tired cell drags a whole group under the cutoff. **Then leave
-   it on charge an hour past 16.8 V**: the balancer only bleeds near 4.2 V/cell, so that hour is the
-   entire reason for fitting a balancing board.
-3. **⚠ Check the VLP-16's input range before `S2` is ever closed.** At 4S the pack reaches
-   **16.8 V** and `S2` hands the sensor raw pack volts; the old 3S assumption capped that leg at
-   12.6 V. **This is the one place going to 4S makes things worse**, and it is unresolved.
+**The whole charge path is built, measured and working. Nothing about it is waiting on a decision.**
 
-Still open from earlier and unrelated: **`S1`'s DC rating is unconfirmed** — it is the emergency
-stop, it breaks a DC inductive load, and an under-rated switch welds its contacts silently.
+| ✅ Done and measured | |
+|---|---|
+| PD trigger | first DIP gave **15.15 V** (useless — a buck only steps down); re-dipped to **20 V**. **Label the board in that position** |
+| `U12` BCD5A | **16.8 V open-circuit, 1.5 A**, set on the meter. **Mark the pots** |
+| `BMS4S` pads | seven pads: five taps named by voltage + `⊕`/`⊖`. **Common port, no `C-`** |
+| `⊕` to `16.8V` | **measured 0 Ω** — positive is unswitched, all ten FETs in the negative leg. Verified, not inferred |
+| Four groups | **2.98 / 3.12 / 3.08 / 3.07 V** — taps in order, nothing damaged, **group 1 is the low one** |
+| Back-feed | **found and fixed.** `S3` charge-isolate switch fitted |
 
-**One assumption in Rev 3.2 that only the board in your hand can settle:** the pad names are drawn
-as `B-` `B1` `B2` `B3` `B+` on the pack side and `P+` `P-` on the output. The silkscreen on these
-boards varies. **Read the board and correct `SYMBOLS["BMS_4S"]` if it differs** — the topology
-(common port, FETs in the negative leg) is what the drawing depends on, and that much is confirmed.
+### The jobs left, in order
+
+1. **CHARGE IT.** `S1` and `S2` **open**, `S3` **closed**. Expect the output to show **pack voltage,
+   not 16.8 V**, while it is in constant current — that is the charger working, not a lost setting.
+   ~5–7 hours, **then an hour past 16.8 V** so the balancer actually engages.
+   **Open `S3` the moment it finishes** — that habit is the only back-feed protection until `D1` is in.
+2. **Re-measure the four groups at the top.** All four within **50 mV of 4.2 V** means the pack is
+   fine and this was only ever a flat battery. **Group 1 still lagging means the weak group is
+   confirmed.** This is the measurement the whole investigation has been building toward.
+3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
+   Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
+   offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
+4. **⚠ Check the VLP-16's input range before `S2` is ever closed.** At 4S the pack reaches
+   **16.8 V** and `S2` hands the sensor raw pack volts. **The one place going to 4S makes things
+   worse**, and it is unresolved.
+
+**Not a job: the motor does not need a 12 V buck.** `U4` is a current-chopping driver, so the supply
+sets how *fast* coil current rises, not how *much*; `CUR ADJ` is what protects the motor and 16.8 V
+is inside `U4`'s 8–35 V. But **the motor has only ever run on a flat pack** — expect more torque and
+a hotter motor on the first charged run, check its temperature, and run it uncoupled from the head.
+
+### Still open
+
+- **`S1`'s DC rating is unconfirmed.** It is the emergency stop, it breaks a DC inductive load, and
+  an under-rated switch welds its contacts silently.
+- **`PM1`'s shunt leg is the one unverified assumption.** Drawn as negative-leg. **Meter thin-black
+  to thick-black: near zero confirms it.** If instead thin-*red* is near zero to a thick lead, the
+  shunt is positive-leg and belongs where `U11` is.
+- **`U11` (INA226) has never been connected** — needs the `R002` variant, `3V3` only, and its code
+  is written but untested. It is the thing that would stop this pack being flattened again, because
+  the BMS's 2.5 V/cell floor is a backstop and not an operating limit.
 
 See the resolved box in Scan geometry for how a derived cell count sent a whole day down the wrong
 path, and `WIRING_REV3_BMS.html` for the full procedure.
