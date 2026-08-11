@@ -413,7 +413,7 @@
       (hide yes)
       (effects (font (size 1.27 1.27)))
     )
-    (property "Description" "Power switch -- check the DC rating, a DC arc does not self-extinguish"
+    (property "Description" "Latching power switch. DC arcs do not self-extinguish, but at 16.8 V and ~3 A into a mostly capacitive load that risk is small -- check the marking once and move on. Anything rated >=20 VDC at >=5 A is fine"
       (at 0 0 0)
       (show_name no)
       (do_not_autoplace no)

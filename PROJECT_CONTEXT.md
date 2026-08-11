@@ -1827,8 +1827,15 @@ a hotter motor on the first charged run, check its temperature, and run it uncou
 
 ### Still open
 
-- **`S1`'s DC rating is unconfirmed.** It is the emergency stop, it breaks a DC inductive load, and
-  an under-rated switch welds its contacts silently.
+- **No separate E-stop — decided 2026-08-12.** `S1`, the main latching switch, *is* the stop.
+  Deliberate and reasonable for a 16.8 V / ~50 W bench rig. Two things follow. **`S1` is now
+  safety-relevant by position**: it must be reachable without reaching over the moving head, and
+  which way is OFF must be obvious to someone not thinking clearly — a latched toggle gives none of
+  the affordances a mushroom head does, so the *mounting* has to. And **`S1` does not stop the
+  lidar**: `S1` and `S2` hang off the fused node in parallel, so opening `S1` kills the Pi and the
+  motor (which *is* the hazard — the head on a 50:1 gearbox) and leaves the VLP-16 spinning on `S2`.
+  "Everything off" means both switches. Its **DC rating is worth one look, not a project**: at
+  16.8 V into a mostly capacitive load the arc energy is small, and ≥20 VDC at ≥5 A is plenty.
 - **`PM1`'s shunt leg is the one unverified assumption.** Drawn as negative-leg. **Meter thin-black
   to thick-black: near zero confirms it.** If instead thin-*red* is near zero to a thick lead, the
   shunt is positive-leg and belongs where `U11` is.

@@ -168,7 +168,9 @@ SYMBOLS: dict[str, dict] = {
     "SW_SPST": dict(
         ref="S", value="SPST", w=15.24, h=7.62,
         pins=[("1", "POLE", "L", 0, "passive"), ("2", "THROW", "R", 0, "passive")],
-        desc="Power switch -- check the DC rating, a DC arc does not self-extinguish",
+        desc="Latching power switch. DC arcs do not self-extinguish, but at 16.8 V and ~3 A "
+             "into a mostly capacitive load that risk is small -- check the marking once and "
+             "move on. Anything rated >=20 VDC at >=5 A is fine",
     ),
     "R": dict(
         ref="R", value="1k", w=10.16, h=5.08,
@@ -628,7 +630,7 @@ def build() -> Sheet:
     sh.place("Batt_4S3P", "BT1", 45.72, Y_A)
     sh.place("BMS_4S", "BMS1", 116.84, Y_A)
     sh.place("Fuse", "F1", 179.07, 58.42)
-    sh.place("SW_SPST", "S1", 226.06, 58.42, value="MAIN / E-stop")
+    sh.place("SW_SPST", "S1", 226.06, 58.42, value="MAIN -- latching, the shutdown switch")
     sh.place("SW_SPST", "S2", 226.06, 99.06, value="LIDAR")
     sh.place("LM2596_Module", "U3", 302.26, Y_A, value="LM2596S-ADJ -> 5.1 V")
     sh.place("INA226_Module", "U11", 396.24, Y_A, value="INA226 -- NOT FITTED", dnp=True)
@@ -748,9 +750,18 @@ def build() -> Sheet:
     g_in, g_out = sh.pin("U12", "3"), sh.pin("U12", "2")
     sh.route(g_in, (g_in[0], 99.06), (g_out[0], 99.06), g_out)
 
-    sh.note("S1 and S2 both hang off the fused node, in PARALLEL. S1 does NOT switch\n"
-            "the lidar -- opening S1 kills the Pi and the motor and leaves the VLP-16\n"
-            "spinning on S2.\n\n"
+    sh.note("*** DESIGN DECISION 2026-08-12: NO SEPARATE E-STOP. S1 IS THE STOP. ***\n"
+            "Deliberate, and reasonable for a 16.8 V ~50 W bench rig. Two things follow:\n"
+            "  - S1 IS NOW SAFETY-RELEVANT BY POSITION. It has to be REACHABLE without\n"
+            "    reaching over the moving head, and which way is OFF must be obvious to\n"
+            "    someone who is not thinking clearly. A latched toggle gives none of the\n"
+            "    affordances a mushroom head does, so the mounting has to.\n"
+            "  - S1 DOES NOT STOP THE LIDAR. S1 and S2 hang off the fused node in\n"
+            "    PARALLEL, so opening S1 kills the Pi and the motor -- which IS the\n"
+            "    hazard, the head on a 50:1 gearbox -- and leaves the VLP-16 spinning on\n"
+            "    S2. \"Everything off\" means BOTH switches.\n"
+            "Its DC rating is worth one look, not a project: at 16.8 V into a mostly\n"
+            "capacitive load the arc energy is small. >=20 VDC at >=5 A is plenty.\n\n"
             "*** RESOLVED 2026-08-12: 16.8 V IS INSIDE THE VLP-16's RANGE. ***\n"
             "Velodyne quote 9-32 VDC with the interface box; the user manual's narrower\n"
             "figure is 9-18 V. 16.8 V is inside BOTH, so design to 9-18 and it still\n"
