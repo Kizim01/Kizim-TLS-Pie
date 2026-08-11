@@ -89,6 +89,12 @@ done
 #    --app opens an app-style window that --kiosk does not fullscreen. THE URL
 #    IS POSITIONAL. It is the last argument, below.
 #
+# --default-background-color is what chromium paints BEFORE the page has
+# rendered. Left at its default it is white, and on a 1080x1920 panel in a dark
+# room that is a full-screen white flash roughly a second long, right in the
+# middle of the boot sequence -- measured at mean=255 across two consecutive
+# captures. ARGB hex, matched to the panel's own --bg.
+#
 # --window-size was added as "belt and braces" against the first bug and made
 # things worse. The lesson: under Wayland, let the compositor size the surface.
 #
@@ -113,6 +119,7 @@ done
     --disable-smooth-scrolling \
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
+    --default-background-color=ff12121a \
     "$URL" &
 BROWSER_PID=$!
 
@@ -159,9 +166,21 @@ BROWSER_PID=$!
 # just means no intro, never a rig you cannot drive. The panel carries the only
 # software STOP on this machine.
 INTRO="${TLSPIE_INTRO_VIDEO:-/home/lipi/TLS-Pie/splash/intro.mp4}"
+
+# ⛔ THE SLEEP IS LOAD-BEARING. DO NOT REMOVE IT TO "CLOSE THE BLACK GAP".
+# cage stacks toplevels in the order they are MAPPED, and the newest wins.
+# Removing this so the intro starts sooner was tried on 2026-08-11 and made
+# the video vanish: mpv mapped first, chromium mapped a few seconds later ON
+# TOP of it, and the intro played to completion underneath a panel nobody
+# could see. On screen it looked like the intro had simply stopped working.
+#
+# Two seconds is enough for chromium to map its window (measured: its
+# "Connecting..." panel is up by then), so mpv maps afterwards and lands on
+# top. The cost is about two seconds of black between plymouth releasing the
+# screen and the intro starting, which is the lesser of the two evils.
+INTRO_DELAY="${TLSPIE_INTRO_DELAY:-2}"
 if [ -r "$INTRO" ] && command -v mpv >/dev/null 2>&1; then
-    # A short head start, so chromium is further along before the intro ends.
-    sleep 2
+    sleep "$INTRO_DELAY"
     # --no-input-terminal   there is no stdin under systemd
     # --no-input-default-bindings + --no-osc   a touchscreen must not be able to
     #                       pause the intro or summon a seek bar over it

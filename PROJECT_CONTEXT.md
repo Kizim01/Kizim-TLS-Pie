@@ -642,7 +642,7 @@ before the motor turns under load.
 - [Raspberry Pie4/TLS-Pie/test_web_install.py](Raspberry%20Pie4/TLS-Pie/test_web_install.py) — HTTP tests for the panel's install surface (no hardware needed)
 - [Raspberry Pie4/TLS-Pie/MICROVIEW_REMOVAL.md](Raspberry%20Pie4/TLS-Pie/MICROVIEW_REMOVAL.md) — wiring, install, staged bench test
 
-**All suites, 2026-08-11 — 350 checks, 0 failures** (`test_viewer.py` on the laptop, which has node;
+**All suites, 2026-08-11 — 435 checks, 0 failures** (`test_viewer.py` on the laptop, which has node;
 the Pi does not, so it skips the four `node --check` cases there):
 
 | suite | checks | covers |
@@ -653,6 +653,8 @@ the Pi does not, so it skips the four `node --check` cases there):
 | `test_blankcursor.py` | 41 | Xcursor bytes, theme install |
 | `test_power.py` | 33 | INA226/238/219 + vcgencmd |
 | `test_shutdown.py` | 31 | every shutdown refusal |
+| `test_splash.py` | 55 | rain wraps, cmdline.txt edits |
+| `test_intro.py` | 30 | video route, Range, intro fails open |
 | `test_storage.py` | 26 | USB vs SD, never returns `mmcblk0` |
 | `test_stepper_watchdog.py` | 23 | duration watchdog |
 - [Raspberry Pie4/TLS-Pie/VLPselfcheck.sh](Raspberry%20Pie4/TLS-Pie/VLPselfcheck.sh) — still current
@@ -955,11 +957,79 @@ changed. **The phone panel is unaffected and keeps working exactly as now.**
 | `tls-kiosk.service` | systemd unit — `cage` (wlroots kiosk compositor) wrapping the browser |
 | `tls_kiosk_launch.sh` | the browser flags, kept out of the unit so tuning needs no `daemon-reload` |
 | `99-tlspie-no-cec-pointer.rules` | **the actual cursor fix** — stops the HDMI CEC endpoints presenting as a mouse |
+| `setup_splash.sh` | boot splash installer. `--status`, `--preview`, `--uninstall` |
+| `tls_splash.py` | splash assets + the tested `cmdline.txt` editor |
+| `splash/` | plymouth theme, `background.png`, `rain.png`, `intro.mp4` |
 | `tls_blankcursor.py` | transparent cursor theme, belt-and-braces only. `python3 tls_blankcursor.py ~/.icons` |
 
 `./setup_kiosk.sh --probe` reports **which input devices present a POINTER capability**, and fails
 loudly if any does. A cursor can only exist when the seat has a pointer, so that one line answers
 the question four rounds of theming could not.
+
+### Boot splash — artwork from power-on, then the intro video ✅ 2026-08-11
+
+Before this, everything between power-on and the panel was visible: the firmware's rainbow square,
+the kernel log, the raspberry logos, a blinking cursor and a login prompt. Now:
+
+| stage | what used to show | what covers it |
+|---|---|---|
+| firmware | rainbow test square | `disable_splash=1` in config.txt |
+| kernel | boot log, raspberries, cursor | `quiet loglevel=3 logo.nologo vt.global_cursor_default=0`, console moved to **tty3** |
+| userspace | getty login prompt | plymouth, holding the artwork |
+| ~6 s | — | cage starts; chromium loads *behind* |
+| ~8 s | — | **the intro video**, via mpv |
+| then | — | the control panel |
+
+Boot is **14.4 s** measured (`2.2 s kernel + 12.1 s userspace`). The plymouth still is the video's own
+**first frame**, so the picture turns out to be where the video starts.
+
+The console **login** on tty1 is untouched — only the kernel's console output moved to tty3, which
+matters because tty1 is the only way in when the network is down. Boot messages are no longer on
+screen but are all in the journal (`journalctl -b`, `-b -1` for the previous boot), and `loglevel=3`
+still prints real errors — deliberately not `loglevel=0`, because the unexplained reboots are open.
+
+`setup_splash.sh` installs, `--status` checks, `--preview` shows it without rebooting, `--uninstall`
+puts everything back. cmdline.txt is edited by **tested Python** (`tls_splash.py cmdline`), not sed:
+it is a single line and the failure mode is a card that will not boot, so `root=` and `rootwait` are
+re-checked after every edit and the original is backed up.
+
+> ### ⛔ Four things that were each invisible until measured
+>
+> **1. The video cannot be played by chromium.** A `<video>` in the panel was built first and ran at
+> **four frames per second**. Resolution was not the cause:
+>
+> | player | result |
+> |---|---|
+> | chromium `<video>` 1080×1920 | ~4 fps |
+> | chromium `<video>` 720×1280 | ~4 fps |
+> | chromium `<video>` 540×960 | ~4 fps |
+> | **mpv** (`--vo=drm`, and inside cage) | **24 fps, 0 dropped** |
+>
+> The hardware decoder was open (`/dev/video10`) and cage was on the GL renderer throughout, so
+> neither decode nor compositing was the limit — it is chromium's Wayland video path.
+>
+> **2. `--hwdec=auto` renders a solid blue rectangle** while reporting `fps=24.000 dropped=0`.
+> Caught only by screenshotting the panel and measuring pixel variance:
+> `--hwdec=auto` → rgb(0,13,128) variance **0.0**; `--hwdec=no` → rgb(57,60,64) variance **1427**.
+> Software decode of 1080×1920@24 is comfortable on a Pi 4, so there is nothing to win.
+>
+> **3. cage stacks toplevels by MAP ORDER, newest on top.** The `sleep 2` before mpv is load-bearing:
+> removing it so the intro started sooner made the video *vanish* — mpv mapped first, chromium mapped
+> on top a few seconds later, and the intro played to completion underneath a panel covering it.
+>
+> **4. chromium paints WHITE before the page renders** — a full-screen white flash about a second
+> long, mid-boot, on a panel usually looked at in the dark. `--default-background-color=ff12121a`.
+
+`plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
+nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —
+plymouth starts from the **initramfs**, so the theme must be baked into it or nothing appears;
+`setup_splash.sh` does that and `--status` verifies it.
+
+`tls_splash.py` also generates the animated rain overlay for the plymouth still. Its one real
+property is that the texture is **vertically periodic**: the animation scrolls two copies and wraps
+by exactly one screen height, so a streak leaving the bottom must re-enter at the top mid-streak. Get
+it wrong and there is no error — just a seam marching up the screen once a second. `test_splash.py`
+asserts it directly.
 
 ### Shut down — the button at the bottom of the panel
 
@@ -1363,6 +1433,7 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Local screen** | 5.5" panel fitted and working full-screen. Needed **no display config at all**. |
 | ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
 | ✅ **Cursor + Shut down button** | 2026-08-11. Cursor gone — the real cause was the **HDMI CEC endpoints presenting as a mouse**, not any cursor theme. Panel can now power the Pi down cleanly. |
+| ✅ **Boot splash** | 2026-08-11. Artwork from power-on, then the intro video, then the panel. No rainbow square, no kernel log, no login prompt. Boot 14.4 s. |
 | ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
 
 Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
