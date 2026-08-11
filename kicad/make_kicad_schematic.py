@@ -308,7 +308,11 @@ SYMBOLS: dict[str, dict] = {
             ("4", "TB1 1-9", "R", 10.16, "passive"),
             ("5", "J1 GPS", "R", -10.16, "passive"),
         ],
-        desc="Barrel jack PJ-102A, centre positive. TB1 carries the sensor's factory cable",
+        desc="VLP-16 interface box. 9-32 VDC per the spec sheet, 9-18 V per the user manual -- "
+             "16.8 V is inside both, so no regulator is needed on S2. Barrel jack is 5.5 mm OD x "
+             "2.5 mm ID CENTRE POSITIVE (2.5, not the 2.1 a PJ-102A plug carries -- measure it). "
+             "Supply must source 3.0 A for rotor spin-up though the sensor runs on ~8 W. Has its "
+             "own fuse and reverse-current diode. TB1 carries the sensor's factory cable",
     ),
     "VLP16": dict(
         ref="U", value="Velodyne VLP-16", w=33.02, h=27.94,
@@ -747,11 +751,24 @@ def build() -> Sheet:
     sh.note("S1 and S2 both hang off the fused node, in PARALLEL. S1 does NOT switch\n"
             "the lidar -- opening S1 kills the Pi and the motor and leaves the VLP-16\n"
             "spinning on S2.\n\n"
-            "*** NEW ON 4S: S2 HANDS THE VLP-16 UP TO 16.8 V ***\n"
-            "On the old 3S assumption that leg never passed 12.6 V. CHECK THE SENSOR'S\n"
-            "OWN INPUT RANGE before S2 is ever closed. If it will not take 16.8 V that\n"
-            "leg needs a regulator -- the one place going to 4S makes things worse.",
-            (196.85, 20.32), 1.5)
+            "*** RESOLVED 2026-08-12: 16.8 V IS INSIDE THE VLP-16's RANGE. ***\n"
+            "Velodyne quote 9-32 VDC with the interface box; the user manual's narrower\n"
+            "figure is 9-18 V. 16.8 V is inside BOTH, so design to 9-18 and it still\n"
+            "passes -- with ~1.2 V of margin, and the pack CANNOT exceed 16.8 V because\n"
+            "the BMS cuts off at 4.2 V/cell. NO REGULATOR IS NEEDED ON THIS LEG.\n"
+            "The 4S worry is closed; it was the last electrical blocker.\n\n"
+            "TWO THINGS THE DATASHEET HUNT TURNED UP THAT DO MATTER:\n"
+            "1. THE SUPPLY MUST DELIVER UP TO 3.0 A for the rotor spin-up surge, though\n"
+            "   the sensor only draws ~8 W (~0.5 A) running. That surge lands on top of\n"
+            "   whatever the rest of the rig is drawing, so peak can approach F1's 6 A.\n"
+            "   If F1 ever blows at switch-on and nothing is faulty, this is why.\n"
+            "2. THE BARREL JACK IS 5.5 mm OD x 2.5 mm ID, CENTRE POSITIVE -- a 2.5 mm\n"
+            "   pin, NOT the 2.1 mm that a PJ-102A plug carries. A 2.1 mm plug pushed\n"
+            "   into a 2.5 mm socket grips on nothing and makes intermittent contact.\n"
+            "   MEASURE THE PIN before trusting the connector.\n"
+            "The interface box has its own fuse and reverse-current diode. Run WITHOUT\n"
+            "the box and you must supply reverse- and over-voltage protection yourself.",
+            (196.85, 15.24), 1.5)
 
     sh.note("CONNECT THE TAPS IN THIS ORDER:  0V  4.2V  8.4V  12.6V  16.8V\n"
             "The board names its pads by voltage, and those are FULL-CHARGE values --\n"

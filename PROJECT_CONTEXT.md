@@ -566,9 +566,19 @@ measures the supply, and one experiment was lost to this before it was noticed.
 >    while charging — not to an isolated `C-` node as in Rev 3.1. Use a floating supply, and do not
 >    also have the Pi on a mains-earthed USB brick.
 >
-> **⚠ One thing 4S makes worse:** `S2` hands the VLP-16 **raw pack voltage, now up to 16.8 V**.
-> Under the 3S assumption that leg never passed 12.6 V. **Check the sensor's input range before S2
-> is ever closed.**
+> **✅ The one thing 4S looked like it made worse is now closed.** `S2` hands the VLP-16 raw pack
+> voltage, up to 16.8 V, where the 3S assumption capped that leg at 12.6 V. **Checked 2026-08-12:
+> 16.8 V is inside the sensor's range.** Velodyne quote **9–32 VDC** with the interface box; the
+> user manual's narrower figure is **9–18 V**; 16.8 V is inside both, with the pack unable to exceed
+> 16.8 V because the BMS cuts off at 4.2 V/cell. **No regulator is needed on that leg.**
+>
+> **Two things the datasheet hunt turned up that DO matter:**
+> 1. **The supply must source up to 3.0 A for rotor spin-up**, though the sensor runs on ~8 W
+>    (~0.5 A). That surge lands on top of everything else the rig is drawing, so the peak can
+>    approach `F1`'s 6 A. **If `F1` ever blows at switch-on with nothing faulty, this is why.**
+> 2. **The barrel jack is 5.5 mm OD × 2.5 mm ID, centre positive** — a **2.5 mm** pin, not the
+>    2.1 mm a `PJ-102A` plug carries. A 2.1 mm plug in a 2.5 mm socket grips nothing and makes
+>    intermittent contact. **Measure the pin before trusting the connector.**
 >
 > **The motor is NOT one of those things — `U6` stays deleted.** A stepper's "12 V" rating is just
 > I_rated × R_phase, the volts you'd need with *no* chopping. `U4` is a current-**chopping** driver:
@@ -1805,9 +1815,10 @@ intro and the panel, that is a different fault from the one fixed — record a b
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
-4. **⚠ Check the VLP-16's input range before `S2` is ever closed.** At 4S the pack reaches
-   **16.8 V** and `S2` hands the sensor raw pack volts. **The one place going to 4S makes things
-   worse**, and it is unresolved.
+4. ~~Check the VLP-16's input range.~~ **✅ RESOLVED 2026-08-12 — 16.8 V is inside it. No
+   regulator needed on `S2`, and the last electrical blocker is closed.** Velodyne quote
+   **9–32 VDC** with the interface box; the user manual's narrower figure is **9–18 V**. 16.8 V is
+   inside *both*, and the pack cannot exceed 16.8 V because the BMS cuts off at 4.2 V/cell.
 
 **Not a job: the motor does not need a 12 V buck.** `U4` is a current-chopping driver, so the supply
 sets how *fast* coil current rises, not how *much*; `CUR ADJ` is what protects the motor and 16.8 V

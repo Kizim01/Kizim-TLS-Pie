@@ -1180,7 +1180,7 @@
       (hide yes)
       (effects (font (size 1.27 1.27)))
     )
-    (property "Description" "Barrel jack PJ-102A, centre positive. TB1 carries the sensor's factory cable"
+    (property "Description" "VLP-16 interface box. 9-32 VDC per the spec sheet, 9-18 V per the user manual -- 16.8 V is inside both, so no regulator is needed on S2. Barrel jack is 5.5 mm OD x 2.5 mm ID CENTRE POSITIVE (2.5, not the 2.1 a PJ-102A plug carries -- measure it). Supply must source 3.0 A for rotor spin-up though the sensor runs on ~8 W. Has its own fuse and reverse-current diode. TB1 carries the sensor's factory cable"
       (at 0 0 0)
       (show_name no)
       (do_not_autoplace no)
