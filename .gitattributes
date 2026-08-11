@@ -27,10 +27,22 @@
 *.md        text eol=lf
 *.json      text eol=lf
 
+# KiCad sources and the HTML sheets. Added 2026-08-11, after `git add` warned it
+# was about to CRLF the whole Rev 3.0 project on the next checkout -- which would
+# have made kicad/test_kicad_schematic.py's "is LF only" check fail on a fresh
+# clone, for a reason nothing in the working copy would show.
+*.kicad_sch   text eol=lf
+*.kicad_sym   text eol=lf
+*.kicad_pro   text eol=lf
+sym-lib-table text eol=lf
+*.html      text eol=lf
+.gitignore  text eol=lf
+
 # Binary -- never touch these.
 *.png       binary
 *.jpg       binary
 *.pcap      binary
 *.ply       binary
 *.bin       binary
+*.pdf       binary
 *.rules text eol=lf
