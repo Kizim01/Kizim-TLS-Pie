@@ -122,10 +122,41 @@ li strong{color:var(--ink);font-weight:620}
     <span>Rev</span><b>3.0</b>
     <span>Supersedes</span><b>2.0 · 2026-08-09</b>
     <span>Date</span><b>2026-08-11</b>
-    <span>Status</span><b>not yet fitted</b>
+    <span>Status</span><b>ON HOLD — see above</b>
     <span>ERC</span><b>0 errors</b>
   </div>
 </header>
+
+<section>
+  <div class="stop" style="border-left-width:8px">
+    <span class="hd">⛔ Stop — do not fit this board yet. The pack's topology is unverified.</span>
+    <p style="margin-bottom:12px"><b>Everything on this page assumes the pack is 3S.</b> That
+    assumption is now in doubt: the pack is <b>12 cells in 4 rows of 3</b>, not the 36 the record
+    said. Physical layout does not settle topology — it depends where the nickel strips run — but
+    “4 rows” is exactly what <b>4S3P</b> looks like, <b>and in that case the 4S board already fitted
+    was correct all along.</b></p>
+    <p style="margin-bottom:12px">At the measured <span class="m">12.22 V</span>, <b>3S</b> means
+    <span class="m">4.07 V</span>/cell — nearly full, so a BMS refusing to conduct must be faulty
+    for the pack. <b>4S</b> means <span class="m">3.05 V</span>/cell — genuinely low, and one weak
+    group easily sits under the cutoff. <b>Both explain the ~0.55 V body-diode reading equally
+    well.</b> One says the BMS is wrong; the other says it was right and doing its job.</p>
+    <p style="margin-bottom:12px"><b>The one measurement that settles it — on the OLD 4S board,
+    between <span class="m">B3+</span> and <span class="m">B4+</span>:</b><br>
+    <span class="m">~0 V</span> → no fourth cell → <b>3S</b>, and this page stands.<br>
+    <span class="m">~3 V</span> → there is a fourth cell → <b>4S</b>, and this board must not go on.
+    </p>
+    <p style="margin-bottom:12px">If that board is already off, walk the meter across each
+    cell-group junction from pack negative instead: <b>three steps of ~4.07 V = 3S, four steps of
+    ~3.05 V = 4S</b>. Corroborate without opening anything by counting the balance conductors
+    (<b>5 = 4S, 4 = 3S</b>) and by the charger's open-circuit voltage
+    (<b><span class="m">16.8 V</span> = 4S, <span class="m">12.6 V</span> = 3S</b>).</p>
+    <p><b>Why this is a hard stop rather than a caveat:</b> a 3S board on a 4S pack puts about
+    <span class="m">16.8 V</span> on a <span class="m">B3+</span> input rated for three cells, which
+    destroys the IC — and leaves the fourth cell with <b>no protection at all</b>, no over-discharge
+    floor and no over-charge ceiling. If the pack measures 4S the right action is to <b>charge it
+    with a 16.8 V charger and find the weak group</b>, not to change the BMS.</p>
+  </div>
+</section>
 
 <section>
   <h2><span class="n">00</span> What the board is</h2>
@@ -178,11 +209,11 @@ li strong{color:var(--ink);font-weight:620}
         lead-acid charger and <strong>must not go near this pack</strong> — it would push 4.6–4.8 V
         per cell. With the old BMS latched off, nothing has been protecting these cells, so this is
         not a formality.</li>
-      <li><strong>The three cell-group voltages, at the pack.</strong> Each group should sit within
-        about <span class="m">50 mV</span> of the others. The pack measured
-        <span class="m">12.22 V</span> total, which is <span class="m">4.07 V</span> per cell — full
-        and healthy. A cheap board balances slowly or not at all, so bring the groups together by
-        hand now rather than waiting for it to do it.</li>
+      <li><strong>The cell-group voltages, at the pack — and count them.</strong> This is also the
+        test in the stop notice above: <strong>three groups of ~4.07 V confirms 3S and unblocks this
+        page; four groups of ~3.05 V means 4S and none of it applies.</strong> Once counted, each
+        group should sit within about <span class="m">50 mV</span> of the others. A cheap board
+        balances slowly or not at all, so bring them together by hand rather than waiting for it.</li>
       <li><strong>Continuity from <span class="m">B3+</span> to <span class="m">P+</span>.</strong>
         On a common-port board these are almost always the same copper, given two pads only so the
         pack wire and the load wire each get their own. Confirm it: if they read as one node, the
