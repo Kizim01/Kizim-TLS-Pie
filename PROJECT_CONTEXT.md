@@ -1476,6 +1476,33 @@ and `~/.ssh/tlspie_ed25519` is a passphrase-free key so it works non-interactive
 | Panel | `http://<pi-ip>:8080/` — the Pi prints its reachable address at startup |
 | Deploy | `scp "Raspberry Pie4/TLS-Pie/"*.py tlspie:~/TLS-Pie/` |
 
+> ### ⛔ LOOK AT THE SCREEN. DO NOT BELIEVE A COMPONENT'S REPORT OF ITSELF.
+>
+> Every hard bug on this panel — the cursor, the blue video, the 4 fps playback, the white flash —
+> was a component reporting success while the panel showed something else. mpv's fps counter said
+> `24.000 dropped=0` over a solid blue rectangle. plymouth failed silently. cage loaded a cursor
+> theme it then ignored. **In each case the fix arrived within minutes of actually looking.**
+>
+> ```bash
+> # a still, from the laptop
+> ssh tlspie 'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim -c /tmp/p.png'
+> scp tlspie:/tmp/p.png .            # then open it
+>
+> # a recording, for anything about timing or flashes -- grim sampling is ~15 Hz
+> # and MISSES sub-100 ms events, which is how a 1.1 s white flash got called fixed
+> ssh tlspie 'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 \
+>     wf-recorder -f /tmp/r.mkv -c libx264 -p preset=ultrafast'
+>
+> # per-frame average luma -> where the white/black/video runs actually are
+> ffmpeg -v error -i /tmp/r.mkv -vf \
+>   'fps=30,scale=32:32,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=/tmp/y.txt' \
+>   -f null -
+> ```
+>
+> Pixel **variance** distinguishes a real image from a flat fill — that is what proved
+> `--hwdec=auto` was drawing blue while claiming 24 fps. `grim`, `wf-recorder`, `ffmpeg` and `mpv`
+> are all installed on the rig.
+
 **⚠ The OS must be Bookworm (Debian 12), not Trixie (13).** Verified on hardware: Trixie has **no
 `pigpiod` at all** — the daemon package was dropped and only client pieces remain, so
 `apt-cache policy pigpio` gives `Candidate: (none)`. The Raspberry Pi archive carries `pigpio` and
@@ -1511,9 +1538,20 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Motion** | `CUR ADJ PWR` turned **DOWN**. Silent and lossless at every speed, 1–28 °/s. |
 | ✅ **Local screen** | 5.5" panel fitted and working full-screen. Needed **no display config at all**. |
 | ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
-| ✅ **Cursor + Shut down button** | 2026-08-11. Cursor gone — the real cause was the **HDMI CEC endpoints presenting as a mouse**, not any cursor theme. Panel can now power the Pi down cleanly. |
-| ✅ **Boot splash** | 2026-08-11. Artwork from power-on, then the intro video, then the panel. No rainbow square, no kernel log, no login prompt. Boot 14.4 s. |
+| ✅ **Cursor** | 2026-08-11. Gone. The real cause was the **HDMI CEC endpoints presenting as a mouse**, not any cursor theme. |
+| ✅ **Shut down + Reboot buttons** | 2026-08-11. Both at the bottom of the panel: confirm twice, refuse mid-scan, flush the USB stick first. Reboot verified end to end. |
+| ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
+| ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
 | ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
+
+**One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
+`black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
+video** — that was the reported fault and it is fixed. What is left is ~0.5 s of white *before* the
+intro (chromium existing before it can paint anything; nothing can stack over the newest window, so
+it cannot be covered) and ~1.8 s of dark panel before the intro starts (mpv's own startup). Both are
+brief and dark rather than a mid-sequence flash. If the operator still sees a flash *between* the
+intro and the panel, that is a different fault from the one fixed — record a boot with
+`wf-recorder` before changing anything.
 
 Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
 pack look flat — which sent an hour of debugging down the wrong path. A 3S BMS is ordered. See
