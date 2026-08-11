@@ -1611,7 +1611,8 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**Two blockers closed on 2026-08-10/11. One new one opened, and it is electrical.**
+**All blockers closed as of 2026-08-11. Nothing is waiting on a diagnosis — what is left is
+physical work on the rig.**
 
 | | |
 |---|---|
@@ -1623,7 +1624,8 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
 | ✅ **THE BMS WAS NEVER THE FAULT** | 2026-08-11. The pack is **4S3P (12 cells, 4 rows of 3)**, so the fitted 4S board was the **correct part doing its job** on a genuinely flat pack. `3S12P` was inherited from this document, never measured, and carried a whole diagnosis with it. **The fix is a 16.8 V charge, not a new BMS.** Do not fit the 3S board that was bought. |
-| ✅ **Rev 3.1 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, ~1,800 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`.
+| ✅ **Rev 3.1 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,982 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
+| ✅ **USB-C charging designed** | 2026-08-11. On the sheet: `303PDSink01` PD trigger **@ 20 V** → `U12` buck **@ 16.8 V** → `R_CHG` → the fused node, returning to `C-`. **The trigger is a fixed-voltage source, not a charger** — 3-way DIP gives 5/9/12/15/20 V only, no PPS, and **20 V straight onto the pack is 5.0 V/cell**. |
 
 **One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
 `black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
@@ -1634,11 +1636,25 @@ brief and dark rather than a mid-sequence flash. If the operator still sees a fl
 intro and the panel, that is a different fault from the one fixed — record a boot with
 `wf-recorder` before changing anything.
 
-**Charge the pack first — at 16.8 V.** It is 4S3P, ~130 Wh, and it genuinely ran down; the BMS
-latched on under-voltage exactly as designed and most such boards only release once a charger is
-applied. Then measure the four groups and find the weak one. See the resolved box in Scan geometry
-for how a derived cell count sent a whole day down the wrong path, and `WIRING_REV3_BMS.html` for
-the procedure.
+### The next three physical jobs, in order
+
+1. **Charge the pack at 16.8 V.** It is 4S3P, ~130 Wh, and it genuinely ran down; the BMS latched on
+   under-voltage exactly as designed, and most such boards only release once a charger is applied.
+   Build the USB-C chain first and **meter the PD trigger's DIP mapping with nothing connected** —
+   one of its eight combinations is 20 V, which onto this pack is 5.0 V/cell. Then **set the buck to
+   16.8 V on the meter, no load, erring low.**
+2. **Measure the four groups and find the weak one** — `B-`/`B1+`, `B1+`/`B2+`, `B2+`/`B3+`,
+   `B3+`/`B4+`. With only 3 cells in parallel, one tired cell drags a whole group under the cutoff.
+   A hobby balance charger would do this properly but needs a 5-pin JST-XH tap the pack lacks.
+3. **⚠ Check the VLP-16's input range before `S2` is ever closed.** At 4S the pack reaches
+   **16.8 V** and `S2` hands the sensor raw pack volts; the old 3S assumption capped that leg at
+   12.6 V. **This is the one place going to 4S makes things worse**, and it is unresolved.
+
+Still open from earlier and unrelated: **`S1`'s DC rating is unconfirmed** — it is the emergency
+stop, it breaks a DC inductive load, and an under-rated switch welds its contacts silently.
+
+See the resolved box in Scan geometry for how a derived cell count sent a whole day down the wrong
+path, and `WIRING_REV3_BMS.html` for the full procedure.
 
 **The next milestone is still the first complete scan — that has never happened.**
 
