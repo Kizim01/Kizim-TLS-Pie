@@ -743,7 +743,20 @@ def build() -> Sheet:
             "FIRST, meter the free connector, and only then plug it in.\n\n"
             "4.2V/8.4V/12.6V carry milliamps -- 22-24 AWG.  16.8V (B+) and 0V (B-) carry\n"
             "the FULL pack current -- run those two THICK. Check the 16.8V lead: it is\n"
-            "the one that looks like a balance wire and is not.",
+            "the one that looks like a balance wire and is not.\n\n"
+            "*** PAD ADJACENCY ON THE REAL BOARD -- ONE SLIP IS A FIRE ***\n"
+            "Right edge, top to bottom:  16.8V | (+) | (-) | 4.2V.\n"
+            "  (+) beside 16.8V   -- a bridge here is HARMLESS. They are the same copper:\n"
+            "                        the ten FETs are all in the NEGATIVE leg, so the\n"
+            "                        positive is never switched. Confirm: (+) to 16.8V\n"
+            "                        should meter ~0 ohms.\n"
+            "  (-) beside 4.2V    -- a bridge here is the WORST SHORT ON THE BOARD. (-) is\n"
+            "                        pack negative through the FETs and 4.2V is the top of\n"
+            "                        group 1, so a stray strand puts a DEAD SHORT ACROSS\n"
+            "                        THREE PARALLEL CELLS. No fuse is in that path and\n"
+            "                        nothing protects it. Sleeve it, inspect it, and work\n"
+            "                        that corner one lead at a time.\n"
+            "Leave the CD and FD test pads alone.",
             (34.29, 125.73), 1.5)
 
     sh.note("PANEL METER PM1 -- and it changes the ground topology, so read this.\n\n"
