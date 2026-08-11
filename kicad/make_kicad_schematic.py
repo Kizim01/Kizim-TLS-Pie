@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Generate the TLS Pie Rev 3.1 KiCad schematic from the Rev 2.0 interconnect drawing.
+"""Generate the TLS Pie Rev 3.2 KiCad schematic from the Rev 2.0 interconnect drawing.
 
-Rev 3.0 = Rev 2.0 + the 3S BMS, and the two consequences that follow from fitting it:
+The pack is 4S3P and the star point is the BMS P- terminal, never the pack's B-.
+U6 (the old 12 V buck) is deleted -- a buck cannot make 12 V from a 12 V pack.
 
-  * the star point MOVES from the pack's B- terminal to the BMS P- terminal, and
-  * U6 (the 12 V buck) is deleted -- a buck cannot make 12 V from a 12 V pack.
+Rev 3.2 fits the parts actually bought, and both changed the topology:
+
+  * BMS4S is COMMON PORT.  It has no C- pad, so charge and discharge share P+/P- and
+    the separate CHG- rail Rev 3.1 carried is DELETED -- the charge return is the star
+    point.  A consequence worth stating: with a non-isolated buck, the USB-C supply's
+    ground is now bonded to the whole rig's ground while charging.
+  * BCD5A is a CC/CV buck -- two pots, voltage and current -- so the 3R3 series
+    resistor Rev 3.1 used for the current phase is DELETED.
 
 Why a generator and not a hand-drawn file: the drawing has to stay in step with a written
 record that changes, and a generator makes that a one-line edit rather than a mouse job.
@@ -107,30 +114,34 @@ SYMBOLS: dict[str, dict] = {
         desc="Tells ERC this rail has a source. S1 and S2 are passive contacts, so "
              "without it every load on +VSW1/+VSW2 reads as undriven",
     ),
+    # Tap names follow the BMS silkscreen, on both parts, because the silkscreen is what
+    # you read with a wire in your hand.  The vendor states the wiring as a voltage
+    # ladder -- 0 / 4.2 / 8.4 / 12.6 / 16.8 V -- and that ladder is on the sheet.
     "Batt_4S3P": dict(
         ref="BT", value="4S3P Li-ion", w=30.48, h=53.34,
         pins=[
-            ("1", "B4+", "R", 20.32, "power_out"),
-            ("2", "B3+", "R", 10.16, "passive"),
-            ("3", "B2+", "R", 0, "passive"),
-            ("4", "B1+", "R", -10.16, "passive"),
+            ("1", "B+", "R", 20.32, "power_out"),
+            ("2", "B3", "R", 10.16, "passive"),
+            ("3", "B2", "R", 0, "passive"),
+            ("4", "B1", "R", -10.16, "passive"),
             ("5", "B-", "R", -20.32, "power_out"),
         ],
         desc="12 cells: 4 series groups of 3 parallel. ~9 Ah / ~130 Wh. 16.8 V full, 14.8 V nominal, 12.22 V measured flat",
     ),
     "BMS_4S": dict(
-        ref="BMS", value="4S separate port", w=40.64, h=63.5,
+        ref="BMS", value="BMS4S 40A common port + balance", w=40.64, h=63.5,
         pins=[
-            ("1", "B4+", "L", 20.32, "passive"),
-            ("2", "B3+", "L", 10.16, "passive"),
-            ("3", "B2+", "L", 0, "passive"),
-            ("4", "B1+", "L", -10.16, "passive"),
+            ("1", "B+", "L", 20.32, "passive"),
+            ("2", "B3", "L", 10.16, "passive"),
+            ("3", "B2", "L", 0, "passive"),
+            ("4", "B1", "L", -10.16, "passive"),
             ("5", "B-", "L", -20.32, "passive"),
             ("6", "P+", "R", 20.32, "power_out"),
-            ("7", "C-", "R", 0, "passive"),
-            ("8", "P-", "R", -20.32, "power_out"),
+            ("7", "P-", "R", -20.32, "power_out"),
         ],
-        desc="The board already fitted. SEPARATE PORT: it has a C- pad, so the charger returns to C- and the load returns to P-. Confirm the tap labels against the board itself before wiring",
+        desc="Cricklewood BMS4S, 60x45 mm. COMMON PORT -- there is no C- pad, so charge and "
+             "discharge share P+/P-. 4.2 V/cell over-volt, 2.5 V/cell under-volt, 20 A charge, "
+             "40 A discharge. The FETs are in the NEGATIVE leg, so P+ is the same copper as B+",
     ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
@@ -159,6 +170,18 @@ SYMBOLS: dict[str, dict] = {
             ("2", "OUT-", "R", -7.62, "passive"),
         ],
         desc="Adjustable buck, 4.5-40 V in, 3 A absolute max, ~2 A real on a bare module",
+    ),
+    "BuckCC_Module": dict(
+        ref="U", value="BCD5A CC/CV", w=33.02, h=25.4,
+        pins=[
+            ("4", "IN+", "L", 7.62, "power_in"),
+            ("3", "IN-", "L", -7.62, "passive"),
+            ("1", "OUT+", "R", 7.62, "power_out"),
+            ("2", "OUT-", "R", -7.62, "passive"),
+        ],
+        desc="Cricklewood BCD5A, 52x26 mm. TWO pots -- CV and CC (100 mA to 5 A) -- which is "
+             "what makes it a charger rather than a supply. 6-38 V in, 1.2-36 V out. A buck "
+             "ONLY steps down: 20 V in is required to reach 16.8 V out",
     ),
     "INA226_Module": dict(
         ref="U", value="INA226", w=30.48, h=33.02,
@@ -532,7 +555,7 @@ class Sheet:
 
 
 def build() -> Sheet:
-    """Rev 3.1 -- one A2 page, and EVERY conductor drawn.
+    """Rev 3.2 -- one A2 page, and EVERY conductor drawn.
 
     No connection is made by name.  Rails are real horizontal wires, drops are real
     vertical wires, and every junction dot is a real node.  A crossing without a dot is
@@ -540,11 +563,16 @@ def build() -> Sheet:
     still leaves the page unambiguous.  The one name on each rail is a reading aid; delete
     every one of them and the netlist is identical.
 
-        BAND A   y  79   pack, BMS, fuse, switches, 5 V buck, monitor, charge socket
-        RAILS    y 121-202
+        BAND A   y  79   pack, BMS, fuse, switches, 5 V buck, monitor, charge chain
+        RAILS    y 121-194
         BAND B   y 245   the Pi and everything on its bus
         BAND C   y 345   the motor chain
         GND      two rails, y 121 and y 400, tied by the trunk at x = 28
+
+    GNDA now runs the full width of band A, because on a common-port board the charge
+    buck's return lands on it like every other return.  That means three of U11's drops
+    CROSS it without a junction dot.  They are crossings, not connections -- which is the
+    whole point of drawing it this way, and both the net tracer and KiCad's ERC check it.
     """
     sh = Sheet()
 
@@ -555,7 +583,7 @@ def build() -> Sheet:
     # ==================================================================================
     # BAND A -- the power chain
     # ==================================================================================
-    sh.note("ZONE A   POWER CHAIN      4S3P pack -- and the 4S BMS fitted to it was right",
+    sh.note("ZONE A   POWER CHAIN      4S3P pack, common-port balancing BMS, USB-C charge",
             (25.4, 25.4), 2.5)
 
     sh.place("Batt_4S3P", "BT1", 45.72, Y_A)
@@ -565,10 +593,11 @@ def build() -> Sheet:
     sh.place("SW_SPST", "S2", 226.06, 99.06, value="LIDAR")
     sh.place("LM2596_Module", "U3", 302.26, Y_A, value="LM2596S-ADJ -> 5.1 V")
     sh.place("INA226_Module", "U11", 396.24, Y_A, value="INA226 -- NOT FITTED", dnp=True)
-    # The charge path, left to right: USB-C PD trigger -> buck -> series R -> pack.
+    # The charge path, left to right: USB-C PD trigger -> CC/CV buck -> the fused node.
+    # There is no series resistor any more: the BCD5A has a current pot, so the current
+    # phase is done properly instead of by burning the difference in a lump of 3R3.
     sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
-    sh.place("LM2596_Module", "U12", 502.92, Y_A, value="charge buck -> 16.8 V")
-    sh.place("R", "R_CHG", 552.45, Y_A, value="3R3 10W (omit if U12 is CC/CV)")
+    sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 16.8 V / 1.5 A")
 
     # Pack to BMS: FIVE conductors -- four taps plus B-.  The only wires that ever touch
     # the pack side.  Count them: five is what makes this pack visibly 4S.
@@ -582,8 +611,11 @@ def build() -> Sheet:
     # ==================================================================================
     # THE RAILS
     # ==================================================================================
-    sh.rail("GNDA", GND_A, TRUNK_X, 375.92, label="GND")
-    sh.rail("+VBATT", 140.97, 196.85, 562.61)
+    # GNDA now runs the full width of band A.  On a COMMON-PORT board the charger's
+    # return IS the star point, so the charge buck's OUT- lands on this rail like every
+    # other return -- the separate CHG- rail that Rev 3.1 carried is deleted, not moved.
+    sh.rail("GNDA", GND_A, TRUNK_X, 530.86, label="GND")
+    sh.rail("+VBATT", 140.97, 196.85, 535.94)
     sh.rail("+VSW1", 148.59, 248.92, 297.18)
     sh.rail("+VSW2", 156.21, 259.08, 405.13)
     sh.rail("+5V", 163.83, 38.1, 334.01)
@@ -591,7 +623,6 @@ def build() -> Sheet:
     sh.rail("SDA", 179.07, 104.14, 436.88)
     sh.rail("SCL", 186.69, 114.3, 447.04)
     sh.rail("ETH", 194.31, 139.7, 391.16)
-    sh.rail("CHG-", 201.93, 154.94, 530.86)
     sh.rail("GNDB", GND_B, TRUNK_X, 406.4, label="GND")
 
     # The ground spine.  Its endpoints sit exactly on the two rail ends, so the three
@@ -609,8 +640,7 @@ def build() -> Sheet:
     sh.drop("S2", "1", "+VBATT", 203.2)
     sh.drop("S1", "2", "+VSW1", 248.92)
     sh.drop("S2", "2", "+VSW2", 259.08)
-    sh.drop("BMS1", "8", "GNDA", 142.24)               # P- IS the star point
-    sh.drop("BMS1", "7", "CHG-", 154.94)               # C- is the charger's own return
+    sh.drop("BMS1", "7", "GNDA", 142.24)               # P- IS the star point
     sh.drop("U3", "4", "+VSW1", 270.51)
     sh.drop("U3", "3", "GNDA", 280.67)
     sh.drop("U3", "1", "+5V", 334.01)
@@ -630,13 +660,15 @@ def build() -> Sheet:
     # trigger reads to ERC as powered by nothing.
     sh.tap((466.09, 74.93), (466.09, 55.88))
     sh.place("PWR_FLAG", "#FLG03", 466.09, 55.88)
-    # Buck out, through the series resistor, onto the fused node.
-    sh.route(sh.pin("U12", "1"), (532.13, 71.12), (532.13, Y_A), sh.pin("R_CHG", "1"))
-    sh.drop("R_CHG", "2", "+VBATT", 562.61)
-    sh.drop("U12", "2", "CHG-", 530.86)
-    # A buck module is NOT isolated: IN- and OUT- are the same copper. Drawn, because
-    # this is what makes the USB-C supply's ground become C- rather than the star point,
-    # and it is the reason not to earth the rig anywhere else while charging.
+    # Buck out onto the fused node, and its return onto the star point.  Common port
+    # means these two are simply the +VBATT and GND rails -- the charger hangs across
+    # the same pair the loads do, upstream of both switches, so it charges with S1 and
+    # S2 open.
+    sh.drop("U12", "1", "+VBATT", 535.94)
+    sh.drop("U12", "2", "GNDA", 530.86)
+    # A buck module is NOT isolated: IN- and OUT- are the same copper.  Drawn, because on
+    # a common-port board this is what bonds the USB-C supply's ground to the WHOLE rig's
+    # ground -- not to a separate C- node as in Rev 3.1.  Charge from a floating supply.
     g_in, g_out = sh.pin("U12", "3"), sh.pin("U12", "2")
     sh.route(g_in, (g_in[0], 99.06), (g_out[0], 99.06), g_out)
 
@@ -649,12 +681,17 @@ def build() -> Sheet:
             "leg needs a regulator -- the one place going to 4S makes things worse.",
             (196.85, 20.32), 1.5)
 
-    sh.note("CONNECT THE TAPS IN THIS ORDER:  B-  B1+  B2+  B3+  B4+\n"
+    sh.note("CONNECT THE TAPS IN THIS ORDER:  B-  B1  B2  B3  B+\n"
+            "Measured against B-, they are the voltage ladder the vendor specifies:\n"
+            "    B- = 0 V    B1 = 4.2 V    B2 = 8.4 V    B3 = 12.6 V    B+ = 16.8 V\n"
+            "METER EACH ONE ON THE FREE CONNECTOR BEFORE PLUGGING IT IN. On a flat pack\n"
+            "they read low and evenly spaced -- what matters is the ORDER and that no two\n"
+            "are swapped.\n"
             "The protection ICs are powered from the taps. Out of order, one stage sees\n"
             "most of the pack across single-cell inputs and dies silently -- leaving a\n"
             "board that looks fine and protects nothing. Solder all five to the pack\n"
             "FIRST, meter the free connector, and only then plug it in.\n\n"
-            "B1+/B2+/B3+ carry milliamps -- 22-24 AWG.  B4+ and B- carry the FULL pack\n"
+            "B1/B2/B3 carry milliamps -- 22-24 AWG.  B+ and B- carry the FULL pack\n"
             "current -- run those two thick.",
             (34.29, 125.73), 1.5)
 
@@ -664,25 +701,36 @@ def build() -> Sheet:
             (340.36, 104.14), 1.4)
 
     sh.note("CHARGE PATH -- USB-C. A 4S Li-ion pack wants 16.8 V.\n\n"
+            "*** THE TRIGGER MUST BE ON 20 V. 15 V CANNOT CHARGE THIS PACK. ***\n"
+            "VERIFIED 2026-08-11: first DIP setting gave 15.15 V, re-dipped and it now\n"
+            "reads 20 V. LABEL THE BOARD IN THAT POSITION -- it is the only one that\n"
+            "works, and the setting is three tiny switches away from being lost.\n"
+            "Why 15 V fails: a buck ONLY steps down, so U12 would reach at best ~14.5 V\n"
+            "-- 3.6 V/cell, a half-full pack -- and the BMS balancer would never start,\n"
+            "because it only bleeds near 4.2 V/cell. A pack that never balances is the\n"
+            "failure this whole board was bought to prevent.\n\n"
             "THE PD TRIGGER IS A FIXED-VOLTAGE SOURCE, NOT A CHARGER. Its 3-way DIP\n"
             "selects from 5/9/12/15/20 V only -- there is NO 16.8 V step, and 20 V\n"
-            "straight onto this pack is 5.0 V PER CELL. Set the trigger to 20 V and\n"
-            "let U12 make 16.8 V. 20 -> 16.8 leaves 3.2 V of headroom, so unlike the\n"
-            "deleted U6 this buck really does regulate.\n"
-            "Find the DIP mapping by metering VBUS with NOTHING connected, then label\n"
-            "the board. One of those eight combinations destroys the pack.\n\n"
-            "U12: a CC/CV buck (two pots) is the right part -- set 16.8 V and ~1.5 A\n"
-            "and OMIT R_CHG. A plain LM2596-ADJ has ONE pot, voltage only: then R_CHG\n"
-            "is the current phase, ~1.4 A into a flat pack ((16.8-12.2)/3.3), tapering\n"
-            "as it fills, and dissipating ~6.5 W at the start -- mount it in free air.\n"
-            "HEATSINK U12. The SS34 catch diode is the 3 A ceiling.\n\n"
-            "SET 16.8 V ON THE METER, NO LOAD, BEFORE IT EVER SEES THE PACK -- AND ERR\n"
-            "LOW. 16.6 V gives ~95% of capacity; 17.2 V is 4.3 V/cell and damages cells.\n"
-            "The buck is NOT isolated, so the trigger's GND becomes C-. Do not earth the\n"
-            "rig anywhere else while charging.\n"
+            "straight onto this pack is 5.0 V PER CELL. Meter VBUS with NOTHING\n"
+            "connected, map all eight combinations, then LABEL THE BOARD. One of those\n"
+            "eight destroys the pack. 20 -> 16.8 leaves 3.2 V of headroom, so unlike\n"
+            "the deleted U6 this buck really does regulate.\n\n"
+            "U12 IS THE CHARGER. The BCD5A has TWO pots -- voltage and current -- which\n"
+            "is the whole difference between a supply and a charger, and is why the\n"
+            "3R3 series resistor Rev 3.1 carried is now DELETED. Set 16.8 V and 1.5 A\n"
+            "(~0.2C on ~9 Ah; the BMS would allow 20 A, the cells would not thank you).\n"
+            "SET BOTH ON THE METER BEFORE IT EVER SEES THE PACK -- AND ERR LOW ON THE\n"
+            "VOLTS. 16.6 V gives ~95% of capacity; 17.2 V is 4.3 V/cell and damages\n"
+            "cells. Set CC by shorting the output through the meter on 10 A.\n\n"
+            "CHARGE WITH S1 AND S2 OPEN. The charger hangs on the fused node in\n"
+            "PARALLEL with every load, so with the rig running the CC limit feeds the\n"
+            "load first and the CV taper never terminates cleanly.\n"
+            "The buck is NOT isolated and this BMS is COMMON PORT, so the USB-C supply's\n"
+            "ground is bonded to the ENTIRE rig's ground while charging. Use a floating\n"
+            "supply, and do not also plug the Pi into a mains-earthed USB brick.\n"
             "DO NOT LEAVE IT CHARGING UNATTENDED -- the BMS cutoff is a backstop, not\n"
             "the control loop, and this pack has already been run flat once.",
-            (429.26, 108.0), 1.4)
+            (470.0, 145.0), 1.3)
 
     # ==================================================================================
     # BAND B -- the Pi and its bus
@@ -818,20 +866,29 @@ def build() -> Sheet:
     # ==================================================================================
     sh.note("ACCEPTANCE TEST -- CHARGE FIRST, THEN MEASURE. The order is the whole point.",
             (429.26, 297.18), 2.0)
-    sh.note("0.  CHARGE AT 16.8 V. At 12.22 V this pack sits at 3.05 V/cell and the BMS is\n"
-            "    correctly latched on under-voltage; most such boards only release once a\n"
-            "    charger is applied. Do this BEFORE judging the board.\n"
-            "1.  Four groups -- B-/B1+, B1+/B2+, B2+/B3+, B3+/B4+ -- each ~4.2 V when full\n"
-            "    and within 50 mV of the others. THE WEAK GROUP SHOWS UP HERE, and it is\n"
-            "    the one that tripped the cutoff.\n"
-            "2.  B- to P- should then read a few MILLIvolts. ~0.55 V AFTER a full charge is\n"
+    sh.note("0.  SET U12 ON THE BENCH FIRST -- 16.8 V open-circuit, then 1.5 A into a dead\n"
+            "    short through the meter. NEITHER POT MAY BE TOUCHED AFTERWARDS. With the\n"
+            "    trigger on 20 V there is now a supply on this bench that would put\n"
+            "    5.0 V/cell on the pack, so U12 is the only thing standing between them.\n"
+            "1.  CHARGE AT 16.8 V. At 12.22 V this pack sits at 3.05 V/cell and the BMS is\n"
+            "    correctly latched on under-voltage; a common-port board releases when it\n"
+            "    sees charge voltage across P+/P-. Do this BEFORE judging the board.\n"
+            "2.  Four groups -- B-/B1, B1/B2, B2/B3, B3/B+ -- each ~4.2 V when full and\n"
+            "    within 50 mV of the others. THE WEAK GROUP SHOWS UP HERE, and it is the\n"
+            "    one that tripped the cutoff. Leave it on charge an hour past 16.8 V: the\n"
+            "    balancer only works at the top, and that hour is the whole point of\n"
+            "    fitting a balancing board.\n"
+            "3.  B- to P- should then read a few MILLIvolts. ~0.55 V AFTER a full charge is\n"
             "    the board failing; ~0.55 V while flat is the board working.\n"
-            "3.  P+ to P- must equal B4+ to B- within a few mV.\n"
-            "4.  Only then close S1, and only with the motor uncoupled from the head.",
+            "4.  P+ to P- must equal B+ to B- within a few mV.\n"
+            "5.  Only then close S1, and only with the motor uncoupled from the head.",
             (429.26, 304.8), 1.4)
 
-    sh.note("TLS Pie -- Rev 3.1 -- generated by kicad/make_kicad_schematic.py. Edit the\n"
+    sh.note("TLS Pie -- Rev 3.2 -- generated by kicad/make_kicad_schematic.py. Edit the\n"
             "script, not this file. Rev 3.0 assumed a 3S pack and was WRONG.\n"
+            "Rev 3.2 fits the bought parts: BMS4S (COMMON PORT -- no C- pad, so the old\n"
+            "CHG- rail is deleted and the charge return is the star point) and the BCD5A\n"
+            "CC/CV buck (two pots, so the 3R3 series resistor is deleted).\n"
             "Every conductor here is drawn: nothing is joined by name, and a crossing\n"
             "without a junction dot is not a connection.\n"
             "GPIO assignment is owned by tls_stepper.py.",
@@ -851,12 +908,12 @@ def schematic(sh: Sheet) -> str:
         f'  (uuid "{ROOT_UUID}")\n'
         f'  (paper "{PAPER}")\n'
         "  (title_block\n"
-        '    (title "TLS Pie -- Rev 3.1 wiring schematic")\n'
+        '    (title "TLS Pie -- Rev 3.2 wiring schematic")\n'
         '    (date "2026-08-11")\n'
-        '    (rev "3.1")\n'
+        '    (rev "3.2")\n'
         '    (company "Kizim Robotics")\n'
-        '    (comment 1 "Supersedes Rev 3.0, which wrongly assumed a 3S pack")\n'
-        '    (comment 2 "Pack is 4S3P. The fitted 4S BMS was correct. Star point P-, charger to C-.")\n'
+        '    (comment 1 "Rev 3.2 fits the parts bought: BMS4S common port + BCD5A CC/CV buck")\n'
+        '    (comment 2 "Pack is 4S3P. Star point P-. Common port: the charge return IS the star point.")\n'
         '    (comment 3 "Generated by kicad/make_kicad_schematic.py -- edit the script")\n'
         '    (comment 4 "GPIO assignment is owned by tls_stepper.py")\n'
         "  )\n"

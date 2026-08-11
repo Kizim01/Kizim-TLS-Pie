@@ -427,17 +427,41 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > **What to do instead:** charge the pack at **16.8 V**, then measure the four groups and find the
 > weak one. (12.6 V is a 3S charger and fills this pack to about half; 13.8–14.4 V lead-acid is
 > *harmless* here at 3.45–3.6 V/cell but undercharges — **note this inverts the 3S-era warning**.)
-> Full procedure in `WIRING_REV3_BMS.html`; schematic in `kicad/` (Rev **3.1**).
+> Full procedure in `WIRING_REV3_BMS.html`; schematic in `kicad/` (Rev **3.2**).
 >
-> **Charging is over USB-C**, and the chain is on the sheet: a `303PDSink01` **PD trigger set to
-> 20 V** → `U12` **buck set to 16.8 V** → `R_CHG` → the fused node, returning to `C-`.
+> ### The parts bought 2026-08-11, and what they changed
+>
+> | part | what it is | what it changed |
+> |---|---|---|
+> | **Cricklewood `BMS4S`**, £5.50, 60×45 mm | 4S, 40 A discharge / 20 A charge, 4.2 V over-volt, **2.5 V under-volt**, **with balancing** | **COMMON PORT — no `C-` pad.** Charge and discharge share `P+`/`P-`, so the `CHG-` rail is **deleted** and the charge return **is** the star point |
+> | **Cricklewood `BCD5A`**, £4.50, 52×26 mm | buck, 6–38 V in, 1.2–36 V out, **two pots: CV *and* CC (0.1–5 A)** | It is a real charger, so the **3R3 series resistor is deleted**. This is the converter the BMS listing itself recommends |
+>
+> **Why the new BMS is worth fitting even though the old one was fine: it balances.** With 3 cells
+> per group, one tired cell drags the whole group, and without balancing that group trips the cutoff
+> earlier every cycle — which is exactly the symptom this pack showed. The cost is the separate
+> charge/discharge FET paths. For this rig that is the right trade. **Its 2.5 V/cell under-volt
+> cutoff is a *deep* floor** — a backstop, not an operating limit; stop the software well above it.
+>
+> **Charging is over USB-C**, and the chain is on the sheet: a `303PDSink01` **PD trigger @ 20 V** →
+> `U12` **BCD5A set to 16.8 V / 1.5 A** → the fused node, returning to the **star point** (`P-`).
 > **The trigger is a fixed-voltage source, not a charger**: its 3-way DIP gives only 5/9/12/15/20 V
 > (three switches means **no PPS**), there is no 16.8 V step, and **20 V straight onto this pack is
-> 5.0 V per cell**. Meter `VBUS` with nothing connected to find the DIP mapping, then label the
-> board. 20 → 16.8 leaves **3.2 V of headroom**, which is exactly what `U6` never had.
-> `R_CHG` (3R3 10 W) is the current phase only because the LM2596 has **one pot, voltage only**;
-> a CC/CV buck set to 1.5 A replaces it. **Err low on the voltage** — 16.6 V is ~95% of capacity,
-> 17.2 V is 4.3 V/cell and damages cells.
+> 5.0 V per cell**. 20 → 16.8 leaves **3.2 V of headroom**, which is exactly what `U6` never had.
+> **Err low on the voltage** — 16.6 V is ~95% of capacity, 17.2 V is 4.3 V/cell and damages cells.
+>
+> **✅ Trigger verified 2026-08-11.** First DIP setting metered **15.15 V**; re-dipped and it now
+> reads **20 V**, so the supply does offer a 20 V PDO. **LABEL THE BOARD IN THAT POSITION** — it is
+> three tiny switches away from being lost. **15 V would not have worked at all:** a buck only steps
+> down, so `U12` would have reached ~14.5 V (3.6 V/cell, half a pack) and **the balancer would never
+> have started**, since it only bleeds near 4.2 V/cell.
+>
+> **⚠ Two consequences of common port, both new:**
+> 1. The charger sits across `+VBATT`/`GND` **in parallel with every load**, upstream of both
+>    switches. **Charge with `S1` and `S2` open** or the CC limit feeds the load and the CV stage
+>    never terminates cleanly.
+> 2. The buck is not isolated, so the **USB-C supply's ground is bonded to the entire rig's ground**
+>    while charging — not to an isolated `C-` node as in Rev 3.1. Use a floating supply, and do not
+>    also have the Pi on a mains-earthed USB brick.
 >
 > **⚠ One thing 4S makes worse:** `S2` hands the VLP-16 **raw pack voltage, now up to 16.8 V**.
 > Under the 3S assumption that leg never passed 12.6 V. **Check the sensor's input range before S2
@@ -1624,8 +1648,9 @@ physical work on the rig.**
 | ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
 | ✅ **THE BMS WAS NEVER THE FAULT** | 2026-08-11. The pack is **4S3P (12 cells, 4 rows of 3)**, so the fitted 4S board was the **correct part doing its job** on a genuinely flat pack. `3S12P` was inherited from this document, never measured, and carried a whole diagnosis with it. **The fix is a 16.8 V charge, not a new BMS.** Do not fit the 3S board that was bought. |
-| ✅ **Rev 3.1 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,982 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
-| ✅ **USB-C charging designed** | 2026-08-11. On the sheet: `303PDSink01` PD trigger **@ 20 V** → `U12` buck **@ 16.8 V** → `R_CHG` → the fused node, returning to `C-`. **The trigger is a fixed-voltage source, not a charger** — 3-way DIP gives 5/9/12/15/20 V only, no PPS, and **20 V straight onto the pack is 5.0 V/cell**. |
+| ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
+| ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
+| ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
 
 **One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
 `black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
@@ -1638,20 +1663,31 @@ intro and the panel, that is a different fault from the one fixed — record a b
 
 ### The next three physical jobs, in order
 
-1. **Charge the pack at 16.8 V.** It is 4S3P, ~130 Wh, and it genuinely ran down; the BMS latched on
-   under-voltage exactly as designed, and most such boards only release once a charger is applied.
-   Build the USB-C chain first and **meter the PD trigger's DIP mapping with nothing connected** —
-   one of its eight combinations is 20 V, which onto this pack is 5.0 V/cell. Then **set the buck to
-   16.8 V on the meter, no load, erring low.**
-2. **Measure the four groups and find the weak one** — `B-`/`B1+`, `B1+`/`B2+`, `B2+`/`B3+`,
-   `B3+`/`B4+`. With only 3 cells in parallel, one tired cell drags a whole group under the cutoff.
-   A hobby balance charger would do this properly but needs a 5-pin JST-XH tap the pack lacks.
+0. **Set the `BCD5A` on the bench, before it ever sees the pack.** Trigger on 20 V (verified) into
+   the buck, nothing on the output: set **16.8 V open-circuit, erring low**, then set **1.5 A** by
+   shorting the output through the meter on its 10 A range. **Then do not touch either pot.** There
+   is now a 20 V supply on that bench which would put 5.0 V/cell on the pack; `U12` is the only
+   thing standing between them.
+1. **Fit the `BMS4S` and charge at 16.8 V.** Five conductors to the pack, connected `B-` `B1` `B2`
+   `B3` `B+` in that order — the vendor's own ladder is 0 / 4.2 / 8.4 / 12.6 / 16.8 V measured
+   against `B-`. Solder all five to the pack first, meter the free connector, and plug it in once.
+   A common-port board releases its under-voltage latch when it sees charge volts across `P+`/`P-`.
+   **Charge with `S1` and `S2` open.**
+2. **Measure the four groups and find the weak one** — `B-`/`B1`, `B1`/`B2`, `B2`/`B3`, `B3`/`B+`.
+   With only 3 cells in parallel, one tired cell drags a whole group under the cutoff. **Then leave
+   it on charge an hour past 16.8 V**: the balancer only bleeds near 4.2 V/cell, so that hour is the
+   entire reason for fitting a balancing board.
 3. **⚠ Check the VLP-16's input range before `S2` is ever closed.** At 4S the pack reaches
    **16.8 V** and `S2` hands the sensor raw pack volts; the old 3S assumption capped that leg at
    12.6 V. **This is the one place going to 4S makes things worse**, and it is unresolved.
 
 Still open from earlier and unrelated: **`S1`'s DC rating is unconfirmed** — it is the emergency
 stop, it breaks a DC inductive load, and an under-rated switch welds its contacts silently.
+
+**One assumption in Rev 3.2 that only the board in your hand can settle:** the pad names are drawn
+as `B-` `B1` `B2` `B3` `B+` on the pack side and `P+` `P-` on the output. The silkscreen on these
+boards varies. **Read the board and correct `SYMBOLS["BMS_4S"]` if it differs** — the topology
+(common port, FETs in the negative leg) is what the drawing depends on, and that much is confirmed.
 
 See the resolved box in Scan geometry for how a derived cell count sent a whole day down the wrong
 path, and `WIRING_REV3_BMS.html` for the full procedure.

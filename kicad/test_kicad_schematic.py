@@ -167,8 +167,8 @@ check("title_block present", kid(sch, "title_block") is not None)
 check("sheet_instances present", kid(sch, "sheet_instances") is not None)
 
 tb = kid(sch, "title_block")
-check("revision is 3.1", sval(kid(tb, "rev")[1]) == "3.1")
-check("title names Rev 3.1", "Rev 3.1" in sval(kid(tb, "title")[1]))
+check("revision is 3.2", sval(kid(tb, "rev")[1]) == "3.2")
+check("title names Rev 3.2", "Rev 3.2" in sval(kid(tb, "title")[1]))
 
 root_uuid = sval(kid(sch, "uuid")[1])
 check("root uuid present", len(root_uuid) == 36)
@@ -197,7 +197,7 @@ for s in kids(lib_block, "symbol"):
             ))
     defs[name] = dict(pins=pins)
 
-check("17 symbols defined", len(defs) == 17, f"got {len(defs)}: {sorted(defs)}")
+check("18 symbols defined", len(defs) == 18, f"got {len(defs)}: {sorted(defs)}")
 
 # THE check that would have saved two rounds of debugging.  Every lib_symbols entry must
 # be named with its library prefix so it matches the lib_id on the instances.  Unprefixed,
@@ -309,7 +309,7 @@ junctions = {(round(fnum(kid(j, "at")[1]), 3), round(fnum(kid(j, "at")[2]), 3))
              for j in kids(sch, "junction")}
 
 check("wires drawn", len(wires) > 40, f"{len(wires)} wires")
-check("labels are few -- rails only", len(labels) == 11, f"{len(labels)}")
+check("labels are few -- rails only", len(labels) == 10, f"{len(labels)}")
 
 endpoints: dict[tuple[float, float], int] = {}
 for a, b in wires:
@@ -455,7 +455,7 @@ def different_net(label: str, a, b) -> None:
 # DESIGN -- the Rev 3.1 engineering rules, checked by following copper
 # --------------------------------------------------------------------------------------
 for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11",
-            "J_USB", "U12", "R_CHG",
+            "J_USB", "U12",
             "JP1", "U1", "U10", "U7", "U8",
             "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
@@ -474,24 +474,32 @@ same_net("star point", ("BMS1", "P-"), ("U3", "IN-"), ("U3", "OUT-"), ("U11", "G
 different_net("ground does NOT reach the pack's B-", ("BMS1", "P-"), ("BT1", "B-"))
 different_net("ground does NOT reach the BMS's B- either", ("BMS1", "P-"), ("BMS1", "B-"))
 
-# Separate-port board: the charger's return is its own node.
-different_net("C- is NOT bonded to the star point", ("BMS1", "C-"), ("BMS1", "P-"))
-same_net("charge return", ("BMS1", "C-"), ("U12", "OUT-"), ("J_USB", "2"))
-# The USB-C charge chain: trigger -> buck -> series R -> the fused node.
+# COMMON-PORT board: there is no C- pad at all, so the charger returns to the star point
+# like everything else.  This inverts Rev 3.1, where C- was asserted to be its OWN node --
+# assert the absence explicitly, so a future edit cannot quietly reintroduce a C- pin and
+# leave the sheet claiming a separate-port topology this board does not have.
+check("the BMS has no C- pad", "C-" not in
+      {pd["name"] for pd in defs[by_ref["BMS1"]["lib"]]["pins"]},
+      "BMS4S is common port: charge and discharge share P+/P-")
+same_net("charge return IS the star point", ("BMS1", "P-"), ("U12", "OUT-"), ("J_USB", "2"))
+# The USB-C charge chain: trigger -> CC/CV buck -> the fused node.  No series resistor:
+# the BCD5A has a current pot, so the current phase is regulated rather than burnt.
 same_net("trigger into the buck", ("J_USB", "1"), ("U12", "IN+"))
-same_net("buck out through the series R", ("U12", "OUT+"), ("R_CHG", "1"))
-different_net("R_CHG is in SERIES, not bridged", ("R_CHG", "1"), ("R_CHG", "2"))
-different_net("the USB-C supply is NOT on the star point", ("J_USB", "2"), ("BMS1", "P-"))
+same_net("buck out onto the fused node", ("U12", "OUT+"), ("F1", "2"))
+check("the 3R3 series resistor is gone", "R_CHG" not in by_ref,
+      "the BCD5A sets current with a pot; a dropper in series with a CC source is dead weight")
+# The buck is not isolated, so this is a consequence of the topology, not a wiring choice.
+same_net("the USB-C supply's ground is bonded to the rig", ("J_USB", "2"), ("BMS1", "P-"))
 
 # --- the pack side --------------------------------------------------------------------
-for tap in ("B4+", "B3+", "B2+", "B1+", "B-"):
+for tap in ("B+", "B3", "B2", "B1", "B-"):
     same_net(f"tap {tap}", ("BT1", tap), ("BMS1", tap))
     pt = pin_xy("BT1", tap)
     ws = [w for w in wires if near(w[0], pt) or near(w[1], pt)]
     check(f"pack {tap} carries exactly one wire", len(ws) == 1, f"{len(ws)} wires")
 
 # --- distribution ---------------------------------------------------------------------
-same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("R_CHG", "2"),
+same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("U12", "OUT+"),
          ("U11", "IN+"), ("U11", "IN-"))
 same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"))
 same_net("+VSW2", ("S2", "THROW"), ("U7", "J2.1 +12V"))
@@ -556,9 +564,11 @@ for key, owners in pin_at.items():
 
 # --- rails are named once each, and the names are only a reading aid -------------------
 rail_names = {n for ns in labels.values() for n in ns}
-for name in ("GND", "+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "SDA", "SCL", "ETH", "CHG-"):
+for name in ("GND", "+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "SDA", "SCL", "ETH"):
     check(f"rail {name} is named", name in rail_names)
-check("labels are rail names only", len(labels) == 11, f"{len(labels)} label anchors")
+check("the CHG- rail is gone", "CHG-" not in rail_names,
+      "common port: there is no separate charge return to name")
+check("labels are rail names only", len(labels) == 10, f"{len(labels)} label anchors")
 
 # --------------------------------------------------------------------------------------
 print(f"\n{passed} checks passed, {len(failures)} failed")
