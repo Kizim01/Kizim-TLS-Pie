@@ -1,0 +1,76 @@
+# TLS Pie boot splash -- the Kizim artwork with rain falling down it.
+#
+# plymouth's script language. Notes for anyone editing this, because the
+# failure mode throughout is SILENCE: a syntax error, a missing image or a
+# misspelled method gives you a black screen and nothing in any log. If the
+# splash goes black after a change, that is what happened.
+#
+#   - variables are global unless declared local, which is why rain_y can be
+#     assigned inside refresh_callback and read on the next call
+#   - the refresh callback is invoked ~50 times a second
+#   - there is no tiling. A scrolling background has to be two sprites.
+#
+# Preview it without rebooting:
+#     sudo systemctl stop tls-kiosk
+#     sudo plymouthd --mode=boot --tty=tty1 ; sudo plymouth show-splash
+#     ... look at the panel ...
+#     sudo plymouth quit ; sudo systemctl start tls-kiosk
+
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# --- the artwork -------------------------------------------------------------
+# Scale() is a no-op when the assets were generated for this panel, which they
+# are by default. It is here so a different screen degrades to "stretched"
+# rather than "a small picture in the corner of a black field".
+background_image = Image("background.png");
+background_image = background_image.Scale(screen_width, screen_height);
+backdrop = Sprite(background_image);
+backdrop.SetX(0);
+backdrop.SetY(0);
+backdrop.SetZ(-100);
+
+# --- the rain ----------------------------------------------------------------
+# Two copies of one vertically-periodic texture, moving together: while A slides
+# down off the bottom, B is arriving from above to take its place. When A has
+# travelled a full screen height they swap, and because the texture wraps, the
+# swap is invisible. tls_splash.py guarantees the wrap; test_splash.py checks it.
+#
+# RAIN_SPEED is pixels per refresh. 0 leaves a still splash, which is also what
+# you get by generating the assets with --drops 0.
+RAIN_SPEED = 22;
+
+rain_image = Image("rain.png");
+rain_image = rain_image.Scale(screen_width, screen_height);
+
+rain_a = Sprite(rain_image);
+rain_a.SetX(0);
+rain_a.SetY(0);
+rain_a.SetZ(100);
+
+rain_b = Sprite(rain_image);
+rain_b.SetX(0);
+rain_b.SetY(0 - screen_height);
+rain_b.SetZ(100);
+
+rain_y = 0;
+
+fun refresh_callback () {
+    rain_y = rain_y + RAIN_SPEED;
+    if (rain_y >= screen_height) {
+        rain_y = rain_y - screen_height;
+    }
+    rain_a.SetY(rain_y);
+    rain_b.SetY(rain_y - screen_height);
+}
+
+Plymouth.SetRefreshFunction (refresh_callback);
+
+# Deliberately no progress bar, no spinner and no status text. The rig has one
+# job at boot and the operator cannot act on "Starting user slice"; a clean
+# picture that means "it is coming up" carries the same information. Boot
+# messages are still in the journal -- journalctl -b -- and errors still print,
+# because loglevel=3 keeps them.
+#
+# No password or question callbacks either: there is no encrypted volume here,
+# and defining handlers for prompts that cannot occur is code that can only rot.

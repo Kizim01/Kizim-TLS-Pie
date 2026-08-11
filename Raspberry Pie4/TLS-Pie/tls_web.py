@@ -73,6 +73,12 @@ WEB_HOST = os.environ.get("TLSPIE_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("TLSPIE_WEB_PORT", "8080"))
 WEB_TOKEN = os.environ.get("TLSPIE_WEB_TOKEN", "")
 
+# The boot intro, played full-screen by the rig's own panel while the rest of
+# the page settles. Absent is a perfectly normal state -- the panel skips it.
+SPLASH_VIDEO = os.environ.get(
+    "TLSPIE_SPLASH_VIDEO",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "splash", "intro.mp4"))
+
 
 class ScannerState:
     """
@@ -674,6 +680,7 @@ PAGE = """<!doctype html>
   html.kiosk::-webkit-scrollbar, html.kiosk *::-webkit-scrollbar{
     width:0;height:0;display:none}
   html.kiosk{scrollbar-width:none;-ms-overflow-style:none}
+
 </style></head><body>
 <script>
 /*
@@ -1783,6 +1790,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"scans": self._library()})
         elif url.path == "/api/scanfile":
             self._send_scanfile(query.get("name", [""])[0])
+        elif url.path == "/splash.mp4":
+            self._send_splash()
         else:
             self._send(404, "Not found", "text/plain")
 
@@ -1795,6 +1804,79 @@ class _Handler(BaseHTTPRequestHandler):
         if self.state.builder is not None:
             building = self.state.builder.status().get("building")
         return tls_scanstore.list_scans(self.state.scan_roots(), building=building)
+
+    def _send_splash(self):
+        """
+        Serve the boot intro file.
+
+        ⚠ THE PANEL DOES NOT PLAY THIS. The intro is played by mpv, from the
+        file on disk, before chromium is revealed -- see the measurements in
+        tls_kiosk_launch.sh, where a chromium <video> managed FOUR frames per
+        second and mpv managed twenty-four on the same machine, same file,
+        same compositor.
+
+        The route is kept because it is the one way to confirm from another
+        machine that the intro is deployed and readable by the service:
+
+            curl -sI http://tlspie.local:8080/splash.mp4
+
+        Range is implemented because it is what a browser asks for if anyone
+        opens it directly, and a 200 where a 206 was expected is the sort of
+        thing that works until it does not.
+
+        A missing file is a 404 and nothing more -- an absent intro is a
+        perfectly normal state and must never affect the panel.
+        """
+        try:
+            size = os.path.getsize(SPLASH_VIDEO)
+        except OSError:
+            self._send(404, "No splash video on this rig", "text/plain")
+            return
+
+        start, end = 0, size - 1
+        partial = False
+        header = (self.headers.get("Range") or "").strip()
+        if header.startswith("bytes="):
+            first, _, last = header[6:].partition("-")
+            try:
+                if first:
+                    start = int(first)
+                    end = int(last) if last else size - 1
+                elif last:                       # "bytes=-500" -- the tail
+                    start = max(0, size - int(last))
+                partial = True
+            except ValueError:
+                start, end, partial = 0, size - 1, False
+            end = min(end, size - 1)
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        try:
+            with open(SPLASH_VIDEO, "rb") as handle:
+                handle.seek(start)
+                payload = handle.read(end - start + 1)
+        except OSError as exc:
+            self._send(500, "Could not read the splash: %s" % exc, "text/plain")
+            return
+
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range",
+                             "bytes %d-%d/%d" % (start, end, size))
+        # It never changes and it is fetched on every kiosk start.
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass       # chromium closes the connection when the intro is skipped
 
     def _send_scanfile(self, name):
         """

@@ -183,9 +183,13 @@ do_install() {
     sudo apt-get update -qq
     # cage: single-window wlroots kiosk compositor, no desktop to swipe into.
     # seatd: grants the session the GPU and input devices.
+    # mpv plays the boot intro. It is not optional decoration: chromium's own
+    # <video> was measured at 4 fps on this hardware against mpv's 24, so mpv
+    # is the only thing here that can play it. Missing mpv is not fatal -- the
+    # launch script simply skips the intro.
     sudo apt-get install -y --no-install-recommends \
-        cage seatd libinput-tools chromium-browser
-    ok "cage, seatd, libinput-tools, chromium-browser"
+        cage seatd libinput-tools chromium-browser mpv
+    ok "cage, seatd, libinput-tools, chromium-browser, mpv"
 
     say "Permissions"
     sudo systemctl enable --now seatd >/dev/null 2>&1 || true

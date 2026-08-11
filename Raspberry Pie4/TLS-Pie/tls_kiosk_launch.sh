@@ -91,7 +91,10 @@ done
 #
 # --window-size was added as "belt and braces" against the first bug and made
 # things worse. The lesson: under Wayland, let the compositor size the surface.
-exec "$BROWSER" \
+#
+# ⛔ NOT exec'd any more, and chromium is started in the BACKGROUND -- see the
+# intro block below, which needs this script to outlive the browser launch.
+"$BROWSER" \
     --kiosk \
     --ozone-platform=wayland \
     --enable-features=UseOzonePlatform \
@@ -110,4 +113,71 @@ exec "$BROWSER" \
     --disable-smooth-scrolling \
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
-    "$URL"
+    "$URL" &
+BROWSER_PID=$!
+
+# --- the boot intro ----------------------------------------------------------
+#
+# ⛔ WHY mpv AND NOT A <video> IN THE PANEL. That was tried first, on
+# 2026-08-11, and played at FOUR FRAMES PER SECOND. Measured, not guessed:
+#
+#   chromium <video>, 1080x1920 ...... ~4 fps
+#   chromium <video>,  720x1280 ...... ~4 fps    <- resolution changed nothing,
+#   chromium <video>,  540x960  ...... ~4 fps       so it is not pixel count
+#   mpv --vo=drm ..................... 24 fps, 0 dropped
+#   mpv as a Wayland client in cage .. 24 fps, 0 dropped
+#
+# The hardware decoder was in use throughout (/dev/video10 was open) and cage
+# was on the GL renderer, so neither decode nor the compositor was the limit --
+# it is chromium's Wayland video presentation path, and nothing about the file
+# fixes it. mpv on the same machine, same file, same compositor, is perfect.
+#
+# ⛔ CHROMIUM IS STARTED FIRST, ON PURPOSE. It needs six to eight seconds
+# before it has anything to show. Playing the intro first and then launching it
+# would trade a stutter for a black screen, which is worse. Started in the
+# background it loads BEHIND the intro; mpv maps its window afterwards so cage
+# stacks it on top, and when mpv exits the panel underneath is already drawn.
+#
+# ⛔ --hwdec=no IS DELIBERATE. DO NOT "OPTIMISE" IT TO auto.
+# With --hwdec=auto mpv reports a perfectly healthy "fps=24.000 dropped=0"
+# and puts a SOLID BLUE RECTANGLE on the screen. Measured by screenshotting
+# the panel and looking at the pixels rather than trusting the stats:
+#
+#   --hwdec=auto ........ rgb(0,13,128), pixel variance 0.0   <- flat blue
+#   --hwdec=no .......... rgb(57,60,64),  pixel variance 1427  <- the video
+#   --vo=wlshm .......... rgb(56,58,62),  pixel variance 1373  <- also fine
+#
+# The V4L2 decoder hands mpv a drm_prime frame that this compositor and GL
+# stack cannot sample from, and nothing in the logs says so. Software decode
+# of 1080x1920@24 is comfortable on a Pi 4 -- mpv reports 24 fps and zero
+# dropped frames -- so there is nothing to win here and a blue screen to lose.
+#
+# THE LESSON, WHICH COST AN HOUR: mpv's own fps counter reports how fast it
+# THINKS it is presenting, not what reaches the panel. Check the pixels.
+#
+# Everything here is best effort. No mpv, no file, a bad decode -- any of them
+# just means no intro, never a rig you cannot drive. The panel carries the only
+# software STOP on this machine.
+INTRO="${TLSPIE_INTRO_VIDEO:-/home/lipi/TLS-Pie/splash/intro.mp4}"
+if [ -r "$INTRO" ] && command -v mpv >/dev/null 2>&1; then
+    # A short head start, so chromium is further along before the intro ends.
+    sleep 2
+    # --no-input-terminal   there is no stdin under systemd
+    # --no-input-default-bindings + --no-osc   a touchscreen must not be able to
+    #                       pause the intro or summon a seek bar over it
+    # --no-stop-screensaver we manage blanking ourselves
+    mpv --fullscreen \
+        --no-audio \
+        --no-config \
+        --really-quiet \
+        --no-input-terminal \
+        --no-input-default-bindings \
+        --no-osc \
+        --no-stop-screensaver \
+        --hwdec=no \
+        "$INTRO" 2>/dev/null || true
+fi
+
+# Stay alive as cage's application: cage exits when this script does, and that
+# would take the panel down with it.
+wait "$BROWSER_PID"

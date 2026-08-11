@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=TLS Pie
+Description=Kizim boot splash for the rig's 5.5" panel, with falling rain
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/tlspie
+ScriptFile=/usr/share/plymouth/themes/tlspie/tlspie.script
