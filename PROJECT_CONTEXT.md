@@ -1790,9 +1790,11 @@ brief and dark rather than a mid-sequence flash. If the operator still sees a fl
 intro and the panel, that is a different fault from the one fixed — record a boot with
 `wf-recorder` before changing anything.
 
-### Where the electrical work actually stands — end of 2026-08-11
+### Where the electrical work actually stands — 2026-08-12
 
-**The whole charge path is built, measured and working. Nothing about it is waiting on a decision.**
+**⭐ EVERY ELECTRICAL BLOCKER IS CLOSED.** The charge path is built and measured, the VLP-16's
+voltage question is answered, and the E-stop question is decided. **Nothing electrical is waiting
+on a decision or a part. What is left is a battery that needs charging and measurements to take.**
 
 | ✅ Done and measured | |
 |---|---|
@@ -1815,10 +1817,13 @@ intro and the panel, that is a different fault from the one fixed — record a b
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
-4. ~~Check the VLP-16's input range.~~ **✅ RESOLVED 2026-08-12 — 16.8 V is inside it. No
-   regulator needed on `S2`, and the last electrical blocker is closed.** Velodyne quote
-   **9–32 VDC** with the interface box; the user manual's narrower figure is **9–18 V**. 16.8 V is
-   inside *both*, and the pack cannot exceed 16.8 V because the BMS cuts off at 4.2 V/cell.
+
+**Closed on 2026-08-12, do not reopen:**
+
+- ~~Check the VLP-16's input range.~~ **16.8 V is inside it.** Velodyne quote **9–32 VDC** with the
+  interface box; the user manual's narrower figure is **9–18 V**. 16.8 V is inside *both*, and the
+  pack cannot exceed 16.8 V because the BMS cuts off at 4.2 V/cell. **No regulator on `S2`.**
+- ~~Fit an E-stop.~~ **Decided against — `S1` is the stop.** See "Still open" for what follows.
 
 **Not a job: the motor does not need a 12 V buck.** `U4` is a current-chopping driver, so the supply
 sets how *fast* coil current rises, not how *much*; `CUR ADJ` is what protects the motor and 16.8 V
