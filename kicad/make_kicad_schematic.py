@@ -565,7 +565,10 @@ def build() -> Sheet:
     sh.place("SW_SPST", "S2", 226.06, 99.06, value="LIDAR")
     sh.place("LM2596_Module", "U3", 302.26, Y_A, value="LM2596S-ADJ -> 5.1 V")
     sh.place("INA226_Module", "U11", 396.24, Y_A, value="INA226 -- NOT FITTED", dnp=True)
-    sh.place("Conn_2", "J_CHG", 480.06, Y_A, value="charge socket")
+    # The charge path, left to right: USB-C PD trigger -> buck -> series R -> pack.
+    sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
+    sh.place("LM2596_Module", "U12", 502.92, Y_A, value="charge buck -> 16.8 V")
+    sh.place("R", "R_CHG", 552.45, Y_A, value="3R3 10W (omit if U12 is CC/CV)")
 
     # Pack to BMS: FIVE conductors -- four taps plus B-.  The only wires that ever touch
     # the pack side.  Count them: five is what makes this pack visibly 4S.
@@ -580,7 +583,7 @@ def build() -> Sheet:
     # THE RAILS
     # ==================================================================================
     sh.rail("GNDA", GND_A, TRUNK_X, 375.92, label="GND")
-    sh.rail("+VBATT", 140.97, 196.85, 504.19)
+    sh.rail("+VBATT", 140.97, 196.85, 562.61)
     sh.rail("+VSW1", 148.59, 248.92, 297.18)
     sh.rail("+VSW2", 156.21, 259.08, 405.13)
     sh.rail("+5V", 163.83, 38.1, 334.01)
@@ -588,7 +591,7 @@ def build() -> Sheet:
     sh.rail("SDA", 179.07, 104.14, 436.88)
     sh.rail("SCL", 186.69, 114.3, 447.04)
     sh.rail("ETH", 194.31, 139.7, 391.16)
-    sh.rail("CHG-", 201.93, 154.94, 514.35)
+    sh.rail("CHG-", 201.93, 154.94, 530.86)
     sh.rail("GNDB", GND_B, TRUNK_X, 406.4, label="GND")
 
     # The ground spine.  Its endpoints sit exactly on the two rail ends, so the three
@@ -620,8 +623,22 @@ def build() -> Sheet:
     sh.drop("U11", "4", "+3V3", 426.72)
     sh.drop("U11", "5", "SDA", 436.88)
     sh.drop("U11", "6", "SCL", 447.04)
-    sh.drop("J_CHG", "1", "+VBATT", 504.19)
-    sh.drop("J_CHG", "2", "CHG-", 514.35)
+    # USB-C trigger into the buck.
+    sh.route(sh.pin("J_USB", "1"), (471.17, 74.93), (471.17, 71.12), sh.pin("U12", "4"))
+    sh.route(sh.pin("J_USB", "2"), (476.25, 82.55), (476.25, 86.36), sh.pin("U12", "3"))
+    # A screw terminal is a passive pin, so without a flag everything downstream of the
+    # trigger reads to ERC as powered by nothing.
+    sh.tap((466.09, 74.93), (466.09, 55.88))
+    sh.place("PWR_FLAG", "#FLG03", 466.09, 55.88)
+    # Buck out, through the series resistor, onto the fused node.
+    sh.route(sh.pin("U12", "1"), (532.13, 71.12), (532.13, Y_A), sh.pin("R_CHG", "1"))
+    sh.drop("R_CHG", "2", "+VBATT", 562.61)
+    sh.drop("U12", "2", "CHG-", 530.86)
+    # A buck module is NOT isolated: IN- and OUT- are the same copper. Drawn, because
+    # this is what makes the USB-C supply's ground become C- rather than the star point,
+    # and it is the reason not to earth the rig anywhere else while charging.
+    g_in, g_out = sh.pin("U12", "3"), sh.pin("U12", "2")
+    sh.route(g_in, (g_in[0], 99.06), (g_out[0], 99.06), g_out)
 
     sh.note("S1 and S2 both hang off the fused node, in PARALLEL. S1 does NOT switch\n"
             "the lidar -- opening S1 kills the Pi and the motor and leaves the VLP-16\n"
@@ -646,11 +663,26 @@ def build() -> Sheet:
             "Must be the R002 variant -- R100 is good for 0.8 A and this rig pulls ~3 A.",
             (340.36, 104.14), 1.4)
 
-    sh.note("Charger: 16.8 V CC-CV for 4S Li-ion. 12.6 V is a 3S charger and\n"
-            "will never fill this pack past about half. 13.8-14.4 V is a lead-acid\n"
-            "unit -- harmless here at 3.45-3.6 V/cell, but it undercharges.\n"
-            "SEPARATE PORT: its negative goes to C-, never to the star point.",
-            (455.93, 104.14), 1.4)
+    sh.note("CHARGE PATH -- USB-C. A 4S Li-ion pack wants 16.8 V.\n\n"
+            "THE PD TRIGGER IS A FIXED-VOLTAGE SOURCE, NOT A CHARGER. Its 3-way DIP\n"
+            "selects from 5/9/12/15/20 V only -- there is NO 16.8 V step, and 20 V\n"
+            "straight onto this pack is 5.0 V PER CELL. Set the trigger to 20 V and\n"
+            "let U12 make 16.8 V. 20 -> 16.8 leaves 3.2 V of headroom, so unlike the\n"
+            "deleted U6 this buck really does regulate.\n"
+            "Find the DIP mapping by metering VBUS with NOTHING connected, then label\n"
+            "the board. One of those eight combinations destroys the pack.\n\n"
+            "U12: a CC/CV buck (two pots) is the right part -- set 16.8 V and ~1.5 A\n"
+            "and OMIT R_CHG. A plain LM2596-ADJ has ONE pot, voltage only: then R_CHG\n"
+            "is the current phase, ~1.4 A into a flat pack ((16.8-12.2)/3.3), tapering\n"
+            "as it fills, and dissipating ~6.5 W at the start -- mount it in free air.\n"
+            "HEATSINK U12. The SS34 catch diode is the 3 A ceiling.\n\n"
+            "SET 16.8 V ON THE METER, NO LOAD, BEFORE IT EVER SEES THE PACK -- AND ERR\n"
+            "LOW. 16.6 V gives ~95% of capacity; 17.2 V is 4.3 V/cell and damages cells.\n"
+            "The buck is NOT isolated, so the trigger's GND becomes C-. Do not earth the\n"
+            "rig anywhere else while charging.\n"
+            "DO NOT LEAVE IT CHARGING UNATTENDED -- the BMS cutoff is a backstop, not\n"
+            "the control loop, and this pack has already been run flat once.",
+            (429.26, 108.0), 1.4)
 
     # ==================================================================================
     # BAND B -- the Pi and its bus

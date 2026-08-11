@@ -454,7 +454,8 @@ def different_net(label: str, a, b) -> None:
 # --------------------------------------------------------------------------------------
 # DESIGN -- the Rev 3.1 engineering rules, checked by following copper
 # --------------------------------------------------------------------------------------
-for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11", "J_CHG",
+for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11",
+            "J_USB", "U12", "R_CHG",
             "JP1", "U1", "U10", "U7", "U8",
             "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
@@ -475,7 +476,12 @@ different_net("ground does NOT reach the BMS's B- either", ("BMS1", "P-"), ("BMS
 
 # Separate-port board: the charger's return is its own node.
 different_net("C- is NOT bonded to the star point", ("BMS1", "C-"), ("BMS1", "P-"))
-same_net("charge return", ("BMS1", "C-"), ("J_CHG", "2"))
+same_net("charge return", ("BMS1", "C-"), ("U12", "OUT-"), ("J_USB", "2"))
+# The USB-C charge chain: trigger -> buck -> series R -> the fused node.
+same_net("trigger into the buck", ("J_USB", "1"), ("U12", "IN+"))
+same_net("buck out through the series R", ("U12", "OUT+"), ("R_CHG", "1"))
+different_net("R_CHG is in SERIES, not bridged", ("R_CHG", "1"), ("R_CHG", "2"))
+different_net("the USB-C supply is NOT on the star point", ("J_USB", "2"), ("BMS1", "P-"))
 
 # --- the pack side --------------------------------------------------------------------
 for tap in ("B4+", "B3+", "B2+", "B1+", "B-"):
@@ -485,7 +491,7 @@ for tap in ("B4+", "B3+", "B2+", "B1+", "B-"):
     check(f"pack {tap} carries exactly one wire", len(ws) == 1, f"{len(ws)} wires")
 
 # --- distribution ---------------------------------------------------------------------
-same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("J_CHG", "1"),
+same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("R_CHG", "2"),
          ("U11", "IN+"), ("U11", "IN-"))
 same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"))
 same_net("+VSW2", ("S2", "THROW"), ("U7", "J2.1 +12V"))
@@ -531,6 +537,9 @@ for nc in kids(sch, "no_connect"):
     at = kid(nc, "at")
     nc_points.add((round(fnum(at[1]), 3), round(fnum(at[2]), 3)))
 check("no_connect markers present", len(nc_points) == 10, f"{len(nc_points)}")
+check("the charge path does not reach the pack unregulated",
+      net("J_USB", "1") != net("BMS1", "P+"),
+      "the PD trigger must never see the pack directly -- 20 V is 5.0 V/cell")
 
 wired = set()
 for a, b in wires:

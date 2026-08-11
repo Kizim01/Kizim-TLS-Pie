@@ -424,11 +424,20 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > **Do NOT fit the 3S board that was bought** (`NLY-3C-V3.0`). On a 4S pack it would put ~16.8 V on
 > a `B3+` input rated for three cells and leave the fourth group with no protection at all.
 >
-> **What to do instead:** measure the charger open-circuit (**16.8 V** is right for 4S; 12.6 V is a
-> 3S charger and fills this pack to about half; 13.8–14.4 V lead-acid is *harmless* here at
-> 3.45–3.6 V/cell but undercharges — **note this inverts the 3S-era warning**), charge the pack,
-> then measure the four groups and find the weak one. Full procedure in `WIRING_REV3_BMS.html`;
-> schematic in `kicad/` (Rev **3.1**).
+> **What to do instead:** charge the pack at **16.8 V**, then measure the four groups and find the
+> weak one. (12.6 V is a 3S charger and fills this pack to about half; 13.8–14.4 V lead-acid is
+> *harmless* here at 3.45–3.6 V/cell but undercharges — **note this inverts the 3S-era warning**.)
+> Full procedure in `WIRING_REV3_BMS.html`; schematic in `kicad/` (Rev **3.1**).
+>
+> **Charging is over USB-C**, and the chain is on the sheet: a `303PDSink01` **PD trigger set to
+> 20 V** → `U12` **buck set to 16.8 V** → `R_CHG` → the fused node, returning to `C-`.
+> **The trigger is a fixed-voltage source, not a charger**: its 3-way DIP gives only 5/9/12/15/20 V
+> (three switches means **no PPS**), there is no 16.8 V step, and **20 V straight onto this pack is
+> 5.0 V per cell**. Meter `VBUS` with nothing connected to find the DIP mapping, then label the
+> board. 20 → 16.8 leaves **3.2 V of headroom**, which is exactly what `U6` never had.
+> `R_CHG` (3R3 10 W) is the current phase only because the LM2596 has **one pot, voltage only**;
+> a CC/CV buck set to 1.5 A replaces it. **Err low on the voltage** — 16.6 V is ~95% of capacity,
+> 17.2 V is 4.3 V/cell and damages cells.
 >
 > **⚠ One thing 4S makes worse:** `S2` hands the VLP-16 **raw pack voltage, now up to 16.8 V**.
 > Under the 3S assumption that leg never passed 12.6 V. **Check the sensor's input range before S2
