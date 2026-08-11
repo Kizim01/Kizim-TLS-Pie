@@ -150,11 +150,13 @@ SYMBOLS: dict[str, dict] = {
              "so the (+) pad is the same copper as the 16.8V pad -- only the return is switched",
     ),
     "Diode": dict(
-        ref="D", value="SS54 Schottky", w=12.7, h=5.08,
+        ref="D", value="1N5822 3A 40V", w=12.7, h=5.08,
         pins=[("1", "A", "L", 0, "passive"), ("2", "K", "R", 0, "passive")],
-        desc="Blocks back-feed from the pack into the charge chain. Without it the pack "
-             "powers the buck's own indicator LED through the switch body diode whenever "
-             "the USB is unplugged -- MEASURED as a real drain on 2026-08-11",
+        desc="Schottky blocking back-feed from the pack into the charge chain. ANY Schottky "
+             "of >=3 A and >=30 V does: 1N5822, SB540, SR360, MBR340. NOT SS54 -- that is "
+             "surface-mount, and this is hand-wired. NOT a plain silicon rectifier (1N400x) "
+             "-- ~1 V drop instead of ~0.2 V. Without it the pack powers the buck's own "
+             "indicator LED through the switch body diode -- MEASURED draining it 2026-08-11",
     ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
@@ -629,7 +631,7 @@ def build() -> Sheet:
     # phase is done properly instead of by burning the difference in a lump of 3R3.
     sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
     sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 17.0 V / 1.5 A")
-    sh.place("Diode", "D1", 558.8, 45.72, value="SS54 -- blocks back-feed")
+    sh.place("Diode", "D1", 558.8, 45.72, value="1N5822 -- BANDED END TO THE PACK")
     # Drawn here because there is room; it MOUNTS on the panel beside the BMS, and its
     # two thick leads must be SHORT and heavy -- they carry the whole rig's return.
     sh.place("PanelMeter_VA", "PM1", 549.91, Y_A, value="panel meter V+A")
@@ -847,9 +849,18 @@ def build() -> Sheet:
             "the pack, through the inductor, through the switch's body diode to the input\n"
             "-- and lights the buck's own indicator LED. It was caught on 2026-08-11\n"
             "draining the pack while everything looked idle. A few mA is ~1.7 Ah a week\n"
-            "on a ~9 Ah pack. THIS PACK HAS ALREADY BEEN FLATTENED ONCE. A connector in\n"
-            "the charge lead would also work and costs no volts, but it can be forgotten;\n"
-            "D1 cannot.\n\n"
+            "on a ~9 Ah pack. THIS PACK HAS ALREADY BEEN FLATTENED ONCE.\n"
+            "D1 IS 1N5822 OR ANY SCHOTTKY >=3 A AND >=30 V -- SB540, SR360, MBR340 all do.\n"
+            "BANDED END (cathode) TOWARDS THE PACK. Backwards, nothing charges at all.\n"
+            "Not a 1N400x: silicon drops ~1 V instead of ~0.2 and the sums above change.\n\n"
+            "THE FREE ALTERNATIVE is a connector or switch in this same lead -- BETWEEN\n"
+            "U12 AND THE PACK, not on the USB side. Unplugging the USB is what CAUSES the\n"
+            "back-feed; the break has to be on the pack side of the buck. It costs no\n"
+            "volts, so the buck stays at 16.8 V. It can also be forgotten, which is the\n"
+            "whole argument for D1. Fitting both is not silly.\n"
+            "UNTIL D1 ARRIVES YOU CAN STILL CHARGE: just physically disconnect U12 from\n"
+            "the BMS when the charge finishes. The drain only happens when the buck is\n"
+            "left connected to the pack with no USB power.\n\n"
             "1.5 A is ~0.2C on ~9 Ah; the BMS would allow 20 A, the cells would not\n"
             "thank you. ERR LOW ON THE VOLTS -- 16.6 V gives ~95% of capacity, 17.2 V\n"
             "is 4.3 V/cell and damages cells.\n"
