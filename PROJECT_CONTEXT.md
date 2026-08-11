@@ -455,6 +455,29 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > down, so `U12` would have reached ~14.5 V (3.6 V/cell, half a pack) and **the balancer would never
 > have started**, since it only bleeds near 4.2 V/cell.
 >
+> ### ✅ CHARGER SET AND VERIFIED 2026-08-11 — **16.8 V open-circuit, 1.5 A**
+>
+> **Mark both pots.** The whole chain is now set: 20 V trigger → `BCD5A` at 16.8 V / 1.5 A. Nothing
+> about the charge path is outstanding.
+>
+> **Both pots ship at MAXIMUM and are multi-turn, so a new board looks broken.** Out of the bag it
+> reads 20 V in / 20 V out and a few turns changes nothing — because the set point starts at 36 V
+> and you must wind **down ~40 turns** to come below the input. Do it with a **small dummy load**;
+> at zero load there is no feedback to watch. Cost an evening; written here so it costs nothing next
+> time. The current pot at its counter-clockwise stop is **minimum** (~0.1 A), which reads as "no
+> current at all" — clockwise is up.
+>
+> **Meter note (Faithfull EM820DL):** the 10 A range needs the red lead moved to the separate `10A`
+> jack, and that jack is **unfused** — the meter is a bare short in that configuration. Safe across
+> the buck only because the buck limits itself. **Never across the pack.** Put the lead back in
+> `VΩmA` immediately afterwards. DC current has its own dial positions on this meter, so there is no
+> AC/DC mode button to catch you out.
+>
+> **⚠ EXPECT ~12–13 V, NOT 16.8 V, WHEN THE FLAT PACK IS FIRST CONNECTED.** That is CC mode holding
+> 1.5 A at whatever the pack sits at; it climbs to 16.8 V as the pack fills and then the current
+> tapers. **Seeing pack voltage instead of 16.8 V is the charger working, not a lost setting** — do
+> not "correct" it with the pots.
+>
 > **⚠ Two consequences of common port, both new:**
 > 1. The charger sits across `+VBATT`/`GND` **in parallel with every load**, upstream of both
 >    switches. **Charge with `S1` and `S2` open** or the CC limit feeds the load and the CV stage
@@ -1663,11 +1686,9 @@ intro and the panel, that is a different fault from the one fixed — record a b
 
 ### The next three physical jobs, in order
 
-0. **Set the `BCD5A` on the bench, before it ever sees the pack.** Trigger on 20 V (verified) into
-   the buck, nothing on the output: set **16.8 V open-circuit, erring low**, then set **1.5 A** by
-   shorting the output through the meter on its 10 A range. **Then do not touch either pot.** There
-   is now a 20 V supply on that bench which would put 5.0 V/cell on the pack; `U12` is the only
-   thing standing between them.
+0. ~~Set the `BCD5A` on the bench.~~ **✅ DONE 2026-08-11 — 16.8 V open-circuit, 1.5 A.** Do not
+   touch either pot again; mark them. The 20 V trigger is the reason: it would put 5.0 V/cell on
+   the pack, and `U12` is the only thing standing between them.
 1. **Fit the `BMS4S` and charge at 16.8 V.** Five conductors to the pack, connected `B-` `B1` `B2`
    `B3` `B+` in that order — the vendor's own ladder is 0 / 4.2 / 8.4 / 12.6 / 16.8 V measured
    against `B-`. Solder all five to the pack first, meter the free connector, and plug it in once.
