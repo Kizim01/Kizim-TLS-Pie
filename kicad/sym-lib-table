@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "TLS_Pie")(type "KiCad")(uri "${KIPRJMOD}/TLS_Pie.kicad_sym")(options "")(descr "TLS Pie project symbols"))
+)

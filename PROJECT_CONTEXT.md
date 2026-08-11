@@ -426,6 +426,42 @@ variant, not LiFePO4**, or the pack is capped at 3.65 V/cell and loses a third o
 is a lead-acid charger and would push 4.6–4.8 V per cell — and with the BMS latched off, nothing has
 been protecting these cells. Measure it open-circuit before connecting it again.
 
+#### Fitting the 3S BMS — the replacement is in hand and drawn, not yet fitted
+
+**2026-08-11.** The board is a **`NLY-3C-V3.0`, 56×40×1.2 mm**. Full procedure in
+**`WIRING_REV3_BMS.html`**; the schematic is **`kicad/`** (KiCad 10, one flat A2 sheet).
+
+**Three questions were answered by the board's own silkscreen, not by a listing:**
+
+| marking | means |
+|---|---|
+| `B1+ 3.7 V`, `B2+ 7.4 V`, `B3+ 11.1 V` | 3S, and **the Li-ion variant** — LiFePO4 boards of this family are marked 3.2 / 6.4 / 9.6 V. **This closes the "confirm it is not LiFePO4" item above.** |
+| pads are `B−`, `B1+`, `B2+`, `B3+`, `P+`, `P−` and there is **no `C−`** | **common port** — charge and discharge share `P+`/`P−`, so exactly two wires leave the pack |
+| 8 × `075N03L`, all in the negative leg | 4 charge + 4 discharge; **switching is on the negative side**, which is what moves the star point |
+
+**⛔ THE STAR POINT MOVES TO `BMS P−`.** Rev 2.0 landed every ground on the pack's `B−`. That is now
+wrong, and wrong in a way that hides: a return on `B−` bypasses the protection FETs, so that load is
+unprotected **and it keeps draining the pack after the BMS has cut off** — past the very cut-off
+meant to protect the cells. The checkable form of the rule: **exactly one wire in the rig touches
+`B−`**, the one from the pack. Two means one is wrong.
+
+**Tap order is `B− → B1+ → B2+ → B3+`.** The protection ICs are powered from the taps; land a high
+tap first and one stage sees most of the pack across single-cell inputs and dies silently, leaving a
+board that looks fine and protects nothing. Safer method that removes the ordering problem entirely:
+solder all four leads to the pack with the board *disconnected*, meter the free connector (≈4.07 V
+per step, ≈12.22 V end to end), then plug it in once.
+
+**Acceptance test — deliberately the same measurement that diagnosed the fault.** `B−` to `P−` must
+read a few **millivolts**; **~0.55 V means the board is latched and current is going through the body
+diodes**, which is exactly the 4S symptom. Then `P+`→`P−` must equal `B3+`→`B−`. Had this been run
+when the 4S board went on, none of that week's debugging would have happened.
+
+Also settled on the same sheet: **`U6` is deleted** (a buck cannot make 12 V from a 12 V pack — `M+`
+takes `+VSW1` directly), the **charge socket taps the fused node** so charging is fused too, and the
+**INA226 is drawn `DNP`** because its shunt sits in series with the pack lead — its position had to be
+decided now or the harness gets cut twice. It must be the **`R002`** variant; `R100` is good for
+0.8 A and this rig pulls ~3 A.
+
 **Things that did NOT work — do not retry them:**
 
 * **Burst motion** (move-dwell-move, `burst_probe.py`) made it audibly **worse**, not better. 90
@@ -1542,7 +1578,8 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Shut down + Reboot buttons** | 2026-08-11. Both at the bottom of the panel: confirm twice, refuse mid-scan, flush the USB stick first. Reboot verified end to end. |
 | ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
-| ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** |
+| ✅ **Rev 3.0 schematic + BMS wiring procedure** | 2026-08-11. `kicad/` (KiCad 10, ERC **0 errors, 1 intentional warning**) and `WIRING_REV3_BMS.html`. The replacement board is identified from its own silkscreen, the wiring and its order are written down, and the acceptance test is the same measurement that diagnosed the fault. |
+| ⛔ **THE BMS IS A 4S ON A 3S PACK** | Latched off, passing current through body diodes. **Fix before trusting anything on battery.** The 3S replacement is now **in hand and fully drawn — but not yet fitted.** Everything needed to fit it is written down; what remains is the soldering iron. |
 
 **One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
 `black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
@@ -1554,8 +1591,9 @@ intro and the panel, that is a different fault from the one fixed — record a b
 `wf-recorder` before changing anything.
 
 Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
-pack look flat — which sent an hour of debugging down the wrong path. A 3S BMS is ordered. See
-"The BMS is the wrong one" in Scan geometry for the measurements and the reasoning.
+pack look flat — which sent an hour of debugging down the wrong path. See "The BMS is the wrong one"
+in Scan geometry for the measurements and the reasoning, and **"Fitting the 3S BMS" below for how to
+wire the replacement**, which is the next physical job on the rig.
 
 **The next milestone is still the first complete scan — that has never happened.**
 
@@ -1724,9 +1762,11 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 1. ⛔ **FIT THE 3S BMS. Nothing on battery is trustworthy until this is done.** The rig currently
    has a **4S BMS on a 3S12P pack**, latched into protection and passing current through MOSFET body
    diodes — that is what caused both brownouts and the reboot mid-move, and what made a healthy pack
-   look flat. See "The BMS is the wrong one" in Scan geometry. Check the replacement is the **Li-ion
-   4.2 V** variant, not LiFePO4. **Measure the charger open-circuit first** — 13.8–14.4 V means it is
-   a lead-acid charger and must not go near this pack.
+   look flat. **The replacement is in hand and fully specified: follow `WIRING_REV3_BMS.html`.**
+   It is a `NLY-3C-V3.0`, confirmed **Li-ion** from its own silkscreen (3.7 V/cell nominal), and
+   confirmed **common port** (no `C−` pad). Three things decide whether it goes well: **measure the
+   charger open-circuit first** (13.8–14.4 V is a lead-acid charger and must not go near this pack),
+   **connect the taps `B−` first**, and **land every ground on `P−`, never on `B−`**.
 2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
    `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
    never run once in the life of this project. The motion is no longer the obstacle; the capture
