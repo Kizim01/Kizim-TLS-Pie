@@ -115,9 +115,9 @@ say "Shutdown permission"
 # the scanner is a background service with no terminal -- and the button fails
 # with "a password is required".
 #
-# Narrow on purpose: ONE command, no wildcard, no ALL. Raspberry Pi OS usually
-# ships blanket NOPASSWD for the first user, but that is a default someone may
-# reasonably remove, and this must keep working if they do.
+# Narrow on purpose: TWO exact commands, no wildcard, no ALL. Raspberry Pi OS
+# usually ships blanket NOPASSWD for the first user, but that is a default
+# someone may reasonably remove, and this must keep working if they do.
 #
 # Written via a temp file and validated with `visudo -c` before it goes live.
 # A syntactically bad file in /etc/sudoers.d does not break one rule, it breaks
@@ -128,12 +128,12 @@ SYSTEMCTL="$(command -v systemctl || echo /usr/bin/systemctl)"
 TMP_SUDOERS="$(mktemp)"
 cat > "$TMP_SUDOERS" <<EOF
 # Installed by first_boot_setup.sh. Lets the TLS Pie control panel power the
-# machine down cleanly, so scans are never lost to a pulled plug.
-$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL poweroff
+# machine down or restart it cleanly, so scans are never lost to a pulled plug.
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL poweroff, $SYSTEMCTL reboot
 EOF
 if visudo -cqf "$TMP_SUDOERS" 2>/dev/null; then
     install -m 0440 -o root -g root "$TMP_SUDOERS" "$SUDOERS"
-    ok "$TARGET_USER may run '$SYSTEMCTL poweroff' without a password"
+    ok "$TARGET_USER may run '$SYSTEMCTL poweroff' and 'reboot' without a password"
 else
     warn "sudoers snippet failed validation -- NOT installed, shutdown button will not work"
 fi

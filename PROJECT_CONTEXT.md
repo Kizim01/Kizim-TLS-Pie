@@ -1050,13 +1050,24 @@ by exactly one screen height, so a streak leaving the bottom must re-enter at th
 it wrong and there is no error — just a seam marching up the screen once a second. `test_splash.py`
 asserts it directly.
 
-### Shut down — the button at the bottom of the panel
+### Shut down / Reboot — the buttons at the bottom of the panel
 
 Added 2026-08-11, because the alternative is pulling the plug and **the scan library is on exFAT,
 which has no journal**: losing power with a dirty cache costs the *directory*, not merely the last
 file, so scans that appeared to record fine are simply not there when the stick reaches a computer.
 
-Three guards, in order — `POST /api/shutdown?confirm=yes`:
+Two buttons, `POST /api/shutdown?confirm=yes` and `POST /api/reboot?confirm=yes`, sharing one
+implementation on the server and one in the page — because the guards are the entire point of them
+and two near-copies would be two places for a guard to rot out of step.
+
+> ⚠ **The Pi button is called "Reboot", never "Restart".** There is already a Restart button on this
+> page and it does something completely different — it returns the *head* to start and clears a
+> fault. Two controls called Restart, one of which reboots the computer mid-session, is a trap in
+> the dark on a tripod. Reboot is also amber rather than red: it is recoverable, and colouring it
+> like the one irreversible control on the page would flatten the distinction that matters when they
+> sit a finger-width apart.
+
+Three guards, in order:
 
 1. **`confirm=yes`.** The panel asks twice, and the arm expires after 5 s, so walking away is the
    same as cancelling. A shutdown button on a touchscreen bolted to a tripod is one brushed sleeve
@@ -1080,8 +1091,20 @@ on a headless machine is unrecoverable without pulling the card). Raspberry Pi O
 Styled deliberately **quieter than STOP** — outlined, not filled, 17px not 23px. STOP is the safety
 control and must stay the loudest thing on screen; a power button shouting equally loudly next to it
 is a hazard under time pressure. It buys its safety from the second tap instead.
-`test_shutdown.py` (31 checks) patches the poweroff command out and asserts, for every refusal, that
-it would **not** have run.
+`test_shutdown.py` (48 checks) patches the command out and asserts, for every refusal on *both*
+endpoints, that it would **not** have run — and that reboot runs `systemctl reboot` and not
+`poweroff`. Verified end to end on the rig: the panel rebooted the Pi and it came back with both
+services up.
+
+> ### ⛔ Do not give `.hdr` a background in kiosk mode
+>
+> There was a `html.kiosk .hdr{background:rgba(18,18,24,.94)}` rule, added by reflex alongside the
+> `.card` and `.banner` ones when backdrop-filter was disabled. It was wrong: **`.hdr` has no
+> background and no backdrop-filter in the base stylesheet** — the title is meant to sit directly on
+> the page gradient, as it does on the phone. The rule painted an opaque slab behind "TLS Scanner"
+> with a hard edge down each side, and the header became the one element on the page that did not
+> match the phone. The other two rules compensate for a blur that was removed; that one compensated
+> for nothing.
 
 > ### ⛔ Every Waveshare guide for this panel is wrong for this Pi
 >

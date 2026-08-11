@@ -517,6 +517,17 @@ PAGE = """<!doctype html>
     border-color:rgba(255,69,58,.78)}
   .power.armed .lbl{color:#fff}
 
+  /* Reboot is amber, not red. It is recoverable -- the rig comes back on its
+     own -- and colouring it identically to the one irreversible control on the
+     page would flatten exactly the distinction that matters when they sit a
+     finger-width apart. */
+  .power.reboot{background:rgba(255,159,10,.10);
+    border-color:rgba(255,159,10,.40)}
+  .power.reboot .lbl{color:#FFC46B}
+  .power.reboot.armed{background:rgba(255,159,10,.32);
+    border-color:rgba(255,159,10,.78)}
+  .power.reboot.armed .lbl{color:#fff}
+
   .kv{display:flex;justify-content:space-between;gap:14px;font-size:14.5px;
     padding:11px 0;border-bottom:.5px solid rgba(255,255,255,.09)}
   .kv:last-child{border-bottom:0;padding-bottom:0}
@@ -669,7 +680,16 @@ PAGE = """<!doctype html>
   html.kiosk *{backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
   html.kiosk .card{background:rgba(32,32,40,.92)}
   html.kiosk .banner{background:rgba(38,32,26,.92)}
-  html.kiosk .hdr{background:rgba(18,18,24,.94)}
+
+  /* ⛔ DO NOT give .hdr a background here. There was a
+         html.kiosk .hdr{background:rgba(18,18,24,.94)}
+     rule, added by reflex alongside the two above, and it was a mistake: .hdr
+     has NO background and NO backdrop-filter in the base stylesheet. The title
+     is meant to sit directly on the page gradient, as it does on the phone.
+     Giving it one painted an opaque slab behind "TLS Scanner" with a hard edge
+     down each side -- the header, alone on the whole page, stopped matching the
+     phone. The two rules above are compensating for a blur that was removed;
+     this one compensated for nothing. */
 
   /* Transitions on a device that is already working hard read as lag rather
      than polish. Taps should land instantly. */
@@ -837,12 +857,24 @@ PAGE = """<!doctype html>
   thumb aiming here. Pulling the plug instead risks the scan library, because
   exFAT has no journal and loses the directory rather than the last file.
 -->
+<!--
+  ⚠ "Reboot the Pi", never "Restart". There is already a Restart button on this
+  page and it does something completely different -- it returns the HEAD to
+  start and clears a fault. Two controls called Restart, one of which reboots
+  the computer mid-session, is a trap in the dark on a tripod.
+-->
 <div class="card" id="powerCard">
   <p class="sechead">Power</p>
-  <button class="power" id="pwrbtn" onclick="armShutdown()">
-    <span class="lbl">Shut down the Pi</span>
-    <span class="det" id="pwrdet">ejects the USB stick first, then powers off</span>
-  </button>
+  <div class="stack">
+    <button class="power reboot" id="rbtbtn" onclick="armPower('rbt')">
+      <span class="lbl">Reboot the Pi</span>
+      <span class="det" id="rbtdet">ejects the USB stick first, then restarts</span>
+    </button>
+    <button class="power" id="pwrbtn" onclick="armPower('pwr')">
+      <span class="lbl">Shut down the Pi</span>
+      <span class="det" id="pwrdet">ejects the USB stick first, then powers off</span>
+    </button>
+  </div>
 </div>
 
 <script>
@@ -1083,82 +1115,108 @@ function drawCloud(d){
     d.packetsUsed.toLocaleString() + '/' + d.packetsSeen.toLocaleString() + ' pkts';
 }
 
-// --- shut down ------------------------------------------------------------
-// Two taps, not a dialog. This button lives on a touchscreen bolted to a
-// tripod, so a brushed sleeve must not end the session -- but a modal is worse
-// on a 5.5" panel in daylight than a button that changes what it says. The arm
-// expires by itself, so walking away is the same as cancelling.
-const PWR_REST = 'ejects the USB stick first, then powers off';
-let armTimer = null;
+// --- shut down / reboot ---------------------------------------------------
+// Two taps, not a dialog. These live on a touchscreen bolted to a tripod, so a
+// brushed sleeve must not end the session -- but a modal is worse on a 5.5"
+// panel in daylight than a button that changes what it says. The arm expires
+// by itself, so walking away is the same as cancelling.
+//
+// Both buttons share one implementation on purpose: they carry identical
+// guards on the server, and two near-copies here would be two places for the
+// confirm or the disable-while-scanning to rot out of step.
+const POWER = {
+  pwr: {btn:'pwrbtn', det:'pwrdet', api:'/api/shutdown',
+        idle:'Shut down the Pi',  rest:'ejects the USB stick first, then powers off',
+        arm:'Tap again to shut down', going:'Shutting down…',
+        phase:'SHUTTING DOWN', after:'safe to cut power once the LED is off',
+        lost:'Shutting down — wait for the green LED to stop before cutting power'},
+  rbt: {btn:'rbtbtn', det:'rbtdet', api:'/api/reboot',
+        idle:'Reboot the Pi',     rest:'ejects the USB stick first, then restarts',
+        arm:'Tap again to reboot', going:'Rebooting…',
+        phase:'REBOOTING', after:'the panel comes back on its own',
+        lost:'Rebooting — the panel comes back in about fifteen seconds'}
+};
+let armTimer = null, armed = null;
 let shuttingDown = false;
 
-function pwrLabel(lbl, det){
-  document.getElementById('pwrbtn').querySelector('.lbl').textContent = lbl;
-  document.getElementById('pwrdet').textContent = det;
+function pwrLabel(k, lbl, det){
+  document.getElementById(POWER[k].btn).querySelector('.lbl').textContent = lbl;
+  document.getElementById(POWER[k].det).textContent = det;
 }
 
-function disarmShutdown(){
-  clearTimeout(armTimer); armTimer = null;
-  document.getElementById('pwrbtn').classList.remove('armed');
-  pwrLabel('Shut down the Pi', PWR_REST);
+function disarmPower(k){
+  if(armed === k){ clearTimeout(armTimer); armTimer = null; armed = null; }
+  document.getElementById(POWER[k].btn).classList.remove('armed');
+  pwrLabel(k, POWER[k].idle, POWER[k].rest);
 }
 
-async function armShutdown(){
-  const b = document.getElementById('pwrbtn');
+async function armPower(k){
+  const c = POWER[k];
+  const b = document.getElementById(c.btn);
   if(!b.classList.contains('armed')){
+    // Arming one disarms the other. Leaving both live invites tapping the
+    // wrong one, and they are one finger-width apart.
+    Object.keys(POWER).forEach(o => { if(o !== k) disarmPower(o); });
     b.classList.add('armed');
-    pwrLabel('Tap again to shut down', 'cancels itself in 5 seconds');
-    armTimer = setTimeout(disarmShutdown, 5000);
+    armed = k;
+    pwrLabel(k, c.arm, 'cancels itself in 5 seconds');
+    armTimer = setTimeout(() => disarmPower(k), 5000);
     return;
   }
-  clearTimeout(armTimer); armTimer = null;
+  clearTimeout(armTimer); armTimer = null; armed = null;
   b.disabled = true;
-  pwrLabel('Shutting down…', 'flushing the USB stick');
+  pwrLabel(k, c.going, 'flushing the USB stick');
 
   let ok = false, message = '';
   try{
-    const r = await fetch(q('/api/shutdown?confirm=yes'), {method:'POST'});
+    const r = await fetch(q(c.api + '?confirm=yes'), {method:'POST'});
     const j = await r.json();
     ok = j.ok; message = j.message;
   }catch(e){
-    // The machine going dark before the reply arrives looks EXACTLY like this,
+    // The machine going down before the reply arrives looks EXACTLY like this,
     // and is the successful case. Treating a dropped connection as a failure
-    // would tell the operator the shutdown had not happened while the rig was
-    // already powering off -- so the only honest reading is that it worked.
+    // would tell the operator it had not happened while the rig was already
+    // on its way down -- so the only honest reading is that it worked.
     ok = true;
-    message = 'Shutting down — wait for the green LED to stop before cutting power';
+    message = c.lost;
   }
 
   if(ok){
     shuttingDown = true;             // stop polling; OFFLINE would be alarming
-    disarmShutdown();
-    document.getElementById('phase').textContent = 'SHUTTING DOWN';
+    b.classList.remove('armed');
+    document.getElementById('phase').textContent = c.phase;
     document.getElementById('phase').style.color = '#FF9F0A';
     document.getElementById('dot').className = 'dot';
     document.getElementById('dot').style.background = '#FF9F0A';
     document.getElementById('msg').textContent = message;
-    pwrLabel('Shutting down…', 'safe to cut power once the LED is off');
+    pwrLabel(k, c.going, c.after);
+    // The other button is now meaningless and must not be tappable.
+    Object.keys(POWER).forEach(o => {
+      if(o !== k) document.getElementById(POWER[o].btn).disabled = true;
+    });
     return;
   }
   // Refused, or it could not run. Say why, right under the button.
   b.disabled = false;
   b.classList.remove('armed');
-  pwrLabel('Shut down the Pi', message);
+  pwrLabel(k, c.idle, message);
 }
 
 function renderShutdown(s){
   if(shuttingDown) return;
-  const b = document.getElementById('pwrbtn');
-  if(s.busy){
-    if(b.classList.contains('armed')) disarmShutdown();
-    b.disabled = true;
-    document.getElementById('pwrdet').textContent = 'stop the scan first';
-  } else if(b.disabled){
-    // Only on the transition back, so a refusal message stays readable
-    // instead of being wiped by the next 1 Hz poll.
-    b.disabled = false;
-    disarmShutdown();
-  }
+  Object.keys(POWER).forEach(k => {
+    const b = document.getElementById(POWER[k].btn);
+    if(s.busy){
+      if(b.classList.contains('armed')) disarmPower(k);
+      b.disabled = true;
+      document.getElementById(POWER[k].det).textContent = 'stop the scan first';
+    } else if(b.disabled){
+      // Only on the transition back, so a refusal message stays readable
+      // instead of being wiped by the next 1 Hz poll.
+      b.disabled = false;
+      disarmPower(k);
+    }
+  });
 }
 
 async function cmd(what, profile){
@@ -1963,6 +2021,8 @@ class _Handler(BaseHTTPRequestHandler):
             ok, message = self._usb(query.get("action", [""])[0])
         elif url.path == "/api/shutdown":
             ok, message = self._shutdown(query.get("confirm", [""])[0])
+        elif url.path == "/api/reboot":
+            ok, message = self._reboot(query.get("confirm", [""])[0])
         else:
             self._json(404, {"ok": False, "message": "Not found"})
             return
@@ -2002,17 +2062,33 @@ class _Handler(BaseHTTPRequestHandler):
             return False, message
         return False, "Unknown action %r" % action
 
-    # Tried in order. The first is the one that works on this rig; the second
-    # is there for a machine where polkit lets a local session power down
-    # without sudo, so a missing sudoers rule is not automatically fatal.
-    _POWEROFF = (
-        ["sudo", "-n", "systemctl", "poweroff"],
-        ["systemctl", "poweroff"],
-    )
+    # What each action is called, and what to say afterwards. Keeping the two
+    # in one table is deliberate: shutdown and reboot must never drift apart in
+    # which guards they run, because the guards are the entire point.
+    _POWER_ACTIONS = {
+        "poweroff": {
+            "verb": "Shutting down",
+            "done": "Shutting down — wait for the green LED to stop before cutting power",
+            "gerund": "shutting down",
+        },
+        "reboot": {
+            "verb": "Rebooting",
+            "done": "Rebooting — the panel comes back in about fifteen seconds",
+            "gerund": "rebooting",
+        },
+    }
 
     def _shutdown(self, confirm):
+        """Power the Pi down. See _power()."""
+        return self._power("poweroff", confirm)
+
+    def _reboot(self, confirm):
+        """Restart the Pi. See _power()."""
+        return self._power("reboot", confirm)
+
+    def _power(self, action, confirm):
         """
-        Power the Pi down from the panel.
+        Power the Pi down, or restart it, from the panel.
 
         This exists because the alternative is pulling the plug, and the Pi
         writes scans to a filesystem with no journal. exFAT does not survive
@@ -2041,8 +2117,10 @@ class _Handler(BaseHTTPRequestHandler):
         matters is failure, and this is the only way the operator hears about
         it instead of watching a rig that stays on with no explanation.
         """
+        words = self._POWER_ACTIONS[action]
+
         if confirm != "yes":
-            return False, "Shutdown needs confirming"
+            return False, "%s needs confirming" % words["verb"]
 
         snap = self.state.snapshot()
         if snap.get("busy"):
@@ -2051,12 +2129,17 @@ class _Handler(BaseHTTPRequestHandler):
         if tls_storage is not None:
             ok, message = tls_storage.eject()
             if not ok:
-                return False, ("Not shutting down: the USB stick would not "
-                               "unmount (%s). Pulling power over a mounted "
-                               "exFAT volume can lose the whole drive." % message)
+                return False, ("Not %s: the USB stick would not unmount (%s). "
+                               "Cutting power over a mounted exFAT volume can "
+                               "lose the whole drive."
+                               % (words["gerund"], message))
 
+        # Tried in order. The first is the one that works on this rig; the
+        # second is for a machine where polkit lets a local session do this
+        # without sudo, so a missing sudoers rule is not automatically fatal.
         errors = []
-        for cmd in self._POWEROFF:
+        for cmd in (["sudo", "-n", "systemctl", action],
+                    ["systemctl", action]):
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True,
                                      timeout=15)
@@ -2064,15 +2147,15 @@ class _Handler(BaseHTTPRequestHandler):
                 errors.append("%s: %s" % (cmd[0], exc))
                 continue
             if res.returncode == 0:
-                return True, "Shutting down — wait for the green LED to stop before cutting power"
+                return True, words["done"]
             errors.append((res.stderr or res.stdout or "").strip()
                           or "%s exited %d" % (cmd[0], res.returncode))
 
         # Almost always a missing sudoers rule, so name the fix rather than
         # echoing "a password is required" at someone holding a phone.
-        return False, ("Could not power down: %s. Needs a NOPASSWD sudoers rule "
-                       "for `systemctl poweroff` — see first_boot_setup.sh."
-                       % "; ".join(errors))
+        return False, ("Could not %s: %s. Needs a NOPASSWD sudoers rule for "
+                       "`systemctl %s` — see first_boot_setup.sh."
+                       % (action, "; ".join(errors), action))
 
     def _read_body(self, limit=8192):
         try:

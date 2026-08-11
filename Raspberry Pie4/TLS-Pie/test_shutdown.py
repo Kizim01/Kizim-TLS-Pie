@@ -154,6 +154,41 @@ def main():
     check("the reply warns about the LED before cutting power",
           "LED" in j.get("message", ""), j.get("message"))
 
+    print("\n=== reboot carries the SAME guards ===")
+    # Two endpoints that differ in which guards they run is the entire risk of
+    # having two, so every refusal is re-asserted here rather than assumed.
+    runner.calls.clear()
+    ejected["n"] = 0
+    code, j = post(base + "/api/reboot")
+    check("reboot without confirm is refused", code == 409 and not j["ok"], j)
+    check("...and ran nothing", not runner.calls, runner.calls)
+
+    state.busy = True
+    code, j = post(base + "/api/reboot?confirm=yes")
+    check("reboot refused during a scan", code == 409 and not j["ok"], j)
+    check("...and ran nothing", not runner.calls, runner.calls)
+    check("...and says to press STOP", "STOP" in j.get("message", ""),
+          j.get("message"))
+    state.busy = False
+
+    ejected["ok"] = False
+    code, j = post(base + "/api/reboot?confirm=yes")
+    check("reboot refused when the stick will not unmount",
+          code == 409 and not j["ok"], j)
+    check("...and ran nothing", not runner.calls, runner.calls)
+    check("...and explains the exFAT risk", "exFAT" in j.get("message", ""),
+          j.get("message"))
+    ejected["ok"] = True
+
+    ejected["n"] = 0
+    code, j = post(base + "/api/reboot?confirm=yes")
+    check("confirmed reboot is accepted", code == 200 and j["ok"], (code, j))
+    check("it ejected the USB stick first", ejected["n"] == 1, ejected["n"])
+    check("it ran systemctl reboot, NOT poweroff",
+          runner.calls == [["sudo", "-n", "systemctl", "reboot"]], runner.calls)
+    check("the reply says the panel comes back",
+          "comes back" in j.get("message", ""), j.get("message"))
+
     print("\n=== when it cannot ===")
 
     # Both candidate commands fail: the operator must be told why, and told the
@@ -182,9 +217,16 @@ def main():
     check("GET /api/shutdown is not a route", code == 404, code)
 
     page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
-    for tag in ('id="pwrbtn"', 'id="powerCard"', 'armShutdown()',
-                'confirm=yes', 'Shut down the Pi'):
+    for tag in ('id="pwrbtn"', 'id="rbtbtn"', 'id="powerCard"', "armPower('pwr')",
+                "armPower('rbt')", 'confirm=yes', 'Shut down the Pi',
+                'Reboot the Pi'):
         check("page carries %s" % tag, tag in page)
+    # ⚠ There is already a Restart button on this page for the scanner HEAD.
+    # The Pi one must never also be called Restart.
+    check("the Pi button says Reboot, not Restart",
+          "Restart the Pi" not in page, "two controls called Restart")
+    check("the head's Restart button still exists and is unchanged",
+          "return the head to start and clear the fault" in page)
     # It has to be the LAST thing on the page -- that is the whole placement.
     check("the shutdown card is below the safety footer",
           page.index('id="powerCard"') > page.index('class="foot"'))
