@@ -1,12 +1,9 @@
-ERC report (2026-08-11T14:27:17, Encoding UTF8)
+ERC report (2026-08-11T15:35:30, Encoding UTF8)
 Report includes: Errors, Warnings, Exclusions
 
 ***** Sheet /
-[isolated_pin_label]: Label connected to only one pin
-    ; warning
-    @(218.44 mm, 152.40 mm): Label '+VBATT_MON'
 
- ** ERC messages: 1  Errors 0  Warnings 1
+ ** ERC messages: 0  Errors 0  Warnings 0
 
  ** Ignored checks:
     - Global label only appears once in the schematic

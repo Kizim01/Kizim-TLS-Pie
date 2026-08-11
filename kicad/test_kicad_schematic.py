@@ -167,8 +167,8 @@ check("title_block present", kid(sch, "title_block") is not None)
 check("sheet_instances present", kid(sch, "sheet_instances") is not None)
 
 tb = kid(sch, "title_block")
-check("revision is 3.0", sval(kid(tb, "rev")[1]) == "3.0")
-check("title names Rev 3.0", "Rev 3.0" in sval(kid(tb, "title")[1]))
+check("revision is 3.1", sval(kid(tb, "rev")[1]) == "3.1")
+check("title names Rev 3.1", "Rev 3.1" in sval(kid(tb, "title")[1]))
 
 root_uuid = sval(kid(sch, "uuid")[1])
 check("root uuid present", len(root_uuid) == 36)
@@ -309,7 +309,7 @@ junctions = {(round(fnum(kid(j, "at")[1]), 3), round(fnum(kid(j, "at")[2]), 3))
              for j in kids(sch, "junction")}
 
 check("wires drawn", len(wires) > 40, f"{len(wires)} wires")
-check("labels placed", len(labels) > 30, f"{len(labels)} label anchors")
+check("labels are few -- rails only", len(labels) == 11, f"{len(labels)}")
 
 endpoints: dict[tuple[float, float], int] = {}
 for a, b in wires:
@@ -337,9 +337,18 @@ for j in junctions:
         and min(a[1], b[1]) - EPS <= j[1] <= max(a[1], b[1]) + EPS
         for a, b in wires), "")
 
-# THE important one: a wire that passes straight through a pin connects to it.
-# This is how two nets get shorted in a way that looks perfectly fine on screen.
+
+# A wire that passes straight through a pin connects to it.  This is how two nets get
+# shorted in a way that looks perfectly fine on screen.  The one legitimate case is a wire
+# deliberately joining two same-named pins of one part -- the Pi's three GND pins, say --
+# so that is allowed and nothing else is.
+pin_names_at: dict[tuple[float, float], str] = {}
+for p in placed:
+    for pd in defs[p["lib"]]["pins"]:
+        pin_names_at[(round(p["x"] + pd["x"], 3), round(p["y"] - pd["y"], 3))] = pd["name"]
+
 for a, b in wires:
+    ends = {pin_names_at.get(a), pin_names_at.get(b)}
     for key, owners in pin_at.items():
         if near(key, a) or near(key, b):
             continue
@@ -348,7 +357,10 @@ for a, b in wires:
             and min(a[1], b[1]) - EPS <= key[1] <= max(a[1], b[1]) + EPS
             and abs((b[0] - a[0]) * (key[1] - a[1]) - (b[1] - a[1]) * (key[0] - a[0])) < 1e-3
         )
-        check(f"wire {a}->{b} does not run through pin {owners[0]}", not on_seg,
+        if not on_seg:
+            continue
+        deliberate = pin_names_at.get(key) in ends and pin_names_at.get(key) is not None
+        check(f"wire {a}->{b} through pin {owners[0]} is deliberate", deliberate,
               "a wire crossing a pin endpoint silently connects to it")
 
 # collinear overlapping segments are a duplicate-wire smell
@@ -367,9 +379,48 @@ for i, (a1, b1) in enumerate(wires):
         check(f"segments {a1}-{b1} and {a2}-{b2} do not overlap",
               min(hi1, hi2) - max(lo1, lo2) <= EPS)
 
+
 # --------------------------------------------------------------------------------------
-# DESIGN -- the Rev 3.0 engineering rules
+# NET TRACER
 # --------------------------------------------------------------------------------------
+# Rev 3.1 draws every conductor -- nothing is joined by name -- so the design rules below
+# can only be checked by actually following copper.  Two wires are one node when they
+# share an endpoint, or when a JUNCTION dot sits on both.  A crossing with no dot is not a
+# connection, which is precisely what the drawing relies on.
+
+parent: dict[tuple[float, float], tuple[float, float]] = {}
+
+
+def find(x):
+    parent.setdefault(x, x)
+    root = x
+    while parent[root] != root:
+        root = parent[root]
+    while parent[x] != root:
+        parent[x], x = root, parent[x]
+    return root
+
+
+def union(a, b):
+    ra, rb = find(a), find(b)
+    if ra != rb:
+        parent[ra] = rb
+
+
+def on_segment(pt, a, b) -> bool:
+    return (min(a[0], b[0]) - EPS <= pt[0] <= max(a[0], b[0]) + EPS
+            and min(a[1], b[1]) - EPS <= pt[1] <= max(a[1], b[1]) + EPS
+            and abs((b[0] - a[0]) * (pt[1] - a[1])
+                    - (b[1] - a[1]) * (pt[0] - a[0])) < 1e-3)
+
+
+for a, b in wires:
+    union(a, b)
+for j in junctions:
+    for a, b in wires:
+        if on_segment(j, a, b):
+            union(j, a)
+
 by_ref = {p["ref"]: p for p in placed}
 
 
@@ -381,121 +432,124 @@ def pin_xy(ref: str, pin_name: str) -> tuple[float, float]:
     raise KeyError(f"{ref} has no pin named {pin_name}")
 
 
-def wires_at(pt) -> list:
-    return [w for w in wires if near(w[0], pt) or near(w[1], pt)]
+def net(ref: str, pin_name: str):
+    return find(pin_xy(ref, pin_name))
 
 
-def other_end(w, pt):
-    return w[1] if near(w[0], pt) else w[0]
+def same_net(label: str, *pins) -> None:
+    """Every pin listed must be one electrical node, reached by drawn wire."""
+    roots = {p: net(*p) for p in pins}
+    first = roots[pins[0]]
+    for p in pins[1:]:
+        check(f"{label}: {p[0]}.{p[1]} is connected to {pins[0][0]}.{pins[0][1]}",
+              roots[p] == first,
+              "not reachable by drawn wire -- nothing here is joined by name")
 
 
-for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "JP1", "U4", "M1",
-            "U1", "U7", "U8", "U10", "U11", "J_CHG", "J_LIDAR",
-            "R_EN", "R_ST", "R_DR", "R_PU"):
+def different_net(label: str, a, b) -> None:
+    check(label, net(*a) != net(*b),
+          f"{a[0]}.{a[1]} and {b[0]}.{b[1]} are the same node and must not be")
+
+
+# --------------------------------------------------------------------------------------
+# DESIGN -- the Rev 3.1 engineering rules, checked by following copper
+# --------------------------------------------------------------------------------------
+for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11", "J_CHG",
+            "JP1", "U1", "U10", "U7", "U8",
+            "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
 
 check("U6 is gone", "U6" not in by_ref,
-      "Rev 3.0 deletes the 12 V buck -- a buck cannot make 12 V from a 12 V pack")
-check("no +12V net remains", not any("+12V" in n for ns in labels.values() for n in ns),
-      "M+ takes +VSW1 directly now")
+      "a buck cannot make 12 V from a 12 V pack; M+ takes the switched battery")
+check("the pack is 4S", len([pd for pd in defs[by_ref["BT1"]["lib"]]["pins"]]) == 5,
+      "four taps plus B-. A 3S pack would have four pins and a different BMS")
 
-# The star point is at BMS P-, and the pack's B- goes nowhere else.
-gnd_syms = [p for p in placed if p["lib"] == "GND"]
-check("exactly one GND symbol", len(gnd_syms) == 1, f"{len(gnd_syms)}")
-if gnd_syms:
-    g = (round(gnd_syms[0]["x"], 3), round(gnd_syms[0]["y"], 3))
-    reachable = {g}
-    for _ in range(4):
-        for w in wires:
-            if any(near(w[0], r) for r in reachable):
-                reachable.add(w[1])
-            if any(near(w[1], r) for r in reachable):
-                reachable.add(w[0])
-    check("star point reaches BMS P-", any(near(r, pin_xy("BMS1", "P-")) for r in reachable),
-          "the star point must be the BMS output, not the pack terminal")
-    check("star point does NOT reach the pack B-",
-          not any(near(r, pin_xy("BT1", "B-")) for r in reachable),
-          "grounding to B- bypasses the FETs: unprotected, and it drains the pack "
-          "after the BMS has cut off")
+# --- the ground spine ---------------------------------------------------------------
+same_net("star point", ("BMS1", "P-"), ("U3", "IN-"), ("U3", "OUT-"), ("U11", "GND"),
+         ("JP1", "GND"), ("U1", "GND"), ("U10", "-"), ("U4", "GND"), ("U7", "J2.2 GND"))
 
-b_minus = pin_xy("BT1", "B-")
-w_bm = wires_at(b_minus)
-check("pack B- carries exactly one wire", len(w_bm) == 1, f"{len(w_bm)} wires")
-if len(w_bm) == 1:
-    check("pack B- goes to BMS B-", near(other_end(w_bm[0], b_minus), pin_xy("BMS1", "B-")))
+# THE rule. A return on B- bypasses the FETs: unprotected, and it drains the pack after
+# the BMS has cut off.
+different_net("ground does NOT reach the pack's B-", ("BMS1", "P-"), ("BT1", "B-"))
+different_net("ground does NOT reach the BMS's B- either", ("BMS1", "P-"), ("BMS1", "B-"))
 
-for tap in ("B1+", "B2+", "B3+"):
+# Separate-port board: the charger's return is its own node.
+different_net("C- is NOT bonded to the star point", ("BMS1", "C-"), ("BMS1", "P-"))
+same_net("charge return", ("BMS1", "C-"), ("J_CHG", "2"))
+
+# --- the pack side --------------------------------------------------------------------
+for tap in ("B4+", "B3+", "B2+", "B1+", "B-"):
+    same_net(f"tap {tap}", ("BT1", tap), ("BMS1", tap))
     pt = pin_xy("BT1", tap)
-    ws = wires_at(pt)
-    check(f"pack {tap} carries exactly one wire", len(ws) == 1, f"{len(ws)}")
-    if len(ws) == 1:
-        check(f"pack {tap} goes to BMS {tap}", near(other_end(ws[0], pt), pin_xy("BMS1", tap)))
+    ws = [w for w in wires if near(w[0], pt) or near(w[1], pt)]
+    check(f"pack {tap} carries exactly one wire", len(ws) == 1, f"{len(ws)} wires")
 
-for tap in ("B1+", "B2+", "B3+", "B-"):
-    pt = pin_xy("BT1", tap)
-    check(f"pack {tap} carries no net label", pt not in labels,
-          "the pack side must not be labelled onto a distribution net")
+# --- distribution ---------------------------------------------------------------------
+same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("J_CHG", "1"),
+         ("U11", "IN+"), ("U11", "IN-"))
+same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"))
+same_net("+VSW2", ("S2", "THROW"), ("U7", "J2.1 +12V"))
+same_net("+5V", ("U3", "OUT+"), ("JP1", "5V"), ("U10", "+"))
+same_net("+3V3", ("JP1", "3V3"), ("U1", "Vin"), ("U11", "VCC"))
+same_net("SDA", ("JP1", "GPIO2 SDA"), ("U1", "SDA"), ("U11", "SDA"))
+same_net("SCL", ("JP1", "GPIO3 SCL"), ("U1", "SCL"), ("U11", "SCL"))
+same_net("ethernet", ("JP1", "eth0"), ("U7", "J3 RJ-45"))
+same_net("sensor cable", ("U7", "TB1 1-9"), ("U8", "cable"))
 
-# The fuse protects charge and discharge alike, so the charger taps the fused node.
-fused = wires_at(pin_xy("F1", "2"))
-check("F1 output is labelled", any(other_end(w, pin_xy("F1", "2")) in labels for w in fused))
-chg_names = set()
-for pin in ("1", "2"):
-    for pd in defs[by_ref["J_CHG"]["lib"]]["pins"]:
-        if pd["number"] == pin:
-            pt = (round(by_ref["J_CHG"]["x"] + pd["x"], 3),
-                  round(by_ref["J_CHG"]["y"] - pd["y"], 3))
-            for w in wires_at(pt):
-                chg_names.update(labels.get(other_end(w, pt), []))
-check("charger lands on the fused node", "+VBATT" in chg_names, str(chg_names))
-check("charger returns to the star point net", "GND" in chg_names, str(chg_names))
+# The two rails a beginner would most easily merge.
+different_net("+5V is not +3V3", ("U3", "OUT+"), ("JP1", "3V3"))
+different_net("SDA is not SCL", ("U1", "SDA"), ("U1", "SCL"))
+different_net("+VSW1 is not +VSW2", ("S1", "THROW"), ("S2", "THROW"))
 
-# The monitor is deliberately not fitted yet.
-u11 = by_ref.get("U11")
-if u11:
-    dnp = kid(u11["node"], "dnp")
-    check("INA226 is marked DNP", dnp is not None and dnp[1] == "yes",
-          "it is ordered but has never been connected")
+# The DS3231 and INA226 must sit on 3V3: their I2C pull-ups reference their own supply,
+# and the Pi's GPIOs are not 5 V tolerant.
+different_net("DS3231 Vin is not on 5 V", ("U1", "Vin"), ("U3", "OUT+"))
+different_net("INA226 VCC is not on 5 V", ("U11", "VCC"), ("U3", "OUT+"))
 
-# Nets that must exist by name.
-all_nets = {n for ns in labels.values() for n in ns}
-for net in ("+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "GND", "SDA", "SCL", "ETH",
-            "SENSOR", "M.ENABLE", "M.STEP", "M.DIR",
-            "COIL_A+", "COIL_A-", "COIL_B+", "COIL_B-"):
-    check(f"net {net} exists", net in all_nets)
+# --- motor chain ----------------------------------------------------------------------
+same_net("M.ENABLE from the Pi", ("JP1", "GPIO13"), ("R_EN", "1"))
+same_net("M.STEP from the Pi", ("JP1", "GPIO19"), ("R_ST", "1"))
+same_net("M.DIR from the Pi", ("JP1", "GPIO26"), ("R_DR", "1"))
+same_net("ENABLE at the driver", ("R_EN", "2"), ("U4", "ENABLE"), ("R_PU", "2"))
+same_net("STEP at the driver", ("R_ST", "2"), ("U4", "STEP"))
+same_net("DIR at the driver", ("R_DR", "2"), ("U4", "DIR"))
 
-# Two kinds of net, and they are checked differently.  A net joined only by NAME needs a
-# label at each end or one end floats.  A net joined by an unbroken WIRE needs exactly one
-# label -- a second would be redundant, and three would suggest a stray.
-for net in ("COIL_A+", "COIL_A-", "COIL_B+", "COIL_B-", "SENSOR"):
-    count = sum(ns.count(net) for ns in labels.values())
-    check(f"net {net} is named at both ends", count == 2, f"{count} label(s)")
+# R_PU must pull ENABLE up to the driver's OWN VCC -- not the Pi's 3V3 -- so it still
+# holds the driver disabled with the Pi unplugged.
+same_net("R_PU reaches the driver's VCC", ("R_PU", "1"), ("U4", "VCC"))
+different_net("R_PU does NOT pull up to the Pi's 3V3", ("R_PU", "1"), ("JP1", "3V3"))
+different_net("driver VCC is not the Pi's 3V3", ("U4", "VCC"), ("JP1", "3V3"))
 
-for net in ("M.ENABLE", "M.STEP", "M.DIR"):
-    count = sum(ns.count(net) for ns in labels.values())
-    check(f"net {net} is wired through and named once", count == 1, f"{count} label(s)")
+for drv, mot in (("A1", "A+"), ("A2", "A-"), ("B1", "B+"), ("B2", "B-")):
+    same_net(f"coil {drv}", ("U4", drv), ("M1", mot))
+different_net("coil A is not coil B", ("U4", "A1"), ("U4", "B1"))
+different_net("the two ends of coil A are not shorted", ("U4", "A1"), ("U4", "A2"))
 
-# The Pi's I2C rail: 3V3, never 5 V.  This trap has already been documented twice.
-for ref, pin_name in (("U1", "Vin"), ("U11", "VCC")):
-    pt = pin_xy(ref, pin_name)
-    names = set()
-    for w in wires_at(pt):
-        names.update(labels.get(other_end(w, pt), []))
-    check(f"{ref} {pin_name} is on +3V3", names == {"+3V3"},
-          f"got {names} -- 5 V here puts 5 V on GPIO2/GPIO3, which are not 5 V tolerant")
+# --- everything a pin, nothing floating ------------------------------------------------
+nc_points = set()
+for nc in kids(sch, "no_connect"):
+    at = kid(nc, "at")
+    nc_points.add((round(fnum(at[1]), 3), round(fnum(at[2]), 3)))
+check("no_connect markers present", len(nc_points) == 10, f"{len(nc_points)}")
 
-# R_PU must pull ENABLE up to the driver's own VCC, not to the Pi's 3V3.
-pu_nets = set()
-for pin in ("1", "2"):
-    pt = pin_xy("R_PU", "1" if pin == "1" else "2")
-    for w in wires_at(pt):
-        pu_nets.update(labels.get(other_end(w, pt), []))
-check("R_PU is not tied to a rail label", not pu_nets & {"+3V3", "+5V", "+VBATT"},
-      f"got {pu_nets} -- it must reach U4 VCC by wire, so it holds with the Pi unplugged")
+wired = set()
+for a, b in wires:
+    wired.add(a)
+    wired.add(b)
+for key, owners in pin_at.items():
+    ref = owners[0].split(".")[0]
+    if ref.startswith("#"):
+        continue
+    on_wire = key in wired or any(on_segment(key, a, b) for a, b in wires)
+    check(f"pin {owners[0]} is either wired or marked no-connect",
+          on_wire or key in nc_points,
+          "every pin on this sheet must be one or the other")
 
-check("M+ takes the switched battery", any(
-    "+VSW1" in labels.get(other_end(w, pin_xy("U4", "M+")), [])
-    for w in wires_at(pin_xy("U4", "M+"))), "Rev 3.0 removed the buck in front of it")
+# --- rails are named once each, and the names are only a reading aid -------------------
+rail_names = {n for ns in labels.values() for n in ns}
+for name in ("GND", "+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "SDA", "SCL", "ETH", "CHG-"):
+    check(f"rail {name} is named", name in rail_names)
+check("labels are rail names only", len(labels) == 11, f"{len(labels)} label anchors")
 
 # --------------------------------------------------------------------------------------
 print(f"\n{passed} checks passed, {len(failures)} failed")

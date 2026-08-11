@@ -1,23 +1,36 @@
-# TLS Pie — Rev 3.0 KiCad schematic
+# TLS Pie — Rev 3.1 KiCad schematic
 
-One flat A2 sheet in three zones: **power** (Zone A), **motor chain** (Zone B), **capture, clock
-and cooling** (Zone C). It supersedes `WIRING_REV2.html`, which stays in the repo because its
+One flat A2 sheet in three bands: **power chain** (Zone A), **the Pi and its bus** (Zone B), and
+**the motor chain** (Zone C), with the shared rails running horizontally between them. It supersedes `WIRING_REV2.html`, which stays in the repo because its
 per-conductor tables and its JP1-as-you-hold-it drawing are still the things you wire from.
 
 Open `TLS_Pie.kicad_pro` in KiCad 10.
 
-## What Rev 3.0 changes
+## What Rev 3.1 is
 
-| | Rev 2.0 | Rev 3.0 |
+| | Rev 2.0 | Rev 3.1 |
 |---|---|---|
-| Pack protection | a **4S** BMS on a 3S pack, latched off | **BMS1**, `NLY-3C-V3.0`, 3S common port |
+| Pack | recorded as "3S12P" — **never measured** | **4S3P**, 12 cells, ~9 Ah / ~130 Wh |
+| Protection | the 4S BMS, believed wrong | **the same 4S BMS — it was correct all along** |
 | Star point | battery negative, `BT1 B-` | **`BMS1 P-`** |
-| Motor supply | `U6` buck set to 12 V | **U6 deleted**, `M+` takes `+VSW1` directly |
-| Pack monitoring | none | `U11` INA226, drawn **DNP** — position decided, not yet fitted |
+| Charge return | — | **`BMS1 C-`**, a separate node (separate-port board) |
+| Motor supply | `U6` buck set to 12 V | **U6 deleted**, `M+` takes `+VSW1` — now up to 16.8 V |
+| Pack monitoring | none | `U11` INA226, **DNP**; the pack lead runs straight through it |
 
-The star-point move is the one that bites. A ground landed on `B-` instead of `P-` bypasses the
-protection FETs entirely: that load is unprotected, *and* it keeps draining the pack after the BMS
-has cut off. Exactly one wire in the whole rig touches `B-`, and it is the one from the pack.
+Rev 3.0 assumed a 3S pack and was wrong throughout Zone A. It is superseded, not amended.
+
+**Every conductor on this sheet is drawn.** No net label joins anything: the rails are real
+horizontal wires, the drops are real vertical wires, and every junction dot is a real node. A
+crossing without a dot is genuinely not a connection. The ten rail names are a reading aid — delete
+all of them and the netlist is identical.
+
+Two rules the drawing exists to make checkable:
+
+* **Every ground lands on `P-`, never on `B-`.** A return on `B-` bypasses the protection FETs: that
+  load is unprotected *and* keeps draining the pack after the BMS has cut off. Exactly one wire in
+  the rig touches `B-`, and it is the one from the pack.
+* **`C-` is not `P-`.** Separate-port board: bonding them defeats the separate charge and discharge
+  FETs, which is the whole purpose of the pad.
 
 ## Editing
 
@@ -50,28 +63,34 @@ substituted pinless placeholders without a single warning, and exported a netlis
 the general lesson is the project's standing one: a tool's report of itself is not evidence of what
 reached the page.
 
-`test_kicad_schematic.py` runs ~7,800 checks in three groups:
+`test_kicad_schematic.py` runs ~1,800 checks in three groups. Since nothing is joined by name, it
+builds a **net tracer** — union-find over wire endpoints and junction dots — and then asserts the
+design rules by following actual copper:
 
 - **format** — parses, balances, LF-only, KiCad 10 syntax, every `lib_id` matches a cache entry
 - **connectivity** — every wire endpoint on the 1.27 mm grid and landing on a pin, label, junction
   or another wire; no wire running *through* a pin it must not touch; no collinear overlaps
-- **design** — the Rev 3.0 rules themselves: the star point reaches `P-` and **not** `B-`, `B-`
-  carries exactly one wire, `U6` is gone, no `+12V` net survives, the DS3231 and INA226 sit on
-  `+3V3` and never 5 V, `R_PU` reaches the driver's VCC by wire rather than a rail label
+- **design** — the star point reaches every ground and **not** `B-`; `C-` is a separate node from
+  `P-`; each pack tap carries exactly one wire; the pack symbol has five pins, so the sheet cannot
+  quietly revert to 3S; `U6` is gone; DS3231 and INA226 sit on `+3V3` and never 5 V; `R_PU` reaches
+  the driver's own VCC and *not* the Pi's 3V3; coil A is not coil B; and every pin on the sheet is
+  either wired or explicitly marked no-connect
 
 The design group is the one worth having. A schematic that parses and is wrong is the failure this
 project keeps meeting.
 
 ## Expected ERC result
 
-**0 errors, 1 warning.** The warning is `isolated_pin_label: +VBATT_MON` and it is correct: that net
-has one end because `U11` is DNP. It gets its second end the day the INA226 is fitted — which is
-also why the part is on the sheet at all. Its shunt goes *in series with the pack lead*, so leaving
-it off the drawing would mean cutting the harness twice.
+**0 violations.**
+
+KiCad's own ERC caught one fault that neither the validator nor a careful look had: **a wire passing
+OVER a pin does not connect to it — the wire has to END there.** The Pi's three ground pins were
+joined by a single vertical that passed straight through pin 9, and pin 9 was floating. It plotted
+perfectly. Run all three checks; they fail differently.
 
 ## Deliberate departures from KiCad convention
 
-- **`R_PU`, `R_EN`, `R_ST`, `R_DR`, `J_CHG`, `J_LIDAR` have no reference number**, so KiCad reports
+- **`R_PU`, `R_EN`, `R_ST`, `R_DR`, `J_CHG` have no reference number**, so KiCad reports
   the sheet as un-annotated. Kept on purpose: those are the names in `PROJECT_CONTEXT.md` and in
   Rev 2.0's master netlist, they are what the build notes call them, and there is no PCB for the
   annotation to matter to. This drawing is documentation, not a layout source.

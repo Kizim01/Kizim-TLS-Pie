@@ -402,47 +402,42 @@ collapsing under load — but the cause was the BMS strangling a healthy pack, n
 The operational lesson survives unchanged: any measurement taken while the supply is sagging
 measures the supply, and one experiment was lost to this before it was noticed.
 
-#### ⛔ The BMS is the wrong one: a 4S BMS on a 3S12P pack — ***THIS DIAGNOSIS IS IN DOUBT***
+#### ~~⛔ The BMS is the wrong one: a 4S BMS on a 3S12P pack~~ — ***WRONG, SEE THE BOX BELOW***
 
-> ## ⛔⛔ STOP — DO NOT FIT THE 3S BMS. THE PACK'S TOPOLOGY IS UNVERIFIED.
+> ## ✅ RESOLVED 2026-08-11: THE PACK IS **4S3P**. THE FITTED BMS WAS CORRECT.
 >
-> **Corrected by the user on 2026-08-11, after everything below was written:** the pack is
-> **12 cells in 4 rows of 3**, not the 36 cells "3S12P" claims. That single fact undermines the
-> whole section below, in two independent ways.
+> **The user confirmed the pack is 12 cells in 4 rows of 3 — 4S3P — not the 36 that "3S12P"
+> claimed.** Everything in this section below is therefore **wrong**, and is kept only so the
+> error stays visible. What actually happened:
 >
-> **1. It may well be 4S3P — in which case the original 4S BMS was CORRECT.** Physical layout does
-> not determine topology (it depends where the nickel strips run), but "4 rows" is exactly what
-> 4S3P looks like. At 12.22 V:
->
-> | if the pack is | that is | reading |
+> | observation | read as 3S (wrong) | read as 4S (correct) |
 > |---|---|---|
-> | 3S | **4.07 V/cell** | nearly full — the diagnosis below |
-> | 4S | **3.05 V/cell** | genuinely low, and one weak group easily sits under the cutoff |
+> | 12.22 V pack | 4.07 V/cell, nearly full — so the BMS must be faulty | **3.05 V/cell, genuinely low.** One weak 3P group easily sits under the cutoff |
+> | `B-`→`P-` ≈ 0.55 V | a wrong BMS strangling a healthy pack | **the right BMS protecting a flat pack.** Most such boards only release once a charger is applied |
+> | brownouts + the reboot mid-move | the BMS choking a full pack | **the pack genuinely running down** |
 >
-> Both explain the ~0.55 V body-diode measurement equally well. One says the BMS is wrong; the
-> other says the BMS was right and doing its job on a flat pack.
+> **The struck-through "flat battery" paragraph in this section was right and should not have been
+> struck out.** The argument used to void it — *"3S12P is ~30 Ah / ~330 Wh, it could not possibly
+> drain in an evening"* — depended entirely on the cell count. **Twelve cells is ~9 Ah / ~130 Wh**,
+> about seven hours at the rig's ~18 W. It drains in an evening comfortably.
 >
-> **2. The argument that killed the flat-battery theory has evaporated.** It was "3S12P is ~30 Ah /
-> ~330 Wh, it could not possibly drain in an evening". **Twelve cells is ~130 Wh whichever way they
-> are wired** — about seven hours at the rig's ~18 W. So the original "the battery ran out" story
-> is back on the table *regardless* of 3S vs 4S. See the struck-through paragraph in Scan geometry
-> that was "corrected" on this basis; that correction may itself be wrong.
+> **Do NOT fit the 3S board that was bought** (`NLY-3C-V3.0`). On a 4S pack it would put ~16.8 V on
+> a `B3+` input rated for three cells and leave the fourth group with no protection at all.
 >
-> **The single measurement that settles it — on the OLD 4S board, between `B3+` and `B4+`:**
-> **~0 V → no fourth cell → 3S.  ~3 V → there is a fourth cell → 4S, and the 3S board must not go
-> on.** If that board is already off, walk the meter across each cell-group junction from pack
-> negative instead: **three steps of ~4.07 V = 3S, four steps of ~3.05 V = 4S**. Corroborate by
-> counting balance conductors (5 = 4S, 4 = 3S) and by the charger's open-circuit voltage
-> (**16.8 V = 4S, 12.6 V = 3S**).
+> **What to do instead:** measure the charger open-circuit (**16.8 V** is right for 4S; 12.6 V is a
+> 3S charger and fills this pack to about half; 13.8–14.4 V lead-acid is *harmless* here at
+> 3.45–3.6 V/cell but undercharges — **note this inverts the 3S-era warning**), charge the pack,
+> then measure the four groups and find the weak one. Full procedure in `WIRING_REV3_BMS.html`;
+> schematic in `kicad/` (Rev **3.1**).
 >
-> **Why this is a hard stop and not a caveat:** a 3S board on a 4S pack puts ~16.8 V on a `B3+`
-> input rated for three cells, destroying the IC, and leaves the fourth cell with **no protection
-> at all** — no over-discharge floor and no over-charge ceiling. That is the one failure mode on
-> this project that ends in a fire rather than a lost session.
+> **⚠ One thing 4S makes worse:** `S2` hands the VLP-16 **raw pack voltage, now up to 16.8 V**.
+> Under the 3S assumption that leg never passed 12.6 V. **Check the sensor's input range before S2
+> is ever closed.**
 >
-> **Everything below, and all of Rev 3.0 (`kicad/`, `WIRING_REV3_BMS.html`), assumes 3S.** If the
-> measurement says 4S, the schematic needs reworking and the correct action is to charge the pack
-> with a 16.8 V 4S charger and find the weak group — not to change the BMS.
+> **The standing lesson:** `3S12P` was never measured — it was inherited from the written record,
+> treated as fact, and carried an entire diagnosis *and* a whole revision of the schematic with it.
+> The capacity derived from it was even used as the argument that killed the correct explanation.
+> **Count the cells.**
 
 Diagnosed 2026-08-11 from three measurements: pack **12.22 V**, and `C-` and `P-` both sitting at
 **~0.55 V** relative to `B-`. That 0.55 V is a MOSFET **body-diode drop** — the signature of a BMS
@@ -1618,8 +1613,8 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 | ✅ **Shut down + Reboot buttons** | 2026-08-11. Both at the bottom of the panel: confirm twice, refuse mid-scan, flush the USB stick first. Reboot verified end to end. |
 | ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
-| ⛔⛔ **THE PACK'S TOPOLOGY IS UNVERIFIED — DO NOT FIT THE 3S BMS** | **The single most important line on this page.** The user corrected the pack on 2026-08-11 to **12 cells in 4 rows of 3**, not 36. It may be **4S3P**, in which case the original 4S BMS was *right* and the 3S board is dangerous. **Measure `B3+`→`B4+` on the OLD board first: ~0 V = 3S, ~3 V = 4S.** See "The BMS is the wrong one" for the full test and why it is a hard stop. |
-| ⚠ **Rev 3.0 schematic + BMS wiring procedure** | 2026-08-11. `kicad/` (KiCad 10, ERC **0 errors, 1 intentional warning**) and `WIRING_REV3_BMS.html`. Sound as drawing and procedure — **but it assumes 3S throughout.** If the pack measures 4S it needs reworking. |
+| ✅ **THE BMS WAS NEVER THE FAULT** | 2026-08-11. The pack is **4S3P (12 cells, 4 rows of 3)**, so the fitted 4S board was the **correct part doing its job** on a genuinely flat pack. `3S12P` was inherited from this document, never measured, and carried a whole diagnosis with it. **The fix is a 16.8 V charge, not a new BMS.** Do not fit the 3S board that was bought. |
+| ✅ **Rev 3.1 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, ~1,800 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`.
 
 **One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
 `black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
@@ -1630,10 +1625,11 @@ brief and dark rather than a mid-sequence flash. If the operator still sees a fl
 intro and the panel, that is a different fault from the one fixed — record a boot with
 `wf-recorder` before changing anything.
 
-Do the BMS first. It caused both brownouts and the reboot mid-move, and it made a perfectly healthy
-pack look flat — which sent an hour of debugging down the wrong path. See "The BMS is the wrong one"
-in Scan geometry for the measurements and the reasoning, and **"Fitting the 3S BMS" below for how to
-wire the replacement**, which is the next physical job on the rig.
+**Charge the pack first — at 16.8 V.** It is 4S3P, ~130 Wh, and it genuinely ran down; the BMS
+latched on under-voltage exactly as designed and most such boards only release once a charger is
+applied. Then measure the four groups and find the weak one. See the resolved box in Scan geometry
+for how a derived cell count sent a whole day down the wrong path, and `WIRING_REV3_BMS.html` for
+the procedure.
 
 **The next milestone is still the first complete scan — that has never happened.**
 
@@ -1799,20 +1795,13 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 ### Still to do — in order
 
-1. ⛔⛔ **ESTABLISH WHETHER THE PACK IS 3S OR 4S. Do not fit any BMS until this is answered.**
-   The pack is **12 cells in 4 rows of 3** — not the 36 the record claimed — and "4 rows" is exactly
-   what **4S3P** looks like. If it is 4S, the original 4S BMS was *correct*, the pack was genuinely
-   flat, and fitting the 3S board would destroy its IC and leave the fourth cell with no protection
-   at all. **The test: on the OLD 4S board, `B3+` to `B4+`. ~0 V = 3S. ~3 V = 4S.** Or walk the
-   meter across each cell-group junction from pack negative: three steps of ~4.07 V = 3S, four steps
-   of ~3.05 V = 4S. Corroborate with the balance-conductor count (5 = 4S, 4 = 3S) and the charger's
-   open-circuit voltage (16.8 V = 4S, 12.6 V = 3S). **Then:**
-   * **If 3S** — fit the `NLY-3C-V3.0` following `WIRING_REV3_BMS.html`. It is confirmed **Li-ion**
-     and **common port** from its own silkscreen. Connect the taps `B−` first, and land every ground
-     on `P−`, never on `B−`.
-   * **If 4S** — the BMS was never the fault. **Charge the pack with a 16.8 V 4S charger** and look
-     for the weak group that tripped the cutoff. Rev 3.0 then needs reworking for 4S, and the
-     struck-through "flat battery" paragraph in Scan geometry needs un-striking.
+1. ✅ **THE BMS BLOCKER IS CLOSED — but the pack still needs charging.** The pack is **4S3P**
+   (12 cells, 4 rows of 3), so the 4S board fitted to it was **correct all along** and the pack was
+   genuinely flat. **Charge it at 16.8 V**, then measure the four groups (`B-`/`B1+`, `B1+`/`B2+`,
+   `B2+`/`B3+`, `B3+`/`B4+`) and find the weak group that tripped the cutoff — with only 3 cells in
+   parallel, one tired cell drags a whole group. **Do not fit the 3S board that was bought.**
+   **⚠ Before closing `S2`, check the VLP-16's input range**: at 4S it now sees up to **16.8 V**,
+   where the old 3S assumption capped that leg at 12.6 V. Procedure: `WIRING_REV3_BMS.html`.
 2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
    `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
    never run once in the life of this project. The motion is no longer the obstacle; the capture

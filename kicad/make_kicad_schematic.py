@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the TLS Pie Rev 3.0 KiCad schematic from the Rev 2.0 interconnect drawing.
+"""Generate the TLS Pie Rev 3.1 KiCad schematic from the Rev 2.0 interconnect drawing.
 
 Rev 3.0 = Rev 2.0 + the 3S BMS, and the two consequences that follow from fitting it:
 
@@ -99,7 +99,7 @@ SYMBOLS: dict[str, dict] = {
     "GND": dict(
         power=True, glyph="gnd", ref="#PWR", value="GND", w=0, h=0,
         pins=[("1", "GND", "B", 0, "power_in")],
-        desc="Common return -- the star point, which in Rev 3.0 is BMS P-",
+        desc="Common return -- the star point, which is BMS P- (never the pack B-)",
     ),
     "PWR_FLAG": dict(
         power=True, glyph="flag", ref="#FLG", value="PWR_FLAG", w=0, h=0,
@@ -107,27 +107,30 @@ SYMBOLS: dict[str, dict] = {
         desc="Tells ERC this rail has a source. S1 and S2 are passive contacts, so "
              "without it every load on +VSW1/+VSW2 reads as undriven",
     ),
-    "Batt_3S12P": dict(
-        ref="BT", value="3S12P Li-ion", w=30.48, h=45.72,
+    "Batt_4S3P": dict(
+        ref="BT", value="4S3P Li-ion", w=30.48, h=53.34,
         pins=[
-            ("1", "B3+", "R", 15.24, "power_out"),
-            ("2", "B2+", "R", 5.08, "passive"),
-            ("3", "B1+", "R", -5.08, "passive"),
-            ("4", "B-", "R", -15.24, "power_out"),
+            ("1", "B4+", "R", 20.32, "power_out"),
+            ("2", "B3+", "R", 10.16, "passive"),
+            ("3", "B2+", "R", 0, "passive"),
+            ("4", "B1+", "R", -10.16, "passive"),
+            ("5", "B-", "R", -20.32, "power_out"),
         ],
-        desc="36 cells: 3 series groups of 12 parallel. ~30 Ah / ~330 Wh. 12.6 V full, 12.22 V measured",
+        desc="12 cells: 4 series groups of 3 parallel. ~9 Ah / ~130 Wh. 16.8 V full, 14.8 V nominal, 12.22 V measured flat",
     ),
-    "BMS_3S": dict(
-        ref="BMS", value="NLY-3C-V3.0 (3S, common port)", w=40.64, h=50.8,
+    "BMS_4S": dict(
+        ref="BMS", value="4S separate port", w=40.64, h=63.5,
         pins=[
-            ("1", "B3+", "L", 15.24, "passive"),
-            ("2", "B2+", "L", 5.08, "passive"),
-            ("3", "B1+", "L", -5.08, "passive"),
-            ("4", "B-", "L", -15.24, "passive"),
-            ("5", "P+", "R", 15.24, "power_out"),
-            ("6", "P-", "R", -15.24, "power_out"),
+            ("1", "B4+", "L", 20.32, "passive"),
+            ("2", "B3+", "L", 10.16, "passive"),
+            ("3", "B2+", "L", 0, "passive"),
+            ("4", "B1+", "L", -10.16, "passive"),
+            ("5", "B-", "L", -20.32, "passive"),
+            ("6", "P+", "R", 20.32, "power_out"),
+            ("7", "C-", "R", 0, "passive"),
+            ("8", "P-", "R", -20.32, "power_out"),
         ],
-        desc="56x40x1.2mm. Per-cell protection, 8x 075N03L in the negative leg. No C- pad exists, so it is common port: charge and discharge share P+/P-",
+        desc="The board already fitted. SEPARATE PORT: it has a C- pad, so the charger returns to C- and the load returns to P-. Confirm the tap labels against the board itself before wiring",
     ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
@@ -374,6 +377,7 @@ class Sheet:
     def __init__(self) -> None:
         self.items: list[str] = []
         self.placed: dict[str, tuple[str, float, float]] = {}
+        self.rails: dict[str, tuple[float, float, float]] = {}
 
     def place(self, sym: str, ref: str, x: float, y: float, value: str | None = None,
               dnp: bool = False) -> None:
@@ -460,6 +464,42 @@ class Sheet:
         self.wire(a, b)
         self.label(net, b, justify="left bottom" if dx >= 0 else "right bottom")
 
+    # ----------------------------------------------------------------------------------
+    # Rails and drops.  Rev 3.1 draws EVERY connection as a real wire -- there are no
+    # net labels doing the joining, so a reader can follow any conductor end to end
+    # without decoding a name.  A rail is one long horizontal wire; a drop is the two
+    # segments from a pin to that rail, plus the junction dot that makes the T a
+    # connection rather than a crossing.  KiCad does NOT connect a crossing without a
+    # junction, which is exactly what makes this style safe: unrelated nets may cross
+    # freely and only the dots mean anything.
+    # ----------------------------------------------------------------------------------
+    def rail(self, net: str, y: float, x0: float, x1: float,
+             label: str | None = None) -> None:
+        self.wire((x0, y), (x1, y))
+        self.rails[net] = (y, x0, x1)
+        net = label or net
+        # One name per rail, at its left end, purely so the plot reads well. The wire is
+        # what carries the connection; remove the name and nothing changes electrically.
+        self.label(net, (x0, y))
+
+    def drop(self, ref: str, number: str, net: str, via_x: float) -> None:
+        """Route a pin to its rail: out horizontally to via_x, then vertically to the rail."""
+        y, x0, x1 = self.rails[net]
+        px, py = self.pin(ref, number)
+        if abs(py - y) < 1e-6:
+            raise ValueError(f"{ref}.{number} sits on the {net} rail; nudge one of them")
+        if not (min(x0, x1) - 1e-6 <= via_x <= max(x0, x1) + 1e-6):
+            raise ValueError(f"{ref}.{number} drops at x={via_x}, off the {net} rail")
+        if abs(via_x - px) > 1e-6:
+            self.wire((px, py), (via_x, py))
+        self.wire((via_x, py), (via_x, y))
+        self.junction((via_x, y))
+
+    def tap(self, at: tuple[float, float], to: tuple[float, float]) -> None:
+        """Branch off an existing wire at `at` -- the junction is what makes it a node."""
+        self.junction(at)
+        self.wire(at, to)
+
     def no_connect(self, ref: str, number: str) -> None:
         """Mark a pin as deliberately open.
 
@@ -492,257 +532,278 @@ class Sheet:
 
 
 def build() -> Sheet:
+    """Rev 3.1 -- one A2 page, and EVERY conductor drawn.
+
+    No connection is made by name.  Rails are real horizontal wires, drops are real
+    vertical wires, and every junction dot is a real node.  A crossing without a dot is
+    genuinely not a connection -- which is what lets unrelated nets cross freely and
+    still leaves the page unambiguous.  The one name on each rail is a reading aid; delete
+    every one of them and the netlist is identical.
+
+        BAND A   y  79   pack, BMS, fuse, switches, 5 V buck, monitor, charge socket
+        RAILS    y 121-202
+        BAND B   y 245   the Pi and everything on its bus
+        BAND C   y 345   the motor chain
+        GND      two rails, y 121 and y 400, tied by the trunk at x = 28
+    """
     sh = Sheet()
 
-    # ==================================================================================
-    # ZONE A -- power distribution.  Everything Rev 3.0 changes is in this zone.
-    # ==================================================================================
-    sh.note("ZONE A   POWER DISTRIBUTION      Rev 3.0: the 3S BMS enters here", (25.4, 25.4), 2.5)
+    Y_A, Y_B, Y_C = 78.74, 245.11, 345.44
+    TRUNK_X = 27.94
+    GND_A, GND_B = 120.65, 400.05
 
-    sh.place("Batt_3S12P", "BT1", 57.15, 69.85)
-    sh.place("BMS_3S", "BMS1", 127.0, 69.85)
+    # ==================================================================================
+    # BAND A -- the power chain
+    # ==================================================================================
+    sh.note("ZONE A   POWER CHAIN      4S3P pack -- and the 4S BMS fitted to it was right",
+            (25.4, 25.4), 2.5)
 
-    # Pack to BMS: four conductors, and the only four that ever touch B- / B1+ / B2+ / B3+.
-    for number in ("1", "2", "3", "4"):
+    sh.place("Batt_4S3P", "BT1", 45.72, Y_A)
+    sh.place("BMS_4S", "BMS1", 116.84, Y_A)
+    sh.place("Fuse", "F1", 179.07, 58.42)
+    sh.place("SW_SPST", "S1", 226.06, 58.42, value="MAIN / E-stop")
+    sh.place("SW_SPST", "S2", 226.06, 99.06, value="LIDAR")
+    sh.place("LM2596_Module", "U3", 302.26, Y_A, value="LM2596S-ADJ -> 5.1 V")
+    sh.place("INA226_Module", "U11", 396.24, Y_A, value="INA226 -- NOT FITTED", dnp=True)
+    sh.place("Conn_2", "J_CHG", 480.06, Y_A, value="charge socket")
+
+    # Pack to BMS: FIVE conductors -- four taps plus B-.  The only wires that ever touch
+    # the pack side.  Count them: five is what makes this pack visibly 4S.
+    for number in ("1", "2", "3", "4", "5"):
         sh.wire(sh.pin("BT1", number), sh.pin("BMS1", number))
 
-    sh.note("CONNECT THE TAPS IN THIS ORDER:  B-  then B1+  then B2+  then B3+\n"
-            "Out of order, the protection IC sees most of the pack across one\n"
-            "stage and dies. Solder them to the pack FIRST, meter the connector,\n"
-            "and only then plug it into the board.\n\n"
-            "B1+ and B2+ carry milliamps -- 22-24 AWG.\n"
-            "B3+ and B- carry the FULL pack current -- run those two thick.",
-            (25.4, 104.14))
-
-    sh.note("*** THE STAR POINT MOVED IN REV 3.0 ***\n"
-            "Every ground in this rig lands on BMS P-, never on the pack's B-.\n"
-            "A return wired to B- bypasses the FETs: that load is unprotected,\n"
-            "AND it keeps draining the pack after the BMS has cut off.\n"
-            "EXACTLY ONE wire touches B-, and it is the one from the pack.",
-            (25.4, 132.08), 1.6)
-
-    # BMS P+ through the fuse to the fused node.
-    sh.place("Fuse", "F1", 177.8, sh.pin("BMS1", "5")[1])
-    sh.wire(sh.pin("BMS1", "5"), sh.pin("F1", "1"))
-    sh.stub("F1", "2", "+VBATT", dx=15.24)
-
-    # BMS P- is the star point.
-    p_minus = sh.pin("BMS1", "6")
-    star = (p_minus[0], round(p_minus[1] + 10.16, 4))
-    sh.wire(p_minus, star)
-    sh.place("GND", "#PWR01", *star)
-    sh.note("STAR POINT", (156.21, 92.71), 1.8)
-
-    # Charge port.  Common-port board, so charge and discharge share P+/P-.
-    sh.place("Conn_2", "J_CHG", 177.8, 111.76, value="charge socket")
-    sh.stub("J_CHG", "1", "+VBATT", dx=15.24)
-    sh.stub("J_CHG", "2", "GND", dx=15.24)
-    sh.note("Charger: 12.6 V CC-CV ONLY.\n"
-            "13.8-14.4 V open circuit is a lead-acid\n"
-            "charger and must not touch this pack.\n"
-            "Measure it before it is ever plugged in.",
-            (161.29, 128.27))
-
-    # Pack monitoring -- not fitted, but its shunt goes in series with the pack lead.
-    sh.place("INA226_Module", "U11", 254.0, 152.4,
-             value="INA226 R002 -- NOT FITTED", dnp=True)
-    sh.stub("U11", "1", "+VBATT", dx=-15.24)
-    sh.stub("U11", "2", "+VBATT_MON", dx=-15.24)
-    sh.stub("U11", "3", "GND", dx=-15.24)
-    sh.stub("U11", "4", "+3V3", dx=15.24)
-    sh.stub("U11", "5", "SDA", dx=15.24)
-    sh.stub("U11", "6", "SCL", dx=15.24)
-    sh.note("DNP -- ordered, never connected. Decide its position NOW:\n"
-            "the shunt sits in series with the pack lead, so retrofitting\n"
-            "means cutting the harness you are about to make.\n"
-            "R002 (0.002 ohm), NOT R100 -- R100 is good for 0.8 A and this\n"
-            "rig pulls ~3 A. 3V3 only, never 5 V, or the module's I2C\n"
-            "pull-ups put 5 V on GPIO2/GPIO3.",
-            (218.44, 176.53))
-
-    # Switches.
-    sh.place("SW_SPST", "S1", 254.0, 46.99, value="MAIN / E-stop")
-    sh.place("SW_SPST", "S2", 254.0, 69.85, value="LIDAR")
-    sh.stub("S1", "1", "+VBATT", dx=-15.24)
-    sh.stub("S2", "1", "+VBATT", dx=-15.24)
-    sh.stub("S1", "2", "+VSW1", dx=15.24)
-    sh.stub("S2", "2", "+VSW2", dx=15.24)
-
-    # A switch contact is passive, so without these the whole rig downstream of S1 and S2
-    # reads to ERC as powered by nothing.  The flags assert "the pack drives this".
-    for ref, sw, dy in (("#FLG01", "S1", -15.24), ("#FLG02", "S2", 15.24)):
-        end = sh.pin(sw, "2")
-        end = (round(end[0] + 15.24, 4), end[1])
-        tip = (end[0], round(end[1] + dy, 4))
-        sh.wire(end, tip)
-        sh.place("PWR_FLAG", ref, *tip)
-    sh.note("S1 and S2 tap the same fused node in PARALLEL.\n"
-            "S1 does NOT switch the lidar -- opening S1 kills the Pi and the\n"
-            "motor and leaves the VLP-16 spinning on S2.",
-            (214.63, 26.67))
-
-    # 5 V for the Pi.
-    sh.place("LM2596_Module", "U3", 330.2, 60.96, value="LM2596S-ADJ -> 5.1 V")
-    sh.stub("U3", "4", "+VSW1", dx=-15.24)
-    sh.stub("U3", "3", "GND", dx=-15.24)
-    sh.stub("U3", "1", "+5V", dx=15.24)
-    sh.stub("U3", "2", "GND", dx=15.24)
-
-    # Lidar power.
-    sh.place("Conn_2", "J_LIDAR", 330.2, 106.68, value="to U7 J2 barrel")
-    sh.stub("J_LIDAR", "1", "+VSW2", dx=15.24)
-    sh.stub("J_LIDAR", "2", "GND", dx=15.24)
-
-    sh.note("U6 IS DELETED IN REV 3.0.\n"
-            "A buck needs ~1.5 V of headroom, so an LM2596 set to 12 V on a\n"
-            "12 V pack never regulates -- it just sags under load, which is\n"
-            "exactly when the motor needs it. M+ now takes +VSW1 directly;\n"
-            "the Big Easy Driver accepts 8-35 V.",
-            (297.18, 124.46), 1.6)
+    # P+ -> fuse -> S1, one straight run.  S2 and the rest hang off the +VBATT rail.
+    sh.wire(sh.pin("BMS1", "6"), sh.pin("F1", "1"))
+    sh.wire(sh.pin("F1", "2"), sh.pin("S1", "1"))
 
     # ==================================================================================
-    # ZONE B -- motor chain.  Unchanged from Rev 2.0 except where M+ comes from.
+    # THE RAILS
     # ==================================================================================
-    sh.note("ZONE B   MOTOR CHAIN      unchanged from Rev 2.0 except M+", (25.4, 196.85), 2.5)
+    sh.rail("GNDA", GND_A, TRUNK_X, 375.92, label="GND")
+    sh.rail("+VBATT", 140.97, 196.85, 504.19)
+    sh.rail("+VSW1", 148.59, 248.92, 297.18)
+    sh.rail("+VSW2", 156.21, 259.08, 405.13)
+    sh.rail("+5V", 163.83, 38.1, 334.01)
+    sh.rail("+3V3", 171.45, 33.02, 426.72)
+    sh.rail("SDA", 179.07, 104.14, 436.88)
+    sh.rail("SCL", 186.69, 114.3, 447.04)
+    sh.rail("ETH", 194.31, 139.7, 391.16)
+    sh.rail("CHG-", 201.93, 154.94, 514.35)
+    sh.rail("GNDB", GND_B, TRUNK_X, 406.4, label="GND")
 
-    sh.place("Pi4B", "JP1", 76.2, 254.0)
-    sh.place("BigEasyDriver", "U4", 228.6, 254.0)
-    sh.place("Stepper_4W", "M1", 330.2, 254.0, value="stepper + 50:1")
+    # The ground spine.  Its endpoints sit exactly on the two rail ends, so the three
+    # wires form one net with no junction dot needed.
+    sh.wire((TRUNK_X, GND_A), (TRUNK_X, GND_B))
 
-    # Three signals, each through its own 1 k series resistor, drawn as real components.
+    # Rails that only passive contacts feed need a flag, or every load downstream reads
+    # to ERC as powered by nothing.
+    sh.place("PWR_FLAG", "#FLG01", 297.18, 148.59)
+    sh.place("PWR_FLAG", "#FLG02", 405.13, 156.21)
+
+    # ---- band A onto the rails --------------------------------------------------------
+    sh.tap((196.85, 58.42), (196.85, 140.97))          # fused node -> +VBATT
+    sh.junction((196.85, 140.97))
+    sh.drop("S2", "1", "+VBATT", 203.2)
+    sh.drop("S1", "2", "+VSW1", 248.92)
+    sh.drop("S2", "2", "+VSW2", 259.08)
+    sh.drop("BMS1", "8", "GNDA", 142.24)               # P- IS the star point
+    sh.drop("BMS1", "7", "CHG-", 154.94)               # C- is the charger's own return
+    sh.drop("U3", "4", "+VSW1", 270.51)
+    sh.drop("U3", "3", "GNDA", 280.67)
+    sh.drop("U3", "1", "+5V", 334.01)
+    sh.drop("U3", "2", "GNDA", 323.85)
+    # The monitor is not fitted, so the pack lead runs straight past it: IN+ and IN- both
+    # land on +VBATT.  Fitting the INA226 means CUTTING the rail between these two drops.
+    sh.drop("U11", "1", "+VBATT", 365.76)
+    sh.drop("U11", "2", "+VBATT", 355.6)
+    sh.drop("U11", "3", "GNDA", 375.92)
+    sh.drop("U11", "4", "+3V3", 426.72)
+    sh.drop("U11", "5", "SDA", 436.88)
+    sh.drop("U11", "6", "SCL", 447.04)
+    sh.drop("J_CHG", "1", "+VBATT", 504.19)
+    sh.drop("J_CHG", "2", "CHG-", 514.35)
+
+    sh.note("S1 and S2 both hang off the fused node, in PARALLEL. S1 does NOT switch\n"
+            "the lidar -- opening S1 kills the Pi and the motor and leaves the VLP-16\n"
+            "spinning on S2.\n\n"
+            "*** NEW ON 4S: S2 HANDS THE VLP-16 UP TO 16.8 V ***\n"
+            "On the old 3S assumption that leg never passed 12.6 V. CHECK THE SENSOR'S\n"
+            "OWN INPUT RANGE before S2 is ever closed. If it will not take 16.8 V that\n"
+            "leg needs a regulator -- the one place going to 4S makes things worse.",
+            (196.85, 20.32), 1.5)
+
+    sh.note("CONNECT THE TAPS IN THIS ORDER:  B-  B1+  B2+  B3+  B4+\n"
+            "The protection ICs are powered from the taps. Out of order, one stage sees\n"
+            "most of the pack across single-cell inputs and dies silently -- leaving a\n"
+            "board that looks fine and protects nothing. Solder all five to the pack\n"
+            "FIRST, meter the free connector, and only then plug it in.\n\n"
+            "B1+/B2+/B3+ carry milliamps -- 22-24 AWG.  B4+ and B- carry the FULL pack\n"
+            "current -- run those two thick.",
+            (34.29, 125.73), 1.5)
+
+    sh.note("INA226 DNP: the pack lead runs straight through. Fitting it means CUTTING\n"
+            "the +VBATT rail between these two drops and letting the shunt bridge the gap.\n"
+            "Must be the R002 variant -- R100 is good for 0.8 A and this rig pulls ~3 A.",
+            (340.36, 104.14), 1.4)
+
+    sh.note("Charger: 16.8 V CC-CV for 4S Li-ion. 12.6 V is a 3S charger and\n"
+            "will never fill this pack past about half. 13.8-14.4 V is a lead-acid\n"
+            "unit -- harmless here at 3.45-3.6 V/cell, but it undercharges.\n"
+            "SEPARATE PORT: its negative goes to C-, never to the star point.",
+            (455.93, 104.14), 1.4)
+
+    # ==================================================================================
+    # BAND B -- the Pi and its bus
+    # ==================================================================================
+    sh.note("ZONE B   THE PI AND ITS BUS", (60.96, 210.82), 2.5)
+
+    sh.place("Pi4B", "JP1", 71.12, Y_B)
+    sh.place("DS3231", "U1", 190.5, Y_B)
+    sh.place("Fan_2", "U10", 269.24, Y_B, value="fan 5 V")
+    sh.place("Velodyne_IF", "U7", 440.0, Y_B, value="VLP-16 interface box")
+    sh.place("VLP16", "U8", 530.0, Y_B)
+
+    # The Pi's two 5 V pins and its three grounds are joined at the header, then taken to
+    # their rails once -- which is what the physical harness does.
+    sh.wire(sh.pin("JP1", "2"), sh.pin("JP1", "4"))
+    # Two wires, not one: KiCad does NOT connect a pin a wire merely passes OVER. The
+    # wire must END there. Caught by ERC as "JP1 pin 9 not connected" -- the schematic
+    # looked perfect and pin 9 was floating.
+    sh.wire(sh.pin("JP1", "6"), sh.pin("JP1", "9"))
+    sh.wire(sh.pin("JP1", "9"), sh.pin("JP1", "39"))
+    sh.wire(sh.pin("JP1", "39"), (TRUNK_X, sh.pin("JP1", "39")[1]))
+    sh.junction((TRUNK_X, sh.pin("JP1", "39")[1]))
+
+    sh.drop("JP1", "1", "+3V3", 33.02)
+    sh.drop("JP1", "2", "+5V", 38.1)
+    sh.drop("JP1", "3", "SDA", 104.14)
+    sh.drop("JP1", "5", "SCL", 114.3)
+    sh.drop("JP1", "ETH", "ETH", 139.7)
+
+    sh.drop("U1", "1", "+3V3", 158.75)
+    sh.drop("U1", "2", "GNDB", 146.05)
+    sh.drop("U1", "3", "SCL", 163.83)
+    sh.drop("U1", "4", "SDA", 153.67)
+    for number in ("5", "6", "7", "8"):
+        sh.no_connect("U1", number)
+
+    sh.drop("U10", "1", "+5V", 243.84)
+    sh.drop("U10", "2", "GNDB", 248.92)
+
+    sh.drop("U7", "1", "+VSW2", 401.32)
+    sh.drop("U7", "2", "GNDB", 406.4)
+    sh.drop("U7", "3", "ETH", 391.16)
+    sh.no_connect("U7", "5")
+
+    # The sensor's factory cable, TB1 to the VLP-16.
+    a = sh.pin("U7", "4")
+    b = sh.pin("U8", "1")
+    sh.route(a, (487.68, a[1]), (487.68, b[1]), b)
+
+    sh.note("Vin from header pin 1 (3V3), NEVER pin 2 or 4. This board's I2C pull-ups\n"
+            "reference Vin, so 5 V on Vin puts 5 V on GPIO2 and GPIO3, which are not\n"
+            "5 V tolerant. Check before trusting it: power the board with SDA and SCL\n"
+            "not yet fitted and measure SDA to GND -- it must read about 3.3 V.\n"
+            "BAT / 32K / SQW / RST: open on purpose.",
+            (153.67, 283.21), 1.4)
+
+    sh.note("eth0 stays on 192.168.1.100 and the phone hotspot must not. The sensor\n"
+            "never touches the GPIO header -- it is Ethernet the whole way. TB1 inside\n"
+            "U7 takes the VLP-16 factory cable: 1 Gnd/Shield, 2 +12 Vdc, 3 GPS_Pulse_CNT,\n"
+            "4 GPS_RX_CNT, 5 Eth TX+, 6 Eth TX-, 7 Eth RX+, 8 Eth RX-, 9 GPS return.",
+            (429.26, 275.59), 1.4)
+
+    # ==================================================================================
+    # BAND C -- the motor chain
+    # ==================================================================================
+    sh.note("ZONE C   MOTOR CHAIN      M+ now sees up to 16.8 V, still inside 8-35 V",
+            (60.96, 300.0), 2.5)
+
+    sh.place("R", "R_EN", 134.62, 337.82, value="1k")
+    sh.place("R", "R_ST", 153.67, 345.44, value="1k")
+    sh.place("R", "R_DR", 172.72, 353.06, value="1k")
+    sh.place("BigEasyDriver", "U4", 279.4, Y_C)
+    sh.place("Stepper_4W", "M1", 381.0, Y_C, value="stepper + 50:1")
+    sh.place("R", "R_PU", 222.25, 386.08, value="10k")
+
     # Pi 33 -> ENABLE, 35 -> STEP, 37 -> DIR.  The runs cross because the header's order
     # and the driver's order are opposite; that is inherent, not a drawing mistake.
-    # The rows are only 7.62 mm apart -- the header's own pitch -- so three resistors on a
-    # shared x would stack their reference and value text into each other.  Staggering x
-    # separates the text without moving a single connection.
-    signals = [
-        ("R_EN", "1k", "33", "4", "M.ENABLE", 246.38, 127.0, 190.5),
-        ("R_ST", "1k", "35", "3", "M.STEP", 254.0, 146.05, 180.34),
-        ("R_DR", "1k", "37", "2", "M.DIR", 261.62, 165.1, 195.58),
-    ]
-    for ref, val, pi_pin, drv_pin, net, row_y, res_x, via_x in signals:
-        sh.place("R", ref, res_x, row_y, value=val)
-        sh.wire(sh.pin("JP1", pi_pin), sh.pin(ref, "1"))
-        # right-justified so the net name runs back along the wire, not over the resistor
-        sh.label(net, sh.pin(ref, "1"), justify="right bottom")
-        target = sh.pin("U4", drv_pin)
-        sh.route(sh.pin(ref, "2"), (via_x, row_y), (via_x, target[1]), target)
+    for pi_pin, res, via_x, drv_pin, jog_x in (
+            ("33", "R_EN", 109.22, "4", 237.49),
+            ("35", "R_ST", 119.38, "3", 231.14),
+            ("37", "R_DR", 129.54, "2", 224.79)):
+        a = sh.pin("JP1", pi_pin)
+        r1 = sh.pin(res, "1")
+        sh.route(a, (via_x, a[1]), (via_x, r1[1]), r1)
+        r2 = sh.pin(res, "2")
+        t = sh.pin("U4", drv_pin)
+        sh.route(r2, (jog_x, r2[1]), (jog_x, t[1]), t)
 
-    # R_PU: 10 k from ENABLE to the driver's own VCC, on the DRIVER side of R_EN.
-    sh.place("R", "R_PU", 186.69, 299.72, value="10k")
-    enable = sh.pin("U4", "4")
-    tap = (196.85, enable[1])
-    sh.junction(tap)
-    sh.route(tap, (196.85, 299.72))          # lands exactly on R_PU pin 2
-    sh.route(sh.pin("R_PU", "1"), (176.53, 250.19), sh.pin("U4", "5"))
+    # R_PU: 10 k from ENABLE up to the driver's OWN VCC, on the driver side of R_EN.
+    sh.tap((243.84, sh.pin("U4", "4")[1]), (243.84, 386.08))
+    sh.wire((243.84, 386.08), sh.pin("R_PU", "2"))
+    vcc = sh.pin("U4", "5")
+    sh.route(vcc, (198.12, vcc[1]), (198.12, 386.08), sh.pin("R_PU", "1"))
 
-    # Open on purpose, and the drawing must say so.  MS1-3 open = 1/16 microstep via the
-    # driver's own pull-ups, which is what the measured steps/rev assumes.  RST and SLP
-    # are tied together on-board on a genuine Big Easy Driver -- put a meter across them
-    # and confirm, because if they are not tied the driver never leaves reset.
+    # Both of the driver's grounds, joined above it and taken down once.
+    g_logic = sh.pin("U4", "1")
+    sh.route(g_logic, (245.11, g_logic[1]), (245.11, GND_B))
+    sh.junction((245.11, GND_B))
+    g_power = sh.pin("U4", "12")
+    sh.route(g_power, (317.5, g_power[1]), (317.5, 297.18),
+             (245.11, 297.18), (245.11, g_logic[1]))
+    sh.junction((245.11, g_logic[1]))          # three wires meet at that corner
+
+    sh.drop("U4", "11", "+VSW1", 292.1)
     for number in ("6", "7", "8", "9", "10"):
         sh.no_connect("U4", number)
 
-    sh.note("R_PU is the gating item -- nothing turns until it is fitted.\n"
-            "Every Pi GPIO floats as an input for the ~30 s the Pi takes to boot,\n"
-            "and ENABLE is active-low. Without this the driver can sit energised\n"
-            "through the whole of boot with nothing in control of it.\n"
-            "It goes on the DRIVER side of R_EN, and pulls up to the driver's own\n"
-            "VCC -- not the Pi's 3V3 -- so it still holds with the Pi unplugged.\n"
-            "Set the APWR jumper to 3.3 V and MEASURE VCC before wiring to it.",
-            (25.4, 302.26), 1.5)
+    # Coils.  A1/A2 are one coil, B1/B2 the other.
+    for drv_pin, motor_pin, via_x in (("13", "1", 325.12), ("14", "2", 330.2),
+                                      ("15", "3", 335.28), ("16", "4", 340.36)):
+        a = sh.pin("U4", drv_pin)
+        b = sh.pin("M1", motor_pin)
+        sh.route(a, (via_x, a[1]), (via_x, b[1]), b)
 
-    sh.stub("JP1", "39", "GND", dx=-15.24)
-    sh.stub("U4", "1", "GND", dx=-15.24)
-    sh.stub("U4", "11", "+VSW1", dx=15.24)
-    sh.stub("U4", "12", "GND", dx=15.24)
+    sh.note("R_PU is the gating item -- nothing turns until it is fitted. Every Pi GPIO\n"
+            "floats as an input for the ~30 s the Pi takes to boot, and ENABLE is\n"
+            "active-low. Without this the driver can sit energised through the whole of\n"
+            "boot with nothing in control of it. It goes on the DRIVER side of R_EN and\n"
+            "pulls up to the driver's own VCC -- not the Pi's 3V3 -- so it still holds\n"
+            "with the Pi unplugged. Set the APWR jumper to 3.3 V and MEASURE VCC first.\n"
+            "MS1-3 open = 1/16 step, via the driver's own pull-ups. RST and SLP are tied\n"
+            "together on-board on a genuine Big Easy Driver -- meter them and confirm.",
+            (34.29, 356.0), 1.4)
 
-    for drv_pin, motor_pin, net in (("13", "1", "COIL_A+"), ("14", "2", "COIL_A-"),
-                                    ("15", "3", "COIL_B+"), ("16", "4", "COIL_B-")):
-        sh.stub("U4", drv_pin, net, dx=12.7)
-        sh.stub("M1", motor_pin, net, dx=-12.7)
-
-    sh.note("A1/A2 must be the two ends of ONE coil, B1/B2 the two ends of the\n"
-            "other. Cross them and the motor buzzes, heats and does not turn.\n"
-            "Which way round a pair goes only reverses direction, and direction\n"
-            "is a software setting (TLSPIE_DIR_FORWARD) -- do not chase it with\n"
-            "a soldering iron. Find the pairs with a meter on continuity,\n"
-            "motor disconnected: one coil reads a few ohms, the other open.",
-            (294.64, 302.26), 1.5)
+    sh.note("A1/A2 must be the two ends of ONE coil, B1/B2 the other. Cross them and the\n"
+            "motor buzzes, heats and does not turn. Which way round a pair goes only\n"
+            "reverses direction, and direction is a software setting -- do not chase it\n"
+            "with a soldering iron. Find the pairs with a meter on continuity.",
+            (429.26, 340.36), 1.4)
 
     # ==================================================================================
-    # ZONE C -- capture, clock, cooling.  Unchanged from Rev 2.0.
+    # Acceptance test
     # ==================================================================================
-    sh.note("ZONE C   CAPTURE, CLOCK, COOLING      unchanged from Rev 2.0",
-            (386.08, 25.4), 2.5)
+    sh.note("ACCEPTANCE TEST -- CHARGE FIRST, THEN MEASURE. The order is the whole point.",
+            (429.26, 297.18), 2.0)
+    sh.note("0.  CHARGE AT 16.8 V. At 12.22 V this pack sits at 3.05 V/cell and the BMS is\n"
+            "    correctly latched on under-voltage; most such boards only release once a\n"
+            "    charger is applied. Do this BEFORE judging the board.\n"
+            "1.  Four groups -- B-/B1+, B1+/B2+, B2+/B3+, B3+/B4+ -- each ~4.2 V when full\n"
+            "    and within 50 mV of the others. THE WEAK GROUP SHOWS UP HERE, and it is\n"
+            "    the one that tripped the cutoff.\n"
+            "2.  B- to P- should then read a few MILLIvolts. ~0.55 V AFTER a full charge is\n"
+            "    the board failing; ~0.55 V while flat is the board working.\n"
+            "3.  P+ to P- must equal B4+ to B- within a few mV.\n"
+            "4.  Only then close S1, and only with the motor uncoupled from the head.",
+            (429.26, 304.8), 1.4)
 
-    sh.place("DS3231", "U1", 438.15, 76.2)
-    sh.place("Fan_2", "U10", 438.15, 146.05, value="fan 5 V")
-    sh.place("Velodyne_IF", "U7", 438.15, 190.5)
-    sh.place("VLP16", "U8", 541.02, 190.5)
-
-    sh.stub("U1", "1", "+3V3", dx=-15.24)
-    sh.stub("U1", "2", "GND", dx=-15.24)
-    sh.stub("U1", "3", "SCL", dx=-15.24)
-    sh.stub("U1", "4", "SDA", dx=-15.24)
-    sh.note("Vin from header pin 1 (3V3), NEVER pin 2 or 4. This board's I2C\n"
-            "pull-ups reference Vin, so 5 V on Vin puts 5 V on GPIO2 and GPIO3,\n"
-            "which are not 5 V tolerant. Check it before you trust it: power the\n"
-            "board with SDA and SCL not yet fitted and measure SDA to GND --\n"
-            "it must read about 3.3 V.\n"
-            "BAT / 32K / SQW / RST: no connection, on purpose.",
-            (386.08, 111.76), 1.5)
-
-    # BAT is the coin cell on the underside, 32K and SQW are open-drain outputs this rig
-    # has no use for, RST is bidirectional open-drain. All four are open by design.
-    for number in ("5", "6", "7", "8"):
-        sh.no_connect("U1", number)
-    sh.no_connect("U7", "5")          # J1 GPS -- not used
-
-    sh.stub("U10", "1", "+5V", dx=-15.24)
-    sh.stub("U10", "2", "GND", dx=-15.24)
-
-    sh.stub("U7", "1", "+VSW2", dx=-15.24)
-    sh.stub("U7", "2", "GND", dx=-15.24)
-    sh.stub("U7", "3", "ETH", dx=-15.24)
-    sh.stub("U7", "4", "SENSOR", dx=12.7)
-    sh.stub("U8", "1", "SENSOR", dx=-12.7)
-
-    # The Pi's power, I2C and ethernet all leave by label.
-    sh.stub("JP1", "1", "+3V3", dx=-15.24)
-    sh.stub("JP1", "2", "+5V", dx=-15.24)
-    sh.stub("JP1", "4", "+5V", dx=-15.24)
-    sh.stub("JP1", "6", "GND", dx=-15.24)
-    sh.stub("JP1", "9", "GND", dx=-15.24)
-    sh.stub("JP1", "3", "SDA", dx=15.24)
-    sh.stub("JP1", "5", "SCL", dx=15.24)
-    sh.stub("JP1", "ETH", "ETH", dx=15.24)
-
-    sh.note("eth0 stays on 192.168.1.100 and the phone hotspot must not.\n"
-            "The sensor never touches the GPIO header -- it is Ethernet\n"
-            "the whole way. TB1 inside U7 takes the VLP-16 factory cable:\n"
-            "1 Gnd/Shield, 2 +12 Vdc, 3 GPS_Pulse_CNT, 4 GPS_RX_CNT,\n"
-            "5 Eth TX+, 6 Eth TX-, 7 Eth RX+, 8 Eth RX-, 9 GPS return.",
-            (386.08, 222.25), 1.5)
-
-    # ==================================================================================
-    # Acceptance test, on the drawing itself.
-    # ==================================================================================
-    sh.note("ACCEPTANCE TEST -- the same measurement that diagnosed the 4S fault",
-            (386.08, 261.62), 2.0)
-    sh.note("1.  B- to P-  must read a few MILLIvolts.  ~0.55 V means both FETs are\n"
-            "    off and current is sneaking through the body diodes. That is the\n"
-            "    exact 4S symptom, and it is what strangled a healthy pack.\n"
-            "2.  P+ to P-  must equal B3+ to B- within a few mV.\n"
-            "3.  Each group -- B- to B1+, B1+ to B2+, B2+ to B3+ -- within 50 mV of\n"
-            "    the others. 12.22 V total is 4.07 V/cell: a full, healthy pack.\n"
-            "4.  Only then close S1, and only with the motor uncoupled.",
-            (386.08, 270.51), 1.5)
-
-    sh.note("TLS Pie -- Rev 3.0 -- generated by kicad/make_kicad_schematic.py\n"
-            "Edit the script, not this file. Supersedes Rev 2.0 (WIRING_REV2.html).\n"
-            "Source of truth for GPIO assignment is tls_stepper.py.",
-            (386.08, 306.07), 1.5)
+    sh.note("TLS Pie -- Rev 3.1 -- generated by kicad/make_kicad_schematic.py. Edit the\n"
+            "script, not this file. Rev 3.0 assumed a 3S pack and was WRONG.\n"
+            "Every conductor here is drawn: nothing is joined by name, and a crossing\n"
+            "without a junction dot is not a connection.\n"
+            "GPIO assignment is owned by tls_stepper.py.",
+            (429.26, 360.68), 1.4)
 
     return sh
 
@@ -758,12 +819,12 @@ def schematic(sh: Sheet) -> str:
         f'  (uuid "{ROOT_UUID}")\n'
         f'  (paper "{PAPER}")\n'
         "  (title_block\n"
-        '    (title "TLS Pie -- Rev 3.0 wiring schematic")\n'
+        '    (title "TLS Pie -- Rev 3.1 wiring schematic")\n'
         '    (date "2026-08-11")\n'
-        '    (rev "3.0")\n'
+        '    (rev "3.1")\n'
         '    (company "Kizim Robotics")\n'
-        '    (comment 1 "Supersedes Rev 2.0 of 2026-08-09")\n'
-        '    (comment 2 "Adds the 3S BMS. Star point moves to BMS P-. U6 deleted.")\n'
+        '    (comment 1 "Supersedes Rev 3.0, which wrongly assumed a 3S pack")\n'
+        '    (comment 2 "Pack is 4S3P. The fitted 4S BMS was correct. Star point P-, charger to C-.")\n'
         '    (comment 3 "Generated by kicad/make_kicad_schematic.py -- edit the script")\n'
         '    (comment 4 "GPIO assignment is owned by tls_stepper.py")\n'
         "  )\n"
