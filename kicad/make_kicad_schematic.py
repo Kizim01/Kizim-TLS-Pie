@@ -776,7 +776,19 @@ def build() -> Sheet:
 
     sh.note("INA226 DNP: the pack lead runs straight through. Fitting it means CUTTING\n"
             "the +VBATT rail between these two drops and letting the shunt bridge the gap.\n"
-            "Must be the R002 variant -- R100 is good for 0.8 A and this rig pulls ~3 A.",
+            "Must be the R002 variant -- R100 is good for 0.8 A and this rig pulls ~3 A.\n\n"
+            "U11 AND PM1 ARE NOT REDUNDANT. They sit in different legs and answer to\n"
+            "different masters:\n"
+            "  PM1  negative leg, its own display. Works with no Pi and no software, and\n"
+            "       is the number you glance at. Cannot log, warn, or act. Unidirectional,\n"
+            "       so it reads 0.00 A on charge.\n"
+            "  U11  positive leg, I2C 0x40, numbers the SOFTWARE can act on -- so they\n"
+            "       reach the phone panel and the rig's screen, which are one UI on two\n"
+            "       displays. BIDIRECTIONAL, so it reads charge current as negative.\n"
+            "U11 IS THE ONE THAT PREVENTS A REPEAT OF THE FLAT PACK. This BMS cuts off at\n"
+            "2.5 V/cell, which is a backstop and not an operating limit -- software has to\n"
+            "stop well above it, and it can only do that if it can SEE the pack. Never\n"
+            "connected on this rig; the code is written and untested.",
             (340.36, 104.14), 1.4)
 
     sh.note("CHARGE PATH -- USB-C. A 4S Li-ion pack wants 16.8 V.\n\n"
