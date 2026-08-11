@@ -511,7 +511,24 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > charge**: all four should reach ~4.2 V and sit within 50 mV. If group 1 is still the laggard then,
 > it is genuinely weak.
 >
-> ### ✅ CHARGER SET AND VERIFIED 2026-08-11 — **16.8 V open-circuit, 1.5 A**
+> ### ⛔ `D1` ADDED 2026-08-11 — the charge chain was draining the pack backwards
+>
+> **Caught live, not theorised.** With the USB unplugged but the buck still wired to the BMS, the
+> pack fed **backwards** through the buck — out of the pack, through the inductor, through the
+> switch's body diode to the input — and lit **the buck's own indicator LED**. The pack was slowly
+> going down while everything looked idle. A few mA is ~1.7 Ah a week on a ~9 Ah pack, and **this
+> pack has already been flattened once by exactly this class of fault**.
+>
+> **Fix: `D1`, an `SS54` Schottky, in the charge lead between the buck and the fused node.** A
+> connector in that lead would also work and costs no volts — but it can be forgotten, and `D1`
+> cannot.
+>
+> **Consequence: set the buck to `17.0 V`, not 16.8 V.** At taper current the Schottky drops ~0.2 V,
+> so the *pack* lands at ~16.8 V — which is what the balancer needs, since it only bleeds near
+> 4.2 V/cell and an undercharged pack never balances. If `D1` is ever bypassed, 17.0 V is
+> 4.25 V/cell and the BMS's own **4.2 V/cell over-voltage cutoff is the backstop**. That is its job.
+>
+> ### ✅ CHARGER SET AND VERIFIED 2026-08-11 — **16.8 V open-circuit, 1.5 A** (before `D1`)
 >
 > **Mark both pots.** The whole chain is now set: 20 V trigger → `BCD5A` at 16.8 V / 1.5 A. Nothing
 > about the charge path is outstanding.

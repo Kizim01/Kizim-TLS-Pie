@@ -197,7 +197,7 @@ for s in kids(lib_block, "symbol"):
             ))
     defs[name] = dict(pins=pins)
 
-check("19 symbols defined", len(defs) == 19, f"got {len(defs)}: {sorted(defs)}")
+check("20 symbols defined", len(defs) == 20, f"got {len(defs)}: {sorted(defs)}")
 
 # THE check that would have saved two rounds of debugging.  Every lib_symbols entry must
 # be named with its library prefix so it matches the lib_id on the instances.  Unprefixed,
@@ -455,7 +455,7 @@ def different_net(label: str, a, b) -> None:
 # DESIGN -- the Rev 3.1 engineering rules, checked by following copper
 # --------------------------------------------------------------------------------------
 for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11",
-            "J_USB", "U12", "PM1",
+            "J_USB", "U12", "PM1", "D1",
             "JP1", "U1", "U10", "U7", "U8",
             "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
@@ -503,7 +503,11 @@ same_net("charge return IS the star point", ("BMS1", "P-"), ("U12", "OUT-"), ("J
 # The USB-C charge chain: trigger -> CC/CV buck -> the fused node.  No series resistor:
 # the BCD5A has a current pot, so the current phase is regulated rather than burnt.
 same_net("trigger into the buck", ("J_USB", "1"), ("U12", "IN+"))
-same_net("buck out onto the fused node", ("U12", "OUT+"), ("F1", "2"))
+same_net("buck out into the blocking diode", ("U12", "OUT+"), ("D1", "A"))
+same_net("diode out onto the fused node", ("D1", "K"), ("F1", "2"))
+# D1 must be IN the charge path, not bridged across it, or the back-feed it exists to
+# stop walks straight round it and quietly drains the pack again.
+different_net("D1 blocks -- anode is not cathode", ("D1", "A"), ("D1", "K"))
 check("the 3R3 series resistor is gone", "R_CHG" not in by_ref,
       "the BCD5A sets current with a pot; a dropper in series with a CC source is dead weight")
 # The buck is not isolated, so this is a consequence of the topology, not a wiring choice.
@@ -517,7 +521,7 @@ for tap in ("16.8V", "12.6V", "8.4V", "4.2V", "0V"):
     check(f"pack {tap} carries exactly one wire", len(ws) == 1, f"{len(ws)} wires")
 
 # --- distribution ---------------------------------------------------------------------
-same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("U12", "OUT+"),
+same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("D1", "K"),
          ("U11", "IN+"), ("U11", "IN-"), ("PM1", "VSENSE"))
 same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"), ("PM1", "SUP+"))
 same_net("+VSW2", ("S2", "THROW"), ("U7", "J2.1 +12V"))

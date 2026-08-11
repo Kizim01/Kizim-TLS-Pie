@@ -149,6 +149,13 @@ SYMBOLS: dict[str, dict] = {
              "2.5 V/cell under-volt, 20 A charge, 40 A discharge. FETs are in the NEGATIVE leg, "
              "so the (+) pad is the same copper as the 16.8V pad -- only the return is switched",
     ),
+    "Diode": dict(
+        ref="D", value="SS54 Schottky", w=12.7, h=5.08,
+        pins=[("1", "A", "L", 0, "passive"), ("2", "K", "R", 0, "passive")],
+        desc="Blocks back-feed from the pack into the charge chain. Without it the pack "
+             "powers the buck's own indicator LED through the switch body diode whenever "
+             "the USB is unplugged -- MEASURED as a real drain on 2026-08-11",
+    ),
     "Fuse": dict(
         ref="F", value="6 A", w=12.7, h=5.08,
         pins=[("1", "1", "L", 0, "passive"), ("2", "2", "R", 0, "passive")],
@@ -621,7 +628,8 @@ def build() -> Sheet:
     # There is no series resistor any more: the BCD5A has a current pot, so the current
     # phase is done properly instead of by burning the difference in a lump of 3R3.
     sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
-    sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 16.8 V / 1.5 A")
+    sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 17.0 V / 1.5 A")
+    sh.place("Diode", "D1", 558.8, 45.72, value="SS54 -- blocks back-feed")
     # Drawn here because there is room; it MOUNTS on the panel beside the BMS, and its
     # two thick leads must be SHORT and heavy -- they carry the whole rig's return.
     sh.place("PanelMeter_VA", "PM1", 549.91, Y_A, value="panel meter V+A")
@@ -648,7 +656,7 @@ def build() -> Sheet:
     # read zero amps for ever.
     sh.rail("P-", 110.49, 142.24, 577.85)
     sh.rail("GNDA", GND_A, TRUNK_X, 533.4, label="GND")
-    sh.rail("+VBATT", 140.97, 196.85, 566.42)
+    sh.rail("+VBATT", 140.97, 196.85, 570.23)
     sh.rail("+VSW1", 148.59, 248.92, 543.56)
     sh.rail("+VSW2", 156.21, 259.08, 405.13)
     sh.rail("+5V", 163.83, 38.1, 334.01)
@@ -703,7 +711,11 @@ def build() -> Sheet:
     # means these two are simply the +VBATT and GND rails -- the charger hangs across
     # the same pair the loads do, upstream of both switches, so it charges with S1 and
     # S2 open.
-    sh.drop("U12", "1", "+VBATT", 535.94)
+    # Buck out THROUGH D1 onto the fused node.  The diode is not optional decoration: with
+    # the USB unplugged the pack otherwise feeds backwards through the buck's own switch
+    # body diode and lights its indicator LED, which measurably drains the pack.
+    sh.route(sh.pin("U12", "1"), (524.51, 45.72), sh.pin("D1", "1"))
+    sh.drop("D1", "2", "+VBATT", 570.23)
     # The charge return goes to the PACK side of the shunt, not the rig side, so charging
     # never pushes current backwards through the meter.  PM1 then reads true rig draw at
     # all times -- and reads zero while charging with the switches open, correctly.
@@ -822,7 +834,22 @@ def build() -> Sheet:
             "U12 IS THE CHARGER. The BCD5A has TWO pots -- voltage and current -- which\n"
             "is the whole difference between a supply and a charger, and is why the\n"
             "3R3 series resistor Rev 3.1 carried is now DELETED.\n"
-            "*** SET AND VERIFIED 2026-08-11: 16.8 V open-circuit, 1.5 A. MARK THE POTS. ***\n"
+            "*** SET 17.0 V OPEN-CIRCUIT AT THE BUCK, 1.5 A. MARK THE POTS. ***\n"
+            "17.0 and not 16.8 because D1 stands between the buck and the pack. At the\n"
+            "taper current a Schottky drops ~0.2 V, so the PACK lands at ~16.8 V, which\n"
+            "is what the balancer needs -- it only bleeds near 4.2 V/cell, so an\n"
+            "undercharged pack never balances and the weak group never gets found.\n"
+            "If D1 is ever bypassed, 17.0 V is 4.25 V/cell and the BMS's own 4.2 V/cell\n"
+            "over-voltage cutoff is the backstop. That is what it is for.\n"
+            "(16.8 V was set and verified on the bench 2026-08-11, BEFORE D1 was added.)\n\n"
+            "*** WHY D1 EXISTS -- MEASURED, NOT THEORETICAL ***\n"
+            "With the USB unplugged, the pack feeds BACKWARDS through the buck: out of\n"
+            "the pack, through the inductor, through the switch's body diode to the input\n"
+            "-- and lights the buck's own indicator LED. It was caught on 2026-08-11\n"
+            "draining the pack while everything looked idle. A few mA is ~1.7 Ah a week\n"
+            "on a ~9 Ah pack. THIS PACK HAS ALREADY BEEN FLATTENED ONCE. A connector in\n"
+            "the charge lead would also work and costs no volts, but it can be forgotten;\n"
+            "D1 cannot.\n\n"
             "1.5 A is ~0.2C on ~9 Ah; the BMS would allow 20 A, the cells would not\n"
             "thank you. ERR LOW ON THE VOLTS -- 16.6 V gives ~95% of capacity, 17.2 V\n"
             "is 4.3 V/cell and damages cells.\n"
