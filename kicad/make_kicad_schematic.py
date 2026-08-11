@@ -189,6 +189,24 @@ SYMBOLS: dict[str, dict] = {
              "what makes it a charger rather than a supply. 6-38 V in, 1.2-36 V out. A buck "
              "ONLY steps down: 20 V in is required to reach 16.8 V out",
     ),
+    "PanelMeter_VA": dict(
+        ref="PM", value="DPM 100V 10A", w=35.56, h=33.02,
+        pins=[
+            # The thick pair IS the shunt, and on this class of meter it sits in the
+            # NEGATIVE leg -- which is why it lands between the rig's ground and P-,
+            # not in the +VBATT rail where U11 goes.  VERIFY BEFORE SOLDERING: see the
+            # note on the sheet.
+            ("1", "I in", "L", 12.7, "passive"),
+            ("2", "I out", "L", 0, "passive"),
+            ("3", "SUP+", "L", -12.7, "power_in"),
+            ("4", "SUP-", "R", 12.7, "power_in"),
+            ("5", "VSENSE", "R", -12.7, "input"),
+        ],
+        desc="Cricklewood DPM, 48x29x22 mm, 0-100 V / 0-10 A, supply 4.5-30 V. Five leads: "
+             "thick red = I in, thick black = I out, thin red = supply +, thin black = supply "
+             "GND, thin yellow = voltage sense. Shunt in the NEGATIVE leg. Supply comes from "
+             "+VSW1 so it dies with S1 and cannot flatten the pack in storage",
+    ),
     "INA226_Module": dict(
         ref="U", value="INA226", w=30.48, h=33.02,
         pins=[
@@ -604,6 +622,9 @@ def build() -> Sheet:
     # phase is done properly instead of by burning the difference in a lump of 3R3.
     sh.place("Conn_2", "J_USB", 447.04, Y_A, value="PD trigger 303PDSink01 @ 20 V")
     sh.place("BuckCC_Module", "U12", 502.92, Y_A, value="BCD5A -> 16.8 V / 1.5 A")
+    # Drawn here because there is room; it MOUNTS on the panel beside the BMS, and its
+    # two thick leads must be SHORT and heavy -- they carry the whole rig's return.
+    sh.place("PanelMeter_VA", "PM1", 549.91, Y_A, value="panel meter V+A")
 
     # Pack to BMS: FIVE conductors -- four taps plus B-.  The only wires that ever touch
     # the pack side.  Count them: five is what makes this pack visibly 4S.
@@ -620,16 +641,22 @@ def build() -> Sheet:
     # GNDA now runs the full width of band A.  On a COMMON-PORT board the charger's
     # return IS the star point, so the charge buck's OUT- lands on this rail like every
     # other return -- the separate CHG- rail that Rev 3.1 carried is deleted, not moved.
-    sh.rail("GNDA", GND_A, TRUNK_X, 530.86, label="GND")
-    sh.rail("+VBATT", 140.97, 196.85, 535.94)
-    sh.rail("+VSW1", 148.59, 248.92, 297.18)
+    # P- is its own rail now, and that is the whole point: the panel meter's shunt sits
+    # in the return, so the rig's ground reaches P- ONLY through PM1.  GND and P- cross
+    # at two places on this sheet and are NOT joined there -- no junction dot, no
+    # connection.  Bridging them anywhere would short out the shunt and the meter would
+    # read zero amps for ever.
+    sh.rail("P-", 110.49, 142.24, 577.85)
+    sh.rail("GNDA", GND_A, TRUNK_X, 533.4, label="GND")
+    sh.rail("+VBATT", 140.97, 196.85, 566.42)
+    sh.rail("+VSW1", 148.59, 248.92, 543.56)
     sh.rail("+VSW2", 156.21, 259.08, 405.13)
     sh.rail("+5V", 163.83, 38.1, 334.01)
     sh.rail("+3V3", 171.45, 33.02, 426.72)
     sh.rail("SDA", 179.07, 104.14, 436.88)
     sh.rail("SCL", 186.69, 114.3, 447.04)
     sh.rail("ETH", 194.31, 139.7, 391.16)
-    sh.rail("GNDB", GND_B, TRUNK_X, 406.4, label="GND")
+    sh.rail("GNDB", GND_B, TRUNK_X, 419.1, label="GND")
 
     # The ground spine.  Its endpoints sit exactly on the two rail ends, so the three
     # wires form one net with no junction dot needed.
@@ -637,8 +664,14 @@ def build() -> Sheet:
 
     # Rails that only passive contacts feed need a flag, or every load downstream reads
     # to ERC as powered by nothing.
-    sh.place("PWR_FLAG", "#FLG01", 297.18, 148.59)
+    # At the rail's END, not partway along it: a rail wire running THROUGH a pin does
+    # connect to it, but it reads as an accident and the validator rejects it.
+    sh.place("PWR_FLAG", "#FLG01", 543.56, 148.59)
     sh.place("PWR_FLAG", "#FLG02", 405.13, 156.21)
+    # The rig's ground needs one too, and for the same reason: PM1's shunt is passive, so
+    # once it sits in the return there is no power-OUTPUT pin left anywhere on this net.
+    # KiCad's ERC caught this and the validator did not -- "JP1 pin 6 not driven".
+    sh.place("PWR_FLAG", "#FLG04", 419.1, GND_B)
 
     # ---- band A onto the rails --------------------------------------------------------
     sh.tap((196.85, 58.42), (196.85, 140.97))          # fused node -> +VBATT
@@ -646,7 +679,7 @@ def build() -> Sheet:
     sh.drop("S2", "1", "+VBATT", 203.2)
     sh.drop("S1", "2", "+VSW1", 248.92)
     sh.drop("S2", "2", "+VSW2", 259.08)
-    sh.drop("BMS1", "7", "GNDA", 142.24)               # P- IS the star point
+    sh.drop("BMS1", "7", "P-", 142.24)                 # P- reaches GND only via the shunt
     sh.drop("U3", "4", "+VSW1", 270.51)
     sh.drop("U3", "3", "GNDA", 280.67)
     sh.drop("U3", "1", "+5V", 334.01)
@@ -671,7 +704,18 @@ def build() -> Sheet:
     # the same pair the loads do, upstream of both switches, so it charges with S1 and
     # S2 open.
     sh.drop("U12", "1", "+VBATT", 535.94)
-    sh.drop("U12", "2", "GNDA", 530.86)
+    # The charge return goes to the PACK side of the shunt, not the rig side, so charging
+    # never pushes current backwards through the meter.  PM1 then reads true rig draw at
+    # all times -- and reads zero while charging with the switches open, correctly.
+    sh.drop("U12", "2", "P-", 530.86)
+    # ---- the panel meter -------------------------------------------------------------
+    # Every drop gets its own via_x.  Two sharing one would overlap into a single wire and
+    # silently short the shunt out -- which is exactly what the first draft of this did.
+    sh.drop("PM1", "1", "GNDA", 533.4)                 # shunt, rig side
+    sh.drop("PM1", "2", "P-", 537.21)                  # shunt, pack side
+    sh.drop("PM1", "3", "+VSW1", 541.02)               # supply: dies with S1
+    sh.drop("PM1", "4", "P-", 577.85)                  # thin black MUST match thick black
+    sh.drop("PM1", "5", "+VBATT", 566.42)              # senses true pack volts
     # A buck module is NOT isolated: IN- and OUT- are the same copper.  Drawn, because on
     # a common-port board this is what bonds the USB-C supply's ground to the WHOLE rig's
     # ground -- not to a separate C- node as in Rev 3.1.  Charge from a floating supply.
@@ -701,6 +745,34 @@ def build() -> Sheet:
             "the FULL pack current -- run those two THICK. Check the 16.8V lead: it is\n"
             "the one that looks like a balance wire and is not.",
             (34.29, 125.73), 1.5)
+
+    sh.note("PANEL METER PM1 -- and it changes the ground topology, so read this.\n\n"
+            "ITS THICK PAIR IS THE SHUNT, AND THE SHUNT IS IN THE NEGATIVE LEG. So it\n"
+            "goes in the RETURN, between the rig's ground and P- -- NOT in the +VBATT\n"
+            "rail where U11 goes. GND and P- are now separate nodes joined ONLY through\n"
+            "PM1. They cross twice on this sheet with no junction dot and are NOT\n"
+            "connected there. Bridge them anywhere and you short out the shunt: the\n"
+            "meter reads 0.00 A for ever and nothing warns you.\n\n"
+            "*** VERIFY THE SHUNT LEG BEFORE SOLDERING ***\n"
+            "Meter resistance thin-black to thick-black. NEAR ZERO = negative-leg shunt\n"
+            "and this drawing is right. If instead thin-RED reads near zero to a thick\n"
+            "lead, the shunt is in the POSITIVE leg -- then it belongs where U11 is, in\n"
+            "the +VBATT rail, and this corner of the sheet must be redrawn.\n"
+            "The two thick leads should read a fraction of an ohm to each other: that\n"
+            "IS the shunt.\n\n"
+            "THIN BLACK GOES TO THE SAME SIDE AS THICK BLACK (P-). On most of these the\n"
+            "two blacks are common inside the meter, so putting the thin one on the rig\n"
+            "side of the shunt bridges it -- the same silent zero-amps failure.\n\n"
+            "SUPPLY FROM +VSW1, NOT +VBATT. These meters draw ~20 mA continuously. On\n"
+            "+VBATT that is ~0.5 Ah/day and would flatten this ~9 Ah pack in about three\n"
+            "weeks of standing -- which is how it got flat the first time. On +VSW1 it\n"
+            "dies with S1. VSENSE still reads TRUE PACK VOLTS because it taps +VBATT\n"
+            "upstream of the switch, and it draws only microamps through its divider.\n\n"
+            "Reads 0.00 A while charging with S1 and S2 open. Correct: the charge return\n"
+            "is on the pack side of the shunt, so charge current never crosses it.\n"
+            "Its two thick leads carry the WHOLE rig's return -- mount PM1 at the BMS and\n"
+            "keep them short and heavy. The 6 A fuse is what keeps this inside its 10 A.",
+            (196.85, 208.28), 1.3)
 
     sh.note("INA226 DNP: the pack lead runs straight through. Fitting it means CUTTING\n"
             "the +VBATT rail between these two drops and letting the shunt bridge the gap.\n"

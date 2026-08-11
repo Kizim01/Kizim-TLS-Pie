@@ -197,7 +197,7 @@ for s in kids(lib_block, "symbol"):
             ))
     defs[name] = dict(pins=pins)
 
-check("18 symbols defined", len(defs) == 18, f"got {len(defs)}: {sorted(defs)}")
+check("19 symbols defined", len(defs) == 19, f"got {len(defs)}: {sorted(defs)}")
 
 # THE check that would have saved two rounds of debugging.  Every lib_symbols entry must
 # be named with its library prefix so it matches the lib_id on the instances.  Unprefixed,
@@ -309,7 +309,7 @@ junctions = {(round(fnum(kid(j, "at")[1]), 3), round(fnum(kid(j, "at")[2]), 3))
              for j in kids(sch, "junction")}
 
 check("wires drawn", len(wires) > 40, f"{len(wires)} wires")
-check("labels are few -- rails only", len(labels) == 10, f"{len(labels)}")
+check("labels are few -- rails only", len(labels) == 11, f"{len(labels)}")
 
 endpoints: dict[tuple[float, float], int] = {}
 for a, b in wires:
@@ -455,7 +455,7 @@ def different_net(label: str, a, b) -> None:
 # DESIGN -- the Rev 3.1 engineering rules, checked by following copper
 # --------------------------------------------------------------------------------------
 for ref in ("BT1", "BMS1", "F1", "S1", "S2", "U3", "U11",
-            "J_USB", "U12",
+            "J_USB", "U12", "PM1",
             "JP1", "U1", "U10", "U7", "U8",
             "R_EN", "R_ST", "R_DR", "R_PU", "U4", "M1"):
     check(f"{ref} is on the sheet", ref in by_ref)
@@ -466,13 +466,31 @@ check("the pack is 4S", len([pd for pd in defs[by_ref["BT1"]["lib"]]["pins"]]) =
       "four taps plus B-. A 3S pack would have four pins and a different BMS")
 
 # --- the ground spine ---------------------------------------------------------------
-same_net("star point", ("BMS1", "P-"), ("U3", "IN-"), ("U3", "OUT-"), ("U11", "GND"),
+# The star point is now in TWO parts, because PM1's shunt sits in the return.  Every load
+# lands on the rig side; the pack side carries P- and the charger.  They are one node
+# electrically (a few milliohms apart) and two nodes topologically, and that distinction is
+# the whole reason the meter reads anything at all.
+same_net("rig ground -- every load returns here", ("PM1", "I in"),
+         ("U3", "IN-"), ("U3", "OUT-"), ("U11", "GND"),
          ("JP1", "GND"), ("U1", "GND"), ("U10", "-"), ("U4", "GND"), ("U7", "J2.2 GND"))
+same_net("pack side of the shunt", ("BMS1", "P-"), ("PM1", "I out"), ("PM1", "SUP-"),
+         ("U12", "OUT-"), ("J_USB", "2"))
+# If these two ever become one node the shunt is bridged and the meter reads 0.00 A for
+# ever, silently.  This is the assertion that catches it.
+different_net("the shunt is IN the return, not bridged across it",
+              ("PM1", "I in"), ("PM1", "I out"))
+different_net("PM1's thin black is NOT on the rig side of its own shunt",
+              ("PM1", "SUP-"), ("PM1", "I in"))
+# Supply from the switched rail, so a stored rig cannot be drained by its own meter.
+different_net("PM1 is not powered from the always-live pack rail",
+              ("PM1", "SUP+"), ("F1", "2"))
 
 # THE rule. A return on B- bypasses the FETs: unprotected, and it drains the pack after
 # the BMS has cut off.
 different_net("ground does NOT reach the pack's B- (0V)", ("BMS1", "P-"), ("BT1", "0V"))
 different_net("ground does NOT reach the BMS's 0V pad either", ("BMS1", "P-"), ("BMS1", "0V"))
+different_net("the rig side of the shunt does not reach 0V either",
+              ("PM1", "I in"), ("BT1", "0V"))
 
 # COMMON-PORT board: there is no C- pad at all, so the charger returns to the star point
 # like everything else.  This inverts Rev 3.1, where C- was asserted to be its OWN node --
@@ -500,8 +518,8 @@ for tap in ("16.8V", "12.6V", "8.4V", "4.2V", "0V"):
 
 # --- distribution ---------------------------------------------------------------------
 same_net("+VBATT", ("F1", "2"), ("S1", "POLE"), ("S2", "POLE"), ("U12", "OUT+"),
-         ("U11", "IN+"), ("U11", "IN-"))
-same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"))
+         ("U11", "IN+"), ("U11", "IN-"), ("PM1", "VSENSE"))
+same_net("+VSW1", ("S1", "THROW"), ("U3", "IN+"), ("U4", "M+"), ("PM1", "SUP+"))
 same_net("+VSW2", ("S2", "THROW"), ("U7", "J2.1 +12V"))
 same_net("+5V", ("U3", "OUT+"), ("JP1", "5V"), ("U10", "+"))
 same_net("+3V3", ("JP1", "3V3"), ("U1", "Vin"), ("U11", "VCC"))
@@ -564,11 +582,11 @@ for key, owners in pin_at.items():
 
 # --- rails are named once each, and the names are only a reading aid -------------------
 rail_names = {n for ns in labels.values() for n in ns}
-for name in ("GND", "+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "SDA", "SCL", "ETH"):
+for name in ("GND", "P-", "+VBATT", "+VSW1", "+VSW2", "+5V", "+3V3", "SDA", "SCL", "ETH"):
     check(f"rail {name} is named", name in rail_names)
 check("the CHG- rail is gone", "CHG-" not in rail_names,
       "common port: there is no separate charge return to name")
-check("labels are rail names only", len(labels) == 10, f"{len(labels)} label anchors")
+check("labels are rail names only", len(labels) == 11, f"{len(labels)} label anchors")
 
 # --------------------------------------------------------------------------------------
 print(f"\n{passed} checks passed, {len(failures)} failed")

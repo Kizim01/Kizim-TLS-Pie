@@ -455,6 +455,36 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > down, so `U12` would have reached ~14.5 V (3.6 V/cell, half a pack) and **the balancer would never
 > have started**, since it only bleeds near 4.2 V/cell.
 >
+> ### Panel meter `PM1` added to the sheet 2026-08-11 — and it splits the ground
+>
+> Cricklewood **`DPM`**, £5.50, 48×29×22 mm, 0–100 V / 0–10 A, supply 4.5–30 V. Five leads: thick
+> red = `I in`, thick black = `I out`, thin red = supply +, thin black = supply GND, thin yellow =
+> voltage sense.
+>
+> **⛔ Its thick pair IS the shunt, and the shunt is in the NEGATIVE leg.** So it goes in the
+> *return*, between the rig's ground and `P-` — **not** in the `+VBATT` rail where `U11` goes.
+> `GND` and `P-` are now two nodes joined **only** through `PM1`. They cross twice on the sheet with
+> no junction dot and are not connected there. **Bridge them anywhere and the shunt is shorted out:
+> the meter reads 0.00 A for ever and nothing warns you.**
+>
+> **⚠ VERIFY THE SHUNT LEG BEFORE SOLDERING.** Meter resistance **thin-black to thick-black**: near
+> zero confirms a negative-leg shunt and the drawing is right. If instead **thin-red** reads near
+> zero to a thick lead, the shunt is in the *positive* leg and it belongs where `U11` is, in the
+> `+VBATT` rail — that corner of the sheet then needs redrawing. The two thick leads should read a
+> fraction of an ohm to each other: that *is* the shunt.
+>
+> **Thin black goes on the same side as thick black (`P-`).** On most of these the two blacks are
+> common inside the meter, so putting the thin one on the rig side bridges the shunt — the same
+> silent zero-amps failure.
+>
+> **Supply from `+VSW1`, never `+VBATT`.** These draw ~20 mA continuously; on the always-live rail
+> that is ~0.5 Ah/day and would flatten this ~9 Ah pack in about three weeks of standing — **which
+> is how it got flat the first time**. On `+VSW1` it dies with `S1`. `VSENSE` still shows true pack
+> volts because it taps `+VBATT` upstream of the switch and draws only microamps.
+>
+> **It reads 0.00 A while charging** with the switches open. Correct: the charge return is on the
+> pack side of the shunt, so charge current never crosses it and the meter always shows true rig draw.
+>
 > ### ✅ FIRST PER-GROUP MEASUREMENT, 2026-08-11 — taps correct, and the old board is exonerated
 >
 > Measured against `0V` on the flat pack: **2.98 / 6.10 / 9.18 / 12.25 V**. Ascending and evenly
