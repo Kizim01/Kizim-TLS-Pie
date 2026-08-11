@@ -144,6 +144,32 @@ def main():
     check("a failing mpv cannot abort the launch", "|| true" in launch)
     check("the intro path is overridable", "TLSPIE_INTRO_VIDEO" in launch)
 
+    print("\n=== the boot shim (kills chromium's white flash) ===")
+    code, got, _ = fetch(base + "/boot.html")
+    shim = got.decode("utf-8")
+    check("boot.html serves", code == 200, code)
+    # It only works if it paints on the very first frame. Anything that costs a
+    # round trip or a layout pass puts the white back.
+    check("tiny -- it must paint on the first frame", len(got) < 600, len(got))
+    check("dark background on <html> itself, not just body",
+          'style="background:#12121a"' in shim, shim[:80])
+    check("nothing external to fetch",
+          "http://" not in shim and "src=" not in shim)
+    check("replaces itself rather than pushing history",
+          "location.replace" in shim and "location.href" not in shim)
+    check("passes the query string through (token, kiosk, zoom)",
+          "location.search" in shim)
+    check("still redirects without JS", 'http-equiv="refresh"' in shim)
+    # The kiosk prefers a file:// shim -- no network at all, so it paints on
+    # the first frame. The served one is the fallback when the runtime
+    # directory cannot be written.
+    check("the kiosk writes a local file:// shim", 'OPEN="file://$SHIM"' in launch)
+    check("chromium opens the shim, not the panel directly",
+          '"$OPEN" &' in launch)
+    check("falls back to the served shim", "boot.html" in launch)
+    check("and to the panel itself if both fail", 'OPEN="$URL"' in launch)
+    check("can be turned off for debugging", "TLSPIE_KIOSK_NO_SHIM" in launch)
+
     print("\n=== token ===")
     httpd.shutdown()
     tls_web.WEB_TOKEN = "s3cr3t"

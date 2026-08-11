@@ -51,6 +51,51 @@ case "$URL" in
     *)    URL="$URL?kiosk=1&zoom=$ZOOM" ;;
 esac
 
+# ⛔ OPEN A BOOT SHIM, NOT THE PANEL. chromium's window is WHITE from the moment
+# cage maps it until it first paints, and painting the panel takes about half a
+# second on this Pi -- half a second of full-screen white, mid-boot, on a screen
+# usually looked at in the dark.
+#
+# It cannot be covered: cage stacks toplevels by map order, newest on top, and
+# chromium's window IS the newest at that instant. And it cannot be suppressed
+# with a flag. All measured, by recording the panel with wf-recorder and
+# counting frames whose average luma is over 200:
+#
+#     panel directly .................... 1.10 s white
+#     --default-background-color=ffARGB . no change      <- does nothing
+#     http://localhost:8080/boot.html ... 0.37 s white   <- better
+#     a local file, no network at all ... 0.00 s white   <- this
+#
+# The last 0.37 s was chromium starting its network stack before it could
+# fetch even a 340-byte page. A file:// shim needs no network, so it paints on
+# the first frame; chromium's paint holding then keeps it on screen until the
+# panel has painted, so the handover is not white either.
+#
+# Falls back to the served shim, and then to the panel itself, so a read-only
+# or full runtime directory costs a flash and never the screen.
+OPEN="$URL"
+if [ -z "${TLSPIE_KIOSK_NO_SHIM:-}" ]; then
+    SHIM="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-boot.html"
+    # The meta refresh is the belt to location.replace's braces: if script is
+    # ever disabled the panel still arrives, a second later instead of at once.
+    if cat > "$SHIM" 2>/dev/null <<EOF
+<!doctype html><html style="background:#12121a"><head><meta charset="utf-8">
+<title>TLS Scanner</title>
+<style>html,body{margin:0;height:100%;background:#12121a}</style>
+<meta http-equiv="refresh" content="1;url=$URL">
+<script>location.replace("$URL");</script>
+</head><body></body></html>
+EOF
+    then
+        OPEN="file://$SHIM"
+    else
+        # No runtime dir to write to -- use the one the panel serves instead.
+        case "$URL" in
+            *://*/\?*) OPEN="${URL%%\?*}boot.html?${URL#*\?}" ;;
+        esac
+    fi
+fi
+
 # Wait for the panel before opening it. On a cold boot this unit and tls-scan
 # start together, and losing that race shows the operator a browser error page
 # that never refreshes itself. Twenty seconds, then go anyway -- if the scanner
@@ -120,7 +165,7 @@ done
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
     --default-background-color=ff12121a \
-    "$URL" &
+    "$OPEN" &
 BROWSER_PID=$!
 
 # --- the boot intro ----------------------------------------------------------

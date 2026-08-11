@@ -1017,8 +1017,27 @@ re-checked after every edit and the original is backed up.
 > removing it so the intro started sooner made the video *vanish* — mpv mapped first, chromium mapped
 > on top a few seconds later, and the intro played to completion underneath a panel covering it.
 >
-> **4. chromium paints WHITE before the page renders** — a full-screen white flash about a second
-> long, mid-boot, on a panel usually looked at in the dark. `--default-background-color=ff12121a`.
+> **4. chromium paints WHITE before the page renders** — a full-screen flash **1.10 s** long,
+> mid-boot, on a panel usually looked at in the dark. Measured by recording the screen with
+> `wf-recorder` and counting frames whose average luma exceeds 200:
+>
+> | | white |
+> |---|---|
+> | panel opened directly | 1.10 s |
+> | `--default-background-color=ffARGB` | no change — **the flag does nothing here** |
+> | via `http://localhost:8080/boot.html` | 0.37 s |
+> | via a local `file://` shim | **0.40 s** ← current |
+>
+> **It cannot be covered and cannot be fully removed.** cage stacks toplevels by map order, newest
+> on top, and chromium's window *is* the newest at that instant — so nothing can be placed in front
+> of it, and mpv cannot map before it. What is left is chromium existing before it can paint
+> anything at all. The shim (`/boot.html`, or a file written to `$XDG_RUNTIME_DIR`) is ~340 bytes of
+> dark background that paints on the first frame and then replaces itself with the panel; chromium's
+> paint holding covers the handover, so the navigation is not white either.
+>
+> The flash sits **before** the intro video, next to plymouth's artwork — deliberately, because the
+> only alternative ordering puts it *after* the video, between the intro and the panel, where it is
+> far more conspicuous.
 
 `plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
 nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —

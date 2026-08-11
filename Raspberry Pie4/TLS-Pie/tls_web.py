@@ -1709,6 +1709,40 @@ setInterval(() => { if(!shuttingDown &&
 """
 
 
+# The boot shim. Chromium's window is WHITE from the moment it is mapped until
+# it first paints, and painting the real panel takes about half a second on the
+# Pi -- half a second of full-screen white in the middle of the boot sequence,
+# on a panel usually looked at in the dark.
+#
+# ⛔ It cannot be covered. cage stacks toplevels by map order, newest on top, so
+# nothing can be put in front of a window that maps after it -- and chromium's
+# is the window in question. It cannot be suppressed either:
+#
+#     no flag ........................... 0.50 s white
+#     --default-background-color=ffARGB . 0.53 s white   <- does nothing
+#     --default-background-color=RGB .... 0.40 s white   <- noise
+#     a trivial dark page ............... 0.00 s white
+#
+# So the answer is to give chromium something it can paint instantly. This is
+# ~300 bytes with the colour in a style attribute, so it paints on the first
+# frame, and then hands over to the real panel -- and chromium's paint holding
+# keeps THIS page on screen until the panel has painted, so the navigation is
+# not white either.
+#
+# location.replace, not href: the shim must not sit in history, or the panel's
+# own popstate handler for closing the 3D viewer would land back here.
+# The query string is passed straight through, so the token, kiosk and zoom
+# all survive without this page having to know what any of them mean.
+BOOT_PAGE = """<!doctype html><html style="background:#12121a"><head>
+<meta charset="utf-8"><title>TLS Scanner</title>
+<style>html,body{margin:0;height:100%;background:#12121a}</style>
+<script>location.replace('/' + location.search + location.hash);</script>
+</head><body>
+<noscript><meta http-equiv="refresh" content="0;url=/"></noscript>
+</body></html>
+"""
+
+
 _ICON_ROUTES = {
     "/icon-192.png": 192,   # Android launcher
     "/icon-512.png": 512,   # Android splash and the maskable entry
@@ -1776,7 +1810,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(403, "Forbidden", "text/plain")
             return
 
-        if url.path in ("/", "/index.html"):
+        if url.path == "/boot.html":
+            self._send(200, BOOT_PAGE, "text/html; charset=utf-8")
+        elif url.path in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
         elif url.path == "/api/status":
             self._json(200, self.state.snapshot())
