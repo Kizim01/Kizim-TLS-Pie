@@ -1344,6 +1344,37 @@ re-checked after every edit and the original is backed up.
 > **0.00 s** of white. It does not. That figure came from `grim` sampling on a *warm* restart — the
 > same ~15 Hz instrument that missed a 1.1 s flash earlier in this very project.
 
+#### ⛔ The band of static at power-up — NOT ours, and `disable_fw_kms_setup=1` MUST STAY
+
+Photographed 2026-08-12: a band of RGB noise and a moiré gradient in a **rectangle smaller than the
+panel**, on an otherwise black screen, at power-on. It is **not plymouth, not cage and not
+chromium** — it happens before any of them exist, which is why deleting the splash artwork did not
+change it. It is the display being fed uninitialised memory before the kernel's `vc4-kms-v3d`
+driver takes over.
+
+> **TESTED AND REVERTED, 2026-08-12. DO NOT RETRY IT.**
+>
+> The obvious suspect was `disable_fw_kms_setup=1` in `config.txt`: with it set, the firmware never
+> sets up *or clears* a framebuffer, so nothing blanks the panel before the kernel loads. Commenting
+> it out should have let the firmware clear the buffer to black, with `disable_splash=1` still
+> suppressing the rainbow.
+>
+> **The screen did not come on at all.** Not the static, not the panel — nothing, all the way
+> through boot. SSH stayed up throughout, which is the only reason this was a two-minute revert
+> rather than a card re-flash. Restored from `/boot/firmware/config.txt.bak-2026-08-12`, rebooted,
+> and the panel came back exactly as before.
+>
+> **So that line is load-bearing for this display.** The Waveshare panel only gets a working mode
+> when the *kernel* does the modesetting; hand it to the firmware and the output never appears.
+> That also explains the static: the cost of the kernel doing modeset is that nothing drives or
+> clears the panel until it does, and the uninitialised buffer is what fills the gap.
+>
+> **What has NOT been tried**, for whoever picks this up: forcing the mode from the kernel command
+> line (`video=HDMI-A-1:1080x1920@60`) so the driver takes the output over sooner, and
+> `max_framebuffers` (currently 2). Both are `cmdline.txt`/`config.txt` edits with the same revert
+> path — **back up first and keep an SSH session open**, because the failure mode here is a screen
+> that never lights.
+
 `plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
 nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —
 plymouth starts from the **initramfs**, so the theme must be baked into it or nothing appears;
