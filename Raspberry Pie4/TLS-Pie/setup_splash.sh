@@ -66,9 +66,12 @@ do_status() {
     say "Theme"
     if [ -f "$THEME_DIR/$THEME.plymouth" ]; then
         ok "$THEME installed at $THEME_DIR"
-        for f in background.png rain.png "$THEME.script"; do
-            [ -s "$THEME_DIR/$f" ] && ok "  $f" || bad "  $f MISSING -- black screen"
-        done
+        # Only the script is required. The artwork was dropped on 2026-08-12 --
+        # the splash is deliberately black now -- so a missing background.png is
+        # no longer a fault. Reporting one would train the operator to ignore a
+        # red line, which is worse than not printing it.
+        [ -s "$THEME_DIR/$THEME.script" ] && ok "  $THEME.script" \
+            || bad "  $THEME.script MISSING -- plymouth falls back to the stock theme"
     else
         warn "$THEME not installed"
     fi
@@ -120,15 +123,17 @@ do_install() {
     say "Checking the ground"
     [ -f "$CMDLINE" ] || { bad "no $CMDLINE -- is this a Raspberry Pi?"; exit 1; }
     ok "boot partition at $BOOT_DIR"
-    for f in "$THEME.plymouth" "$THEME.script" background.png rain.png; do
+    # The artwork is no longer part of the theme -- see the comment block in
+    # tlspie.script for why the splash is black as of 2026-08-12. Only the two
+    # theme files are required now; the PNGs may or may not be in the tree and
+    # neither case is an error.
+    for f in "$THEME.plymouth" "$THEME.script"; do
         if [ ! -s "$SPLASH_SRC/$f" ]; then
             bad "missing $SPLASH_SRC/$f"
-            echo "     Regenerate the images with:"
-            echo "       python3 tls_splash.py build splash/kizim.png splash/"
             exit 1
         fi
     done
-    ok "all four theme files present"
+    ok "both theme files present"
 
     say "Installing plymouth"
     if ! command -v plymouthd >/dev/null 2>&1; then
@@ -141,8 +146,11 @@ do_install() {
     install -d "$THEME_DIR"
     install -m 0644 "$SPLASH_SRC/$THEME.plymouth" "$THEME_DIR/"
     install -m 0644 "$SPLASH_SRC/$THEME.script"   "$THEME_DIR/"
-    install -m 0644 "$SPLASH_SRC/background.png"  "$THEME_DIR/"
-    install -m 0644 "$SPLASH_SRC/rain.png"        "$THEME_DIR/"
+    # Remove artwork left by an older install. Without this an upgrade leaves
+    # background.png sitting in the theme directory: harmless, because the
+    # script no longer references it, but it makes the next person reading the
+    # directory believe the splash still draws it.
+    rm -f "$THEME_DIR/background.png" "$THEME_DIR/rain.png" "$THEME_DIR/preview.png"
     ok "$THEME_DIR"
 
     # Selected two ways, because which one is authoritative depends on where

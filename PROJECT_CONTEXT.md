@@ -1304,8 +1304,45 @@ re-checked after every edit and the original is backed up.
 > rendered only when mpv exited, showing white first. The panel must be painted *before* the intro
 > covers it. Cost: ~1.8 s of dark panel ahead of the intro, which is UI rather than a flash.
 
-Measured end state, recorded at 30 fps: `black 1.73 s → white 0.50 s → dark UI 1.83 s → video
-5.13 s → panel`, **no white after the video**.
+> #### ✅ REBUILT 2026-08-12 — artwork removed, and the panel no longer shows itself first
+>
+> The operator's report was: *"static image with rain, then white, then the control surface for a
+> few seconds, then the video, then back to the control menu"* — four changes of subject before the
+> rig was usable. Two changes fixed it:
+>
+> 1. **The artwork and rain are gone.** `tlspie.script` draws nothing; the splash is plain black.
+>    plymouth is still installed and still doing its real job, which is covering the getty login
+>    prompt between the kernel and cage — the artwork was decoration, the covering is function.
+> 2. **The panel holds a black curtain over itself until the intro ends.** It still paints early
+>    (it must, or chromium defers painting an occluded window and the white comes back *after* the
+>    video), but what it paints is black. `tls_kiosk_launch.sh` creates `tlspie-intro-playing` in its
+>    runtime dir before starting chromium and deletes it when mpv exits; `/api/status` reports it;
+>    the page holds `html.booting` until told otherwise.
+>
+> Measured across a real cold boot by sampling the screen 20×/s (`TLSPIE_KIOSK_TRACE=1`, which logs
+> to the now-persistent journal — `wf-recorder` cannot do this, it dies with the session it is
+> recording):
+>
+> | was | is |
+> |---|---|
+> | artwork → white 0.50 s → **control panel 1.83 s** → video → panel | black → white **0.999 s** → **black 2.56 s** → video → panel |
+>
+> The curtain drops **8 ms** after mpv exits, because the page polls at 200 ms while it is up.
+>
+> **⛔ Three independent ways the curtain comes down**, because it covers STOP: the server says the
+> intro ended, *or* a 25 s deadline passes, *or* the operator touches the screen. The server also
+> ignores a flag older than 120 s, so a launcher killed mid-boot cannot black out the panel forever.
+>
+> **The white is structural and is the one thing left.** `--default-background-color` was re-tested
+> from scratch rather than inherited — set to bright green, the flash still came back pure white.
+> chromium commits a white buffer the moment cage maps its surface and replaces it only when the
+> renderer has a frame; the content is irrelevant (the shim is a 354-byte black `file://` page).
+> It cannot be covered, because cage stacks by map order and chromium's window is the newest thing
+> on screen at that instant. 923–999 ms cold, 218 ms warm.
+>
+> **⚠ A correction this measurement forced:** the note below once claimed the `file://` shim gave
+> **0.00 s** of white. It does not. That figure came from `grim` sampling on a *warm* restart — the
+> same ~15 Hz instrument that missed a 1.1 s flash earlier in this very project.
 
 `plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
 nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —

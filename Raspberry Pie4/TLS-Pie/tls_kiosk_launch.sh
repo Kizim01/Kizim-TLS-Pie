@@ -12,6 +12,62 @@
 
 set -u
 
+# --- boot-sequence trace, off unless asked for ------------------------------
+#
+# TLSPIE_KIOSK_TRACE=1 logs a timestamped screen-brightness sample every ~50 ms
+# into the journal, alongside a line at each transition. That is how the boot
+# sequence gets measured ACROSS A REBOOT, which `wf-recorder` cannot do: the
+# recorder is a Wayland client of the very session being restarted, so it dies
+# with cage and can never see its own successor start. It also relies on the
+# journal being persistent, which it only became on 2026-08-12.
+#
+# Read a boot back with:
+#     journalctl -b -u tls-kiosk --no-pager | grep kiosk-trace
+#
+# The numbers to look for are luma runs: ~0 is black (nothing mapped), ~255 is
+# chromium's unpainted white window, and anything in between is real content.
+TRACE="${TLSPIE_KIOSK_TRACE:-0}"
+T0="$(date +%s%3N)"
+
+trace() {
+    [ "$TRACE" = "1" ] && echo "kiosk-trace +$(( $(date +%s%3N) - T0 ))ms $*"
+    return 0
+}
+
+# Mean brightness of a small patch of screen, or -1 if it cannot be read.
+#
+# Deliberately od+awk and not python3: this runs in a polling loop, and every
+# millisecond of latency here is a millisecond longer that the panel sits
+# visible before the intro covers it. A python interpreter start is ~0.2 s on
+# this Pi and dominated the whole wait.
+#
+# The PPM header for an 8x8 image is exactly "P6\n8 8\n255\n" -- 11 bytes --
+# so the pixels start at byte 12. Fixed because the geometry is fixed.
+#
+# Defined up here rather than beside its caller because the trace sampler below
+# needs it before anything else in this script runs.
+screen_mean() {
+    local probe="${1:-${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-probe.ppm}"
+    grim -g '0,0 8x8' -t ppm "$probe" 2>/dev/null || { echo -1; return; }
+    tail -c +12 "$probe" 2>/dev/null | od -An -tu1 -v 2>/dev/null | awk '
+        {for (i = 1; i <= NF; i++) { s += $i; n++ }}
+        END {print (n ? int(s / n) : -1)}' 2>/dev/null || echo -1
+}
+
+if [ "$TRACE" = "1" ] && command -v grim >/dev/null 2>&1; then
+    (
+        # Its own probe file: sharing one with wait_for_panel() would have the
+        # two writers tearing each other's frames and reporting nonsense.
+        p="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-trace.ppm"
+        for _ in $(seq 1 600); do
+            echo "kiosk-trace +$(( $(date +%s%3N) - T0 ))ms luma=$(screen_mean "$p")"
+            sleep 0.05
+        done
+        rm -f "$p"
+    ) &
+    trace "sampler started"
+fi
+
 URL="${TLSPIE_KIOSK_URL:-http://localhost:8080/}"
 PROFILE="${TLSPIE_KIOSK_PROFILE:-/home/lipi/.config/tls-kiosk}"
 
@@ -76,14 +132,22 @@ esac
 # counting frames whose average luma is over 200:
 #
 #     panel directly .................... 1.10 s white
-#     --default-background-color=ffARGB . no change      <- does nothing
+#     --default-background-color=ffARGB . no change      <- re-verified 2026-08-12
 #     http://localhost:8080/boot.html ... 0.37 s white   <- better
-#     a local file, no network at all ... 0.00 s white   <- this
+#     a local file, no network at all ... see below      <- this
 #
-# The last 0.37 s was chromium starting its network stack before it could
-# fetch even a 340-byte page. A file:// shim needs no network, so it paints on
-# the first frame; chromium's paint holding then keeps it on screen until the
-# panel has painted, so the handover is not white either.
+# The 0.37 s was chromium starting its network stack before it could fetch even
+# a 340-byte page. A file:// shim needs no network, and chromium's paint holding
+# then keeps the shim on screen until the panel has painted, so the HANDOVER is
+# not white either. That part works and is why the shim is still here.
+#
+# ⚠ THIS BLOCK ONCE CLAIMED THE file:// SHIM GAVE "0.00 s white". IT DOES NOT.
+# Re-measured properly on 2026-08-12 by sampling the screen 20x a second across
+# a real reboot: 923 ms white cold, 218 ms warm, with the shim in use and
+# confirmed as the opened URL. The earlier zero was measured on a warm restart
+# with grim, whose ~15 Hz sampling is the same instrument that missed a 1.1 s
+# flash once before. The shim removes the network wait; it cannot remove
+# chromium's white buffer, because that is committed before the shim is parsed.
 #
 # Falls back to the served shim, and then to the panel itself, so a read-only
 # or full runtime directory costs a flash and never the screen.
@@ -99,18 +163,29 @@ esac
 # chromium defers painting an occluded window. The navigation did not render
 # while mpv was on top; it rendered when mpv exited, showing white first.
 #
-# So the panel must be painted BEFORE the intro covers it, not during. The cost
-# is a second or so of panel on screen ahead of the intro -- which is dark UI,
-# not a flash, and is the better of the two.
+# So the panel must be painted BEFORE the intro covers it, not during.
+#
+# ✅ AND SINCE 2026-08-12 IT PAINTS ITSELF BLACK WHILE IT DOES SO. The cost used
+# to be "a second or so of control panel on screen ahead of the intro" -- the
+# operator reported exactly that, as the panel appearing, then a video over it,
+# then the panel again. The panel now holds a black curtain over itself for as
+# long as the intro flag exists (see the curtain block below and the CSS in
+# tls_web.py), so it still paints early and shows nothing while it does.
+# Measured on a cold boot: 2743 ms of black where the control surface used to be.
 OPEN="$URL"
 if [ -z "${TLSPIE_KIOSK_NO_SHIM:-}" ]; then
     SHIM="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-boot.html"
     # The meta refresh is the belt to setTimeout's braces: if script is ever
     # disabled the panel still arrives, a second later instead of at once.
+    # Black, not the panel's #12121a. Since 2026-08-12 the boot splash is black
+    # and the panel holds a black curtain over itself until the intro ends, so
+    # black here means the whole run from power-on to the video is ONE colour
+    # and the handovers inside it are invisible. A dark grey shim between two
+    # blacks reads as a flicker.
     if cat > "$SHIM" 2>/dev/null <<EOF
-<!doctype html><html style="background:#12121a"><head><meta charset="utf-8">
+<!doctype html><html style="background:#000"><head><meta charset="utf-8">
 <title>TLS Scanner</title>
-<style>html,body{margin:0;height:100%;background:#12121a}</style>
+<style>html,body{margin:0;height:100%;background:#000}</style>
 <meta http-equiv="refresh" content="1;url=$URL">
 <script>location.replace("$URL");</script>
 </head><body></body></html>
@@ -163,15 +238,65 @@ done
 #    --app opens an app-style window that --kiosk does not fullscreen. THE URL
 #    IS POSITIONAL. It is the last argument, below.
 #
-# --default-background-color is what chromium paints BEFORE the page has
-# rendered. Left at its default it is white, and on a 1080x1920 panel in a dark
-# room that is a full-screen white flash roughly a second long, right in the
-# middle of the boot sequence -- measured at mean=255 across two consecutive
-# captures. ARGB hex, matched to the panel's own --bg.
+# --default-background-color is SUPPOSED to be what chromium paints before the
+# page has rendered. ⛔ IT DOES NOTHING ON THIS RIG. Re-tested from scratch on
+# 2026-08-12 rather than inherited, by setting it to an unmistakable green
+# (ff00ff00) and sampling the screen 20 times a second across a restart: the
+# flash came back mean=255, pure white, not green. The flag is left here at
+# black because black is what it should be doing, not because it works.
+#
+# What the flash actually is: chromium commits a white buffer the moment cage
+# maps its surface, and only replaces it when the renderer produces a frame.
+# The content is irrelevant -- the shim it opens is a 354-byte black file:// page
+# with no network involved and it still happens. Measured duration:
+#
+#     cold boot .......... 923 ms
+#     warm restart ....... 218 ms
+#
+# It cannot be covered, because cage stacks toplevels by MAP ORDER and
+# chromium's window is the newest thing on the screen at that instant -- there
+# is nothing that can be put in front of it, and mpv cannot map before it
+# without the video ending up underneath the panel. Removing it needs a Wayland
+# client of our own that can re-map itself on top at the right moment, which is
+# a lot of machinery for a fifth of a second on a warm boot.
 #
 # --window-size was added as "belt and braces" against the first bug and made
 # things worse. The lesson: under Wayland, let the compositor size the surface.
 #
+# --- raise the curtain BEFORE chromium starts --------------------------------
+#
+# The panel reads this file through /api/status and holds itself black while it
+# exists, so the operator never sees the control surface until the intro is
+# done. It has to be created before chromium, not before mpv: chromium paints
+# the panel during mpv's ~1.8 s startup, and that paint is precisely what needs
+# covering.
+#
+# Failure here is not fatal by design. No flag means no curtain, which is the
+# behaviour this script had before -- a cosmetic regression, never a rig that
+# cannot be driven. The panel carries the only software STOP on this machine and
+# nothing about a boot animation may put it out of reach.
+INTRO_FLAG="${TLSPIE_INTRO_FLAG:-${XDG_RUNTIME_DIR:-/tmp}/tlspie-intro-playing}"
+drop_curtain() { rm -f "$INTRO_FLAG" 2>/dev/null || true; }
+
+# ⛔ THE TRAP IS LOAD-BEARING. Without it, any exit between here and the end of
+# the intro -- systemd stopping the unit, an mpv crash, a failed launch -- would
+# leave the flag behind and black out the panel. The server's staleness check is
+# the backstop for the case this cannot cover (SIGKILL), and the panel's own
+# deadline and touch-to-dismiss are the backstop for that. Three layers, because
+# what is being guarded is access to STOP.
+trap drop_curtain EXIT HUP INT TERM
+
+if [ -r "${TLSPIE_INTRO_VIDEO:-/home/lipi/TLS-Pie/splash/intro.mp4}" ] \
+   && command -v mpv >/dev/null 2>&1; then
+    : > "$INTRO_FLAG" 2>/dev/null || true
+    trace "curtain raised ($INTRO_FLAG)"
+else
+    # No intro is going to play, so raising the curtain would only delay the
+    # panel behind a video that does not exist.
+    drop_curtain
+    trace "no intro available -- curtain not raised"
+fi
+
 # ⛔ NOT exec'd any more, and chromium is started in the BACKGROUND -- see the
 # intro block below, which needs this script to outlive the browser launch.
 "$BROWSER" \
@@ -193,7 +318,7 @@ done
     --disable-smooth-scrolling \
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
-    --default-background-color=ff12121a \
+    --default-background-color=ff000000 \
     "$OPEN" &
 BROWSER_PID=$!
 
@@ -261,21 +386,9 @@ INTRO="${TLSPIE_INTRO_VIDEO:-/home/lipi/TLS-Pie/splash/intro.mp4}"
 INTRO_DELAY="${TLSPIE_INTRO_DELAY:-2}"
 PROBE="${XDG_RUNTIME_DIR:-/tmp}/tls-kiosk-probe.ppm"
 
-# Mean brightness of a small patch of screen, or -1 if it cannot be read.
-#
-# Deliberately od+awk and not python3: this runs in a polling loop, and every
-# millisecond of latency here is a millisecond longer that the panel sits
-# visible before the intro covers it. A python interpreter start is ~0.2 s on
-# this Pi and dominated the whole wait.
-#
-# The PPM header for an 8x8 image is exactly "P6\n8 8\n255\n" -- 11 bytes --
-# so the pixels start at byte 12. Fixed because the geometry is fixed.
-screen_mean() {
-    grim -g '0,0 8x8' -t ppm "$PROBE" 2>/dev/null || { echo -1; return; }
-    tail -c +12 "$PROBE" 2>/dev/null | od -An -tu1 -v 2>/dev/null | awk '
-        {for (i = 1; i <= NF; i++) { s += $i; n++ }}
-        END {print (n ? int(s / n) : -1)}' 2>/dev/null || echo -1
-}
+# screen_mean() is defined at the top of this script, because the trace sampler
+# there needs it before anything else runs. It takes the probe file as its
+# argument and defaults to $PROBE.
 
 wait_for_panel() {
     # Without grim there is nothing to watch, so fall back to the old guess
@@ -312,6 +425,7 @@ wait_for_panel() {
 
 if [ -r "$INTRO" ] && command -v mpv >/dev/null 2>&1; then
     wait_for_panel
+    trace "chromium window up -- starting mpv"
     # --no-input-terminal   there is no stdin under systemd
     # --no-input-default-bindings + --no-osc   a touchscreen must not be able to
     #                       pause the intro or summon a seek bar over it
@@ -326,7 +440,13 @@ if [ -r "$INTRO" ] && command -v mpv >/dev/null 2>&1; then
         --no-stop-screensaver \
         --hwdec=no \
         "$INTRO" 2>/dev/null || true
+    trace "mpv exited"
 fi
+
+# The intro is off the screen, so let the panel show itself. This is the normal
+# path; the trap above only matters when this line is never reached.
+drop_curtain
+trace "curtain dropped"
 
 # Stay alive as cage's application: cage exits when this script does, and that
 # would take the panel down with it.

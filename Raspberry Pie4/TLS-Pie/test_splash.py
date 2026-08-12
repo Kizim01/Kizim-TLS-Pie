@@ -154,8 +154,11 @@ def test_build():
     with Image.open(paths["preview"]) as im:
         check("preview is the panel size", im.size == (108, 192), im.size)
 
-    # The names are not cosmetic -- tlspie.script loads them by these exact
-    # strings, and plymouth fails silently if they are missing.
+    # ⚠ The theme stopped loading these on 2026-08-12 -- the boot splash is
+    # plain black now, and setup_splash.sh no longer installs them. The builder
+    # and these checks are kept deliberately: the artwork is one flag away from
+    # coming back, and the wrap-continuity property checked above is expensive
+    # to rediscover. What this no longer proves is that the SPLASH works.
     for want in ("background.png", "rain.png"):
         check("theme filename %s" % want,
               os.path.isfile(os.path.join(out, want)))

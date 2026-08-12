@@ -79,6 +79,40 @@ SPLASH_VIDEO = os.environ.get(
     "TLSPIE_SPLASH_VIDEO",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "splash", "intro.mp4"))
 
+# --- the intro flag ----------------------------------------------------------
+#
+# tls_kiosk_launch.sh creates this file before it starts chromium and deletes it
+# when mpv exits, so the panel can hold a black curtain over itself for exactly
+# as long as the intro is on screen. The kiosk launcher and this server are
+# different processes under different users, and a file is the smallest thing
+# that carries one bit between them without inventing a protocol.
+#
+# ⛔ THE STALENESS CHECK IS THE SAFETY FEATURE, not tidiness. The curtain covers
+# the whole screen including STOP. If the launcher is killed between creating
+# the flag and removing it -- SIGKILL, a crash, a yanked power lead mid-boot --
+# a plain existence check would black out the panel on every boot thereafter,
+# and the only cure would be an SSH session the operator may not have. The
+# window is generous against a slow cold boot and still far shorter than the
+# time it takes to walk to the rig.
+#
+# The path is the kiosk's own runtime directory, not /run: this server runs as
+# root but the launcher runs as `lipi`, and /run is not writable by it. Same
+# hardcoded uid as tls-kiosk.service's XDG_RUNTIME_DIR, and for the same reason
+# -- there is exactly one login user on this machine. Override in both places
+# together if that ever stops being true.
+INTRO_FLAG = os.environ.get("TLSPIE_INTRO_FLAG",
+                            "/run/user/1000/tlspie-intro-playing")
+INTRO_FLAG_MAX_AGE = 120.0
+
+
+def intro_playing():
+    """True while the boot intro is on screen. Never raises: a status poll that
+    could 500 on a stat() is a panel that goes OFFLINE because of a decoration."""
+    try:
+        return (time.time() - os.path.getmtime(INTRO_FLAG)) < INTRO_FLAG_MAX_AGE
+    except Exception:
+        return False
+
 
 class ScannerState:
     """
@@ -248,6 +282,9 @@ class ScannerState:
                 "storage": (tls_storage.status(sd_dumpdir=self.dumpdir)
                             if tls_storage is not None else None),
                 "recordingToUsb": self.recording_to_usb,
+                # Cheap: one stat() per poll, and only the rig's own screen acts
+                # on it. The phone ignores the field entirely.
+                "introPlaying": intro_playing(),
                 "scans": [
                     {"id": key, "label": value["label"], "detail": value["detail"]}
                     for key, value in sorted(
@@ -732,6 +769,30 @@ PAGE = """<!doctype html>
     width:0;height:0;display:none}
   html.kiosk{scrollbar-width:none;-ms-overflow-style:none}
 
+/* --- the boot curtain -------------------------------------------------------
+   Holds the panel black from its FIRST PAINT until the intro video has
+   finished, on the rig's own screen only (`kiosk=1`; the phone never gets it).
+
+   ⛔ WHY THE PANEL HAS TO PAINT ITSELF AND THEN HIDE, rather than just loading
+   later. cage stacks toplevels by map order, so mpv has to map AFTER chromium
+   or the video plays underneath the panel. mpv takes about 1.8 s to get its
+   window up, and chromium spends that time painting -- so the operator saw the
+   control surface, then a video over it, then the control surface again.
+
+   Loading the panel late instead was tried on 2026-08-11 and put a WHITE FLASH
+   between the intro and the panel: a window covered by a fullscreen client is
+   occluded, and chromium defers painting an occluded window, so the navigation
+   rendered only when mpv exited -- white first. The panel must be painted
+   BEFORE the intro covers it. This makes what it paints black.
+
+   Black on `html` with the body faded out, rather than a fixed overlay: the
+   panel sets `zoom` on the root element, and zoom changes the containing block
+   a `position:fixed` overlay is sized against. This construction cannot be
+   caught out by it. */
+html.booting{background:#000}
+html.booting body{opacity:0}
+body{transition:opacity .25s ease}
+@media (prefers-reduced-motion:reduce){body{transition:none}}
 </style></head><body>
 <script>
 /*
@@ -758,6 +819,13 @@ PAGE = """<!doctype html>
     if(z > 0) document.documentElement.style.zoom = z / 100;
     if(p.get('kiosk') === '1') document.documentElement.classList.add('kiosk');
     if(p.get('aero') === '1') document.documentElement.classList.add('aero');
+    /* Curtain up before the first paint, on the rig's screen only. Dropped by
+       poll() once the server says the intro is over -- see the CSS above.
+       Applied optimistically: if the intro is already finished, the very first
+       poll clears it, which costs one frame of black on a screen that was
+       black anyway. Getting it wrong the other way shows the control surface
+       mid-boot, which is the fault being fixed. */
+    if(p.get('kiosk') === '1') document.documentElement.classList.add('booting');
   }catch(e){}
 })();
 </script>
@@ -1013,12 +1081,37 @@ function renderStorage(s){
   ej.disabled  = s.busy || !st.usbMounted;
 }
 
+/* --- dropping the boot curtain ---------------------------------------------
+   One-shot. Once the panel has been shown it is never hidden again: the curtain
+   exists to cover a boot, and a control surface that can black itself out later
+   is a hazard, not a feature. */
+let curtainDropped = false;
+function dropCurtain(){
+  if(curtainDropped) return;
+  curtainDropped = true;
+  document.documentElement.classList.remove('booting');
+}
+
+/* ⛔ THIS IS SAFETY, NOT POLISH. The curtain covers the whole screen, STOP
+   button included, so every path that could leave it up is a safety problem
+   rather than a cosmetic one -- the same rule test_intro.py already applies to
+   the intro itself. It is therefore bounded three independent ways: the server
+   says the intro ended, OR a deadline passes, OR the operator touches the
+   screen. Losing the server does not strand anybody behind it. */
+if(document.documentElement.classList.contains('booting')){
+  setTimeout(dropCurtain, 25000);
+  addEventListener('pointerdown', dropCurtain, {once:true});
+}
+
 async function poll(){
   // Once the Pi is on its way down there is nothing left to ask it, and the
   // OFFLINE banner would read as a fault rather than as the expected outcome.
   if(shuttingDown) return;
   try{
     const s = await (await fetch(q('/api/status'),{cache:'no-store'})).json();
+    // A server too old to report the field sends undefined, which drops the
+    // curtain. That is the right way round to fail.
+    if(!s.introPlaying) dropCurtain();
     if(!built) buildScans(s);
     const c = COLOR[s.phase] || '#8E8E93';
 
@@ -1791,6 +1884,17 @@ window.addEventListener('popstate', closeViewer);
 poll();
 refreshLibrary();
 setInterval(poll, 1000);
+
+/* While the curtain is up, ask more often. At the normal 1 Hz the panel could
+   sit black for a further second after the video had already ended, which reads
+   as a stall right at the moment the rig is meant to become usable. The fast
+   timer stops itself the moment the curtain drops, so it costs nothing after
+   boot. */
+if(document.documentElement.classList.contains('booting')){
+  const fast = setInterval(() => {
+    if(curtainDropped) clearInterval(fast); else poll();
+  }, 200);
+}
 setInterval(() => { if(!shuttingDown &&
                        !document.getElementById('viewer').classList.contains('on'))
                       refreshLibrary(); }, 5000);
