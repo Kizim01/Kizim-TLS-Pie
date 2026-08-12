@@ -1468,6 +1468,32 @@ systemd unit matters: a dropped link must not be able to kill a scan mid-rotatio
 `TLSPIE_WEB_TOKEN` in `tls-scan.service` before using the panel on any network that is not just the
 Pi and one phone.
 
+### Logs survive a reboot — journald made persistent ✅ 2026-08-12
+
+Raspberry Pi OS ships `Storage=volatile` in `/etc/systemd/journald.conf`, keeping the journal in
+`/run/log/journal` (RAM) to spare the SD card. **`journalctl --list-boots` showed exactly one boot:
+every power cycle destroyed the diagnostic record.**
+
+That is the wrong trade here. Everything worth investigating on this rig — a brownout, a pack going
+flat mid-move, a scan dying — is investigated *after* a power cycle, which is the precise moment
+volatile storage throws the evidence away. `vcgencmd get_throttled` shares the blind spot: its
+"ever" bits only count since boot, so there was no undervoltage history at all. The wear objection
+does not survive the numbers: the root card is 119 GB at 4 % use, scans now land on the USB stick
+rather than the card, and the journal is capped at 100 MB.
+
+Now `Storage=persistent`, `SystemMaxUse=100M`, `SystemMaxFileSize=20M`, `SystemMaxFiles=10`.
+Previous file kept at `/etc/systemd/journald.conf.bak-2026-08-12`.
+
+> #### ⚠ Restarting journald is NOT enough, and it looks like it worked
+> After `systemctl restart systemd-journald` the config read `persistent`, the service was `active`,
+> and the journal was **still entirely in RAM** — `/var/log/journal` held no `.journal` files at all.
+> Nothing reported an error. The migration needs **`sudo journalctl --flush`** (preceded by
+> `systemd-tmpfiles --create --prefix /var/log/journal` if the directory is not set up).
+>
+> **Verified the only way that counts — by rebooting.** `journalctl --list-boots` now lists boot
+> `-1` alongside boot `0`, and a marker written with `logger` before the reboot reads back after it.
+> A config file saying `persistent` proves nothing on its own.
+
 ### Live point-cloud preview — opt in, and why
 
 `TLSPIE_PREVIEW=1` enables a second UDP socket on port 2368 that decodes a decimated slice of the
