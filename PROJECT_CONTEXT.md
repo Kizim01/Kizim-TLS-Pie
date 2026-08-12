@@ -1943,21 +1943,44 @@ physical work on the rig.**
 | ✅ **Storage + power telemetry** | Deployed and passing on the rig. |
 | ✅ **Cursor** | 2026-08-11. Gone. The real cause was the **HDMI CEC endpoints presenting as a mouse**, not any cursor theme. |
 | ✅ **Shut down + Reboot buttons** | 2026-08-11. Both at the bottom of the panel: confirm twice, refuse mid-scan, flush the USB stick first. Reboot verified end to end. |
-| ✅ **Boot splash** | 2026-08-11. Artwork from power-on → intro video (mpv) → panel. No rainbow square, no kernel log, no login prompt. Boot **12.5 s**. |
+| ✅ **Boot sequence** | 2026-08-12, **supersedes the 08-11 splash entry**. **black → video → panel** — artwork removed at the operator's request, and the panel holds a black curtain over itself until the intro ends. Boot **6.36 s** (was 13.13 s). No rainbow, no kernel log, no login prompt. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
 | ✅ **THE BMS WAS NEVER THE FAULT** | 2026-08-11. The pack is **4S3P (12 cells, 4 rows of 3)**, so the fitted 4S board was the **correct part doing its job** on a genuinely flat pack. `3S12P` was inherited from this document, never measured, and carried a whole diagnosis with it. **The fix is a 16.8 V charge, not a new BMS.** Do not fit the 3S board that was bought. |
 | ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
 
-**One thing awaiting the user's eyes, on the next cold boot.** The sequence, recorded at 30 fps, is
-`black 1.73 s → white 0.50 s → dark UI 1.83 s → video 5.13 s → panel`, with **no white after the
-video** — that was the reported fault and it is fixed. What is left is ~0.5 s of white *before* the
-intro (chromium existing before it can paint anything; nothing can stack over the newest window, so
-it cannot be covered) and ~1.8 s of dark panel before the intro starts (mpv's own startup). Both are
-brief and dark rather than a mid-sequence flash. If the operator still sees a flash *between* the
-intro and the panel, that is a different fault from the one fixed — record a boot with
-`wf-recorder` before changing anything.
+### ✅ Boot sequence and system check — CLOSED 2026-08-12
+
+**The boot sequence is now `black → video → panel`**, confirmed by the operator. The splash artwork
+and rain are gone, and the control surface no longer appears before the intro (the panel holds a
+**black curtain** over itself until mpv exits). **Boot time 13.128 s → 6.360 s.** Full detail in the
+boot-splash section above; measure boots with **`TLSPIE_KIOSK_TRACE=1`**, never `wf-recorder`, which
+dies with the session it is recording.
+
+**Full system check passed with the USB stick fitted** — `throttled=0x0`, both services up, stepper
+ENABLE high (coils off), and the USB path **exercised on real hardware for the first time**: mounts
+in 0.03 s at `/media/tlsusb`, 113 MB/s, 123 GB free, target auto-flips, eject and re-mount both
+work. **A stick showing "not mounted" at idle is correct** — `choose_dumpdir()` mounts at PREFLIGHT.
+The panel's mount action is **`check`**, not `mount`.
+
+**journald is now persistent**, so `journalctl -b -1` finally works — which is what made the boot
+measurement possible at all.
+
+> **⛔ ONE OPEN ITEM, AND IT NEEDS AN EYE RATHER THAN AN EDIT.** A band of RGB static appears at
+> power-up. It is **not** plymouth, cage or chromium — it is there before any of them exist. Two
+> config guesses have been spent and both are recorded as negatives above:
+> `disable_fw_kms_setup=1` **must stay** (removing it blacks the screen out completely), and
+> `video=HDMI-A-1:1080x1920@60` is safe but changes nothing. **Do not try a third config edit before
+> answering this:** does the band appear *instantly* at switch-on (⇒ the panel's own memory,
+> unreachable from the Pi, remedy is hardware) or *~2 s in* as the kernel loads (⇒ uncleared
+> framebuffer, try `max_framebuffers`)?
+
+> **⚠ Two traps this session caught, both worth keeping.** `ping 192.168.1.201` **reports the lidar
+> as present when `eth0` is down** — the hotspot's NAT answers for the whole subnet, and
+> `192.168.1.202` replies too. Check `cat /sys/class/net/eth0/carrier`. And
+> `systemctl restart systemd-journald` does **not** migrate the journal to disk and says nothing
+> about it; it needs `journalctl --flush`.
 
 ### Where the electrical work actually stands — 2026-08-12
 
