@@ -1369,11 +1369,39 @@ driver takes over.
 > That also explains the static: the cost of the kernel doing modeset is that nothing drives or
 > clears the panel until it does, and the uninitialised buffer is what fills the gap.
 >
-> **What has NOT been tried**, for whoever picks this up: forcing the mode from the kernel command
-> line (`video=HDMI-A-1:1080x1920@60`) so the driver takes the output over sooner, and
-> `max_framebuffers` (currently 2). Both are `cmdline.txt`/`config.txt` edits with the same revert
-> path — **back up first and keep an SSH session open**, because the failure mode here is a screen
-> that never lights.
+> **`video=HDMI-A-1:1080x1920@60` on `cmdline.txt` was then tried too.** It is **safe** — the panel
+> comes up normally with it, unlike the config.txt change above — but it does **not** move the point
+> at which the display starts being driven, so it is not a fix for the static on its own. Left in
+> place because it pins the mode explicitly and costs nothing. Backup at `cmdline.txt.bak-2026-08-12`.
+>
+> **Still untried:** `max_framebuffers` (currently 2). Same revert discipline — **back up first and
+> keep an SSH session open**, because the failure mode is a screen that never lights.
+
+### ⚡ Boot time halved — 2026-08-12
+
+`systemd-analyze`: **13.128 s → 6.360 s** (userspace 11.015 s → 4.300 s). Two units did it, neither
+of which the rig needs:
+
+| unit | cost | why it was safe to disable |
+|---|---|---|
+| `NetworkManager-wait-online` | **7.215 s** | It was **already failing on every boot** — the Pi comes up before the phone's hotspot exists, which is the normal order on site. Nothing waits on it: `tls-scan` deliberately orders after `network.target`, not `network-online.target`, because the panel binds `0.0.0.0` and becomes reachable whenever the network turns up. |
+| `e2scrub_reap` | **2.976 s** | LVM online-fsck reaping. There is no LVM on this machine. |
+
+**⚠ This did NOT make the panel appear sooner, and it was never going to.** `tls-kiosk.service`
+already started at **@3.8 s**, well before either of those finished, so they were never in front of
+it — they were holding up *`systemd`'s idea of "boot finished"*, and competing for I/O. Time to a
+usable panel is set almost entirely by what happens after cage starts:
+
+| stage | cost |
+|---|---|
+| chromium launch → its window maps | **8.1 s** |
+| mpv launch → first video frame | **3.9 s** |
+| the intro video itself | ~5.1 s |
+| video ends → panel visible | 0.65 s |
+
+**So the honest lever for "boot faster" is the intro, not systemd.** The video and mpv's startup are
+9 s of the ~21 s from power-on to a usable panel. chromium's 8.1 s runs underneath the intro and is
+mostly hidden by it; shortening the video without shortening chromium just exposes black instead.
 
 `plymouth-set-default-theme` lives in **/usr/sbin**, so calling it bare with `|| true` silently does
 nothing and you reboot into the stock theme. And with `auto_initramfs=1` set — it is, on this card —
