@@ -511,6 +511,39 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > charge**: all four should reach ~4.2 V and sit within 50 mV. If group 1 is still the laggard then,
 > it is genuinely weak.
 >
+> ### ⭐⭐ THE VERDICT — 2026-08-12, AT FULL CHARGE. **NO WEAK GROUP. THE PACK IS GOOD.**
+>
+> Measured against `B-` after the charge: **4.15 / 8.33 / 12.52 / 16.68 V**. Differenced:
+>
+> | group | pads | flat (08-11) | **charged (08-12)** | vs mean |
+> |---|---|---|---|---|
+> | 1 | `0V`→`4.2V` | 2.98 — *the low one* | **4.15** | −0.02 |
+> | 2 | `4.2V`→`8.4V` | 3.12 | **4.18** | +0.01 |
+> | 3 | `8.4V`→`12.6V` | 3.08 | **4.19** | +0.02 |
+> | 4 | `12.6V`→`16.8V` | 3.07 | **4.16** | −0.01 |
+>
+> **Spread 140 mV → 40 mV**, against a pass threshold of 50 mV set *before* the charge. **Group 1
+> came up with the rest** — it is 4.15 V, 40 mV below the top group and 50 mV below a nominal 4.2 V,
+> which is meter-and-balancer noise, not a capacity deficit. The 08-11 ordering did not survive
+> either: group 4 is now within 10 mV of group 1, so the flat-pack ranking was the steep bottom of
+> the discharge curve amplifying nothing, exactly as predicted.
+>
+> **⭐ This closes the battery thread that has run since 2026-08-08.** The brownouts and the
+> mid-move reboots were **a flat battery and nothing else**. Every other explanation offered along
+> the way — a faulty BMS, a wrong-series board, a degraded cell, a tired 3P group — is now
+> disproved by measurement rather than argument.
+>
+> **Pack 16.68 V against a 16.8 V setpoint is correct, not a shortfall.** Li-ion relaxes ~100 mV
+> off the charger as surface charge dissipates; 16.6 V was already logged here as ~95% of capacity.
+> Do **not** wind `U12` up to chase the missing 120 mV — that is how a pack gets charged to
+> 4.25 V/cell. The only voltage that justifies trimming `U12` is the drop `D1` introduces once it
+> is fitted, measured at the pack's own pads.
+>
+> **The balancer had something to do and did it, or had nothing to do** — from 40 mV we cannot tell
+> which, and it does not matter. What matters is that the top-of-charge condition the balancer needs
+> was actually reached, so this measurement is the real test and not a repeat of the undercharge
+> trap.
+>
 > ### ⛔ `D1` ADDED 2026-08-11 — the charge chain was draining the pack backwards
 >
 > **Caught live, not theorised.** With the USB unplugged but the buck still wired to the BMS, the
@@ -1933,8 +1966,10 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**All blockers closed as of 2026-08-11. Nothing is waiting on a diagnosis — what is left is
-physical work on the rig.**
+**All blockers closed as of 2026-08-11, and as of 2026-08-12 the pack is charged and proven good.
+Nothing is waiting on a diagnosis or a measurement.** What is left is to **run the rig on the
+charged pack** — the brownout symptom has never once been tested against a full battery, and only
+the symptom failing to recur closes it.
 
 | | |
 |---|---|
@@ -1946,6 +1981,7 @@ physical work on the rig.**
 | ✅ **Boot sequence** | 2026-08-12, **supersedes the 08-11 splash entry**. **black → video → panel** — artwork removed at the operator's request, and the panel holds a black curtain over itself until the intro ends. Boot **6.36 s** (was 13.13 s). No rainbow, no kernel log, no login prompt. |
 | ✅ **Panel look + speed** | 2026-08-11. Translucent "aero" cards at **8.0%** of a core against 17.1% for real blur; header transparent again. |
 | ✅ **THE BMS WAS NEVER THE FAULT** | 2026-08-11. The pack is **4S3P (12 cells, 4 rows of 3)**, so the fitted 4S board was the **correct part doing its job** on a genuinely flat pack. `3S12P` was inherited from this document, never measured, and carried a whole diagnosis with it. **The fix is a 16.8 V charge, not a new BMS.** Do not fit the 3S board that was bought. |
+| ⭐ **AND THE PACK IS GOOD** | 2026-08-12, at full charge: groups **4.15 / 4.18 / 4.19 / 4.16 V**, pack **16.68 V**. **40 mV spread against a 50 mV threshold set before the charge — no weak group.** Group 1, the one that tripped the cutoff, came up with the rest. **The brownouts were a flat battery and nothing else**; every rival explanation is now disproved by measurement. |
 | ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
@@ -1984,9 +2020,11 @@ measurement possible at all.
 
 ### Where the electrical work actually stands — 2026-08-12
 
-**⭐ EVERY ELECTRICAL BLOCKER IS CLOSED.** The charge path is built and measured, the VLP-16's
-voltage question is answered, and the E-stop question is decided. **Nothing electrical is waiting
-on a decision or a part. What is left is a battery that needs charging and measurements to take.**
+**⭐ EVERY ELECTRICAL BLOCKER IS CLOSED, AND THE PACK IS NOW PROVEN GOOD.** The charge path is
+built and measured, the VLP-16's voltage question is answered, the E-stop question is decided —
+and as of **2026-08-12 the pack has been charged and re-measured: four groups at 4.15 / 4.18 /
+4.19 / 4.16 V, a 40 mV spread against a 50 mV threshold. There is no weak group.** The whole
+battery investigation ends where it started: **it was only ever a flat battery.**
 
 | ✅ Done and measured | |
 |---|---|
@@ -1994,21 +2032,25 @@ on a decision or a part. What is left is a battery that needs charging and measu
 | `U12` BCD5A | **16.8 V open-circuit, 1.5 A**, set on the meter. **Mark the pots** |
 | `BMS4S` pads | seven pads: five taps named by voltage + `⊕`/`⊖`. **Common port, no `C-`** |
 | `⊕` to `16.8V` | **measured 0 Ω** — positive is unswitched, all ten FETs in the negative leg. Verified, not inferred |
-| Four groups | **2.98 / 3.12 / 3.08 / 3.07 V** — taps in order, nothing damaged, **group 1 is the low one** |
+| Four groups, flat | **2.98 / 3.12 / 3.08 / 3.07 V** — taps in order, nothing damaged, group 1 lowest |
+| ⭐ **Four groups, charged** | **2026-08-12: 4.15 / 4.18 / 4.19 / 4.16 V, pack 16.68 V. 40 mV spread vs a 50 mV threshold — NO WEAK GROUP.** The battery thread is closed |
 | Back-feed | **found and fixed.** `S3` charge-isolate switch fitted |
 
 ### The jobs left, in order
 
-1. **CHARGE IT.** `S1` and `S2` **open**, `S3` **closed**. Expect the output to show **pack voltage,
-   not 16.8 V**, while it is in constant current — that is the charger working, not a lost setting.
-   ~5–7 hours, **then an hour past 16.8 V** so the balancer actually engages.
-   **Open `S3` the moment it finishes** — that habit is the only back-feed protection until `D1` is in.
-2. **Re-measure the four groups at the top.** All four within **50 mV of 4.2 V** means the pack is
-   fine and this was only ever a flat battery. **Group 1 still lagging means the weak group is
-   confirmed.** This is the measurement the whole investigation has been building toward.
+1. ~~**CHARGE IT** and re-measure the four groups at the top.~~ **✅ DONE 2026-08-12 — passed.**
+   Detail in the per-group section above. **Open `S3` after every charge** — that habit is still the
+   only back-feed protection until `D1` is in.
+2. **RUN THE RIG ON THE CHARGED PACK.** This is now the top job and the real confirmation: the
+   symptom was brownouts and reboots mid-move, and no bench voltage disproves a symptom — only the
+   symptom failing to recur does. **The motor has only ever run on a flat pack**, so expect more
+   torque and a hotter motor; check its temperature and run it uncoupled from the head the first time.
+   Budget roughly **5 h** of runtime (~9 Ah / ~130 Wh against ~26 W with the VLP-16 spinning).
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
+   **⚠ Do not trim `U12` for the 120 mV between 16.68 V and 16.8 V** — that gap is a charged pack
+   relaxing off the charger, not undercharge, and chasing it puts cells at 4.25 V.
 
 **Closed on 2026-08-12, do not reopen:**
 
@@ -2207,13 +2249,13 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 ### Still to do — in order
 
-1. ✅ **THE BMS BLOCKER IS CLOSED — but the pack still needs charging.** The pack is **4S3P**
-   (12 cells, 4 rows of 3), so the 4S board fitted to it was **correct all along** and the pack was
-   genuinely flat. **Charge it at 16.8 V**, then measure the four groups (`B-`/`B1+`, `B1+`/`B2+`,
-   `B2+`/`B3+`, `B3+`/`B4+`) and find the weak group that tripped the cutoff — with only 3 cells in
-   parallel, one tired cell drags a whole group. **Do not fit the 3S board that was bought.**
-   **⚠ Before closing `S2`, check the VLP-16's input range**: at 4S it now sees up to **16.8 V**,
-   where the old 3S assumption capped that leg at 12.6 V. Procedure: `WIRING_REV3_BMS.html`.
+1. ✅✅ **THE BATTERY THREAD IS FULLY CLOSED — 2026-08-12.** The pack is **4S3P** (12 cells, 4 rows
+   of 3), so the 4S board fitted to it was **correct all along** and the pack was genuinely flat.
+   Charged at 16.8 V and re-measured at the top: **4.15 / 4.18 / 4.19 / 4.16 V, pack 16.68 V — a
+   40 mV spread, no weak group.** ~~find the weak group~~ there isn't one. **Do not fit the 3S board
+   that was bought.** ~~Check the VLP-16's input range~~ **16.8 V is inside it (9–32 V quoted,
+   9–18 V in the manual); no regulator on `S2`.** Procedure: `WIRING_REV3_BMS.html`.
+   **The one job this leaves: run the rig on the charged pack and confirm the brownouts are gone.**
 2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
    `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
    never run once in the life of this project. The motion is no longer the obstacle; the capture
@@ -2226,9 +2268,11 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    loading the Pi's rail. **Find out what is powering the Pi and what it is rated** — a 5 V/2 A phone
    charger under sustained chromium compositing is the classic version of this. Persistent journald
    is enabled now, so the next one leaves evidence.
-5. **Exercise the USB scan path.** `tls_storage.py` is deployed and passing on the rig, but no stick
-   has ever been plugged in. `sudo apt install exfatprogs`, format a stick exFAT, press **Check for
-   USB**, run a scan and confirm the panel says *recording to USB*.
+5. ✅ **Exercise the USB scan path.** ~~no stick has ever been plugged in~~ **Done 2026-08-12**: the
+   stick mounts at `/media/tlsusb` in 0.03 s, **113 MB/s**, 123 GB free, target auto-flips, eject and
+   remount both work. It is **vfat, not exFAT** — so mind the **4 GB single-file limit**. The panel
+   action is **`check`**, not `mount`. What remains untested is only *a scan actually recording to
+   it*, which folds into job 2.
 6. **Fit the INA226** (ordered, ~£1.23) for real pack volts and amps on the panel. **3V3 only, never
    5 V** — its I²C pull-ups reference its own VCC. Check whether the shunt is `R100` or `R002` and
    set `TLSPIE_SHUNT_OHMS` to match; wrong value is a silent 50× error.
