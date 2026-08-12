@@ -1369,13 +1369,23 @@ driver takes over.
 > That also explains the static: the cost of the kernel doing modeset is that nothing drives or
 > clears the panel until it does, and the uninitialised buffer is what fills the gap.
 >
-> **`video=HDMI-A-1:1080x1920@60` on `cmdline.txt` was then tried too.** It is **safe** — the panel
-> comes up normally with it, unlike the config.txt change above — but it does **not** move the point
-> at which the display starts being driven, so it is not a fix for the static on its own. Left in
-> place because it pins the mode explicitly and costs nothing. Backup at `cmdline.txt.bak-2026-08-12`.
+> **`video=HDMI-A-1:1080x1920@60` on `cmdline.txt` was then tried too, and CONFIRMED BY EYE NOT TO
+> FIX IT** — the operator power-cycled and the band was still there. It is **safe**, unlike the
+> config.txt change above, and is left in place because it pins the mode explicitly and costs
+> nothing, but it buys nothing here either. Backup at `cmdline.txt.bak-2026-08-12`.
 >
-> **Still untried:** `max_framebuffers` (currently 2). Same revert discipline — **back up first and
-> keep an SSH session open**, because the failure mode is a screen that never lights.
+> **⚠ THE NEXT STEP IS A DIAGNOSTIC, NOT ANOTHER CONFIG EDIT.** Two config guesses have now been
+> spent, and the second could not have worked for a reason that was knowable in advance: nothing on
+> the kernel command line changes *when* the display starts being driven. Before touching
+> `max_framebuffers`, settle which side of the cable this is on — **when does the band appear?**
+>
+> | observation | meaning |
+> |---|---|
+> | instantly at switch-on, before the Pi could reach its kernel (~2 s) | it is **the panel**, showing its own uninitialised frame memory or an unlocked signal. No Pi-side setting can reach it. |
+> | ~2 s in, as the kernel loads | it is **`vc4-kms-v3d` scanning out an uncleared framebuffer**, and `max_framebuffers` is worth a try |
+>
+> The rectangle being **smaller than the panel and offset** is weak evidence for the first: that is
+> what a panel doing its own scaling of a signal it has not locked looks like.
 
 ### ⚡ Boot time halved — 2026-08-12
 
