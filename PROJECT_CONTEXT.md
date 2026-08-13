@@ -1997,8 +1997,13 @@ on it with `throttled=0x0` throughout, not even latched.** The brownouts do not 
 leg ran for the first time and landed on the mark**, so `STEPS_PER_REV = 160000` is now confirmed in
 both directions at full torque.
 
-**⛔ ONE NEW BLOCKER, AND IT IS THE ONLY THING BETWEEN HERE AND A FIRST REAL SCAN: `eth0` HAS NO
-CARRIER.** The VLP-16 sends nothing. See the section below before touching anything else.
+**✅ AND THE LIDAR LINK CAME UP THE SAME NIGHT.** `eth0` at `192.168.1.100`, 100Mbps/Full, and the
+puck streaming **753 data packets/s from `192.168.1.201`**, decoded and confirmed as genuine VLP-16
+frames. `tls_scan.py --check` passes.
+
+**⭐ THERE IS NO LONGER ANY BLOCKER. The rig is ready for its first real scan** — which has still
+never run. That is the next job, and the only untested things left are the capture path and the
+geometry.
 
 | | |
 |---|---|
@@ -2015,9 +2020,32 @@ CARRIER.** The VLP-16 sends nothing. See the section below before touching anyth
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
 
-### ⛔ OPEN 2026-08-13 — `eth0` has NO CARRIER and the VLP-16 sends nothing
+### ✅ CLOSED 2026-08-13, same night — the lidar link is UP and the puck is streaming
 
-**Symptom.** `eth0: <NO-CARRIER,...,UP> state DOWN`, carrier `0`, no address, empty ARP table, and
+**It was the cable.** Reconnected, and the link negotiated immediately: a **new** kernel event at
+t=11.49 s, `Link is Up - 100Mbps/Full`, `eth0: <...,UP,LOWER_UP>` carrier `1`, address
+**`192.168.1.100/24`**, NetworkManager bound to the `lidar` profile, route to the puck via `eth0`.
+
+**The puck is sending real data, verified by decoding it — not by ping and not by packet count
+alone:**
+
+| stream | rate | size | source |
+|---|---|---|---|
+| **`:2368` data** | **753/s** | 1206 B | `192.168.1.201` |
+| **`:8308` position** | 138/s | 512 B | `192.168.1.201` |
+
+Decoded from a live packet: **12/12 blocks carry the `0xEEFF` flag**, azimuths ascend **186.2° →
+190.6°** across the packet (4.4°, right for 600 rpm), **product ID `0x22` = VLP-16**, return mode
+`0x37` = strongest. `tls_scan.py --check` reports **`Preflight OK: interface eth0, lidar
+192.168.1.201`**. ~753 packets/s is the textbook VLP-16 rate.
+
+**✅ This also settles the addressing question that had been open and unverified.** The Pi's `eth0`
+is **`192.168.1.100`**, *not* the `192.168.1.222` in Rotoslider's notes — and `.100`, the figure
+this document carried unverified, is correct. The puck is at `192.168.1.201` as expected.
+
+> #### The diagnosis that got here, kept because the traps are permanent
+>
+> **Symptom.** `eth0: <NO-CARRIER,...,UP> state DOWN`, carrier `0`, no address, empty ARP table, and
 **zero UDP packets on :2368** across four separate listens. NetworkManager has a `lidar` profile but
 the device sits `unavailable`, because there is no carrier for it to bind to.
 
@@ -2110,9 +2138,13 @@ battery investigation ends where it started: **it was only ever a flat battery.*
    the latched bit**. The brownouts do not recur. **The return leg ran for the first time and landed
    on the mark**, so `STEPS_PER_REV = 160000` holds in both directions at full torque. Timing +0.12%
    / +0.11%. Budget roughly **5 h** of runtime (~9 Ah / ~130 Wh against ~26 W with the puck spinning).
-3. **⛔ FIX THE LIDAR LINK — this is now the only thing between here and a first real scan.** `eth0`
-   has no carrier and the puck sends nothing. Full diagnosis and the two decisive tests are in the
-   **"OPEN 2026-08-13"** section above. **Do not use `ping` to check it.**
+3. ~~**FIX THE LIDAR LINK.**~~ **✅ DONE 2026-08-13 — it was the cable.** `eth0` at
+   `192.168.1.100`, 100Mbps/Full, puck streaming **753 pkt/s from `192.168.1.201`**, packets decoded
+   and confirmed genuine VLP-16 (product `0x22`, 12/12 `0xEEFF` blocks). Preflight passes.
+   **⛔ Keep the diagnostic method: check `carrier`, never `ping`** — see the section above.
+4. **⭐ RUN THE FIRST REAL SCAN. Nothing blocks it now.** `--plan`, then `--scan slow --no-record`,
+   then a recorded scan **including its return leg**. The motion and the data path are both proven
+   individually; what has never been exercised is the two together, plus the geometry.
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
@@ -2347,9 +2379,9 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
 8. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
    under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.
-9. **Confirm the VLP-16 addressing on hardware.** Rotoslider's own setup notes say the puck is
-   `192.168.1.201` and the Pi's `eth0` is `192.168.1.222`; this document previously claimed
-   `192.168.1.100` for the Pi, unverified. A mismatch presents as a capture fault, not a network one.
+9. ✅ **Confirm the VLP-16 addressing on hardware.** **DONE 2026-08-13.** The Pi's `eth0` is
+   **`192.168.1.100`** — this document's own unverified figure was right and **Rotoslider's
+   `192.168.1.222` is his rig, not ours**. Puck confirmed at **`192.168.1.201`**, streaming.
 10. **Then enable the preview** (`TLSPIE_PREVIEW=1`) and re-check for lost steps under capture load.
 11. **Consider deleting U6 entirely** — the 12 V buck is now unloaded, M+ having been moved to the
    switched battery.
