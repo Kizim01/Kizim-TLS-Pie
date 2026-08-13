@@ -174,9 +174,9 @@ def choose_stride(pcap_path, budget):
     return max(1, tls_cloudbuild.choose_stride(expected, budget))
 
 
-def convert(pcap_path, out_path, voxel_m=0.02, budget=None,
+def convert(pcap_path, out_path, voxel_m=0.01, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
-            colouriser=None, progress=None):
+            colouriser=None, progress=None, viewer_sink=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -210,6 +210,8 @@ def convert(pcap_path, out_path, voxel_m=0.02, budget=None,
         rgb = (colouriser(xyz) if colouriser is not None
                else export.intensity_to_grey(refl))
         writer.write(xyz, rgb, intensity=refl)
+        if viewer_sink is not None:
+            viewer_sink.add(xyz, rgb)
         lo = np.minimum(lo, xyz.min(axis=0))
         hi = np.maximum(hi, xyz.max(axis=0))
 

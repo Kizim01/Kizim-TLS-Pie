@@ -16,7 +16,7 @@ import os
 import sys
 import time
 
-from tlsconvert import pipeline, rig
+from tlsconvert import pipeline, rig, viewer
 
 
 def human(n):
@@ -38,10 +38,19 @@ def build_parser():
     p.add_argument("-f", "--format", default="las",
                    choices=("las", "laz", "ply"),
                    help="output format (default: las)")
-    p.add_argument("--voxel", type=float, default=0.02,
-                   help="voxel edge in metres; 0 disables (default: 0.02)")
+    p.add_argument("--voxel", type=float, default=0.01,
+                   help="voxel edge in metres; 0 disables (default: 0.01). "
+                        "THIS is the density control -- see --max-points.")
+    # ASCII only in help text: argparse prints it to a cp1252 console, where a
+    # decorative character raises UnicodeEncodeError and --help dies.
     p.add_argument("--max-points", type=int, default=None,
-                   help="approximate ceiling, reached by reading fewer packets")
+                   help="THROWS AWAY DATA. Skips whole packets before decoding "
+                        "to land near this figure, so detail is lost across "
+                        "the whole scan rather than thinned evenly. Off by "
+                        "default; use --voxel instead unless you are "
+                        "deliberately sampling a capture quickly.")
+    p.add_argument("--view", action="store_true",
+                   help="open the cloud in a viewer when it is finished")
     p.add_argument("--full", action="store_true",
                    help="every return, no voxel and no budget. Large.")
     p.add_argument("--per-laser-azimuth", action="store_true",
@@ -73,6 +82,7 @@ def main(argv=None):
     budget = None if args.full else args.max_points
 
     failures = 0
+    last_view = None
     for path in paths:
         out = args.out or (os.path.splitext(path)[0] + "." + args.format)
         if not args.quiet:
@@ -93,12 +103,13 @@ def main(argv=None):
                              % (format(kept, ","), format(decoded, ",")))
             sys.stdout.flush()
 
+        sink = viewer.ViewerBuffer() if args.view else None
         try:
             info = pipeline.convert(
                 path, out, voxel_m=voxel, budget=budget,
                 per_laser_azimuth=args.per_laser_azimuth,
                 min_range=args.min_range, max_range=args.max_range,
-                progress=progress)
+                progress=progress, viewer_sink=sink)
         except Exception as exc:
             if not args.quiet:
                 sys.stdout.write("\r" + " " * 70 + "\r")
@@ -137,6 +148,31 @@ def main(argv=None):
                   % (format(info["points"], ","), format(args.max_points, ",")))
         print("  wrote    : %s in %.1f s"
               % (human(os.path.getsize(out)), info["seconds"]))
+        if sink is not None and sink.count:
+            last_view = (sink, os.path.basename(out))
+
+    if last_view is not None:
+        sink, name = last_view
+        server = viewer.ViewerServer(sink, title=name)
+        print("\nViewer: %s  (%s points%s)"
+              % (server.url, format(sink.count, ","),
+                 ", subsampled for display" if sink.subsampled else ""))
+        server.open()
+        # The server dies with the process, so the process has to outlive the
+        # browser tab. Blocking here is the whole mechanism, not a stall.
+        print("Serving until you press Ctrl+C.")
+        # ⛔ FLUSH BEFORE BLOCKING. Python block-buffers stdout when it is not a
+        # terminal, so piped or redirected output would hold the URL in the
+        # buffer and then sit here forever without ever emitting it -- the one
+        # line the operator needs, invisible in exactly the case where they
+        # cannot see the console.
+        sys.stdout.flush()
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("\nClosed.")
+        server.stop()
 
     return 1 if failures else 0
 

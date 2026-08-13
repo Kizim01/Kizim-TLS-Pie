@@ -328,5 +328,93 @@ for node in ast.walk(tree):
 check("every message kind the worker sends is handled by the drain loop",
       kinds <= handled, sorted(kinds - handled))
 
+# --- 10. viewer --------------------------------------------------------------
+print("\nviewer")
+
+from tlsconvert import viewer                                # noqa: E402
+import urllib.request                                        # noqa: E402
+
+buf = viewer.ViewerBuffer(max_points=1000)
+rsv = np.random.RandomState(4)
+for _ in range(12):
+    buf.add(rsv.uniform(-5, 5, (500, 3)).astype(np.float32),
+            rsv.randint(0, 255, (500, 3)).astype(np.uint8))
+check("the viewer buffer respects its cap", buf.count <= 1000, buf.count)
+check("and says when it subsampled", buf.subsampled)
+vx, vc = buf.arrays()
+check("xyz and colour stay the same length", vx.shape[0] == vc.shape[0])
+check("it keeps a useful fraction, not a handful", buf.count > 300, buf.count)
+
+# ⭐ The sample must be spread over the WHOLE scan. A fixed stride chosen up
+# front cannot do that when the total is unknown, and the failure is a cloud
+# that is dense where the sweep started and empty where it ended.
+spread = viewer.ViewerBuffer(max_points=600)
+for chunk in range(10):
+    spread.add(np.full((400, 3), float(chunk), dtype=np.float32),
+               np.zeros((400, 3), dtype=np.uint8))
+sx, _ = spread.arrays()
+check("every part of the scan survives the subsample",
+      len(np.unique(sx[:, 0])) == 10, sorted(np.unique(sx[:, 0]).tolist()))
+
+small = viewer.ViewerBuffer(max_points=10_000)
+small.add(np.zeros((5, 3), np.float32), np.zeros((5, 3), np.uint8))
+check("a small cloud is not subsampled at all", not small.subsampled)
+
+srv = viewer.ViewerServer(small, title="t&st <x>")
+try:
+    page = urllib.request.urlopen(srv.url, timeout=10).read()
+    blob = urllib.request.urlopen(srv.url + "points.bin", timeout=10).read()
+    check("the page is served", b"<canvas" in page and len(page) > 2000,
+          len(page))
+    check("template placeholders are all substituted",
+          b"__TITLE__" not in page and b"__SUB__" not in page)
+    check("the title is HTML-escaped, not injected",
+          b"t&amp;st &lt;x&gt;" in page)
+    check("the point blob is tagged", blob[:4] == b"TLSV", blob[:4])
+    n_blob = int.from_bytes(blob[4:8], "little")
+    check("its declared count matches its length",
+          n_blob == 5 and len(blob) == 8 + 5 * 15, (n_blob, len(blob)))
+    check("it binds loopback only, never the network",
+          srv.httpd.server_address[0] == "127.0.0.1",
+          srv.httpd.server_address)
+    code = urllib.request.urlopen(srv.url + "nope").getcode()
+    check("unknown paths are refused", False, code)
+except urllib.error.HTTPError as exc:
+    check("unknown paths are refused", exc.code == 404, exc.code)
+finally:
+    srv.stop()
+
+# --- 11. the density default that caused this --------------------------------
+print("\ndensity defaults")
+
+check("the pipeline's default voxel is 1 cm, not 2",
+      close(pipeline.convert.__defaults__[0], 0.01, 1e-9),
+      pipeline.convert.__defaults__[0])
+check("no packet budget by default -- reading every packet",
+      pipeline.convert.__defaults__[1] is None)
+check("a budget of None means stride 1",
+      pipeline.choose_stride("nonexistent.pcap", None) == 1)
+
+# ⛔ REGRESSION GUARD. A "max points" box in the GUI reads one packet in N and
+# discards the rest of the capture before decoding, which is what made the first
+# clouds far sparser than the hardware can produce. Density belongs to the voxel.
+check("the GUI offers detail levels rather than a packet budget",
+      len(gui.DETAIL_LEVELS) >= 4 and
+      all(isinstance(v, float) for _, v in gui.DETAIL_LEVELS),
+      gui.DETAIL_LEVELS)
+check("the default detail level is one of the offered levels",
+      gui.DEFAULT_DETAIL in [d[0] for d in gui.DETAIL_LEVELS])
+gui_src = open(gui.__file__, encoding="utf-8").read()
+check("the GUI has no max-points entry box",
+      "self.budget" not in gui_src and "budget=None" in gui_src)
+check("'Maximum' means no voxel at all", close(gui.DETAIL_LEVELS[0][1], 0.0))
+voxels = [v for _, v in gui.DETAIL_LEVELS[1:]]
+check("the levels run coarser down the list, so the order reads as detail",
+      voxels == sorted(voxels) and len(set(voxels)) == len(voxels), voxels)
+default_voxel = dict((label, v) for label, v in
+                     gui.DETAIL_LEVELS)[gui.DEFAULT_DETAIL]
+check("the default is 1 cm, matching the pipeline's own default",
+      close(default_voxel, 0.01, 1e-9), default_voxel)
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

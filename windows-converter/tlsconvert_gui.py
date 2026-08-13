@@ -28,7 +28,7 @@ from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tlsconvert import pipeline                                   # noqa: E402
+from tlsconvert import pipeline, viewer                           # noqa: E402
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -39,6 +39,29 @@ except ImportError:                                   # pragma: no cover
 CAPTURE_EXT = ".pcap"
 COMPANION_EXT = (".json", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
                  ".cloud", ".las", ".laz", ".ply")
+
+# ⛔ DENSITY IS SET BY THE VOXEL ALONE. There is deliberately NO "max points"
+# box here, although the CLI still has one: that control works by skipping whole
+# PACKETS before anything is decoded, so asking for five million points on a
+# 390 MB capture reads one packet in twenty-four and throws away 96% of the scan
+# before the grid ever sees it. It thins detail everywhere instead of merging
+# what is genuinely redundant, and shipping it as the default is what made the
+# first clouds far sparser than the hardware can produce.
+#
+# Counts measured on TLS_26_08_13_02_05_15 (390 MB, 59.3 M returns), reading
+# every packet, so these figures are real rather than estimated.
+DETAIL_LEVELS = [
+    ("Maximum — every return (~59 M, very large)", 0.0),
+    ("Very high — 5 mm voxel (~11 M)", 0.005),
+    ("High — 1 cm voxel (~2.9 M)", 0.01),
+    ("Balanced — 2 cm voxel (~880 k)", 0.02),
+    ("Light — 5 cm voxel", 0.05),
+]
+DEFAULT_DETAIL = DETAIL_LEVELS[2][0]
+
+# ⚠ Below about 3 cm the grid is finer than the VLP-16's own range accuracy, so
+# the extra points include noise as well as geometry. Offered anyway, because
+# which of those an operator wants is their call and not this program's.
 
 
 class Cancelled(Exception):
@@ -77,6 +100,10 @@ class App:
         self.captures = []                 # absolute paths, in order added
         self.worker = None
         self.cancel = threading.Event()
+        # Held so the viewer keeps serving, and so the previous one can be shut
+        # down rather than leaking a thread and a port on every conversion.
+        self.server = None
+        root.protocol("WM_DELETE_WINDOW", self._close)
 
         root.title("TLS-Pie Converter")
         root.geometry("880x620")
@@ -126,30 +153,23 @@ class App:
                      values=("las", "laz", "ply")).grid(row=0, column=1,
                                                         sticky="w")
 
-        ttk.Label(opts, text="Voxel (m)").grid(row=0, column=2, sticky="e",
-                                               padx=6)
-        self.voxel = tk.StringVar(value="0.02")
-        ttk.Entry(opts, textvariable=self.voxel, width=8).grid(row=0, column=3,
-                                                               sticky="w")
+        ttk.Label(opts, text="Detail").grid(row=0, column=2, sticky="e",
+                                            padx=6)
+        self.detail = tk.StringVar(value=DEFAULT_DETAIL)
+        ttk.Combobox(opts, textvariable=self.detail, width=34,
+                     state="readonly",
+                     values=[d[0] for d in DETAIL_LEVELS]).grid(
+                         row=0, column=3, columnspan=3, sticky="w")
 
-        ttk.Label(opts, text="Max points").grid(row=0, column=4, sticky="e",
-                                                padx=6)
-        self.budget = tk.StringVar(value="5000000")
-        ttk.Entry(opts, textvariable=self.budget, width=12).grid(row=0,
-                                                                 column=5,
-                                                                 sticky="w")
-
-        self.full = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts, text="Every return (no voxel, no limit)",
-                        variable=self.full,
-                        command=self._toggle_full).grid(row=1, column=0,
-                                                        columnspan=4,
-                                                        sticky="w", padx=6,
-                                                        pady=(0, 6))
         self.per_laser = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Per-laser azimuth (slightly finer)",
-                        variable=self.per_laser).grid(row=1, column=4,
-                                                      columnspan=2, sticky="w",
+                        variable=self.per_laser).grid(row=1, column=0,
+                                                      columnspan=3, sticky="w",
+                                                      padx=6, pady=(0, 6))
+        self.want_view = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts, text="Open the viewer when finished",
+                        variable=self.want_view).grid(row=1, column=3,
+                                                      columnspan=3, sticky="w",
                                                       pady=(0, 6))
 
         run = ttk.Frame(self.root)
@@ -173,12 +193,11 @@ class App:
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind("<<Drop>>", self._on_drop)
 
-    def _toggle_full(self):
-        # The entry boxes are read at run time, not cached, so nothing needs
-        # disabling -- just say plainly which setting is in charge.
-        self.bar["value"] = 0
-        self.say("Every return: voxel and point limit ignored."
-                 if self.full.get() else "Voxel and point limit back in use.")
+    def _voxel(self):
+        for label, voxel in DETAIL_LEVELS:
+            if label == self.detail.get():
+                return voxel
+        return DETAIL_LEVELS[2][1]
 
     # --- adding files ------------------------------------------------------
     def _on_drop(self, event):
@@ -230,21 +249,6 @@ class App:
         self.say("Cleared.")
 
     # --- running -----------------------------------------------------------
-    def _settings(self):
-        if self.full.get():
-            return 0.0, None
-        try:
-            voxel = float(self.voxel.get())
-        except ValueError:
-            raise ValueError("Voxel must be a number of metres, e.g. 0.02")
-        if voxel < 0:
-            raise ValueError("Voxel cannot be negative.")
-        text = self.budget.get().strip().replace(",", "")
-        budget = int(text) if text else None
-        if budget is not None and budget <= 0:
-            raise ValueError("Max points must be positive, or blank for none.")
-        return voxel, budget
-
     def start(self):
         if self.worker and self.worker.is_alive():
             return
@@ -254,19 +258,14 @@ class App:
                                 "Add at least one capture that has its .json "
                                 "sidecar beside it.")
             return
-        try:
-            voxel, budget = self._settings()
-        except ValueError as exc:
-            messagebox.showerror("Check the settings", str(exc))
-            return
-
         self.cancel.clear()
         self.go.configure(state="disabled")
         self.stop.configure(state="normal")
         self.bar["value"] = 0
         self.worker = threading.Thread(
-            target=self._run, args=(runnable, voxel, budget,
-                                    self.fmt.get(), self.per_laser.get()),
+            target=self._run, args=(runnable, self._voxel(), self.fmt.get(),
+                                    self.per_laser.get(),
+                                    self.want_view.get()),
             daemon=True)
         self.worker.start()
 
@@ -274,8 +273,9 @@ class App:
         self.cancel.set()
         self.say("Stopping after the current chunk…")
 
-    def _run(self, captures, voxel, budget, fmt, per_laser):
+    def _run(self, captures, voxel, fmt, per_laser, want_view):
         """Worker thread. Talks ONLY through self.queue."""
+        last = None
         for path in captures:
             if self.cancel.is_set():
                 self.queue.put(("status", path, "cancelled"))
@@ -291,10 +291,12 @@ class App:
                     raise Cancelled()
                 self.queue.put(("progress", _p, (kept, decoded)))
 
+            sink = viewer.ViewerBuffer() if want_view else None
             try:
                 info = pipeline.convert(
-                    path, out, voxel_m=voxel, budget=budget,
-                    per_laser_azimuth=per_laser, progress=progress)
+                    path, out, voxel_m=voxel, budget=None,
+                    per_laser_azimuth=per_laser, progress=progress,
+                    viewer_sink=sink)
             except Cancelled:
                 self.queue.put(("status", path, "cancelled"))
                 self.queue.put(("say", None,
@@ -306,6 +308,14 @@ class App:
                 self.queue.put(("say", None, "  FAILED: %s" % exc))
                 continue
             self.queue.put(("done", path, info))
+            if sink is not None and sink.count:
+                last = (sink, os.path.basename(out))
+
+        # Only the last cloud is shown. Opening a browser tab per capture on a
+        # batch of ten would be hostile, and the operator can re-open any of
+        # them from the finished files.
+        if last is not None and not self.cancel.is_set():
+            self.queue.put(("view", None, last))
         self.queue.put(("finished", None, None))
 
     # --- main-thread drain -------------------------------------------------
@@ -325,6 +335,8 @@ class App:
                     self.bar["value"] = (self.bar["value"] + 17) % 1000
                 elif kind == "done":
                     self._report(path, payload)
+                elif kind == "view":
+                    self._open_viewer(*payload)
                 elif kind == "finished":
                     self.go.configure(state="normal")
                     self.stop.configure(state="disabled")
@@ -357,6 +369,28 @@ class App:
         if os.path.exists(info["out"]):
             self.say("  wrote    : %s in %.1f s"
                      % (human(os.path.getsize(info["out"])), info["seconds"]))
+
+    def _open_viewer(self, sink, name):
+        """Serve the finished cloud on loopback and open the browser at it."""
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
+        try:
+            self.server = viewer.ViewerServer(sink, title=name)
+        except OSError as exc:
+            self.say("  viewer unavailable: %s" % exc)
+            return
+        self.say("  viewer   : %s  (%s points%s)"
+                 % (self.server.url, format(sink.count, ","),
+                    ", subsampled for display" if sink.subsampled else ""))
+        self.server.open()
+        self.say("  The viewer is served by this program — leave it running "
+                 "while the browser tab is open.")
+
+    def _close(self):
+        if self.server is not None:
+            self.server.stop()
+        self.root.destroy()
 
     def say(self, text):
         self.log.configure(state="normal")

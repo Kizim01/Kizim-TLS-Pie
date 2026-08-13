@@ -92,18 +92,57 @@ usual reason colourised clouds bleed colour across edges.
 ⚠ *Colour sampling is not implemented yet.* The photo is located and reported;
 the equirectangular projection and the yaw solve are the next piece of work.
 
-## Density
+## Density — read this before deciding it lost detail
 
-`--voxel` is the binding constraint, not `--max-points`. On the Pi, six times
-the budget bought only 2.2× the points because the grid saturated first.
+**The voxel sets the density. `--max-points` throws data away.**
+
+`--max-points` works by skipping whole *packets before anything is decoded*, so
+asking for five million on a 390 MB capture reads about one packet in
+twenty-four and discards 96% of the scan before the grid ever sees it. It thins
+detail across the whole cloud instead of merging what is genuinely redundant.
+**It is off by default and there is no such control in the GUI** — it is kept in
+the CLI only for deliberately sampling a capture quickly.
+
+Measured on `TLS_26_08_13_02_05_15` (390 MB, **59.3 million returns**), reading
+every packet:
+
+| voxel | points | LAS | time |
+|---|---|---|---|
+| none (`--full`) | 59,343,707 | ~1.5 GB | — |
+| 5 mm | 11,114,614 | 275 MB | 27 s |
+| 1 cm **(default)** | 2,929,122 | 73 MB | 20 s |
+| 2 cm | 884,322 | 22 MB | 18 s |
+
+For SketchUp, 1 cm is a sensible ceiling; 5 mm and finer are better sent to
+CloudCompare.
 
 **This tool will not silently change your voxel.** The Pi's builder doubles the
 edge and re-bins when a grid overruns its budget, which is why asking it for
-1 cm quietly gives you 2 cm. Here you get the voxel you named, and a message if
-the result overruns.
+1 cm quietly gives you 2 cm. Here you get the voxel you named.
 
 ⚠ Below about 3 cm you are preserving the VLP-16's own range noise as well as
-geometry. Fine for a preview, poor for measurement.
+geometry. Fine for looking at, poor for measuring from.
+
+## Viewer
+
+Conversion opens the cloud in your browser (`Open the viewer when finished`, or
+`--view` on the command line). Drag to orbit, wheel to zoom — **the zoom flies
+through walls rather than stopping at them** — shift-drag or right-drag to pan,
+`R` for free roam, `F` to recentre. Colour by photo/intensity or by height, with
+an adjustable range.
+
+It rotates about **the sensor at the origin**, not the bounding-box centre: on
+the Pi, one stray return 72 m away put the pivot 24.8 m out in open air, which
+is why rotating felt like dragging the cloud around.
+
+The renderer is WebGL because that is the only GPU available on a bare Windows
+machine without installing anything. The page is served from `127.0.0.1` for as
+long as the program is open — a `file://` page cannot fetch its own point data,
+and embedding it would inflate an 11 million point cloud into a 200 MB document.
+Nothing listens on an outside interface.
+
+Very large clouds are subsampled for display only (8 M points by default); the
+file on disk always holds everything.
 
 ⛔ **Do not compare surface thickness across different voxel or stride
 settings.** Voxelling thins a surface's dense core far more than its sparse
