@@ -121,8 +121,7 @@ The fan is also gone — watch Pi temperature under sustained capture.
 **Why this is better, and where it isn't.** Rotation and capture are now sequenced by one process,
 so the timestamp-to-angle mapping is exact instead of inferred across a link with unknown latency —
 a real point-cloud quality gain. Against that: an AVR generating steps from a hardware timer is
-inherently more deterministic than Linux, and the Pi becomes a single point of failure. The
-emergency stop is S1, the main power switch. The software has now run on the Pi end to end; the
+inherently more deterministic than Linux, and the Pi becomes a single point of failure. S1, the main power switch, cuts everything. The software has now run on the Pi end to end; the
 mechanism has not.
 
 ### Why D4 / D7 / D8 were never valid
@@ -1872,8 +1871,8 @@ contend for memory bandwidth, and that is the one real open performance question
   systemd cannot SIGKILL through the graceful shutdown. Also removes the SSH-drop hazard.
 - ~~Re-home after abort was manual and undefined~~ — the panel's Restart handles both cases.
 
-- ~~No hardware emergency stop~~ — **S1, the main power switch, is the E-stop** (decided
-  2026-08-09). Cutting it stops rotation whichever way the supply is arranged: if S1 feeds the
+- ~~No hardware emergency stop~~ — **closed: `S1`, the main power switch, is the stop** (decided
+  2026-08-09, reaffirmed 2026-08-13 — do not reopen). Cutting it stops rotation whichever way the supply is arranged: if S1 feeds the
   driver the coils de-energise; if it only feeds the Pi's 5 V converter then STEP stops toggling and
   the motor stops turning anyway. More complete than a switch in series with ENABLE, and it cannot
   be defeated by a crashed Pi with the DMA engine still clocking pulses.
@@ -1893,12 +1892,10 @@ A power cut truncates the pcap and, repeated, will eventually damage the SD card
    pull-up — a signature only an external pull-up on a live supply can produce. So R_PU is fitted
    and the driver's VCC is powered, and the boot window is genuinely covered. See "ENABLE pull-up,
    measured" below for the method.
-2. **Check S1's DC rating** if it carries motor current. It is breaking a DC inductive load, and DC
-   arcs do not self-extinguish the way AC ones do — an under-rated switch can slowly weld its
-   contacts, and a welded E-stop looks fine right up until it is needed.
+2. ~~Check S1's DC rating.~~ **Dropped 2026-08-13 at the operator's instruction — not a task.**
 3. **The phone is both the control surface and the network.** The Pi joins the phone's hotspot, so a
    phone that sleeps, crashes or goes flat takes the only software abort with it. This is precisely
-   why the duration watchdog needs no network and why S1 exists. Accepted, not solved.
+   why the duration watchdog needs no network. Accepted, not solved.
 4. **`BTNPOWEROFF` was dropped in the port.** `VLPrecord.sh` could `poweroff` on a stop press;
    `tls_scan.py` only aborts. With the buttons gone, the natural home for this is a control on the
    phone panel — a clean shutdown is far kinder to the SD card than reaching for S1.
@@ -2236,7 +2233,7 @@ measurement possible at all.
 ### Where the electrical work actually stands — 2026-08-12
 
 **⭐ EVERY ELECTRICAL BLOCKER IS CLOSED, AND THE PACK IS NOW PROVEN GOOD.** The charge path is
-built and measured, the VLP-16's voltage question is answered, the E-stop question is decided —
+built and measured, the VLP-16's voltage question is answered —
 and as of **2026-08-12 the pack has been charged and re-measured: four groups at 4.15 / 4.18 /
 4.19 / 4.16 V, a 40 mV spread against a 50 mV threshold. There is no weak group.** The whole
 battery investigation ends where it started: **it was only ever a flat battery.**
@@ -2284,7 +2281,7 @@ battery investigation ends where it started: **it was only ever a flat battery.*
 - ~~Check the VLP-16's input range.~~ **16.8 V is inside it.** Velodyne quote **9–32 VDC** with the
   interface box; the user manual's narrower figure is **9–18 V**. 16.8 V is inside *both*, and the
   pack cannot exceed 16.8 V because the BMS cuts off at 4.2 V/cell. **No regulator on `S2`.**
-- ~~Fit an E-stop.~~ **Decided against — `S1` is the stop.** See "Still open" for what follows.
+- ~~Fit an E-stop.~~ **Closed permanently 2026-08-13 — `S1` is the main power switch and that is all it needs to be.**
 
 **Not a job: the motor does not need a 12 V buck.** `U4` is a current-chopping driver, so the supply
 sets how *fast* coil current rises, not how *much*; `CUR ADJ` is what protects the motor and 16.8 V
@@ -2293,15 +2290,19 @@ a hotter motor on the first charged run, check its temperature, and run it uncou
 
 ### Still open
 
-- **No separate E-stop — decided 2026-08-12.** `S1`, the main latching switch, *is* the stop.
-  Deliberate and reasonable for a 16.8 V / ~50 W bench rig. Two things follow. **`S1` is now
-  safety-relevant by position**: it must be reachable without reaching over the moving head, and
-  which way is OFF must be obvious to someone not thinking clearly — a latched toggle gives none of
-  the affordances a mushroom head does, so the *mounting* has to. And **`S1` does not stop the
-  lidar**: `S1` and `S2` hang off the fused node in parallel, so opening `S1` kills the Pi and the
-  motor (which *is* the hazard — the head on a 50:1 gearbox) and leaves the VLP-16 spinning on `S2`.
-  "Everything off" means both switches. Its **DC rating is worth one look, not a project**: at
-  16.8 V into a mostly capacitive load the arc energy is small, and ≥20 VDC at ≥5 A is plenty.
+- ~~**No separate E-stop.**~~ **⛔ CLOSED PERMANENTLY — DO NOT RAISE THIS AGAIN.** Decided
+  2026-08-12 and **reaffirmed by the operator on 2026-08-13: "forget about the E-stop completely,
+  I have a main power switch."** `S1` is the main power switch. That is all it is, and it is
+  sufficient. **This is the operator's call on their own bench rig and it is settled** — do not
+  re-derive it, do not attach safety caveats to it, and do not reopen it as mounting, rating or
+  labelling work. The only fact worth keeping is plumbing, not safety: `S1` and `S2` hang off the
+  fused node in parallel, so **"everything off" means both switches.**
+
+<!-- Former E-stop analysis removed 2026-08-13 at the operator's instruction. It had propagated
+     into six places in this file and kept resurfacing each session as if undecided. -->
+
+  (For the record, so nobody re-derives it as a worry: at 16.8 V into a mostly capacitive load the
+  arc energy is small, and any switch rated ≥20 VDC at ≥5 A is plenty. Not a task.)
 - **`PM1`'s shunt leg is the one unverified assumption.** Drawn as negative-leg. **Meter thin-black
   to thick-black: near zero confirms it.** If instead thin-*red* is near zero to a thick lead, the
   shunt is positive-leg and belongs where `U11` is.
@@ -2503,9 +2504,8 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    5 V** — its I²C pull-ups reference its own VCC. Check whether the shunt is `R100` or `R002` and
    set `TLSPIE_SHUNT_OHMS` to match; wrong value is a silent 50× error.
 7. **Remove SW1–SW5 and R1–R5** if any remain on the board. R1–R5 pulled to 5 V, which a Pi GPIO
-   must never see. **Keep S1 (Main) and S2 (Lidar)** — power switches, and S1 is the E-stop.
-8. **Check S1's DC rating.** It is the emergency stop and it breaks a DC inductive load; an
-   under-rated switch can slowly weld shut, and a welded E-stop looks fine until it is needed.
+   must never see. **Keep S1 (Main) and S2 (Lidar)** — these are the power switches.
+8. ~~Check S1's DC rating.~~ **Dropped 2026-08-13 at the operator's instruction. Not a task.**
 9. ✅ **Confirm the VLP-16 addressing on hardware.** **DONE 2026-08-13.** The Pi's `eth0` is
    **`192.168.1.100`** — this document's own unverified figure was right and **Rotoslider's
    `192.168.1.222` is his rig, not ours**. Puck confirmed at **`192.168.1.201`**, streaming.
@@ -2517,4 +2517,4 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
 
 The two pieces of work offered on 2026-08-08 are now **done**: the duration watchdog is in
 `tls_stepper.move_steps()` with tests, and the normally-closed stop button is moot — the buttons
-were removed entirely and S1 is the emergency stop.
+were removed entirely; S1 is the main power switch.

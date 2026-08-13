@@ -38,9 +38,10 @@ started and not stopped is worse than one that will not start.
 
 BEFORE FIRST RUN
 ----------------
-  * Fit a LATCHING E-STOP in series with the driver's ENABLE. With no stop
-    button, this is the only hardware abort, and the only thing that works if
-    the Pi crashes while pigpio's DMA engine is still clocking steps.
+  * S1, the main power switch, is the hardware stop. No separate E-stop is
+    fitted and none is wanted -- settled 2026-08-13, do not re-suggest one.
+    Note what it does NOT cover: if the Pi crashes while pigpio's DMA engine
+    is still clocking steps, only cutting power stops the motor.
   * Fit a pull-up from the driver's ENABLE to +3V3. Pi GPIOs float for the
     ~30 s of boot and ENABLE is active-low. See tls_stepper.py.
   * sudo apt install pigpio python3-pigpio
@@ -106,7 +107,7 @@ except ImportError:
 #
 # Use the panel's Stop for normal aborts and S1 only when something is wrong:
 # a hard power cut truncates the pcap and, repeated, will eventually damage
-# the SD card. See MICROVIEW_REMOVAL.md for the switch's DC rating caveat.
+# the SD card.
 #
 # See also: the duration watchdog in tls_stepper.move_steps(), the software
 # half of this, which needs no network but cannot survive this process dying.

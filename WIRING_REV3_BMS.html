@@ -215,17 +215,17 @@ li strong{color:var(--ink);font-weight:620}
     </div>
 
     <div class="note">
-      <span class="hd">No separate E-stop &mdash; decided 2026-08-12</span>
-      <span class="m">S1</span>, the main latching switch, <em>is</em> the stop. Reasonable for a
-      16.8 V / ~50 W bench rig. Two things follow. <b><span class="m">S1</span> is now
-      safety-relevant by position</b> &mdash; it must be reachable without reaching over the moving
-      head, and which way is OFF must be obvious to someone not thinking clearly; a latched toggle
-      gives none of the affordances a mushroom head does, so the mounting has to. And
-      <b><span class="m">S1</span> does not stop the lidar</b> &mdash; <span class="m">S1</span> and
-      <span class="m">S2</span> hang off the fused node in parallel, so opening
-      <span class="m">S1</span> kills the Pi and the motor (which <em>is</em> the hazard, the head on
-      a 50:1 gearbox) and leaves the VLP-16 spinning on <span class="m">S2</span>.
+      <span class="hd">The switches</span>
+      <span class="m">S1</span> is the main power switch and <span class="m">S2</span> feeds the
+      lidar. They hang off the fused node <b>in parallel</b>, so opening <span class="m">S1</span>
+      kills the Pi and the motor and leaves the VLP-16 running on <span class="m">S2</span>.
       <b>&ldquo;Everything off&rdquo; means both switches.</b>
+      <br><br>
+      <b>⛔ Settled 2026-08-13, do not reopen:</b> there is no separate E-stop and none is wanted.
+      <span class="m">S1</span> is the main power switch, that is all it is, and the operator has
+      confirmed it twice. The former analysis here &mdash; mounting position, switch affordances,
+      DC contact rating &mdash; is <b>removed deliberately</b>, not lost: it kept resurfacing each
+      session as though the question were still open.
     </div>
     <div class="stop">
       <span class="hd">A shorted balance lead on a 3P group is still a fire</span>

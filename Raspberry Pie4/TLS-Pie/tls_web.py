@@ -37,8 +37,9 @@ SAFETY
 ------
 The stop button here is software, exactly like the GPIO stop button, with the
 same limit: if the controlling process dies, pigpio's DMA engine keeps clocking
-step pulses and nothing in this file can intervene. Only a hardware E-stop in
-series with the driver's ENABLE covers that.
+step pulses and nothing in this file can intervene. S1, the main power switch,
+is what covers that case. No separate E-stop is fitted and none is wanted --
+settled 2026-08-13, do not re-suggest one.
 """
 
 import json
@@ -947,8 +948,7 @@ body{transition:opacity .25s ease}
 </div>
 
 <div class="foot">
-  Software stop only. A hardware E-stop in series with the driver&rsquo;s ENABLE
-  is the only thing that stops the motor if the controller dies.
+  Software stop only &mdash; if the controller dies, cut power at the main switch.
 </div>
 
 <!--
