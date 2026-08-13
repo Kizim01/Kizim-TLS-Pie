@@ -544,6 +544,31 @@ measures the supply, and one experiment was lost to this before it was noticed.
 > was actually reached, so this measurement is the real test and not a repeat of the undercharge
 > trap.
 >
+> ### ⭐⭐⭐ THE SYMPTOM IS GONE — 2026-08-13, first run on the charged pack
+>
+> The rig assembled, on the pack, with the puck mounted on the head. **Two continuous 360° legs at
+> 10 °/s — 72 seconds of real motion — and `throttled` stayed `0x0` throughout.** Sampled at
+> baseline, after leg 1, after leg 2, and at the end: **not even bit 16, the latched "undervoltage
+> happened at some point" flag.** ARM held 1800 MHz under load.
+>
+> | leg | commanded | elapsed | error |
+> |---|---|---|---|
+> | 1 | +360° @ 10 °/s | 36.043 s | +0.12% |
+> | 2 | **−360° @ 10 °/s — the return leg** | 36.038 s | +0.11% |
+>
+> **⭐ The return leg ran for the first time in this project's life, and the head came back on the
+> mark** (confirmed by eye — *"motor perfect"*). Both legs 160,000 steps at 4444.4 Hz, exit 0,
+> nothing in the journal, `ENABLE` back to 1 (de-energised) after each.
+>
+> **Two things this establishes that nothing before it could.** The brownouts and mid-move reboots
+> **do not recur on a charged pack** — the 40 mV spread said the pack *should* be fine, this says it
+> *is*. And **`STEPS_PER_REV = 160000` is confirmed on a charged pack**, at higher available torque
+> than it was originally calibrated at, in *both directions*.
+>
+> ⚠ **`arm 700 MHz` after a leg is the idle downclock, not throttling** — `throttled=0x0` rules out
+> capping. Do not read it as a fault. Likewise `DIR` left low after a reverse move is the last
+> direction latched, not a stuck pin.
+>
 > ### ⛔ `D1` ADDED 2026-08-11 — the charge chain was draining the pack backwards
 >
 > **Caught live, not theorised.** With the USB unplugged but the buck still wired to the BMS, the
@@ -1966,10 +1991,14 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**All blockers closed as of 2026-08-11, and as of 2026-08-12 the pack is charged and proven good.
-Nothing is waiting on a diagnosis or a measurement.** What is left is to **run the rig on the
-charged pack** — the brownout symptom has never once been tested against a full battery, and only
-the symptom failing to recur closes it.
+**⭐ THE POWER THREAD IS FULLY CLOSED AS OF 2026-08-13 — measurement AND symptom.** The pack is
+charged and balanced (40 mV spread), and the assembled rig then drove **72 s of continuous motion
+on it with `throttled=0x0` throughout, not even latched.** The brownouts do not recur. The **return
+leg ran for the first time and landed on the mark**, so `STEPS_PER_REV = 160000` is now confirmed in
+both directions at full torque.
+
+**⛔ ONE NEW BLOCKER, AND IT IS THE ONLY THING BETWEEN HERE AND A FIRST REAL SCAN: `eth0` HAS NO
+CARRIER.** The VLP-16 sends nothing. See the section below before touching anything else.
 
 | | |
 |---|---|
@@ -1985,6 +2014,41 @@ the symptom failing to recur closes it.
 | ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
+
+### ⛔ OPEN 2026-08-13 — `eth0` has NO CARRIER and the VLP-16 sends nothing
+
+**Symptom.** `eth0: <NO-CARRIER,...,UP> state DOWN`, carrier `0`, no address, empty ARP table, and
+**zero UDP packets on :2368** across four separate listens. NetworkManager has a `lidar` profile but
+the device sits `unavailable`, because there is no carrier for it to bind to.
+
+**What is already ruled out.**
+
+- **Not an admin-down interface.** Brought it up explicitly with `ip link set eth0 up` and re-read
+  carrier — still `0`. *Carrier is meaningless while an interface is admin-down, so this test is the
+  one that makes the reading mean anything.*
+- **Not a dead PHY on the Pi.** `bcmgenet fd580000.ethernet: GENET 5.0 EPHY` initialises and
+  configures for external RGMII at boot.
+- **Not a negotiation failure.** **The only link event in the entire journal is from boot at
+  t=6.08 s.** A live cable entering the port logs a transition within about a second; 45 s of
+  deliberate unplug/replug at both ends produced **no event at all**. Nothing has ever been alive on
+  that wire.
+
+**⛔ THE PUCK SPINNING PROVES POWER, NOT DATA.** `S2` feeds the sensor; the Ethernet run is a
+separate path. The rig looked "on and working" throughout, and it was — just not connected.
+
+**⛔ AND `ping 192.168.1.201` WOULD ANSWER RIGHT NOW, WITH NO LINK AT ALL.** This is exactly the
+false positive recorded on 2026-08-12: the phone hotspot's NAT replies for the whole subnet.
+`192.168.1.202` answers too, which is the control that proves it. **Check `carrier`, never `ping`.**
+
+**The two tests that split it, in order:**
+
+1. **Plug a known-good live device into the Pi's port** — a laptop, a router, anything that links.
+   Links ⇒ the Pi's port is fine and the fault is the cable or the interface box. Doesn't link ⇒ the
+   fault is the Pi's port itself.
+2. **Establish how the Ethernet is actually routed** — through the Velodyne interface box, or
+   hand-wired? A hand-wired run with the pairs split or swapped gives precisely this signature: the
+   puck powers and spins, and the link never comes up. **This rig has form here** — the harness that
+   killed the MicroView was wired with both pin rows reversed.
 
 ### ✅ Boot sequence and system check — CLOSED 2026-08-12
 
@@ -2041,11 +2105,14 @@ battery investigation ends where it started: **it was only ever a flat battery.*
 1. ~~**CHARGE IT** and re-measure the four groups at the top.~~ **✅ DONE 2026-08-12 — passed.**
    Detail in the per-group section above. **Open `S3` after every charge** — that habit is still the
    only back-feed protection until `D1` is in.
-2. **RUN THE RIG ON THE CHARGED PACK.** This is now the top job and the real confirmation: the
-   symptom was brownouts and reboots mid-move, and no bench voltage disproves a symptom — only the
-   symptom failing to recur does. **The motor has only ever run on a flat pack**, so expect more
-   torque and a hotter motor; check its temperature and run it uncoupled from the head the first time.
-   Budget roughly **5 h** of runtime (~9 Ah / ~130 Wh against ~26 W with the VLP-16 spinning).
+2. ~~**RUN THE RIG ON THE CHARGED PACK.**~~ **✅ DONE 2026-08-13 — PASSED.** Assembled rig, puck on
+   the head, **72 s of continuous motion (±360° at 10 °/s) with `throttled=0x0` throughout, not even
+   the latched bit**. The brownouts do not recur. **The return leg ran for the first time and landed
+   on the mark**, so `STEPS_PER_REV = 160000` holds in both directions at full torque. Timing +0.12%
+   / +0.11%. Budget roughly **5 h** of runtime (~9 Ah / ~130 Wh against ~26 W with the puck spinning).
+3. **⛔ FIX THE LIDAR LINK — this is now the only thing between here and a first real scan.** `eth0`
+   has no carrier and the puck sends nothing. Full diagnosis and the two decisive tests are in the
+   **"OPEN 2026-08-13"** section above. **Do not use `ping` to check it.**
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
