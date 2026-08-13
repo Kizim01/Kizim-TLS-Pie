@@ -2,31 +2,42 @@
 """
 Look at the cloud the moment it is built, without leaving the converter.
 
+BUILT FOR DENSITY. The operator models from these clouds and picks usable points
+by eye, so thinning the display to keep the renderer comfortable defeats the
+purpose -- a point that was dropped cannot be chosen. Everything here exists to
+get as many points onto the screen as the machine will hold.
+
 WHY A BROWSER AND A LOCAL SERVER
 --------------------------------
-Millions of points need a GPU, and the only GPU renderer available on a bare
-Windows machine with no extra install is the one already in the browser. Tk
-cannot draw this; adding an OpenGL binding would mean a native dependency and a
-much larger executable for a window that WebGL gives away.
+Millions of points need a GPU, and the only GPU renderer on a bare Windows
+machine with nothing installed is the one in the browser. A `file://` page
+cannot fetch a sibling binary -- browsers refuse it -- and embedding the points
+would mean base64, inflating them by a third. So the page and the points are
+served from 127.0.0.1 for as long as the program is open. Nothing listens on an
+outside interface and the server stops with the program.
 
-The server exists because a page opened from `file://` cannot fetch a sibling
-binary -- browsers refuse the request. Embedding the points in the HTML instead
-would mean base64, which inflates them by a third and makes an 11 million point
-cloud a 200 MB document. So the converter serves the page and the point data
-from 127.0.0.1 for as long as it is open. Nothing listens on an outside
-interface and the server stops with the program.
+⭐ int16 COSTS NOTHING HERE, AND BUYS OVER TWICE THE POINTS.
+Positions go over as int16 with a per-axis scale and offset rather than float32.
+Across the widest scan measured (140 m) that quantises to about 2 mm, while the
+VLP-16's own range accuracy is +/-30 mm -- so the encoding is roughly fifteen
+times finer than the instrument feeding it, and rounding cannot be what limits
+a model built from this. In exchange a point costs 7 bytes instead of 15, so the
+same graphics memory holds well over twice as many.
 
-⭐ THE CAMERA IS THE PANEL'S, DELIBERATELY. Orbit that flies THROUGH the cloud
-rather than stopping at a radius, a free-roam mode that holds the eye and moves
-the target instead, and a pivot on the sensor at the origin rather than on the
-bounding-box centre. Those three came out of real complaints about the Pi's
-preview -- "it stops when it hits a point", "it drags the whole cloud", corners
-that could only be circled and never entered -- and the same complaints would
-arrive here within a minute of shipping a naive orbit.
+⛔ BUFFERS ARE CHUNKED, WHICH IS NOT OPTIONAL. WebGL will not accept one buffer
+of tens of millions of vertices; past a driver-dependent limit the upload simply
+fails and the canvas stays black with nothing reported. Points are split across
+several buffers and drawn with one call each.
+
+⭐ THE CAMERA IS THE PANEL'S, DELIBERATELY. Zoom flies THROUGH the cloud rather
+than stopping at a radius, free roam holds the eye and moves the target instead
+of orbiting, and the pivot is the sensor at the origin rather than the bounding
+box centre. Those three came out of real complaints about the Pi's preview --
+"it stops when it hits a point", "it drags the whole cloud", corners that could
+only be circled and never entered.
 """
 
 import http.server
-import json
 import os
 import socket
 import socketserver
@@ -36,44 +47,60 @@ import webbrowser
 
 import numpy as np
 
-# A viewer buffer is float32 xyz + uint8 rgb = 15 bytes a point. The cap is
-# about GPU memory rather than bandwidth: localhost moves 150 MB instantly, but
-# a buffer that will not fit in VRAM fails as a blank canvas with nothing said.
-DEFAULT_VIEW_MAX = 8_000_000
+# Set so a FULL-DENSITY scan goes in whole rather than being halved: the 390 MB
+# reference capture yields 59.3 M returns, which at 7 bytes is ~415 MB of vertex
+# data. That is a lot to ask of a graphics card and some will refuse -- but the
+# refusal is caught and explained on screen, whereas silently throwing away half
+# the points would be invisible and is the thing this viewer exists to avoid.
+# Lower it with TLSCONVERT_VIEW_MAX if your card struggles; the file on disk is
+# never affected either way.
+DEFAULT_VIEW_MAX = int(os.environ.get("TLSCONVERT_VIEW_MAX", "60000000"))
+
+# Points per WebGL buffer. Small enough to stay well inside any driver's limit,
+# large enough that the draw-call count stays trivial.
+CHUNK_POINTS = 4_000_000
+
+FORMAT_VERSION = 2
+FLAG_RGB = 1
 
 
 class ViewerBuffer:
     """
     Collects points for the viewer alongside writing the real output.
 
-    Subsamples by a stride that RISES as the cloud grows, so an unknown total
-    still lands near the cap without holding everything first. Points already
-    taken are thinned in place when the stride rises, which keeps the sample
-    even across the whole scan instead of dense at the start and empty later --
-    the failure a fixed stride gives when the total is not known in advance.
+    Holds everything up to `max_points` and only then begins thinning, because
+    the whole point of this viewer is that nothing was thrown away. When the cap
+    is finally hit, points already held are halved IN PLACE and the intake
+    stride doubles with them -- so the sample stays even across the whole sweep
+    instead of dense at the start and empty at the end, which is what a stride
+    chosen up front gives you when the total is not known in advance.
     """
 
     def __init__(self, max_points=DEFAULT_VIEW_MAX):
         self.max_points = int(max_points)
         self._xyz = []
-        self._rgb = []
+        self._col = []
         self._n = 0
         self._stride = 1
-        self._seen = 0
+        self._encoded = None
+        self.rgb = False
 
     def add(self, xyz, rgb):
         if xyz.shape[0] == 0:
             return
         take = xyz[::self._stride]
         col = rgb[::self._stride]
+        # Grey is the overwhelmingly common case (no photo yet), and grey needs
+        # one byte, not three. Detect it once per chunk rather than storing
+        # three copies of the same number for every point.
+        if not self.rgb and not _is_grey(col):
+            self.rgb = True
         self._xyz.append(np.ascontiguousarray(take, dtype=np.float32))
-        self._rgb.append(np.ascontiguousarray(col, dtype=np.uint8))
+        self._col.append(np.ascontiguousarray(col, dtype=np.uint8))
         self._n += take.shape[0]
-        self._seen += xyz.shape[0]
         while self._n > self.max_points:
-            # Halve everything already held, and halve the intake with it.
             self._xyz = [a[::2] for a in self._xyz]
-            self._rgb = [a[::2] for a in self._rgb]
+            self._col = [a[::2] for a in self._col]
             self._n = sum(a.shape[0] for a in self._xyz)
             self._stride *= 2
 
@@ -88,23 +115,75 @@ class ViewerBuffer:
     def arrays(self):
         if not self._xyz:
             return (np.empty((0, 3), np.float32), np.empty((0, 3), np.uint8))
-        return np.concatenate(self._xyz), np.concatenate(self._rgb)
+        return np.concatenate(self._xyz), np.concatenate(self._col)
 
-    def write(self, path):
+    def encode(self):
         """
-        Flat binary the page can hand straight to WebGL.
+        Pack into the wire format, freeing source chunks as they are consumed.
 
-        'TLSV' + uint32 count + float32 xyz[count*3] + uint8 rgb[count*3].
-        No interleaving: the two blocks become two buffers untouched, so the
-        browser does no work to unpack them.
+        The freeing matters at these sizes: holding the float32 originals and
+        the int16 copy at once is about 1.4 GB for a full-density scan, and
+        dropping each chunk as it is converted keeps the peak near the larger of
+        the two instead of their sum.
         """
-        xyz, rgb = self.arrays()
-        with open(path, "wb") as handle:
-            handle.write(b"TLSV")
-            handle.write(struct.pack("<I", xyz.shape[0]))
-            handle.write(xyz.astype("<f4").tobytes())
-            handle.write(rgb.astype(np.uint8).tobytes())
-        return path
+        # ⛔ Idempotent on purpose. Encoding CONSUMES the stored chunks to keep
+        # peak memory down, so a second call would otherwise hand back a blob
+        # with no points in it -- and a viewer showing nothing looks like a scan
+        # that captured nothing.
+        if self._encoded is not None:
+            return self._encoded
+
+        n = self._n
+        if n == 0:
+            self._encoded = _header(0, np.ones(3), np.zeros(3), False)
+            return self._encoded
+
+        lo = np.array([np.inf] * 3)
+        hi = np.array([-np.inf] * 3)
+        for chunk in self._xyz:
+            lo = np.minimum(lo, chunk.min(axis=0))
+            hi = np.maximum(hi, chunk.max(axis=0))
+        span = np.maximum(hi - lo, 1e-6)
+        scale = (span / 65534.0).astype(np.float64)
+        offset = ((lo + hi) / 2.0).astype(np.float64)
+
+        pos = np.empty((n, 3), dtype="<i2")
+        comps = 3 if self.rgb else 1
+        col = np.empty((n, comps), dtype=np.uint8)
+
+        at = 0
+        while self._xyz:
+            src = self._xyz.pop(0)
+            c = self._col.pop(0)
+            m = src.shape[0]
+            q = np.rint((src.astype(np.float64) - offset) / scale)
+            np.clip(q, -32767, 32767, out=q)
+            pos[at:at + m] = q.astype("<i2")
+            col[at:at + m] = c if self.rgb else c[:, :1]
+            at += m
+        self._n = at
+
+        # join, not +: chained concatenation of two 400 MB blocks builds an
+        # intermediate copy of the first pair before the second is appended.
+        self._encoded = b"".join([_header(at, scale, offset, self.rgb),
+                                  pos.tobytes(), col.tobytes()])
+        return self._encoded
+
+
+def _is_grey(rgb):
+    if rgb.shape[0] == 0:
+        return True
+    sample = rgb[::max(1, rgb.shape[0] // 512)]
+    return bool(np.all(sample[:, 0] == sample[:, 1])
+                and np.all(sample[:, 1] == sample[:, 2]))
+
+
+def _header(count, scale, offset, rgb):
+    return (b"TLSV"
+            + struct.pack("<HBB", FORMAT_VERSION, FLAG_RGB if rgb else 0, 0)
+            + struct.pack("<I", count)
+            + struct.pack("<3f", *[float(v) for v in scale])
+            + struct.pack("<3f", *[float(v) for v in offset]))
 
 
 PAGE = r"""<!doctype html>
@@ -126,7 +205,7 @@ PAGE = r"""<!doctype html>
   button.on{background:#2f5d8a;border-color:#3d7ab5;color:#fff}
   #keys{position:fixed;bottom:8px;left:12px;color:#777;font-size:11px}
   #err{position:fixed;inset:0;display:none;place-items:center;padding:40px;
-       text-align:center;color:#f88}
+       text-align:center;color:#f88;font-size:15px}
 </style>
 <canvas id="cv"></canvas>
 <div id="hud"><b id="title">__TITLE__</b><div id="stat">loading…</div></div>
@@ -134,33 +213,31 @@ PAGE = r"""<!doctype html>
   <button id="roam">Orbit</button>
   <button id="reset">Recentre</button>
   <label>Point size <span id="psv">1.0</span></label>
-  <input type="range" id="ps" min="0.25" max="6" step="0.05" value="1">
+  <input type="range" id="ps" min="0.2" max="8" step="0.05" value="1">
   <label>Colour</label>
-  <button id="mode">Photo / intensity</button>
+  <button id="mode">Intensity</button>
   <label>Height range <span id="zv"></span></label>
-  <input type="range" id="zlo" min="0" max="1" step="0.005" value="0">
-  <input type="range" id="zhi" min="0" max="1" step="0.005" value="1">
+  <input type="range" id="zlo" min="0" max="1" step="0.002" value="0">
+  <input type="range" id="zhi" min="0" max="1" step="0.002" value="1">
 </div>
 <div id="keys">drag orbit · wheel zoom (flies through) · shift-drag or
   right-drag pan · R free roam · F recentre</div>
 <div id="err"></div>
 <script>
-const CAM_FLOOR = 0.6, FLY_GAIN = 6.0;
+const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7, pitch:0.45, dist:30, t:[0,0,0]}, free:false,
-           psize:1.0, mode:0, n:0, zlo:0, zhi:1, zmin:0, zmax:1};
+           psize:1.0, mode:0, n:0, zlo:0, zhi:1, zmin:0, zmax:1,
+           chunks:[], scale:[1,1,1], offset:[0,0,0], rgb:false};
 let gl, prog, loc, cv, need = true;
 
-function fail(m){ document.getElementById('err').style.display='grid';
-  document.getElementById('err').textContent = m; }
+function fail(m){ const e=document.getElementById('err');
+  e.style.display='grid'; e.textContent=m; }
 
-/* --- camera: eye = target + dir*dist ---------------------------------- */
 function basis(){
   const cy=Math.cos(V.cam.yaw), sy=Math.sin(V.cam.yaw);
   const cp=Math.cos(V.cam.pitch), sp=Math.sin(V.cam.pitch);
-  const dir=[cy*cp, sy*cp, sp];               /* target -> eye */
-  const right=[-sy, cy, 0];
-  const up=[-cy*sp, -sy*sp, cp];
-  return {dir, right, up};
+  return {dir:[cy*cp, sy*cp, sp], right:[-sy, cy, 0],
+          up:[-cy*sp, -sy*sp, cp]};
 }
 function eye(){ const b=basis(), t=V.cam.t, d=V.cam.dist;
   return [t[0]+b.dir[0]*d, t[1]+b.dir[1]*d, t[2]+b.dir[2]*d]; }
@@ -175,7 +252,7 @@ function orbit(dx,dy){
   invalidate();
 }
 function pan(dx,dy){
-  const b=basis(), k=Math.max(V.cam.dist,1.5)*0.0022;
+  const b=basis(), k=Math.max(V.cam.dist,1.0)*0.0022;
   for(let i=0;i<3;i++) V.cam.t[i] += (-b.right[i]*dx + b.up[i]*dy)*k;
   invalidate();
 }
@@ -183,7 +260,7 @@ function pan(dx,dy){
    pushed forward and the eye follows, so you fly through walls. */
 function zoom(f){
   const d = V.cam.dist*f;
-  if(d >= CAM_FLOOR){ V.cam.dist = Math.min(4000,d); invalidate(); return; }
+  if(d >= CAM_FLOOR){ V.cam.dist = Math.min(6000,d); invalidate(); return; }
   const b=basis(), step=(CAM_FLOOR-d)*FLY_GAIN;
   for(let i=0;i<3;i++) V.cam.t[i] -= b.dir[i]*step;
   V.cam.dist = CAM_FLOOR;
@@ -216,9 +293,12 @@ function look(e,c,u){
     -(v[0]*e[0]+v[1]*e[1]+v[2]*e[2]), f[0]*e[0]+f[1]*e[1]+f[2]*e[2], 1]);
 }
 
+/* aPos arrives as raw int16 and becomes metres here, so the GPU stores half
+   what float32 would and the CPU never expands it. */
 const VS = `
 attribute vec3 aPos; attribute vec3 aCol;
-uniform mat4 uVP; uniform float uPS, uPSmax, uMode, uZlo, uZhi;
+uniform mat4 uVP; uniform vec3 uScale, uOffset;
+uniform float uPS, uPSmax, uMode, uZlo, uZhi, uGrey;
 varying vec3 vCol;
 vec3 ramp(float t){
   t = clamp(t, 0.0, 1.0);
@@ -226,11 +306,12 @@ vec3 ramp(float t){
                     1.5-abs(4.0*t-1.0)), 0.0, 1.0);
 }
 void main(){
-  vec4 w = vec4(aPos, 1.0);
-  gl_Position = uVP * w;
-  vCol = (uMode > 0.5) ? ramp((aPos.z - uZlo)/max(uZhi-uZlo, 1e-4)) : aCol;
-  /* A fixed ceiling would make the size slider do nothing once most points
-     sit on the clamp, which is exactly what happened on the Pi's preview. */
+  vec3 p = aPos * uScale + uOffset;
+  gl_Position = uVP * vec4(p, 1.0);
+  vec3 base = (uGrey > 0.5) ? vec3(aCol.r) : aCol;
+  vCol = (uMode > 0.5) ? ramp((p.z - uZlo)/max(uZhi-uZlo, 1e-4)) : base;
+  /* A fixed ceiling makes the size slider do nothing once most points sit on
+     the clamp, which is exactly what happened on the Pi's preview. */
   gl_PointSize = clamp(uPS/max(gl_Position.w, 0.5), 1.0, uPSmax);
 }`;
 const FS = `precision mediump float; varying vec3 vCol;
@@ -255,17 +336,26 @@ function draw(){
   gl.clearColor(0.067,0.067,0.075,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
   if(!V.n) return;
-  const e=eye();
-  const vp=mul(persp(1.0, cv.width/cv.height, 0.05, 6000),
-               look(e, V.cam.t, [0,0,1]));
+  const vp=mul(persp(1.0, cv.width/cv.height, 0.03, 9000),
+               look(eye(), V.cam.t, [0,0,1]));
   gl.useProgram(prog);
   gl.uniformMatrix4fv(loc.uVP,false,vp);
+  gl.uniform3fv(loc.uScale, V.scale);
+  gl.uniform3fv(loc.uOffset, V.offset);
   gl.uniform1f(loc.uPS, cv.height*0.11*V.psize);
-  gl.uniform1f(loc.uPSmax, Math.max(1.0, 5.0*V.psize));
+  gl.uniform1f(loc.uPSmax, Math.max(1.0, 6.0*V.psize));
   gl.uniform1f(loc.uMode, V.mode);
   gl.uniform1f(loc.uZlo, V.zlo);
   gl.uniform1f(loc.uZhi, V.zhi);
-  gl.drawArrays(gl.POINTS, 0, V.n);
+  gl.uniform1f(loc.uGrey, V.rgb ? 0.0 : 1.0);
+  const comps = V.rgb ? 3 : 1;
+  for(const c of V.chunks){
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.pos);
+    gl.vertexAttribPointer(loc.aPos, 3, gl.SHORT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, c.col);
+    gl.vertexAttribPointer(loc.aCol, comps, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.drawArrays(gl.POINTS, 0, c.n);
+  }
 }
 
 function recentre(){
@@ -290,58 +380,83 @@ async function boot(){
       throw new Error(gl.getProgramInfoLog(prog));
   }catch(e){ return fail('Shader failed: '+e.message); }
   loc={};
-  for(const u of ['uVP','uPS','uPSmax','uMode','uZlo','uZhi'])
-    loc[u]=gl.getUniformLocation(prog,u);
+  for(const u of ['uVP','uScale','uOffset','uPS','uPSmax','uMode','uZlo',
+                  'uZhi','uGrey']) loc[u]=gl.getUniformLocation(prog,u);
+  loc.aPos=gl.getAttribLocation(prog,'aPos');
+  loc.aCol=gl.getAttribLocation(prog,'aCol');
+  gl.enableVertexAttribArray(loc.aPos);
+  gl.enableVertexAttribArray(loc.aCol);
 
   let buf;
   try{
+    document.getElementById('stat').textContent='downloading points…';
     const r = await fetch('points.bin');
     if(!r.ok) throw new Error('HTTP '+r.status);
     buf = await r.arrayBuffer();
   }catch(e){ return fail('Could not load the points: '+e.message); }
 
-  const tag=new TextDecoder().decode(new Uint8Array(buf,0,4));
-  if(tag!=='TLSV') return fail('Point file is not in the expected format.');
-  const n=new DataView(buf).getUint32(4,true);
-  const xyz=new Float32Array(buf, 8, n*3);
-  const rgb=new Uint8Array(buf, 8+n*12, n*3);
+  const dv=new DataView(buf);
+  if(new TextDecoder().decode(new Uint8Array(buf,0,4))!=='TLSV')
+    return fail('Point file is not in the expected format.');
+  const ver=dv.getUint16(4,true), flags=dv.getUint8(6);
+  if(ver!==2) return fail('Unexpected point format version '+ver+'.');
+  V.rgb = !!(flags & 1);
+  const n=dv.getUint32(8,true);
+  V.scale=[dv.getFloat32(12,true),dv.getFloat32(16,true),dv.getFloat32(20,true)];
+  V.offset=[dv.getFloat32(24,true),dv.getFloat32(28,true),dv.getFloat32(32,true)];
+  const HEAD=36, comps=V.rgb?3:1;
+  const pos=new Int16Array(buf, HEAD, n*3);
+  const col=new Uint8Array(buf, HEAD+n*6, n*comps);
   V.n=n;
 
-  let zmin=Infinity, zmax=-Infinity, reach=[];
-  for(let i=0;i<n;i++){
-    const z=xyz[i*3+2];
+  /* ⛔ Chunked on purpose: one buffer of tens of millions of vertices is
+     refused by the driver, and the failure is a black canvas with no error. */
+  let zmin=Infinity, zmax=-Infinity;
+  const step=Math.max(1, Math.floor(n/20000));
+  const reach=[];
+  for(let i=0;i<n;i+=step){
+    const z=pos[i*3+2]*V.scale[2]+V.offset[2];
     if(z<zmin)zmin=z; if(z>zmax)zmax=z;
-    if((i%97)===0) reach.push(Math.hypot(xyz[i*3],xyz[i*3+1]));
+    reach.push(Math.hypot(pos[i*3]*V.scale[0]+V.offset[0],
+                          pos[i*3+1]*V.scale[1]+V.offset[1]));
   }
-  /* Frame on a high PERCENTILE, never the maximum: one stray return through a
-     doorway is enough to push the camera far outside the room otherwise. */
   reach.sort((a,b)=>a-b);
-  V.reach = Math.max(4, (reach[Math.floor(reach.length*0.9)]||10)*1.6);
+  /* A high percentile, never the maximum: one stray return through a doorway
+     otherwise frames the camera far outside the room. */
+  V.reach=Math.max(3,(reach[Math.floor(reach.length*0.9)]||10)*1.6);
   V.zmin=zmin; V.zmax=zmax; V.zlo=zmin; V.zhi=zmax;
 
-  const pos=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,pos);
-  gl.bufferData(gl.ARRAY_BUFFER,xyz,gl.STATIC_DRAW);
-  const a0=gl.getAttribLocation(prog,'aPos');
-  gl.enableVertexAttribArray(a0);
-  gl.vertexAttribPointer(a0,3,gl.FLOAT,false,0,0);
-  const col=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,col);
-  gl.bufferData(gl.ARRAY_BUFFER,rgb,gl.STATIC_DRAW);
-  const a1=gl.getAttribLocation(prog,'aCol');
-  gl.enableVertexAttribArray(a1);
-  gl.vertexAttribPointer(a1,3,gl.UNSIGNED_BYTE,true,0,0);
+  const CH=__CHUNK__;
+  try{
+    for(let s=0;s<n;s+=CH){
+      const m=Math.min(CH,n-s);
+      const pb=gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+      gl.bufferData(gl.ARRAY_BUFFER, pos.subarray(s*3,(s+m)*3), gl.STATIC_DRAW);
+      const cb=gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER,cb);
+      gl.bufferData(gl.ARRAY_BUFFER,
+                    col.subarray(s*comps,(s+m)*comps), gl.STATIC_DRAW);
+      const err=gl.getError();
+      if(err!==gl.NO_ERROR) throw new Error('GL error '+err+' uploading points');
+      V.chunks.push({pos:pb,col:cb,n:m});
+    }
+  }catch(e){
+    return fail('The graphics card could not hold this cloud ('+e.message+
+      '). Convert with a larger voxel, or set TLSCONVERT_VIEW_MAX lower.');
+  }
 
   document.getElementById('stat').textContent =
-    n.toLocaleString()+' points'+(__SUB__?' (subsampled for display)':'')+
+    n.toLocaleString()+' points in '+V.chunks.length+' buffers'+
+    (__SUB__?' (subsampled for display)':'')+
     ' · height '+zmin.toFixed(2)+' to '+zmax.toFixed(2)+' m';
   document.getElementById('zv').textContent =
     zmin.toFixed(2)+' – '+zmax.toFixed(2)+' m';
+  if(V.rgb) document.getElementById('mode').textContent='Photo';
   recentre();
   draw();
 }
 
-/* --- input ------------------------------------------------------------- */
 addEventListener('resize', invalidate);
 window.addEventListener('load', boot);
 document.addEventListener('contextmenu', e=>e.preventDefault());
@@ -378,7 +493,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   };
   document.getElementById('mode').onclick=e=>{
     V.mode = V.mode ? 0 : 1;
-    e.target.textContent = V.mode ? 'Height' : 'Photo / intensity';
+    e.target.textContent = V.mode ? 'Height' : (V.rgb ? 'Photo' : 'Intensity');
     e.target.classList.toggle('on', !!V.mode);
     invalidate();
   };
@@ -425,29 +540,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
 
+class _Server(socketserver.ThreadingTCPServer):
+    # Threaded so a slow 200 MB download does not block the page itself from
+    # loading, and daemonic so a half-finished transfer cannot keep the process
+    # alive after the operator closes the window.
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class ViewerServer:
     """
-    Serves one cloud on loopback until the program exits.
+    Serves one cloud on loopback until stopped.
 
-    Bound to 127.0.0.1 explicitly, not 0.0.0.0: this is a local convenience and
-    has no business being reachable from the network.
+    Bound to 127.0.0.1 explicitly rather than 0.0.0.0: this is a local
+    convenience and has no business being reachable from the network.
     """
 
     def __init__(self, buffer, title="Point cloud", port=0):
-        xyz, rgb = buffer.arrays()
-        blob = bytearray(b"TLSV")
-        blob += struct.pack("<I", xyz.shape[0])
-        blob += xyz.astype("<f4").tobytes()
-        blob += rgb.astype(np.uint8).tobytes()
-
+        blob = buffer.encode()
         page = (PAGE.replace("__TITLE__", _escape(title))
-                    .replace("__SUB__", "true" if buffer.subsampled else "false"))
-
+                    .replace("__SUB__", "true" if buffer.subsampled else "false")
+                    .replace("__CHUNK__", str(CHUNK_POINTS)))
         handler = type("_H", (_Handler,), {"page": page.encode("utf-8"),
-                                           "blob": bytes(blob)})
-        socketserver.TCPServer.allow_reuse_address = True
-        self.httpd = socketserver.TCPServer(("127.0.0.1", port), handler)
+                                           "blob": blob})
+        self.httpd = _Server(("127.0.0.1", port), handler)
         self.port = self.httpd.server_address[1]
+        self.bytes = len(blob)
         self.thread = threading.Thread(target=self.httpd.serve_forever,
                                        daemon=True)
         self.thread.start()

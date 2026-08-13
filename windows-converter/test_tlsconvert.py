@@ -360,6 +360,33 @@ small = viewer.ViewerBuffer(max_points=10_000)
 small.add(np.zeros((5, 3), np.float32), np.zeros((5, 3), np.uint8))
 check("a small cloud is not subsampled at all", not small.subsampled)
 
+# ⭐ THE CLAIM THAT JUSTIFIES int16: across a scan wider than any this rig has
+# produced, the rounding stays far under the VLP-16's own +/-30 mm range
+# accuracy, so the encoding cannot be what limits a model built from it.
+HEAD = 36
+precise = viewer.ViewerBuffer()
+truth = np.column_stack([
+    rsv.uniform(-70, 70, 40000), rsv.uniform(-80, 80, 40000),
+    rsv.uniform(-25, 25, 40000)]).astype(np.float32)
+precise.add(truth, np.zeros((40000, 3), np.uint8))
+enc = precise.encode()
+n_enc = int.from_bytes(enc[8:12], "little")
+scale = np.frombuffer(enc[12:24], "<f4").astype(np.float64)
+offset = np.frombuffer(enc[24:36], "<f4").astype(np.float64)
+back = (np.frombuffer(enc[HEAD:HEAD + n_enc * 6], "<i2")
+        .reshape(-1, 3).astype(np.float64) * scale + offset)
+worst = float(np.abs(back - truth).max())
+check("int16 round-trip is far finer than the sensor's +/-30 mm",
+      worst < 0.005, "worst %.4f m over a 160 m span" % worst)
+check("grey collapses to one byte a point, not three",
+      len(enc) == HEAD + n_enc * 6 + n_enc * 1, len(enc))
+
+rgbbuf = viewer.ViewerBuffer()
+rgbbuf.add(np.zeros((10, 3), np.float32),
+           np.tile(np.array([[9, 40, 200]], np.uint8), (10, 1)))
+check("a real photo colour is detected and kept at three bytes",
+      rgbbuf.rgb and len(rgbbuf.encode()) == HEAD + 10 * 6 + 10 * 3)
+
 srv = viewer.ViewerServer(small, title="t&st <x>")
 try:
     page = urllib.request.urlopen(srv.url, timeout=10).read()
@@ -367,16 +394,24 @@ try:
     check("the page is served", b"<canvas" in page and len(page) > 2000,
           len(page))
     check("template placeholders are all substituted",
-          b"__TITLE__" not in page and b"__SUB__" not in page)
+          all(t not in page for t in (b"__TITLE__", b"__SUB__", b"__CHUNK__")))
     check("the title is HTML-escaped, not injected",
           b"t&amp;st &lt;x&gt;" in page)
     check("the point blob is tagged", blob[:4] == b"TLSV", blob[:4])
-    n_blob = int.from_bytes(blob[4:8], "little")
+    check("and versioned, so the page can refuse an old one",
+          int.from_bytes(blob[4:6], "little") == 2)
+    n_blob = int.from_bytes(blob[8:12], "little")
     check("its declared count matches its length",
-          n_blob == 5 and len(blob) == 8 + 5 * 15, (n_blob, len(blob)))
+          n_blob == 5 and len(blob) == HEAD + 5 * 7, (n_blob, len(blob)))
     check("it binds loopback only, never the network",
           srv.httpd.server_address[0] == "127.0.0.1",
           srv.httpd.server_address)
+    # ⛔ One buffer of tens of millions of vertices is refused by the driver and
+    # the failure is a black canvas, so the page must split them.
+    check("the page chunks its GPU buffers",
+          b"V.chunks.push" in page and str(viewer.CHUNK_POINTS).encode() in page)
+    check("a full-density scan is not halved by the default cap",
+          viewer.DEFAULT_VIEW_MAX >= 59_343_707, viewer.DEFAULT_VIEW_MAX)
     code = urllib.request.urlopen(srv.url + "nope").getcode()
     check("unknown paths are refused", False, code)
 except urllib.error.HTTPError as exc:
@@ -413,8 +448,10 @@ check("the levels run coarser down the list, so the order reads as detail",
       voxels == sorted(voxels) and len(set(voxels)) == len(voxels), voxels)
 default_voxel = dict((label, v) for label, v in
                      gui.DETAIL_LEVELS)[gui.DEFAULT_DETAIL]
-check("the default is 1 cm, matching the pipeline's own default",
-      close(default_voxel, 0.01, 1e-9), default_voxel)
+# The operator models from these and picks usable points by eye, so the default
+# must not merge anything away.
+check("the GUI defaults to every return", close(default_voxel, 0.0, 1e-12),
+      default_voxel)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

@@ -51,13 +51,19 @@ COMPANION_EXT = (".json", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
 # Counts measured on TLS_26_08_13_02_05_15 (390 MB, 59.3 M returns), reading
 # every packet, so these figures are real rather than estimated.
 DETAIL_LEVELS = [
-    ("Maximum — every return (~59 M, very large)", 0.0),
-    ("Very high — 5 mm voxel (~11 M)", 0.005),
-    ("High — 1 cm voxel (~2.9 M)", 0.01),
-    ("Balanced — 2 cm voxel (~880 k)", 0.02),
-    ("Light — 5 cm voxel", 0.05),
+    ("Maximum — every return (~59 M, 375 MB as LAZ)", 0.0),
+    ("Very high — 5 mm (~11 M)", 0.005),
+    ("High — 1 cm (~2.9 M)", 0.01),
+    ("Balanced — 2 cm (~880 k)", 0.02),
+    ("Light — 5 cm", 0.05),
 ]
-DEFAULT_DETAIL = DETAIL_LEVELS[2][0]
+# ⭐ Maximum by default. These clouds are modelled from, and the operator picks
+# which points to trust by eye, so a point merged away is a point that cannot be
+# chosen. Nothing about the pipeline struggles with it either -- the reference
+# capture converts in 19 s and LAZ holds all 59 million returns in 375 MB.
+# ⚠ Choose LAZ rather than LAS at this density: the same cloud is ~1.5 GB
+# uncompressed, and Scan Essentials reads both.
+DEFAULT_DETAIL = DETAIL_LEVELS[0][0]
 
 # ⚠ Below about 3 cm the grid is finer than the VLP-16's own range accuracy, so
 # the extra points include noise as well as geometry. Offered anyway, because

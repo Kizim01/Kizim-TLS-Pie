@@ -106,15 +106,20 @@ the CLI only for deliberately sampling a capture quickly.
 Measured on `TLS_26_08_13_02_05_15` (390 MB, **59.3 million returns**), reading
 every packet:
 
-| voxel | points | LAS | time |
-|---|---|---|---|
-| none (`--full`) | 59,343,707 | ~1.5 GB | — |
-| 5 mm | 11,114,614 | 275 MB | 27 s |
-| 1 cm **(default)** | 2,929,122 | 73 MB | 20 s |
-| 2 cm | 884,322 | 22 MB | 18 s |
+| voxel | points | LAZ | LAS | time |
+|---|---|---|---|---|
+| **none — the default** | **59,343,707** | **393 MB** | ~1.5 GB | 19 s |
+| 5 mm | 11,114,614 | ~75 MB | 275 MB | 27 s |
+| 1 cm | 2,929,122 | ~20 MB | 73 MB | 20 s |
+| 2 cm | 884,322 | ~6 MB | 22 MB | 18 s |
 
-For SketchUp, 1 cm is a sensible ceiling; 5 mm and finer are better sent to
-CloudCompare.
+⭐ **Every return is the default**, because these clouds are modelled from and
+the operator picks which points to trust by eye — a point merged away is a point
+that cannot be chosen. Nothing in the pipeline strains at it.
+
+⚠ **Use LAZ at full density.** The same cloud is 393 MB compressed against
+~1.5 GB as LAS, and Scan Essentials reads both. SketchUp itself will be happier
+with a coarser voxel; CloudCompare will take the lot.
 
 **This tool will not silently change your voxel.** The Pi's builder doubles the
 edge and re-bins when a grid overruns its budget, which is why asking it for
@@ -141,8 +146,26 @@ long as the program is open — a `file://` page cannot fetch its own point data
 and embedding it would inflate an 11 million point cloud into a 200 MB document.
 Nothing listens on an outside interface.
 
-Very large clouds are subsampled for display only (8 M points by default); the
-file on disk always holds everything.
+### It shows everything
+
+A full-density scan reaches the viewer **whole** — all 59,343,707 points, no
+subsampling. Two things make that possible:
+
+**Positions travel as int16 with a per-axis scale, not float32.** Across a 151 m
+extent that rounds to about 2 mm, while the VLP-16's own range accuracy is
+**±30 mm** — so the encoding is roughly fifteen times finer than the instrument
+feeding it and cannot be what limits a model. In exchange a point costs **7
+bytes instead of 15**: 415 MB rather than 890 MB, encoded in 4.4 s and served
+over loopback in 0.4 s.
+
+**GPU buffers are chunked** (4 M points each, 15 buffers for the above). One
+buffer of tens of millions of vertices is refused by the driver, and the failure
+mode is a black canvas with nothing reported.
+
+⚠ **415 MB of vertex data is a real ask of a graphics card**, and a weak or
+integrated one may refuse it. That refusal is caught and explained on screen
+rather than left as a blank window. If you hit it, convert with a voxel or set
+`TLSCONVERT_VIEW_MAX` lower — the file on disk is never affected.
 
 ⛔ **Do not compare surface thickness across different voxel or stride
 settings.** Voxelling thins a surface's dense core far more than its sparse
