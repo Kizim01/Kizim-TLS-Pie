@@ -2007,12 +2007,21 @@ confirmed on this rig and the instrument-height question **dissolved** — the r
 by construction. The preview was then substantially rebuilt (fly-through, free roam, sensor pivot,
 Display sliders, per-scan downloads, 119k → **537k points**) and a **lens-cover detector** added.
 
-**⛔ THE TOP JOB NOW IS THE TWO-PASS DISAGREEMENT.** The two halves of a sweep do not agree — pass A's
-overhead surface trends **−14.79°**, pass B's **+0.30°** — which is what the operator sees as tilted
-surfaces that should be horizontal. **Asymmetric, so it is NOT a plain roll error, and no mechanism
-is established.** The plan is a parameter sweep scored on inter-pass disagreement, not another
-hypothesis. **Read the "OPEN, AND THE TOP JOB" section before touching it — two wrong analyses are
-recorded there specifically so they are not repeated.**
+**✅✅ AND THE TWO-PASS DISAGREEMENT IS SOLVED — 2026-08-13.** The tilted surfaces the operator
+reported were **`MOUNT_PITCH_DEG` sitting at `0.0` when it should be `8.4`**. On a sideways puck,
+pitch adds straight onto the sensor's own azimuth, so it **is the fan's zero** — not a small
+misalignment — and the VLP-16's azimuth origin was never aligned to vertical. The two halves of a
+sweep view each direction from opposite sides of the fan, so the error entered them with opposite
+sign and put a **28 cm wedge** in every horizontal surface. **Surfaces are now 1.8 cm thick, down
+from 40.7 cm**; confirmed out of sample on two held-out surfaces; roll re-optimised to exactly
+**90.00**, so the earlier roll result stands. All three clouds rebuilt on the rig — and the biggest
+one **shrank 3.65 MB → 2.20 MB**, because a thin surface occupies far fewer voxels than a smeared
+one. See the SOLVED section: it records **three** wrong cuts, and the one method that worked
+(compare inside the same horizontal cell, so the room cancels).
+
+**Verified on two independent scans at different speeds**, so it is the mount and not something
+per-scan. `tls_pitchcheck.py` keeps that test runnable on the rig — **run it if the puck is ever
+unbolted**, since 8.4 is one bracket's angle, not a property of the sensor.
 
 | | |
 |---|---|
@@ -2029,55 +2038,118 @@ recorded there specifically so they are not repeated.**
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
 
-### ⛔⛔ OPEN, AND THE TOP JOB — the two passes of a sweep DISAGREE — 2026-08-13
+### ✅✅ SOLVED — the two passes disagreed because THE FAN'S ZERO WAS NEVER MEASURED — 2026-08-13
 
-**Reported by the operator from the preview, with a screenshot: two surfaces that should both be
-horizontal come back tilted, forming a shallow wedge.** Real, and the largest outstanding question
-about this instrument's output.
+**`MOUNT_PITCH_DEG` was `0.0`. It is `8.4`.** That one number was the whole fault. Surfaces went from
+**40.7 cm thick to 1.8 cm**.
 
-**Geometry established while chasing it.** The puck is on its side, so the fan is a **full vertical
-circle**. At pan θ it covers horizontal azimuths **θ+90 and θ−90 at once**, so **a 180° pan sweep
-already covers the whole room — and the second 180° covers it again.** Those two halves are the two
-passes, and that is where the ~2× redundancy comes from.
+**Geometry that makes "two passes" a real thing.** The puck is on its side, so the fan is a **full
+vertical circle**. At pan θ it covers horizontal azimuths **θ+90 and θ−90 at once**, so **a 180° pan
+sweep already covers the whole room — and the second 180° covers it again.** Those halves are the two
+passes and the source of the ~2× redundancy.
 
-**Measured on `TLS_26_08_13_03_35_07`** — median height of the overhead surface against horizontal
-range, per pass:
+**⭐ WHY PITCH, WHICH NOBODY SUSPECTED.** Multiply `Ry(pitch) . Rx(90)` out by hand:
 
-| | trend of the overhead surface |
-|---|---|
-| pass A (pan 0–180°) | **−14.79°** |
-| pass B (pan 180–360°) | **+0.30°** |
+```
+mx = r cos(omega) sin(alpha + pitch)
+my = -r sin(omega)                      <- no pitch term at all
+mz = r cos(omega) cos(alpha + pitch)
+```
 
-**They genuinely disagree, far beyond noise.** But the disagreement is **ASYMMETRIC** — one pass
-essentially level, the other badly sloped. **A pure `MOUNT_ROLL_DEG` error predicts the opposite**:
-two tilts of similar size in opposite directions. **So roll alone does not explain it and no
-mechanism is established. Do not assume roll.**
+**Pitch adds straight onto the sensor's own azimuth**, so on a sideways puck it is not a small
+misalignment — it **is the fan's zero**. The VLP-16's azimuth origin is set by its own body, and
+nothing ever aligned it to vertical; the bracket simply holds it 8.4° round from up. `0.0` was a
+placeholder standing in for a measurement, and it was carried as though it were one.
 
-**⛔ TWO WRONG CUTS WERE MADE AT THIS — do not repeat them:**
+**⭐ AND THAT IS EXACTLY WHY IT SHOWED UP AS THE TWO PASSES DISAGREEING.** The same physical point is
+seen from opposite sides of the fan half a turn apart, so a fan-zero error enters the two views with
+**opposite sign**. For a point H metres from the pan axis the pass-to-pass difference is
+**2·H·α₀ — growing with H, and zero on the axis.** Measured, comparing points inside the **same 15 cm
+horizontal cell**:
+
+| H from pan axis | 0.25 m | 0.75 m | 1.25 m | 1.75 m | 2.25 m | 2.75 m |
+|---|---|---|---|---|---|---|
+| pass B − pass A | +0.05 | +0.19 | +0.29 | +0.44 | +0.62 | **+0.75 m** |
+
+A straight line through the origin at **0.28 m/m** — a 28 cm wedge in every horizontal surface.
+
+**Two scores that share no arithmetic**, so agreement is evidence: the regression above driven to
+zero → **+8.34**; and **surface thickness** (median per-cell spread of Z, which never mentions the
+passes at all) → **+8.22**.
+
+**✅ CONFIRMED OUT OF SAMPLE.** Only the overhead band was fitted. The table and floor were held out:
+
+| | pass diff @ 0 | pass diff @ 8.4 | its own best pitch |
+|---|---|---|---|
+| overhead | +0.336 m | −0.003 m | +8.22 (fitted) |
+| table | −0.023 m | +0.001 m | +8.24 (**held out**) |
+| floor | +0.230 m | +0.012 m | +8.59 (**held out**) |
+
+The floor's share of points within 2 cm of its own surface went **16% → 54%**. `MOUNT_ROLL_DEG`
+re-optimised at the same time and came back **exactly 90.00**, so the earlier roll finding stands and
+the earlier "this is not a roll error" call was right.
+
+**⭐⭐ THE METHOD THAT BROKE IT OPEN, after two wrong cuts: COMPARE INSIDE THE SAME HORIZONTAL CELL.**
+Bin points into 15 cm cells and compare the two passes *within* each cell. The room's real shape —
+sloped roof, shelves, clutter — is identical for both things being compared, so it **cancels
+exactly**. Every earlier attempt failed by comparing two *different* parts of the room and reading
+the difference as instrument error. This also settles a question the old statistic could not even
+pose: whether the wedge was the room or the rig.
+
+**⛔ THREE WRONG CUTS ARE ON RECORD — do not repeat them:**
 
 1. **Splitting by the puck's own azimuth is meaningless.** Fan side A (`atan2(y,x)` < 180° in the
    SENSOR frame) holds **every** overhead point — 1.64 M — and side B holds **none**. The fan's
-   halves look up and down; they see different parts of the room, not two views of one surface.
-2. **Reading an angle off a per-range-bin mode histogram of the combined cloud.** In a small
-   cluttered room the "two peaks" are different physical objects — shelf, ceiling, wall tops. It
-   produced confident-looking numbers (7.7°, 3.4°) that mean nothing.
+   halves look up and down; different parts of the room, not two views of one surface.
+2. **Reading an angle off a per-range-bin mode histogram of the combined cloud.** In a cluttered room
+   the "two peaks" are different objects — shelf, ceiling, wall tops. Produced 7.7° and 3.4°, both
+   meaningless.
+3. **The per-pass "trend of the overhead surface vs horizontal range" (−14.79° / +0.30°).** Same flaw
+   in subtler dress: at different ranges it is looking at different objects. It did establish that
+   something was wrong, but its **numbers should not be quoted** and the asymmetry it seemed to show
+   was an artefact of the statistic, not a property of the fault. The real error is clean and
+   antisymmetric.
 
-**⚠ THE ROOM CANNOT SUPPORT A LONG-BASELINE FIT.** 99.9% of the points are within 4 m: 96,731 in the
-1–2 m band, **20 points at 4–5 m, zero past 6 m.** The 25 m reach in the bounds is a few strays
-through a doorway. Calibrate at short range, or move to a bigger space.
+**⚠ THE VALUE IS TIED TO THE DECODER.** `tls_cloud.decode_packet` puts all 32 channels at the block
+azimuth; the true VLP-16 firing schedule spreads them up to **0.32° further round**, and on this rig
+that spread is **vertical**. Decoding the same scan with per-laser azimuths moves the answer to
+**+8.2** and buys only **4%** of thickness — so the approximation stays and the constant is matched
+to it. **Change one and you must re-measure the other.**
 
-**THE PLAN — a sweep, not another hypothesis.** Vary `MOUNT_ROLL_DEG`, `MOUNT_PITCH_DEG` and
-`LEVER_X_M`/`LEVER_Y_M`, rebuild, and score each combination by **how much the two pan-halves
-disagree**. Whatever collapses the disagreement is the answer, and it needs no mechanism named first.
-`TLS_26_08_13_03_35_07.pcap` has everything; no new measurement required. The pass-splitting method
-is `tls_pcap.udp_packets` → `tls_cloud.decode_packet` → `track.angle_at(epoch − sweep_start)` →
-`Frame().rotator(pan)`, bucketing on `pan % 360 < 180`.
+**⚠ HONEST UNCERTAINTY: ±0.2°**, the scatter across the three bands — 1 cm at 3 m, under the room's
+own flatness. **⛔ RE-MEASURE IF THE PUCK IS EVER UNBOLTED**: this is one bracket's angle, not a
+property of the sensor. The method needs no tape and no known distances — build twice, split on
+`pan % 360 < 180`, and pick the pitch that flattens the per-cell diff against distance from the axis.
 
-**⚠ CAVEAT ON THE ROLL RESULT BELOW, WHICH THIS DOES NOT OVERTURN.** The three-surface test confirmed
-the **sign** of `+90` with a 2.8 m margin. It did **not** confirm the angle to better than a degree
-or two: every surface used was 0.2–1.4 m away, where **1° moves a point 2 cm** — inside the tape
-agreement — while **at 25 m the same 1° is 44 cm**. Sign settled; precision not, and that is what the
-sweep is for.
+**⛔ OLD SIDECARS MUST NOT BE BELIEVED ABOUT PITCH.** Every scan captured before this recorded
+`"pitch_deg": 0.0`. `Frame.from_dict` now **discards** a pitch that arrives without the
+`pitch_calibrated` marker and says so in `describe()` — otherwise rebuilding an old scan would
+faithfully reproduce the 28 cm wedge and the result would look fresh. Roll, lever and pan zero in
+those blocks *were* measured, so they are still honoured.
+
+**⚠ THE ROOM CANNOT SUPPORT A LONG-BASELINE FIT.** 99.9% of points are within 4 m; **20 points at
+4–5 m, zero past 6 m.** Fine for this calibration, which is a short-range differential measurement,
+but any check that needs a long lever arm must move to a bigger space.
+
+**✅ CONFIRMED ON A SECOND SCAN, SO IT IS THE MOUNT.** `TLS_26_08_13_03_35_07` — a different session
+at a different speed (2°/s vs 1°/s), and **the very scan the −14.79°/+0.30° report came from** —
+checked on the rig with its own pure-Python decoder:
+
+| pitch | slope of diff vs H | mean diff |
+|---|---|---|
+| 0.00 | +0.1359 | +0.335 m |
+| 4.00 | +0.0666 | +0.180 m |
+| **8.40** | **+0.0033** | **−0.005 m** |
+| 12.00 | −0.0555 | −0.157 m |
+
+**`tls_pitchcheck.py` is that test, kept in the repo** — the re-measurement procedure as a runnable
+tool rather than a paragraph, since it is what to run if the puck is ever unbolted:
+
+```
+./tls_pitchcheck.py /media/tlsusb/SCAN.pcap 0 4 8.4 12
+```
+
+Stdlib only, runs on the Pi, works on **any** scan of anywhere with a surface overhead.
 
 ### ✅ Preview and control panel — 2026-08-13
 

@@ -150,7 +150,78 @@ import os
 # where a single distance to a surface is known. Measure one, histogram the
 # cloud, see which side it lands. No driveway and no special capture required.
 MOUNT_ROLL_DEG = float(os.environ.get("TLSPIE_MOUNT_ROLL_DEG", "90.0"))
-MOUNT_PITCH_DEG = float(os.environ.get("TLSPIE_MOUNT_PITCH_DEG", "0.0"))
+
+# ⛔ PITCH IS NOT A SMALL RESIDUAL ON THIS RIG. IT IS 8.4 DEGREES, AND IT WAS
+# THE CAUSE OF THE TWO-PASS DISAGREEMENT — 2026-08-13.
+#
+# Work through Ry(pitch) . Rx(90) by hand and pitch turns out to be exactly a
+# FAN-ANGLE ZERO OFFSET:
+#
+#     mx = r cos(omega) sin(alpha + pitch)
+#     my = -r sin(omega)                       <- untouched
+#     mz = r cos(omega) cos(alpha + pitch)
+#
+# So it adds straight onto the sensor's own azimuth. That matters because the
+# puck is on its SIDE: azimuth is the vertical fan angle, and the VLP-16's
+# azimuth zero is set by its own body, which no one ever aligned to vertical.
+# The bracket simply holds it 8.4 degrees round from up. Nothing was faulty —
+# the number had never been measured, and 0.0 was a placeholder standing in for
+# a measurement.
+#
+# WHY IT SHOWED UP AS THE TWO PASSES DISAGREEING
+# ----------------------------------------------
+# A full-circle fan covers world azimuths pan+90 and pan-90 at once, so every
+# direction is measured twice, half a turn of pan apart. Those two views sit on
+# opposite sides of the fan, so an error in where the fan's zero is enters them
+# with OPPOSITE SIGN. For a point H metres from the pan axis:
+#
+#     Z error = +H . alpha0   in one pass,  -H . alpha0  in the other
+#     pass-to-pass difference = 2 . H . alpha0        <- grows with H, zero on
+#                                                        the axis
+#
+# Measured on TLS_26_08_13_02_05_15, comparing points inside the SAME 15 cm
+# horizontal cell so the room's own shape cancels exactly:
+#
+#     H from pan axis   0.25 m   0.75 m   1.25 m   1.75 m   2.25 m   2.75 m
+#     pass B - pass A   +0.05    +0.19    +0.29    +0.44    +0.62    +0.75 m
+#
+# A straight line through the origin at 0.28 m/m, i.e. alpha0 = 8.0 deg, which
+# is what put a 28 cm wedge in every horizontal surface.
+#
+# HOW THE VALUE WAS FIXED — two scores that share no arithmetic
+# -------------------------------------------------------------
+#   slope      the regression above, driven to zero.        -> +8.34
+#   thickness  median per-cell spread of Z, i.e. how THIN a surface is.
+#              Never mentions the passes at all.            -> +8.22
+#
+#   overhead band    40.7 cm thick at pitch 0   ->   1.8 cm at pitch 8.4
+#
+# ✅ CONFIRMED OUT OF SAMPLE. The fit used only the overhead band. The table and
+# the floor were held out, and both independently pick the same pitch and lose
+# their own wedge:
+#
+#                     pass diff @ 0    pass diff @ 8.4    own best pitch
+#     overhead        +0.336 m         -0.003 m           +8.22   (fitted)
+#     table           -0.023 m         +0.001 m           +8.24   (held out)
+#     floor           +0.230 m         +0.012 m           +8.59   (held out)
+#
+# The floor's share of points within 2 cm of its own surface went 16% -> 54%.
+# The scatter across the three bands is the honest uncertainty: +/- 0.2 deg,
+# which is 1 cm at 3 m and under the room's own flatness.
+#
+# ⛔ THE VALUE IS TIED TO THIS DECODER. tls_cloud.decode_packet puts all 32
+# channels at the block azimuth; the true VLP-16 firing schedule spreads them
+# up to 0.32 deg further round, and on this rig that spread is VERTICAL. Decode
+# the same scan with per-laser azimuths and the answer moves to +8.2. It is
+# only worth 4% of thickness, so the approximation stays and the constant is
+# matched to it — but change one and you must re-measure the other.
+#
+# ⛔ RE-MEASURE IF THE PUCK IS EVER UNBOLTED. This is the angle of one bracket,
+# not a property of the sensor or of the room. Method, on any scan of anywhere:
+# build the cloud twice, splitting on pan < 180 vs pan >= 180, compare mean Z
+# inside matching horizontal cells, and pick the pitch that flattens the diff
+# against distance from the axis. It needs no known distances and no tape.
+MOUNT_PITCH_DEG = float(os.environ.get("TLSPIE_MOUNT_PITCH_DEG", "8.4"))
 MOUNT_YAW_DEG = float(os.environ.get("TLSPIE_MOUNT_YAW_DEG", "0.0"))
 
 # Optical centre relative to the pan axis, metres, in the rotating frame.
@@ -167,6 +238,11 @@ PAN_ZERO_DEG = float(os.environ.get("TLSPIE_PAN_ZERO_DEG", "0.0"))
 # Below this, a rotation matrix is treated as identity and skipped entirely.
 # 1e-9 rad is far under any angle the hardware could hold.
 _IDENTITY_EPS = 1e-9
+
+# Stamped into a sidecar's mount block from the moment MOUNT_PITCH_DEG became a
+# measurement instead of a placeholder. Its ABSENCE is the informative case --
+# see Frame.from_dict.
+PITCH_CALIBRATED_KEY = "pitch_calibrated"
 
 
 def rotation_matrix(roll_deg, pitch_deg, yaw_deg):
@@ -292,6 +368,9 @@ class Frame:
         # a constant offset it cannot smear anything.
         self._lever_is_axial = (abs(self.lever[0]) < 1e-9
                                 and abs(self.lever[1]) < 1e-9)
+        # Set by from_dict when a pre-calibration sidecar's pitch was ignored,
+        # so a caller can say so rather than silently differing from the file.
+        self.pitch_is_legacy = False
 
     # --- description -------------------------------------------------------
     @property
@@ -303,13 +382,18 @@ class Frame:
         bits = []
         if self._mount_is_identity:
             bits.append("upright, spin axis on the pan axis")
-        elif (abs(abs(self.roll_deg) - 90.0) < 1.0
-                and abs(self.pitch_deg) < 1.0 and abs(self.yaw_deg) < 1.0):
-            bits.append("on its side (roll %+.1f deg), fan sweeps vertically"
-                        % self.roll_deg)
+        elif abs(abs(self.roll_deg) - 90.0) < 1.0 and abs(self.yaw_deg) < 1.0:
+            # Pitch is the fan-angle zero on this mount, so report it as such
+            # rather than as a misalignment -- 8.4 deg is the expected value.
+            bits.append("on its side (roll %+.1f deg), fan sweeps vertically, "
+                        "fan zero %+.2f deg off vertical"
+                        % (self.roll_deg, self.pitch_deg))
         else:
             bits.append("mount roll %.3f / pitch %.3f / yaw %.3f deg"
                         % (self.roll_deg, self.pitch_deg, self.yaw_deg))
+        if self.pitch_is_legacy:
+            bits.append("sidecar predates the pitch calibration, its pitch "
+                        "IGNORED in favour of %+.2f deg" % self.pitch_deg)
         if self._lever_is_axial:
             bits.append("coaxial (lever %.3f m along the axis, no parallax)"
                         % self.lever[2])
@@ -325,18 +409,40 @@ class Frame:
             "yaw_deg": self.yaw_deg,
             "lever_m": list(self.lever),
             "pan_zero_deg": self.pan_zero_deg,
+            PITCH_CALIBRATED_KEY: True,
         }
 
     @classmethod
     def from_dict(cls, data):
+        """
+        Rebuild a Frame from a sidecar's mount block.
+
+        ⛔ A block with no PITCH_CALIBRATED_KEY has its pitch DISCARDED rather
+        than honoured, which is the opposite of what a sidecar is normally for.
+
+        Every scan captured before 2026-08-13 recorded "pitch_deg": 0.0, and
+        that zero was never an observation -- it was the module default standing
+        in for a measurement nobody had taken, and it is wrong by 8.4 degrees.
+        Replaying it faithfully is exactly the wrong thing: rebuilding an old
+        scan would reproduce the 28 cm wedge it caused, and the rebuild would
+        look like a fresh result rather than a repeat of a known fault. So the
+        recorded pitch is treated as absent and the calibrated default is used.
+
+        Nothing else in the block is second-guessed. Roll, the lever and the pan
+        zero WERE established when they were written, so they are honoured.
+        """
         data = data or {}
-        return cls(
+        pitch = data.get("pitch_deg")
+        legacy = pitch is not None and not data.get(PITCH_CALIBRATED_KEY)
+        frame = cls(
             roll_deg=data.get("roll_deg"),
-            pitch_deg=data.get("pitch_deg"),
+            pitch_deg=None if legacy else pitch,
             yaw_deg=data.get("yaw_deg"),
             lever=data.get("lever_m"),
             pan_zero_deg=data.get("pan_zero_deg"),
         )
+        frame.pitch_is_legacy = legacy
+        return frame
 
     # --- the transform ----------------------------------------------------
     def rotator(self, pan_deg):

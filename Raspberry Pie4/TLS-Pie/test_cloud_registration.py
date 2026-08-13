@@ -153,21 +153,72 @@ check("the default mount is sideways", close(frame.roll_deg, 90.0),
       frame.roll_deg)
 check("and is described as such", "on its side" in frame.describe(),
       frame.describe())
-sx, sy, sz = frame.rotator(0.0)(0.0, 1.0, 0.0)
+# Roll is checked with the calibrated fan zero taken back out, so these stay
+# assertions about ROLL and do not move if the pitch is ever re-measured.
+roll_only = tls_geometry.Frame(pitch_deg=0.0)
+sx, sy, sz = roll_only.rotator(0.0)(0.0, 1.0, 0.0)
 check("laid over, the sensor's fan sweeps vertically",
       close(sx, 0.0, 1e-12) and close(sy, 0.0, 1e-12) and close(sz, 1.0, 1e-12),
       (sx, sy, sz))
-ax, ay, az_ = frame.rotator(0.0)(0.0, 0.0, 1.0)
+ax, ay, az_ = roll_only.rotator(0.0)(0.0, 0.0, 1.0)
 check("laid over, the sensor's spin axis is horizontal",
       close(ax, 0.0, 1e-12) and close(ay, -1.0, 1e-12)
       and close(az_, 0.0, 1e-12), (ax, ay, az_))
 # The measurement this default came from: driveway.pcap's ground sat at -1.5 m
 # under roll +90 and at +1.5 m under roll -90.
-gx, gy, gz = frame.rotator(0.0)(0.0, -1.5, 0.0)
+gx, gy, gz = roll_only.rotator(0.0)(0.0, -1.5, 0.0)
 check("roll +90 puts the driveway's ground below the sensor", gz < 0,
       gz)
 
-upright = tls_geometry.Frame(roll_deg=0.0)
+# --- the 2026-08-13 pitch calibration ---------------------------------------
+# Pitch on this mount is the FAN'S ZERO, not a small misalignment: the puck's
+# azimuth origin sits 8.4 degrees round from vertical. Getting this wrong put a
+# 28 cm wedge in every horizontal surface, because the two halves of a sweep
+# view each direction from opposite sides of the fan and so take the error with
+# opposite sign.
+check("the default mount carries the calibrated fan zero",
+      close(frame.pitch_deg, 8.4, 1e-9), frame.pitch_deg)
+p0 = math.radians(frame.pitch_deg)
+px, py, pz = frame.rotator(0.0)(0.0, 1.0, 0.0)
+check("the calibrated pitch rotates the fan zero off vertical",
+      close(px, math.sin(p0), 1e-12) and close(pz, math.cos(p0), 1e-12),
+      (px, py, pz))
+# my = -r sin(omega) has no pitch term at all, so the spin axis cannot move.
+qx, qy, qz = frame.rotator(0.0)(0.0, 0.0, 1.0)
+check("pitch leaves the spin axis alone, being a fan-angle offset",
+      close(qx, 0.0, 1e-12) and close(qy, -1.0, 1e-12)
+      and close(qz, 0.0, 1e-12), (qx, qy, qz))
+check("the fan zero is described rather than hidden",
+      "fan zero" in frame.describe(), frame.describe())
+
+# ⛔ A sidecar written before the calibration recorded pitch 0.0 as a
+# placeholder, never as an observation. Honouring it would rebuild an old scan
+# with the very fault that was fixed, and the result would look fresh.
+legacy = tls_geometry.Frame.from_dict(
+    {"roll_deg": 90.0, "pitch_deg": 0.0, "yaw_deg": 0.0,
+     "lever_m": [0.0, 0.0, 0.0], "pan_zero_deg": 0.0})
+check("a pre-calibration sidecar's pitch is discarded",
+      close(legacy.pitch_deg, tls_geometry.MOUNT_PITCH_DEG, 1e-9),
+      legacy.pitch_deg)
+check("the substitution is flagged", legacy.pitch_is_legacy)
+check("and announced in words",
+      "predates" in legacy.describe(), legacy.describe())
+check("the rest of a legacy block is still honoured",
+      close(legacy.roll_deg, 90.0, 1e-9), legacy.roll_deg)
+
+# A calibrated sidecar is believed, including a deliberate zero -- otherwise
+# the override could never be switched off.
+modern = tls_geometry.Frame.from_dict(
+    {"roll_deg": 90.0, "pitch_deg": 0.0,
+     tls_geometry.PITCH_CALIBRATED_KEY: True})
+check("a calibrated sidecar is honoured, zero included",
+      close(modern.pitch_deg, 0.0, 1e-9), modern.pitch_deg)
+check("and is not flagged as legacy", not modern.pitch_is_legacy)
+check("as_dict/from_dict round trips the calibrated pitch",
+      close(tls_geometry.Frame.from_dict(frame.as_dict()).pitch_deg,
+            frame.pitch_deg, 1e-12))
+
+upright = tls_geometry.Frame(roll_deg=0.0, pitch_deg=0.0)
 at_zero = upright.rotator(0.0)
 check("pan 0 is a no-op", at_zero(1.0, 2.0, 3.0) == (1.0, 2.0, 3.0))
 
@@ -295,7 +346,11 @@ meta = {
     "version": 1,
     "sweep": {"started_epoch": T0,
               "track": [[0.0, 0.0], [SWEEP_S, SWEEP_DEG]]},
-    "mount": tls_geometry.Frame(roll_deg=0.0).as_dict(),
+    # pitch_deg=0.0 explicitly: this fixture exercises the PAN track and the
+    # composition, so the mount is held at identity. Letting the calibrated fan
+    # zero in here would rotate the synthetic wall by 8.4 deg and test nothing
+    # about registration.
+    "mount": tls_geometry.Frame(roll_deg=0.0, pitch_deg=0.0).as_dict(),
     "zero": {"provenance": "commanded", "position_known": True},
 }
 with open(os.path.join(tmpdir, "wall.json"), "w") as handle:
