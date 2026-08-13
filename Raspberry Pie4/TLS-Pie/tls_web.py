@@ -630,6 +630,8 @@ PAGE = """<!doctype html>
     color:var(--text);font:600 14px/1 -apple-system,system-ui,sans-serif;
     padding:12px 15px;text-align:center}
   .vb.wide{flex:1}
+  .vb.on{background:linear-gradient(180deg,rgba(10,132,255,.34),rgba(10,132,255,.20));
+    border-color:rgba(10,132,255,.55)}
   .vb.danger{background:linear-gradient(180deg,rgba(255,69,58,.42),
     rgba(255,69,58,.26));border-color:rgba(255,69,58,.62)}
   .vtitle{flex:1;font-size:13.5px;color:var(--dim);min-width:0;
@@ -930,6 +932,7 @@ body{transition:opacity .25s ease}
 
   <div class="vbar vbot">
     <button class="vb wide" id="vcolor" onclick="cycleColor()">Colour: height</button>
+    <button class="vb" id="vroam" onclick="toggleRoam()">Orbit</button>
     <button class="vb" onclick="resetView()">Recentre</button>
     <!-- Stop stays reachable from inside the viewer. The panel is the only
          software abort on this rig, so it must never be a navigation away. -->
@@ -1503,6 +1506,7 @@ void main(){ gl_FragColor = vec4(vC, 1.0); }`;
 const V = {
   gl:null, prog:null, loc:{}, layers:[], base:null, sel:null,
   cam:{yaw:-0.9, pitch:0.45, dist:30, t:[0,0,0]},
+  free:false,
   mode:0, raf:0, dirty:true, dpr:1
 };
 const MODES = ['height','scan','intensity'];
@@ -1659,8 +1663,9 @@ function draw(){
   document.getElementById('vstat').textContent =
     shown.toLocaleString() + ' pts · ' + on +
     (on===1 ? ' scan' : ' scans') + ' · ' +
-    (V.cam.dist <= CAM_FLOOR + 1e-6 ? 'inside'
-                                    : V.cam.dist.toFixed(0) + ' m out');
+    (V.free ? 'free roam'
+            : V.cam.dist <= CAM_FLOOR + 1e-6 ? 'inside'
+                                             : V.cam.dist.toFixed(0) + ' m out');
 }
 function invalidate(){ if(!V.raf) V.raf = requestAnimationFrame(draw); }
 
@@ -1699,9 +1704,49 @@ function bindTouch(cv){
   cv.addEventListener('wheel', e => { e.preventDefault();
     zoom(Math.exp(e.deltaY*0.0012)); }, {passive:false});
 }
+/* ---- the pivot, and why there are two modes -------------------------------
+   The camera is stored as (yaw, pitch, dist, t) with eye = t + dir*dist, so
+   rotating yaw/pitch swings the EYE around t while t stays put. That is an
+   orbit rig, and it is the right feel for inspecting a cloud from outside.
+
+   Inside a room it is the wrong feel entirely. Every drag swings you around a
+   pivot somewhere out in the geometry, which reads as the cloud being dragged
+   about rather than you turning your head, and corners stay unreachable
+   because you can never look INTO one -- you can only circle it.
+
+   FREE ROAM keeps the eye fixed and rotates about it: look around from where
+   you stand. Same maths, opposite fixed point. Recompute t from the eye after
+   the angles change and every other function -- m4view, zoom, pan -- carries
+   on working unaltered, because they only ever read (yaw,pitch,dist,t). */
+function eyePos(){
+  const b = camBasis(), t = V.cam.t, d = V.cam.dist;
+  return [t[0]+b.dir[0]*d, t[1]+b.dir[1]*d, t[2]+b.dir[2]*d];
+}
+function setEye(e){
+  const b = camBasis(), d = V.cam.dist;      /* NEW basis: call after rotating */
+  for(let i=0;i<3;i++) V.cam.t[i] = e[i] - b.dir[i]*d;
+}
+
 function orbit(dx,dy){
+  const keep = V.free ? eyePos() : null;
   V.cam.yaw -= dx*0.0062;
   V.cam.pitch = Math.max(-1.45, Math.min(1.45, V.cam.pitch + dy*0.0062));
+  if(keep) setEye(keep);          /* pivot on the eye, not on the target */
+  invalidate();
+}
+
+function toggleRoam(){
+  const keep = eyePos();
+  V.free = !V.free;
+  /* Pin the radius short on entry. dist is the gain for both pan and the
+     fly-through step, so leaving it at overview scale (30 m) would make a
+     single swipe inside a room throw you across the building. The eye is
+     preserved, so the view does not jump when the mode changes -- only the
+     handling does. */
+  if(V.free) V.cam.dist = CAM_FLOOR;
+  setEye(keep);
+  document.getElementById('vroam').textContent = V.free ? 'Free roam' : 'Orbit';
+  document.getElementById('vroam').classList.toggle('on', V.free);
   invalidate();
 }
 /* ---- fly-through, added 2026-08-13 ------------------------------------
@@ -1747,14 +1792,49 @@ function pan(dx,dy){
 }
 
 function resetView(){
-  const b = V.layers.filter(l=>l.on).map(l=>l.hdr.bounds_m).filter(Boolean);
-  if(b.length){
-    const lo = [0,1,2].map(i => Math.min.apply(null, b.map(x=>x[0][i])));
-    const hi = [0,1,2].map(i => Math.max.apply(null, b.map(x=>x[1][i])));
-    V.cam.t = [0,1,2].map(i => (lo[i]+hi[i])/2);
-    V.cam.dist = Math.max(4, Math.hypot(hi[0]-lo[0], hi[1]-lo[1])*0.75);
-  } else { V.cam.t = [0,0,0]; V.cam.dist = 30; }
+  const bnds = V.layers.filter(l=>l.on).map(l=>l.hdr.bounds_m).filter(Boolean);
+
+  /* ⭐ PIVOT ON THE LIDAR, NOT ON THE BOUNDING BOX.
+     The cloud is built in a sensor-centred frame -- the optical centre IS the
+     origin, confirmed 2026-08-13 against three tape-measured surfaces -- so
+     [0,0,0] is exactly where the instrument stood, and it is the only pivot
+     that means anything physically.
+
+     The bounding-box centre is not a place at all. It is an artefact of
+     whatever the scan happened to reach, so one far return drags it somewhere
+     nobody ever stood. On this rig's first scan the box spans
+     y = -24.9 .. +72.8 m because a single wall was seen at 72 m, which put the
+     pivot about 24 m out in +y -- open air. Every drag then swung the cloud
+     about a point off in the distance rather than about the instrument, which
+     is what made it feel like dragging the cloud instead of examining it. */
+  V.cam.t = [0,0,0];
+
+  if(bnds.length){
+    const lo = [0,1,2].map(i => Math.min.apply(null, bnds.map(x=>x[0][i])));
+    const hi = [0,1,2].map(i => Math.max.apply(null, bnds.map(x=>x[1][i])));
+    /* Frame by REACH FROM THE SENSOR, now that the sensor is the centre -- the
+       box diagonal would pull back to fit geometry that is no longer centred.
+
+       Use the MEDIAN of the four horizontal half-extents, not the max. The max
+       is set by the single furthest thing the scan caught: on the bench scan
+       that is a wall at 72.8 m seen through a doorway, which frames the view at
+       ~102 m and renders the actual room a smudge. The median tolerates one
+       runaway direction out of four and gives ~35 m here, which frames what you
+       came to look at. Under-framing is cheap now anyway -- you can zoom and
+       fly out -- whereas over-framing wastes the whole screen. */
+    const reach = [Math.abs(lo[0]), Math.abs(hi[0]),
+                   Math.abs(lo[1]), Math.abs(hi[1])].sort((p,q) => p-q);
+    V.cam.dist = Math.max(4, (reach[1]+reach[2])/2 * 1.4);
+  } else { V.cam.dist = 30; }
   V.cam.yaw = -0.9; V.cam.pitch = 0.45;
+  /* Recentre means 'back to the overview', which is an orbit view by
+     definition. Leaving free roam on here would keep the eye-pivot while
+     dist jumped back to overview scale -- overview reach, room-scale handling. */
+  if(V.free){
+    V.free = false;
+    const btn = document.getElementById('vroam');
+    if(btn){ btn.textContent = 'Orbit'; btn.classList.remove('on'); }
+  }
   invalidate();
 }
 function cycleColor(){
