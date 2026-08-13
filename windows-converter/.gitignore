@@ -1,0 +1,11 @@
+.venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+# Converter output, in case anyone works inside this folder
+*.las
+*.laz
+*.ply
+*.pcap

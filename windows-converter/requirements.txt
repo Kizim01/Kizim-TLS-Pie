@@ -1,0 +1,6 @@
+# Kept deliberately short: PyInstaller bundles whatever is in the environment,
+# so every package here is weight in the finished .exe.
+numpy>=2.0
+laspy>=2.7          # LAS/LAZ writing
+lazrs>=0.6          # the LAZ compression backend laspy defers to
+pillow>=10.0        # reads the equirectangular photo for colourisation
