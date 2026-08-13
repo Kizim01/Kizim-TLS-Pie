@@ -240,7 +240,26 @@ def start_capture(dumpdir=None):
     timestamp = datetime.now().strftime("%y_%m_%d_%H_%M_%S")
     capture_file = os.path.join(dumpdir, "TLS_%s.pcap" % timestamp)
 
-    cmd = ["tcpdump", "-U", "-w", capture_file, "-i", ETH_INTERFACE]
+    # ⛔ -Z root IS LOAD-BEARING ON THE USB STICK. Debian builds tcpdump to drop
+    # privileges to user `tcpdump` automatically, and dropping them with -w makes
+    # it chown() the savefile. The stick is vfat, which cannot represent ownership
+    # at all, so that chown returns EPERM and tcpdump treats it as FATAL: it exits
+    # code 1 having written only the 24-byte pcap header, and the scan aborts with
+    # TCPDUMP_ERROR before the motor ever turns.
+    #
+    # Measured 2026-08-13, all three legs on the rig:
+    #   no -Z  + vfat  -> FAILS, 24 bytes, "Couldn't change ownership of savefile"
+    #   -Z root+ vfat  -> works, 23,222 bytes, 20 real packets
+    #   no -Z  + ext4  -> works, and the file lands owned tcpdump:tcpdump
+    # That last line is the proof: on ext4 the chown SUCCEEDS, which is precisely
+    # what vfat cannot do. The fault is the filesystem, not the flag.
+    #
+    # Unconditional rather than "only when the target is vfat" on purpose. A
+    # filesystem-sniffing conditional silently regresses the moment the stick is
+    # reformatted, replaced, or exFAT is used instead — exFAT has no ownership
+    # either. tls_scan.py already runs as root, so keeping tcpdump there costs
+    # nothing that was not already spent.
+    cmd = ["tcpdump", "-Z", "root", "-U", "-w", capture_file, "-i", ETH_INTERFACE]
     if CAPTURE_FILTER:
         cmd.extend(CAPTURE_FILTER.split())
 

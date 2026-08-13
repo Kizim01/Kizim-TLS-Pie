@@ -2001,9 +2001,14 @@ both directions at full torque.
 puck streaming **753 data packets/s from `192.168.1.201`**, decoded and confirmed as genuine VLP-16
 frames. `tls_scan.py --check` passes.
 
-**⭐ THERE IS NO LONGER ANY BLOCKER. The rig is ready for its first real scan** — which has still
-never run. That is the next job, and the only untested things left are the capture path and the
-geometry.
+**⭐⭐⭐ AND THE FIRST FULL SCAN THEN RAN, 02:05–02:11.** `360° Slow` on the battery to the USB
+stick: **337,280 packets, 0 dropped**, return leg included, **cloud built — 119,354 points**,
+`throttled=0x0` throughout. One bug was found and fixed on the way (**tcpdump cannot chown on vfat —
+`-Z root`**, see below).
+
+**Every stage of this machine has now run, together, at least once. A capture from THIS rig finally
+exists**, so the geometry work — `MOUNT_ROLL_DEG` and the instrument height, stuck since
+`driveway.pcap` turned out to be another machine — is unblocked and is the next real job.
 
 | | |
 |---|---|
@@ -2019,6 +2024,57 @@ geometry.
 | ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
+
+### ⭐⭐⭐ THE FIRST FULL SCAN RAN — 2026-08-13, 02:05–02:11
+
+**`360° Slow`, 1°/s, on the battery, recording to the USB stick. It completed, including the return
+leg, and built a cloud.** Every stage of this machine has now run once, together, for the first time.
+
+| | |
+|---|---|
+| packets captured | **337,280** — **0 dropped by the kernel** |
+| capture | `TLS_26_08_13_02_05_15.pcap`, **372 MB**, on the USB stick |
+| cloud | **119,354 points in 7.8 s**, `registered: true` |
+| phases | PREFLIGHT → RECORDING → SCANNING → **RETURNING** → COMPLETE → IDLE |
+| position after | **known** — no re-home needed |
+| pack | **`throttled=0x0` across 14 samples over ~6 min** of motion + capture |
+| peak SoC temp | 61.3 °C |
+
+**Zero kernel drops at 753 packets/s for six minutes is the number worth keeping.** It says the
+capture path keeps up with the sensor with margin, on a USB stick, while the motor is stepping.
+
+**⭐ A capture from THIS RIG now exists**, which unblocks the geometry work that has been stuck since
+`captures/driveway.pcap` was found to be from a different machine. `MOUNT_ROLL_DEG` and the 1.5 m
+instrument height can now be re-derived rather than inherited.
+
+### ⛔ BUG FOUND AND FIXED THE SAME NIGHT — tcpdump could not write to the USB stick
+
+**Symptom: every scan aborted instantly** with `TCPDUMP_ERROR: tcpdump exited immediately (code 1)`,
+leaving a **24-byte** pcap — the header and nothing else. Reported as *"preflight is stopping it"*;
+**preflight was in fact passing**, and the failure was one step later, at capture start.
+
+**Cause.** Debian builds tcpdump to **drop privileges to user `tcpdump` automatically**, and dropping
+them with `-w` makes it `chown()` the savefile. **The stick is vfat, which cannot represent ownership
+at all**, so the chown returns `EPERM` and **tcpdump treats that as fatal.**
+
+Proved on the rig with three legs rather than assumed:
+
+| test | filesystem | `-Z` | result |
+|---|---|---|---|
+| A | vfat | none (the code as written) | **FAILS** — 24 B, *Couldn't change ownership of savefile* |
+| B | vfat | **`-Z root`** | works — 23,222 B, 20 real packets |
+| C | ext4 | none | works, **and the file lands owned `tcpdump:tcpdump`** |
+
+**Leg C is the proof: on ext4 the chown SUCCEEDS.** The fault is the filesystem, not the flag.
+
+**Fix: `-Z root` in `start_capture()`, unconditionally.** Not "only when the target is vfat" — a
+filesystem-sniffing conditional regresses silently the moment the stick is reformatted or replaced,
+and **exFAT has no ownership either**, so the documented "format it exFAT" advice would have hit the
+same wall. `tls_scan.py` already runs as root, so keeping tcpdump there costs nothing not already spent.
+
+**⚠ This bug was invisible to every test that came before it.** The storage layer passed, the USB
+mount passed, the lidar streamed, and `tls_scan.py --check` reported `Preflight OK` — because none of
+them ever asked tcpdump to *write* to the stick.
 
 ### ✅ CLOSED 2026-08-13, same night — the lidar link is UP and the puck is streaming
 
@@ -2142,9 +2198,14 @@ battery investigation ends where it started: **it was only ever a flat battery.*
    `192.168.1.100`, 100Mbps/Full, puck streaming **753 pkt/s from `192.168.1.201`**, packets decoded
    and confirmed genuine VLP-16 (product `0x22`, 12/12 `0xEEFF` blocks). Preflight passes.
    **⛔ Keep the diagnostic method: check `carrier`, never `ping`** — see the section above.
-4. **⭐ RUN THE FIRST REAL SCAN. Nothing blocks it now.** `--plan`, then `--scan slow --no-record`,
-   then a recorded scan **including its return leg**. The motion and the data path are both proven
-   individually; what has never been exercised is the two together, plus the geometry.
+4. ~~**RUN THE FIRST REAL SCAN.**~~ **✅ DONE 2026-08-13 — it completed.** `360° Slow` on the
+   battery to USB: **337,280 packets, 0 kernel drops, return leg included, cloud built (119,354
+   points, `registered: true`), `throttled=0x0` throughout.** Fixed one bug to get there —
+   **tcpdump cannot `chown` on vfat, so `-Z root` is now load-bearing** in `start_capture()`.
+5. **⭐ RE-DERIVE THE MOUNT GEOMETRY — now unblocked, and the top job.** `TLS_26_08_13_02_05_15.pcap`
+   is the first capture that has ever come from **this** rig. Run the ground-plane histogram on it
+   and settle `MOUNT_ROLL_DEG` and the instrument height, both of which are currently inherited from
+   `captures/driveway.pcap` — **a different machine** — so the sign of the roll is still unknown.
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
@@ -2355,13 +2416,12 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    that was bought.** ~~Check the VLP-16's input range~~ **16.8 V is inside it (9–32 V quoted,
    9–18 V in the manual); no regulator on `S2`.** Procedure: `WIRING_REV3_BMS.html`.
    **The one job this leaves: run the rig on the charged pack and confirm the brownouts are gone.**
-2. **Run a full scan end to end — this has never happened.** `--plan`, `--check`,
-   `--scan slow --no-record`, then a real recorded scan **including its return leg**, which has
-   never run once in the life of this project. The motion is no longer the obstacle; the capture
-   path and the geometry are now the untested parts.
-3. **Re-derive the mount geometry on THIS rig.** `MOUNT_ROLL_DEG` and the 1.5 m instrument height
-   came from `captures/driveway.pcap`, which is a different machine. Take the first real capture
-   from this rig and re-run the ground-plane histogram. Until then the sign of the roll is unknown.
+2. ✅ **Run a full scan end to end.** **DONE 2026-08-13** — `360° Slow`, battery, USB, **337,280
+   packets / 0 drops**, return leg included, cloud built. Details in the "FIRST FULL SCAN" section.
+3. **⭐ Re-derive the mount geometry on THIS rig — NOW UNBLOCKED and the top job.**
+   `MOUNT_ROLL_DEG` and the 1.5 m instrument height came from `captures/driveway.pcap`, which is a
+   different machine. **`TLS_26_08_13_02_05_15.pcap` is the first capture from this rig** — re-run
+   the ground-plane histogram on it. Until then the sign of the roll is unknown.
 4. **Explain the three unexplained reboots** of 2026-08-10 (23:41, 23:50, 23:51), which began when
    the screen was connected and stopped afterwards. The display has its own charger so it is not
    loading the Pi's rail. **Find out what is powering the Pi and what it is rated** — a 5 V/2 A phone
