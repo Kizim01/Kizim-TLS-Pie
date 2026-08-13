@@ -1659,7 +1659,8 @@ function draw(){
   document.getElementById('vstat').textContent =
     shown.toLocaleString() + ' pts · ' + on +
     (on===1 ? ' scan' : ' scans') + ' · ' +
-    V.cam.dist.toFixed(0) + ' m out';
+    (V.cam.dist <= CAM_FLOOR + 1e-6 ? 'inside'
+                                    : V.cam.dist.toFixed(0) + ' m out');
 }
 function invalidate(){ if(!V.raf) V.raf = requestAnimationFrame(draw); }
 
@@ -1703,12 +1704,44 @@ function orbit(dx,dy){
   V.cam.pitch = Math.max(-1.45, Math.min(1.45, V.cam.pitch + dy*0.0062));
   invalidate();
 }
+/* ---- fly-through, added 2026-08-13 ------------------------------------
+   This used to be a pure orbit rig with a hard floor on the radius:
+
+       V.cam.dist = Math.max(0.6, Math.min(900, V.cam.dist*f));
+
+   Zooming only ever shortened the leash to a target pinned at the centre of
+   the cloud, so the camera could never pass through anything. That read as
+   "the viewport stops when it hits a point" -- but nothing here tests points
+   at all. It was the 0.6 m floor, every time, and the wall was simply what
+   happened to be near the pivot.
+
+   Below the floor the pinch stops shrinking the radius and starts pushing the
+   TARGET forward instead. The eye follows, because eye = t + dir*dist, so the
+   whole camera translates and you fly through the wall into the room. Orbit
+   still works once inside: there is still a target to swing around, it is just
+   in front of you now rather than at the centre of the scan.
+
+   ⚠ FLY_GAIN is not cosmetic. The raw residual (CAM_FLOOR - dist*f) is about a
+   centimetre per touchmove, so without it crossing a room takes a minute of
+   pinching and the feature reads as still broken.
+
+   Reset View returns to the fitted overview, so flying off into empty space is
+   always one tap from recoverable. */
+const CAM_FLOOR = 0.6, FLY_GAIN = 6.0;
+
 function zoom(f){
-  V.cam.dist = Math.max(0.6, Math.min(900, V.cam.dist*f));
+  const d = V.cam.dist * f;
+  if(d >= CAM_FLOOR){ V.cam.dist = Math.min(900, d); invalidate(); return; }
+  const b = camBasis(), step = (CAM_FLOOR - d) * FLY_GAIN;
+  for(let i=0;i<3;i++) V.cam.t[i] -= b.dir[i]*step;   /* -dir is into the scene */
+  V.cam.dist = CAM_FLOOR;
   invalidate();
 }
 function pan(dx,dy){
-  const b = camBasis(), k = V.cam.dist*0.0022;
+  /* Floor the gain too. While flying, dist is pinned at CAM_FLOOR, and a
+     strictly dist-proportional pan works out at well under a millimetre per
+     swipe -- which feels like a seized control rather than a slow one. */
+  const b = camBasis(), k = Math.max(V.cam.dist, 1.5)*0.0022;
   for(let i=0;i<3;i++) V.cam.t[i] += (-b.right[i]*dx + b.up[i]*dy)*k;
   invalidate();
 }
