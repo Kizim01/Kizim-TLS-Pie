@@ -79,9 +79,38 @@ import os
 #     roll -90  ->  the same plane at +1.5 m, i.e. a ceiling 1.5 m
 #                   above a driveway, which is not a thing
 #
-# So the puck is on its side, laid the +90 way, and the instrument stood 1.5 m
-# above the ground. Both the sign and the orientation come from the data rather
-# than from reading a photograph, which is what got this wrong twice.
+# So the puck is on its side, laid the +90 way. The sign and the orientation
+# come from the data rather than from reading a photograph, which is what got
+# this wrong twice.
+#
+# ⛔ THE 1.5 m ABOVE IS AN OBSERVATION, NOT A SETTING, AND NOT OURS.
+#
+# Instrument height is NOT a parameter of this system and never has been. There
+# is no height input anywhere: see rotator(), where the world transform is a pan
+# rotation plus LEVER_Z_M, and LEVER_Z_M is the optical centre's offset from the
+# PAN AXIS — a property of how the puck is bolted to the head, not of how high
+# the tripod is standing.
+#
+# It cannot matter, structurally. Instrument height is a translation ALONG the
+# pan axis, and a translation along the rotation axis commutes with the
+# rotation, so it factors out of the entire sweep. Raising or lowering the rig
+# translates the finished cloud vertically and cannot distort it. That is the
+# same fact as the note on LEVER_Z_M below: only x and y can smear a scan.
+#
+# So the rig is height-agnostic by construction. Deployments are expected to
+# vary — bench, low tripod, high tripod — and none of them need reconfiguring.
+# The 1.5 m above is simply where driveway.pcap's instrument happened to stand,
+# recorded because it was the evidence that fixed the roll SIGN.
+#
+# ⚠ AND THE SIGN IS STILL INHERITED FROM THAT FOREIGN CAPTURE. driveway.pcap is
+# a DIFFERENT RIG. The +90/-90 argument above rests on "a ceiling 1.5 m above a
+# driveway is not a thing" — an argument that does NOT survive indoors, where a
+# floor below and a ceiling above are both real. The first capture from this rig
+# (TLS_26_08_13_02_05_15, 2026-08-13) was taken on a workbench and shows a broad
+# hump 1.0-1.8 m ABOVE the sensor with no single sharp plane, which is
+# consistent with BOTH signs and therefore settles nothing. Re-derive it from a
+# capture with one unambiguous dominant plane — outdoors, or with the rig set on
+# the floor — before trusting the sign on this machine.
 MOUNT_ROLL_DEG = float(os.environ.get("TLSPIE_MOUNT_ROLL_DEG", "90.0"))
 MOUNT_PITCH_DEG = float(os.environ.get("TLSPIE_MOUNT_PITCH_DEG", "0.0"))
 MOUNT_YAW_DEG = float(os.environ.get("TLSPIE_MOUNT_YAW_DEG", "0.0"))
