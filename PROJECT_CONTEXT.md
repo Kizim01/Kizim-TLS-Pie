@@ -2023,6 +2023,25 @@ one. See the SOLVED section: it records **three** wrong cuts, and the one method
 per-scan. `tls_pitchcheck.py` keeps that test runnable on the rig — **run it if the puck is ever
 unbolted**, since 8.4 is one bracket's angle, not a property of the sensor.
 
+**✅ AND THERE IS NOW A DESKTOP CONVERTER — 2026-08-13.** `windows-converter/` builds two standalone
+Windows programs (drag-and-drop GUI and a console twin) that turn a capture into **LAS / LAZ / PLY**
+for SketchUp Studio's Scan Essentials, CloudCompare and ReCap — no Python, no MATLAB runtime, no
+fixed install path, which is the whole reason to stop using `Kizim-velodyne-to-point-cloud`'s MATLAB
+app. **That app still knows nothing about the 8.4°, so pointing it at these captures reproduces the
+wedge.** The converter imports `tls_geometry` rather than restating it, and matches the Pi
+like-for-like (313,626 points against 313,612). 52 tests. See its own section below — it records two
+mistakes I made and corrected during the build, both of the "confident number from an invalid
+comparison" kind this project keeps meeting.
+
+**Next on it:** colour sampling with the yaw solve, then registration (which is also when E57 earns
+its place). The colourisation plan is settled: **scan, then swap the lidar for the Insta360 X4 on the
+same tripod at the same optical-centre height**, shoot HDR, drop the equirectangular JPG beside the
+capture sharing its stem. Putting the camera where the lidar was makes occlusion **vanish** rather
+than merely be corrected, and deletes the triggering problem entirely — no SDK, no second WiFi radio.
+⭐ Free bonus: the X4's stitched output is gravity-levelled by its own IMU, so it is an independent
+**vertical reference** — and our clouds are in the RIG's frame, not gravity's, because the pitch
+calibration was differential and **a common tilt of the whole tripod is invisible to it**.
+
 | | |
 |---|---|
 | ✅ **Motion** | `CUR ADJ PWR` turned **DOWN**. Silent and lossless at every speed, 1–28 °/s. |
@@ -2150,6 +2169,65 @@ tool rather than a paragraph, since it is what to run if the puck is ever unbolt
 ```
 
 Stdlib only, runs on the Pi, works on **any** scan of anywhere with a surface overhead.
+
+### ✅ Desktop converter — captures to LAS/LAZ/PLY on Windows — 2026-08-13
+
+`windows-converter/`. Two standalone programs, no Python, no MATLAB runtime, no fixed install path:
+**`TLS-Pie-Converter.exe`** (26.6 MB, drag-and-drop) and **`tlsconvert.exe`** (22.6 MB, console).
+**52 tests.** Commits `9d2e211`, `0740cf0`.
+
+**It was never a question of feasibility.** `tls_pcap`/`tls_geometry`/`tls_cloudbuild` are stdlib-only
+and already ran on Windows — `tls_pcap`'s own docstring says the workstation is meant to build the
+full cloud. Proven by running the Pi's builder unchanged on the laptop: **7.5 s against the Pi's
+29 s, and the same 313,612 points.** The desktop half adds full resolution and the formats other
+software reads, not new maths.
+
+**Verified like-for-like against the Pi**, same capture, same settings: **313,626 points against
+313,612**, overhead surface **4.6 cm against 5.0 cm**.
+
+| | |
+|---|---|
+| **LAS** | Default. Scan Essentials, CloudCompare, ReCap, QGIS, Cyclone |
+| **LAZ** | Same, ~8× smaller (8.2 MB → 1.0 MB measured) |
+| **PLY** | Also read by Scan Essentials; needs no library to write |
+
+**E57 deliberately absent** — its advantage over LAS is per-setup scan positions, which only earn
+their complexity once registration exists.
+
+**⛔ THE GEOMETRY IS NOT DUPLICATED.** `tlsconvert/rig.py` imports `tls_geometry` from the scanner
+tree. `MOUNT_PITCH_DEG` already spent this rig's whole life wrong in one place, and
+`Kizim-velodyne-to-point-cloud`'s MATLAB app **still reproduces the 28 cm wedge** for want of that
+number — a second copy here would be a third place to drift. The one deliberate duplicate is
+`decode.to_world()`, a vectorised twin of `Frame.rotator()` (calling the original 113 M times is not
+viable), and the tests check it against the original on three mounts including an off-axis lever.
+
+**⛔ `--add-data` IN `build_exe.py` IS LOAD-BEARING.** The four scanner modules are imported through
+a `sys.path` entry computed at run time, two from inside functions, so PyInstaller cannot see them.
+Without those lines the exe looks fine and dies on the first conversion. **Smoke-test with the
+CONSOLE build** — a `--windowed` exe has no console, so its bundling failures are silent. Proven by
+running `tlsconvert.exe` in a temp folder with no venv and no repo reachable: it converted a 372 MB
+capture and reported `fan zero +8.40 deg`.
+
+**⭐ Deliberately unlike the Pi: the voxel you name is the voxel you get.** `tls_cloudbuild` doubles
+the edge and re-bins when a budget overruns — which is how asking for 1 cm quietly gives 2 cm. The
+converter prints a note instead and lets the operator decide.
+
+**⛔ DO NOT COMPARE SURFACE THICKNESS ACROSS DIFFERENT VOXEL OR STRIDE SETTINGS.** Voxelling thins a
+surface's dense core far more than its sparse outliers, so it **inflates** a per-cell spread. The
+same scan measures **1.8 cm raw and 5–7 cm voxelled with identical geometry**. That comparison was
+made during this build and misread as a regression; the "fix" it motivated (averaging rather than
+keeping the first return) was kept, but for the duller real reasons — a cell mean beats an arbitrary
+first return, and it matches `tls_cloudbuild` so the two tools agree.
+
+**⚠ And averaging buys less than it sounds like.** It only removes noise when the scatter across a
+surface is SMALLER than the cell; at a 2 cm voxel against the VLP-16's ±3 cm range accuracy it is
+not, so the grid has already frozen the error in. Even when noise is well inside the voxel, a surface
+straddling a cell boundary sets the floor. Both regimes are pinned in the tests.
+
+**Colour is located but not yet sampled.** The convention is a sibling sharing the capture's stem
+(`SCAN.pcap` / `SCAN.json` / `SCAN.jpg`); the converter finds it and reports it. With no photo every
+point still gets RGB — grey from reflectivity — so a viewer never falls back to a flat default that
+would make an uncoloured cloud look coloured.
 
 ### ✅ Preview and control panel — 2026-08-13
 
