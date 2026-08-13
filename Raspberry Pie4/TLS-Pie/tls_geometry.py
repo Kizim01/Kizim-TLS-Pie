@@ -102,15 +102,44 @@ import os
 # The 1.5 m above is simply where driveway.pcap's instrument happened to stand,
 # recorded because it was the evidence that fixed the roll SIGN.
 #
-# ⚠ AND THE SIGN IS STILL INHERITED FROM THAT FOREIGN CAPTURE. driveway.pcap is
-# a DIFFERENT RIG. The +90/-90 argument above rests on "a ceiling 1.5 m above a
-# driveway is not a thing" — an argument that does NOT survive indoors, where a
-# floor below and a ceiling above are both real. The first capture from this rig
-# (TLS_26_08_13_02_05_15, 2026-08-13) was taken on a workbench and shows a broad
-# hump 1.0-1.8 m ABOVE the sensor with no single sharp plane, which is
-# consistent with BOTH signs and therefore settles nothing. Re-derive it from a
-# capture with one unambiguous dominant plane — outdoors, or with the rig set on
-# the floor — before trusting the sign on this machine.
+# ✅ THE SIGN IS NOW CONFIRMED ON THIS RIG — 2026-08-13, and no longer rests on
+# driveway.pcap (a different machine) or on the "a ceiling above a driveway is
+# not a thing" argument, which does NOT survive indoors where a floor below and
+# a ceiling above are both real.
+#
+# TLS_26_08_13_02_05_15 was taken on a workbench with two distances measured by
+# tape: the sensor sat 18 cm above the table, and the surface directly overhead
+# was 141 cm above the sensor. Histogramming the built cloud (which was rendered
+# at roll +90) against those numbers:
+#
+#                        tape said        LIDAR MEASURED      agreement
+#     surface overhead   +1.41 m          +1.405 m            5 mm
+#     table top          -0.18 m          -0.193 m            13 mm
+#     floor              ~-1.05 m         -1.040 m            ~1 cm
+#
+# The sharpest 6 cm slab anywhere in +/-3 m is +1.37..+1.43, i.e. the surface
+# overhead. Under roll -90 all three mirror: the 1.41 m surface would lie BELOW,
+# the table ABOVE, the floor 1.04 m overhead. Nothing is at any of those places.
+# Three surfaces at independently known distances agree for one sign only.
+#
+# ⛔ THE LIDAR COLUMN IS THE MEASUREMENT OF RECORD, NOT THE TAPE. The tape only
+# had to break a BINARY ±90 ambiguity and the margin for that is 2.8 m, so a
+# centimetre of tape error is irrelevant to the verdict. The third column is
+# agreement, NOT lidar error: 119,354 points averaged into a plane beat a
+# hand-held tape, and the finer instrument is the one being confirmed.
+#
+# The residual also has an identifiable home: you cannot tape to the optical
+# centre, which sits inside the puck body. The 18 cm was necessarily taken to
+# some external datum, and ~1 cm is exactly what that produces — so the
+# difference is better read as an ESTIMATE OF THE DATUM OFFSET than an error.
+#
+# Free fourth check that nobody set up: floor to table top comes out at
+# 1.040 - 0.193 = 0.847 m, an ordinary bench height — and being differential,
+# the optical-centre datum cancels out of it entirely.
+#
+# ⭐ THE GENERAL METHOD, worth reusing: the roll sign is checkable on ANY scan
+# where a single distance to a surface is known. Measure one, histogram the
+# cloud, see which side it lands. No driveway and no special capture required.
 MOUNT_ROLL_DEG = float(os.environ.get("TLSPIE_MOUNT_ROLL_DEG", "90.0"))
 MOUNT_PITCH_DEG = float(os.environ.get("TLSPIE_MOUNT_PITCH_DEG", "0.0"))
 MOUNT_YAW_DEG = float(os.environ.get("TLSPIE_MOUNT_YAW_DEG", "0.0"))

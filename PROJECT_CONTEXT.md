@@ -2025,6 +2025,68 @@ exists**, so the geometry work — `MOUNT_ROLL_DEG` and the instrument height, s
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
 
+### ⭐⭐ MOUNT GEOMETRY SETTLED ON THIS RIG — 2026-08-13
+
+**Two findings, and the first one dissolves a question rather than answering it.**
+
+#### 1. The rig is HEIGHT-AGNOSTIC by construction. There is no height parameter.
+
+Instrument height is **not** an input and never was. `rotator()` applies a pan rotation plus
+`LEVER_Z_M`, and `LEVER_Z_M` is the optical centre's offset from the **pan axis** — how the puck is
+bolted to the head, not how high the tripod stands. The first scan's sidecar confirms it:
+`lever_m: [0,0,0]`, no height field anywhere.
+
+**It cannot matter, structurally: instrument height is a translation ALONG the pan axis, and a
+translation along the rotation axis commutes with the rotation**, so it factors out of the entire
+sweep. Raising or lowering the rig translates the finished cloud and cannot distort it. The code
+already implied this — *"only x and y can smear a scan; z cannot."*
+
+**⛔ The "1.5 m" in the old comments was an OBSERVATION, not a setting** — where `driveway.pcap`'s
+instrument happened to stand, recorded as the evidence that fixed the roll sign. It read like
+configuration and misled a full session. Now labelled as such in `tls_geometry.py`.
+
+**Deployments are expected to vary — bench, low tripod, high tripod — and none need reconfiguring.**
+
+#### 2. `MOUNT_ROLL_DEG = +90` CONFIRMED, and no longer inherited from another rig
+
+The old argument — *"a ceiling 1.5 m above a driveway is not a thing"* — **does not survive indoors**,
+where a floor below and a ceiling above are both real. It needed replacing, not re-running.
+
+Replaced with a tape measure. On the bench: sensor **18 cm** above the table, surface directly
+overhead **141 cm** above the sensor. Histogramming the built cloud (rendered at roll +90):
+
+| surface | tape said | **lidar measured** | agreement |
+|---|---|---|---|
+| surface overhead | +1.41 m | **+1.405 m** | 5 mm |
+| table top | −0.18 m | **−0.193 m** | 13 mm |
+| floor | ~−1.05 m | **−1.040 m** | ~1 cm |
+
+The sharpest 6 cm slab anywhere in ±3 m is `+1.37..+1.43` — the surface overhead. **Under roll −90
+all three mirror**: the 1.41 m surface below, the table above, the floor 1.04 m overhead. Nothing is
+at any of those places. **Three surfaces at independently known distances agree for one sign only.**
+
+**⛔ THE LIDAR COLUMN IS THE MEASUREMENT OF RECORD, NOT THE TAPE.** The tape's only job here was to
+break a **binary** ±90 ambiguity, and the margin for that is **2.8 m** — a centimetre of tape error
+is irrelevant to it. Do not read the third column as lidar error; the lidar is by far the finer
+instrument, and 119,354 points averaged into a plane beat a hand-held tape.
+
+**And the residual has an identifiable home: you cannot tape to the optical centre.** It sits inside
+the puck body, invisible to a measuring tape, so the 18 cm was necessarily taken to some external
+datum. **A ~1 cm disagreement is exactly what that produces** — which means the difference is better
+read as an *estimate of the datum offset* than as an error in anything.
+
+**A free fourth check nobody set up:** floor to table top = 1.040 − 0.193 = **0.847 m**, an ordinary
+bench height — and that figure is differential, so the optical-centre datum cancels out of it
+entirely.
+
+**⭐ THE GENERAL METHOD, worth reusing: the roll sign is checkable on ANY scan where a single
+distance to any surface is known.** Measure one, histogram the cloud, see which side it lands on. No
+driveway, no outdoor trip, no special capture.
+
+⚠ One prediction failed and is recorded as failing: the table at 0.18 m was expected to be invisible
+inside the VLP-16's minimum range. **It is plainly there, 7,809 points at −0.193 m.** The puck sees
+closer than assumed.
+
 ### ⭐⭐⭐ THE FIRST FULL SCAN RAN — 2026-08-13, 02:05–02:11
 
 **`360° Slow`, 1°/s, on the battery, recording to the USB stick. It completed, including the return
@@ -2418,10 +2480,10 @@ The Pi is built, provisioned and proven as far as it can be without the rig atta
    **The one job this leaves: run the rig on the charged pack and confirm the brownouts are gone.**
 2. ✅ **Run a full scan end to end.** **DONE 2026-08-13** — `360° Slow`, battery, USB, **337,280
    packets / 0 drops**, return leg included, cloud built. Details in the "FIRST FULL SCAN" section.
-3. **⭐ Re-derive the mount geometry on THIS rig — NOW UNBLOCKED and the top job.**
-   `MOUNT_ROLL_DEG` and the 1.5 m instrument height came from `captures/driveway.pcap`, which is a
-   different machine. **`TLS_26_08_13_02_05_15.pcap` is the first capture from this rig** — re-run
-   the ground-plane histogram on it. Until then the sign of the roll is unknown.
+3. ✅✅ **Re-derive the mount geometry on THIS rig. DONE 2026-08-13 — `MOUNT_ROLL_DEG = +90`
+   CONFIRMED**, and the instrument-height question dissolved: **there is no height parameter, the rig
+   is height-agnostic by construction.** Confirmed against three tape-measured surfaces on
+   `TLS_26_08_13_02_05_15`, agreeing to 5–13 mm. See "MOUNT GEOMETRY SETTLED" below.
 4. **Explain the three unexplained reboots** of 2026-08-10 (23:41, 23:50, 23:51), which began when
    the screen was connected and stopped afterwards. The display has its own charger so it is not
    loading the Pi's rail. **Find out what is powering the Pi and what it is rated** — a 5 V/2 A phone
