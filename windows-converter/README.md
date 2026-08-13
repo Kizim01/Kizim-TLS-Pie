@@ -3,12 +3,29 @@
 Turns a scanner capture into a point cloud SketchUp Studio can open, on Windows,
 at full resolution.
 
+## Just use it
+
+Build once (see Setup), then `dist\` holds two standalone programs. Neither
+needs Python, a runtime download, or a fixed install path — put them anywhere.
+
+**`TLS-Pie-Converter.exe`** — drop captures onto its window, or onto the icon.
+
+**`tlsconvert.exe`** — the same engine on the command line, for batches:
+
 ```
-python tlsconvert_cli.py SCAN.pcap                      # LAS beside the capture
-python tlsconvert_cli.py SCAN.pcap -f laz --voxel 0.03  # smaller
-python tlsconvert_cli.py SCAN.pcap --full               # every return
-python tlsconvert_cli.py *.pcap -f ply --max-points 3000000
+tlsconvert SCAN.pcap                      # LAS beside the capture
+tlsconvert SCAN.pcap -f laz --voxel 0.03  # smaller
+tlsconvert SCAN.pcap --full               # every return
+tlsconvert *.pcap -f ply --max-points 3000000
 ```
+
+⭐ The console build is not just a convenience. A `--windowed` executable has
+**no console at all**, so if a bundling problem ever stops the GUI working, it
+fails silently. The console twin is the one that can tell you why — smoke-test
+with it after any rebuild.
+
+From a source checkout, `python tlsconvert_cli.py …` and
+`python tlsconvert_gui.py` do the same things.
 
 A capture needs its `.json` sidecar beside it. Without one there is no pan
 track, so the converter refuses rather than smearing every surface into a
@@ -99,15 +116,28 @@ measures 1.8 cm raw and 5 cm voxelled with identical geometry.
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python test_tlsconvert.py
+.venv\Scripts\python build_exe.py
 ```
 
-Keep the venv minimal — PyInstaller bundles whatever is in it, so an environment
-carrying pandas and scipy produces an enormous `.exe`.
+⚠ Keep the venv minimal, and **build from it rather than a general-purpose
+environment**. PyInstaller bundles whatever is importable where it runs, so an
+environment carrying pandas and scipy produces an enormous executable for a
+program that needs none of them. As it stands: 26.6 MB for the GUI, 22.6 MB for
+the console build.
+
+⛔ `build_exe.py` carries the scanner's four modules in with `--add-data`, and
+that is load-bearing. They are imported through a `sys.path` entry computed at
+run time, and two of them from inside functions, so PyInstaller's static
+analysis cannot see them. Without those lines you get an executable that looks
+fine and dies on the first conversion.
 
 ## Status
 
-Done: full-resolution decode, calibrated transform, voxel averaging, LAS/LAZ/PLY,
-CLI, 42 tests.
+**Working end to end.** Full-resolution decode, calibrated transform, voxel
+averaging, LAS/LAZ/PLY, CLI, drag-and-drop GUI, both executables, 52 tests.
 
-Next: colour sampling with the yaw solve, then the drag-and-drop GUI and the
-PyInstaller build.
+Verified against the Pi like-for-like on the same capture at the same settings:
+**313,626 points against its 313,612**, overhead surface 4.6 cm against 5.0 cm.
+
+Next: colour sampling with the yaw solve. After that, registration — which is
+also when E57 starts to earn its place.

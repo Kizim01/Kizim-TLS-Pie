@@ -282,5 +282,51 @@ except ValueError as exc:
     check("a capture with no sidecar is refused rather than smeared",
           "pan track" in str(exc), str(exc)[:60])
 
+# --- 9. GUI logic, without opening a window ---------------------------------
+print("\nGUI")
+
+import ast                                                  # noqa: E402
+import tlsconvert_gui as gui                                 # noqa: E402
+
+cap = os.path.join(tmp, "SCAN.pcap")
+check("a dropped capture maps to itself",
+      gui.as_capture(cap) == os.path.abspath(cap))
+check("a dropped SIDECAR resolves to its capture",
+      gui.as_capture(os.path.join(tmp, "SCAN.json")) == os.path.abspath(cap))
+check("a dropped PHOTO resolves to its capture",
+      gui.as_capture(os.path.join(tmp, "SCAN.jpg")) == os.path.abspath(cap))
+check("an unrelated file is ignored, not guessed at",
+      gui.as_capture(os.path.join(tmp, "notes.txt")) is None)
+check("a directory is ignored", gui.as_capture(tmp) is None)
+check("a companion with no capture beside it is ignored",
+      gui.as_capture(os.path.join(tmp, "orphan.json")) is None)
+check("sizes read in human units", gui.human(1536) == "1.5 KB",
+      gui.human(1536))
+
+# ⛔ The worker thread and the UI thread agree on a 3-tuple message. Getting
+# this wrong raises ValueError deep inside the drain loop, where it surfaces as
+# a GUI that silently stops updating -- so it is checked structurally rather
+# than left to be found by running it.
+tree = ast.parse(open(gui.__file__, encoding="utf-8").read())
+puts = [n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute) and n.func.attr == "put"]
+check("the GUI actually posts messages", len(puts) >= 6, len(puts))
+bad = [ast.unparse(p)[:50] for p in puts
+       if not (len(p.args) == 1 and isinstance(p.args[0], ast.Tuple)
+               and len(p.args[0].elts) == 3)]
+check("every queue message is a (kind, path, payload) triple", not bad, bad)
+
+kinds = {p.args[0].elts[0].value for p in puts
+         if isinstance(p.args[0].elts[0], ast.Constant)}
+handled = set()
+for node in ast.walk(tree):
+    if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+            and node.left.id == "kind"
+            and isinstance(node.comparators[0], ast.Constant)):
+        handled.add(node.comparators[0].value)
+check("every message kind the worker sends is handled by the drain loop",
+      kinds <= handled, sorted(kinds - handled))
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
