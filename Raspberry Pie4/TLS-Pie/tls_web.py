@@ -598,7 +598,14 @@ PAGE = """<!doctype html>
   .daygroup:first-child{margin-top:0}
   .srow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
     padding:13px 0;background:none;border:0;border-bottom:.5px solid
-    rgba(255,255,255,.09);color:var(--text);border-radius:0}
+    rgba(255,255,255,.09);color:var(--text);border-radius:0;cursor:pointer}
+  /* The row used to be a <button>. It carries a real <button> inside it now,
+     and a button inside a button is invalid HTML that browsers silently
+     un-nest -- which would put the download control outside the row. */
+  .dl{flex:0 0 auto;width:36px;height:36px;padding:0;border-radius:99px;
+    font-size:15px;line-height:1;background:rgba(255,255,255,.07);
+    border:.5px solid var(--edge);color:var(--dim)}
+  .dl:active{opacity:.55}
   .srow:last-child{border-bottom:0}
   .srow:active{transform:none;opacity:.6}
   .srow .nm{flex:1;min-width:0}
@@ -1439,10 +1446,19 @@ async function refreshLibrary(){
     const size = s.hasCapture ? (s.pcapBytes/1048576).toFixed(0)+' MB'
                               : 'capture offloaded';
     const det = [clock(s.epoch), s.label || '', size].filter(Boolean).join(' · ');
-    html += '<button class="srow" data-scan="'+s.name+'" ' +
+    /* Offer the capture when there is one -- that is the product, and the
+       reason to get a scan off the rig at all. Once it has been offloaded and
+       pruned the cloud is what remains, so offer that instead. */
+    const kind = s.hasCapture ? 'capture' : (s.hasCloud ? 'cloud' : null);
+    const what = s.hasCapture ? 'capture, '+(s.pcapBytes/1048576).toFixed(0)+' MB'
+                              : 'cloud';
+    const dl = kind ? '<button class="dl" data-dl="'+s.name+'" data-kind="'+kind+
+                      '" title="Download '+what+'" aria-label="Download '+what+
+                      '">&#8595;</button>' : '';
+    html += '<div class="srow" role="button" tabindex="0" data-scan="'+s.name+'" ' +
             'data-ready="'+(s.hasCloud?1:0)+'">' +
             '<span class="nm"><span class="t">'+(s.label||s.name)+'</span>' +
-            '<span class="d">'+det+'</span></span>'+chip+'</button>';
+            '<span class="d">'+det+'</span></span>'+chip+dl+'</div>';
   });
   wrap.innerHTML = html;
 }
@@ -1455,11 +1471,38 @@ async function refreshLibrary(){
    entirely. Containers keep their listeners because only their children are
    replaced. */
 document.getElementById('lib').addEventListener('click', e => {
+  /* The download button sits inside the row, so it must be claimed first or
+     tapping it would also open the viewer behind the download. */
+  const dl = e.target.closest('.dl');
+  if(dl){
+    downloadScan(dl.getAttribute('data-dl'), dl.getAttribute('data-kind'));
+    return;
+  }
   const row = e.target.closest('.srow'); if(!row) return;
   const name = row.getAttribute('data-scan');
   if(row.getAttribute('data-ready') === '1') openViewer(name);
   else buildCloud(name);
 });
+/* The row is a div now, so Enter and Space are not free any more. */
+document.getElementById('lib').addEventListener('keydown', e => {
+  if(e.key !== 'Enter' && e.key !== ' ') return;
+  const row = e.target.closest('.srow'); if(!row) return;
+  e.preventDefault();
+  row.click();
+});
+
+function downloadScan(name, kind){
+  /* A plain navigation, NOT fetch(). The browser's own downloader handles
+     resume, backgrounding and the save location, and it streams to storage --
+     whereas fetch() into a Blob would have to fit 370 MB in the phone's RAM
+     before a single byte reached the disk. */
+  const a = document.createElement('a');
+  a.href = q('/api/download?name='+encodeURIComponent(name)+'&kind='+kind);
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 async function buildCloud(name){
   try{ await fetch(q('/api/build?name='+encodeURIComponent(name)),
@@ -2133,6 +2176,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"scans": self._library()})
         elif url.path == "/api/scanfile":
             self._send_scanfile(query.get("name", [""])[0])
+        elif url.path == "/api/download":
+            self._send_download(query.get("name", [""])[0],
+                                query.get("kind", ["capture"])[0])
         elif url.path == "/splash.mp4":
             self._send_splash()
         else:
@@ -2247,6 +2293,100 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_bytes(200, payload, "application/octet-stream",
                          cache="private, max-age=86400")
+
+    # Extensions are literals here, never taken from the request. The key is
+    # what the phone sends; the value is what the filesystem gets asked for.
+    DOWNLOAD_KINDS = {
+        "capture": (".pcap", "application/vnd.tcpdump.pcap"),
+        "cloud": (".cloud", "application/octet-stream"),
+        "meta": (".json", "application/json"),
+    }
+
+    def _send_download(self, name, kind):
+        """
+        Stream a scan file to the browser as a download.
+
+        ⛔ STREAMED, NOT read() INTO MEMORY. /api/scanfile above reads whole
+        files, which is fine for a cloud of a few MB. A capture is ~370 MB, so
+        the same approach would put a tenth of the Pi's RAM on the heap for one
+        request and more for two.
+
+        ⛔ RANGE IS HONOURED, and that is not politeness. This is a large file
+        crossing a phone hotspot, and the one thing established about that link
+        on 2026-08-13 is that it drops when the phone walks into another room.
+        Without ranges a 370 MB download that dies at 90% starts again at zero.
+        """
+        entry = self.DOWNLOAD_KINDS.get(kind)
+        if entry is None:
+            self._send(400, "Unknown download kind", "text/plain")
+            return
+        ext, ctype = entry
+        if self.state.dumpdir is None:
+            self._send(404, "No scan library on this rig", "text/plain")
+            return
+        import tls_scanstore
+        path = tls_scanstore.scan_file_path(self.state.scan_roots(), name, ext)
+        if path is None:
+            self._send(404, "No %s for that scan" % kind, "text/plain")
+            return
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            self._send(500, "Could not read that scan: %s" % exc, "text/plain")
+            return
+
+        start, end, status = 0, size - 1, 200
+        rng = self.headers.get("Range") or ""
+        if rng.startswith("bytes=") and size:
+            first, _, last = rng[6:].partition("-")
+            try:
+                if first:
+                    start = int(first)
+                    end = min(int(last), size - 1) if last else size - 1
+                elif last:
+                    start = max(0, size - int(last))      # suffix range
+                status = 206
+            except ValueError:
+                start, end, status = 0, size - 1, 200
+            if status == 206 and (start > end or start >= size):
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        # name has already survived the traversal guard, so it holds no
+        # separators; strip quotes anyway rather than reason about whether a
+        # filename can break out of the header it is quoted into.
+        filename = (name + ext).replace('"', "").replace("\\", "")
+        length = end - start + 1
+
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition",
+                         'attachment; filename="%s"' % filename)
+        if status == 206:
+            self.send_header("Content-Range",
+                             "bytes %d-%d/%d" % (start, end, size))
+        self.send_header("Cache-Control", "private, max-age=0")
+        self.end_headers()
+
+        remaining = length
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                while remaining > 0:
+                    chunk = handle.read(min(262144, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # the phone left the room mid-download; expected, not an error
+        except OSError:
+            pass   # headers are already sent, so there is no error to report
 
     def do_POST(self):
         url = urlparse(self.path)

@@ -10,7 +10,7 @@ answer.
 
 WHAT IT PRODUCES, AND WHAT IT DOES NOT
 --------------------------------------
-A decimated, voxel-averaged cloud of ~150,000 points, about 1 MB, in the
+A decimated, voxel-averaged cloud of ~700,000 points, about 5 MB, in the
 world frame. That is a coverage check and a visual index of the scan. It is
 NOT the product: the pcap is, and the full-resolution cloud is built on a
 workstation where 113 million points are somebody else's problem.
@@ -49,21 +49,49 @@ import tls_cloud
 import tls_geometry
 
 # --- Output sizing ---------------------------------------------------------
-# ~150k points is what a phone can orbit smoothly in one WebGL draw call, and
-# at 7 bytes a point it is about 1 MB over the hotspot -- a second or two.
-MAX_POINTS = int(os.environ.get("TLSPIE_CLOUD_MAX_POINTS", "150000"))
-
-# Voxel edge for the averaging filter. 3 cm is a shade under the VLP-16's
-# +/-3 cm range accuracy, so it thins without inventing detail.
+# ⛔ THE VOXEL IS THE BINDING CONSTRAINT, NOT THIS BUDGET. Raising MAX_POINTS
+# alone barely helps, because the 3 cm grid saturates long before the budget
+# does. Measured 2026-08-13 on TLS_26_08_13_02_05_15 (337,280 packets):
 #
-# On this rig -- puck on its SIDE -- the redundancy is only about 2x: each
-# revolution of the fan lands 0.1 deg from the last, so nearly every one
-# contributes new geometry rather than repeating, and the doubling comes from
-# the 378 deg sweep passing everything twice. The averaging is therefore mostly
-# a noise filter and a way to hit a point budget, NOT a way to average away a
-# thousand repeat measurements. (It would be, on an upright coaxial mount --
-# which is what this rig was mistakenly believed to be for part of a day.)
-VOXEL_M = float(os.environ.get("TLSPIE_CLOUD_VOXEL_M", "0.03"))
+#     budget    packets decoded    output points
+#     150,000        0.9%             119,354
+#     400,000        2.4%             181,372
+#     800,000        4.5%             223,894
+#   1,500,000        9.1%             267,191     <- 6x the budget, 2.2x the points
+#
+# Sweeping the voxel instead, with the budget held high:
+#
+#     voxel     points        size       build
+#     3.0 cm    320,353       2.1 MB     63 s
+#     2.0 cm    702,421       4.7 MB     73 s     <- chosen
+#     1.5 cm  1,210,361       8.1 MB     94 s
+#     1.0 cm    (falls back to 2.0 cm -- exceeds the budget, so voxel_average
+#                doubles the edge and retries; that fallback is why a smaller
+#                number here can silently give you a LARGER voxel)
+#
+# So: 2 cm and a budget with headroom, giving ~700k points -- 5.9x what the
+# preview used to show, for 4.7 MB and about a minute of background build.
+MAX_POINTS = int(os.environ.get("TLSPIE_CLOUD_MAX_POINTS", "900000"))
+
+# Voxel edge for the averaging filter.
+#
+# ⚠ 2 cm is BELOW the VLP-16's +/-3 cm range accuracy, and that is deliberate,
+# but know what it means: some of the extra points are range noise on a surface
+# rather than new geometry. For a PREVIEW that is the right trade -- it reads as
+# a denser, more natural surface -- but do not mistake it for resolution.
+#
+# What justifies going under the accuracy figure at all: on this rig -- puck on
+# its SIDE -- the redundancy is only about 2x. Each revolution of the fan lands
+# 0.1 deg from the last, so nearly every one contributes new geometry rather
+# than repeating, and the doubling comes from the 378 deg sweep passing
+# everything twice. A 3 cm grid was therefore merging genuinely DISTINCT
+# returns, not averaging away a thousand repeat measurements of the same spot.
+# (It would be, on an upright coaxial mount -- which is what this rig was
+# mistakenly believed to be for part of a day.)
+#
+# Set TLSPIE_CLOUD_VOXEL_M=0.015 for ~1.2M points if the phone stays smooth,
+# or back to 0.03 if it does not.
+VOXEL_M = float(os.environ.get("TLSPIE_CLOUD_VOXEL_M", "0.02"))
 
 LIDAR_PORT = int(os.environ.get("TLSPIE_LIDAR_PORT", "2368"))
 

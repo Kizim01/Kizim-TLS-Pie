@@ -163,14 +163,23 @@ def list_scans(dumpdir, building=None):
     return out
 
 
-def cloud_path(dumpdir, name):
+def scan_file_path(dumpdir, name, ext):
     """
-    Resolve a scan name to its .cloud, refusing anything that escapes DUMPDIR.
+    Resolve a scan name + extension to a path, refusing anything that escapes
+    DUMPDIR.
 
-    The name arrives from the phone as a query parameter, so it is untrusted
-    input being turned into a filesystem path -- exactly the shape of a
-    directory traversal. Rejecting separators outright is simpler to be sure of
-    than normalising and comparing prefixes.
+    ⛔ THE TRAVERSAL CHECK LIVES HERE AND NOWHERE ELSE. The name arrives from
+    the phone as a query parameter, so it is untrusted input being turned into a
+    filesystem path -- exactly the shape of a directory traversal. Rejecting
+    separators outright is simpler to be sure of than normalising and comparing
+    prefixes.
+
+    cloud_path() and the download route both funnel through this one function
+    deliberately: a second copy of a security check is a second thing to keep
+    correct, and the copy is always the one that rots.
+
+    `ext` is NEVER taken from the request. Callers pass a literal from a fixed
+    set, so a caller cannot ask for ".ssh/id_rsa" by supplying an extension.
     """
     if not name or "/" in name or "\\" in name or name.startswith("."):
         return None
@@ -180,10 +189,15 @@ def cloud_path(dumpdir, name):
     # The traversal check above has already run, so joining against more than
     # one root does not widen what a caller can reach.
     for root in as_roots(dumpdir):
-        path = os.path.join(root, name + ".cloud")
+        path = os.path.join(root, name + ext)
         if os.path.exists(path):
             return path
     return None
+
+
+def cloud_path(dumpdir, name):
+    """Resolve a scan name to its .cloud. See scan_file_path for the guard."""
+    return scan_file_path(dumpdir, name, ".cloud")
 
 
 def save_alignment(dumpdir, name, alignment):
