@@ -52,6 +52,51 @@ def as_roots(dumpdir):
     return [dumpdir]
 
 
+# --- "did anything actually reach the sensor?" ------------------------------
+# ⛔ A LENS COVER LEFT ON PRODUCES A SCAN THAT REPORTS COMPLETE SUCCESS.
+# Caught on 2026-08-13: a full 377 deg sweep, 186 MB of capture, [COMPLETE] in
+# the log, a cloud built and registered: true -- and the data was worthless,
+# because the cap was on. Nothing anywhere in the rig noticed.
+#
+# The signature is REACH, not point count. Measured across both scans:
+#
+#                        returns/packet      anything beyond 3 m
+#   uncovered  2% in          274                    0
+#   uncovered  35%            291                   67
+#   uncovered  70%            286                 2765
+#   cover on   2%              28                    0
+#   cover on   35%            123                    0
+#   cover on   70%             27                    0
+#
+# Returns-per-packet OVERLAPS (123 against 274) so it cannot be the test. Reach
+# does not overlap at all: with the cover on, nothing was seen past 1.6 m at any
+# azimuth in the whole scan, while a working scan eventually sees across the
+# room. The cloud header already carries bounds_m, so this costs one comparison
+# and no extra reads.
+#
+# ⚠ This is a POST-scan test and cannot be moved to preflight. Before the head
+# turns, a genuinely working scan facing a near wall also shows no reach -- the
+# 2% row above is exactly that case, on the good scan. Judging at rest would
+# flag real scans.
+BLOCKED_REACH_M = float(os.environ.get("TLSPIE_BLOCKED_REACH_M", "3.0"))
+
+
+def _reach_m(bounds):
+    """Furthest any point in the cloud got from the sensor, horizontally.
+
+    The sensor is the origin of the cloud's frame, so this is just the largest
+    absolute x or y in the bounds. Z is left out: floor and ceiling are close in
+    any indoor scan and say nothing about whether the beam is getting out.
+    """
+    if not bounds:
+        return None
+    try:
+        lo, hi = bounds
+        return max(abs(lo[0]), abs(hi[0]), abs(lo[1]), abs(hi[1]))
+    except (TypeError, IndexError, ValueError):
+        return None
+
+
 def list_scans(dumpdir, building=None):
     """
     Stored scans, newest first.
@@ -119,6 +164,8 @@ def list_scans(dumpdir, building=None):
             "points": None,
             "registered": None,
             "bounds": None,
+            "reachM": None,
+            "blocked": None,
             "built": None,
             "zero": None,
             "alignment": None,
@@ -137,6 +184,9 @@ def list_scans(dumpdir, building=None):
             entry["points"] = header.get("count")
             entry["registered"] = header.get("registered")
             entry["bounds"] = header.get("bounds_m")
+            entry["reachM"] = _reach_m(header.get("bounds_m"))
+            entry["blocked"] = (entry["reachM"] is not None
+                                and entry["reachM"] < BLOCKED_REACH_M)
             entry["built"] = header.get("built_epoch")
             entry["label"] = entry["label"] or (header.get("scan") or {}).get("label")
             if entry["epoch"] is None:

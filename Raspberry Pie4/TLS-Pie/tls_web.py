@@ -602,6 +602,16 @@ PAGE = """<!doctype html>
   /* The row used to be a <button>. It carries a real <button> inside it now,
      and a button inside a button is invalid HTML that browsers silently
      un-nest -- which would put the download control outside the row. */
+  .vsliders{position:absolute;left:11px;right:11px;bottom:62px;z-index:6;
+    background:rgba(10,12,18,.90);border:.5px solid var(--edge);
+    border-radius:15px;padding:11px 13px;display:flex;flex-direction:column;
+    gap:9px}
+  .vsl{display:flex;align-items:center;gap:10px;font-size:12.5px;
+    color:var(--dim)}
+  .vsl>span{flex:0 0 78px}
+  .vsl>input{flex:1;min-width:0;accent-color:#0A84FF}
+  .vsl>b{flex:0 0 62px;text-align:right;color:var(--text);font-weight:600;
+    font-variant-numeric:tabular-nums}
   .dl{flex:0 0 auto;width:36px;height:36px;padding:0;border-radius:99px;
     font-size:15px;line-height:1;background:rgba(255,255,255,.07);
     border:.5px solid var(--edge);color:var(--dim)}
@@ -937,8 +947,24 @@ body{transition:opacity .25s ease}
 
   <div class="vstat" id="vstat"></div>
 
+  <!-- Hidden by default: on a 5.5in panel three sliders permanently on screen
+       cost more than they earn, and they are set once and left. -->
+  <div class="vsliders" id="vsliders" hidden>
+    <label class="vsl"><span>Point size</span>
+      <input type="range" id="spsize" min="20" max="200" value="100" step="5">
+      <b id="spsizev">1.00&times;</b></label>
+    <label class="vsl"><span>Colour low</span>
+      <input type="range" id="szlo" min="0" max="1000" value="0" step="1">
+      <b id="szlov">auto</b></label>
+    <label class="vsl"><span>Colour high</span>
+      <input type="range" id="szhi" min="0" max="1000" value="1000" step="1">
+      <b id="szhiv">auto</b></label>
+    <button class="vb" id="sreset" onclick="resetDisplay()">Reset display</button>
+  </div>
+
   <div class="vbar vbot">
     <button class="vb wide" id="vcolor" onclick="cycleColor()">Colour: height</button>
+    <button class="vb" id="vdisp" onclick="toggleSliders()">Display</button>
     <button class="vb" id="vroam" onclick="toggleRoam()">Orbit</button>
     <button class="vb" onclick="resetView()">Recentre</button>
     <!-- Stop stays reachable from inside the viewer. The panel is the only
@@ -1437,6 +1463,12 @@ async function refreshLibrary(){
     if(s.building) chip = '<span class="chip busy">building…</span>';
     else if(s.hasCloud && s.registered === false)
       chip = '<span class="chip warn">unregistered</span>';
+    else if(s.hasCloud && s.blocked)
+      /* Nothing in this scan got more than a few metres from the sensor. The
+         usual cause is the lens cover, and the rig cannot tell on its own --
+         every other status reads as a clean success. */
+      chip = '<span class="chip warn" title="nothing beyond ' +
+             (s.reachM||0).toFixed(1) + ' m — lens cover on?">blocked?</span>';
     else if(s.hasCloud) chip = '<span class="chip ok">' +
       (s.points/1000).toFixed(0) + 'k pts</span>';
     else if(!s.hasCapture) chip = '<span class="chip warn">no data</span>';
@@ -1524,6 +1556,7 @@ uniform vec2 uZ;            /* height range for the colour ramp */
 uniform vec3 uFlat;         /* per-scan colour */
 uniform float uMode;        /* 0 = by height, 1 = by scan, 2 = by intensity */
 uniform float uPS;
+uniform float uPSmax;    /* ceiling, so points can go genuinely small */
 varying vec3 vC;
 vec3 ramp(float t){
   return vec3(smoothstep(0.42,0.95,t),
@@ -1538,7 +1571,12 @@ void main(){
   if(uMode > 1.5) c = vec3(0.35 + 0.65*aInt);
   else if(uMode > 0.5) c = uFlat;
   vC = c;
-  gl_PointSize = clamp(uPS/max(gl_Position.w, 0.5), 1.0, 5.0);
+  /* The ceiling is what actually decides how fat a dense cloud looks: at
+     500k points most are near enough to sit on the clamp, so scaling uPS alone
+     changes almost nothing until the ceiling comes down with it. 1.0 is the
+     floor because a point smaller than a pixel is not drawn smaller, it is
+     drawn unreliably. */
+  gl_PointSize = clamp(uPS/max(gl_Position.w, 0.5), 1.0, uPSmax);
 }`;
 
 const FS = `
@@ -1550,6 +1588,7 @@ const V = {
   gl:null, prog:null, loc:{}, layers:[], base:null, sel:null,
   cam:{yaw:-0.9, pitch:0.45, dist:30, t:[0,0,0]},
   free:false,
+  psize:1.0, zlo:null, zhi:null,
   mode:0, raf:0, dirty:true, dpr:1
 };
 const MODES = ['height','scan','intensity'];
@@ -1613,7 +1652,8 @@ function glInit(){
     aPos: gl.getAttribLocation(p,'aPos'), aInt: gl.getAttribLocation(p,'aInt'),
     uVP: gl.getUniformLocation(p,'uVP'), uModel: gl.getUniformLocation(p,'uModel'),
     uZ: gl.getUniformLocation(p,'uZ'), uFlat: gl.getUniformLocation(p,'uFlat'),
-    uMode: gl.getUniformLocation(p,'uMode'), uPS: gl.getUniformLocation(p,'uPS')
+    uMode: gl.getUniformLocation(p,'uMode'), uPS: gl.getUniformLocation(p,'uPS'),
+    uPSmax: gl.getUniformLocation(p,'uPSmax')
   };
   gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0.02, 0.024, 0.039, 1);
@@ -1666,6 +1706,22 @@ function zRange(){
     lo = Math.min(lo, b[0][2] + l.align.z);
     hi = Math.max(hi, b[1][2] + l.align.z);
   });
+  if(lo > hi) return [0,1];
+  /* A manual range is kept as absolute metres, not as a fraction of the auto
+     range, so toggling scans on and off does not silently move the colours
+     you just set. */
+  const a = (V.zlo === null) ? lo : V.zlo;
+  const b = (V.zhi === null) ? hi : V.zhi;
+  return (b - a < 0.01) ? [a, a + 0.01] : [a, b];
+}
+function zAuto(){
+  let lo = 1e9, hi = -1e9;
+  V.layers.filter(l=>l.on).forEach(l => {
+    const b = l.hdr.bounds_m;
+    if(!b) return;
+    lo = Math.min(lo, b[0][2] + l.align.z);
+    hi = Math.max(hi, b[1][2] + l.align.z);
+  });
   return (lo > hi) ? [0,1] : [lo, hi];
 }
 
@@ -1682,7 +1738,8 @@ function draw(){
   const vp = m4mul(m4persp(1.0, cv.width/Math.max(1,cv.height), 0.15, far), m4view());
   gl.uniformMatrix4fv(V.loc.uVP, false, vp);
   gl.uniform2fv(V.loc.uZ, new Float32Array(zRange()));
-  gl.uniform1f(V.loc.uPS, cv.height * 0.11);
+  gl.uniform1f(V.loc.uPS, cv.height * 0.11 * V.psize);
+  gl.uniform1f(V.loc.uPSmax, Math.max(1.0, 5.0 * V.psize));
   gl.uniform1f(V.loc.uMode, V.mode);
 
   let shown = 0;
@@ -1880,6 +1937,59 @@ function resetView(){
   }
   invalidate();
 }
+/* ---- the Display sliders -------------------------------------------------
+   Point size is a multiplier on both the size and its ceiling (see the shader
+   note). The two colour sliders are positions within the cloud's own height
+   range, converted to absolute metres the moment they are touched -- so the
+   colours stay put when scans are toggled, instead of drifting as the auto
+   range changes underneath them. */
+function toggleSliders(){
+  const p = document.getElementById('vsliders');
+  p.hidden = !p.hidden;
+  document.getElementById('vdisp').classList.toggle('on', !p.hidden);
+  if(!p.hidden) syncSliders();
+}
+function syncSliders(){
+  const [lo,hi] = zAuto(), span = Math.max(0.01, hi-lo);
+  const f = v => Math.round(1000*(v-lo)/span);
+  const zl = document.getElementById('szlo'), zh = document.getElementById('szhi');
+  if(V.zlo !== null) zl.value = Math.max(0, Math.min(1000, f(V.zlo)));
+  if(V.zhi !== null) zh.value = Math.max(0, Math.min(1000, f(V.zhi)));
+  labelSliders();
+}
+function labelSliders(){
+  document.getElementById('spsizev').textContent = V.psize.toFixed(2)+'×';
+  document.getElementById('szlov').textContent =
+    V.zlo === null ? 'auto' : V.zlo.toFixed(1)+' m';
+  document.getElementById('szhiv').textContent =
+    V.zhi === null ? 'auto' : V.zhi.toFixed(1)+' m';
+}
+function bindSliders(){
+  const ps = document.getElementById('spsize');
+  ps.addEventListener('input', () => {
+    V.psize = ps.value/100; labelSliders(); invalidate();
+  });
+  const zl = document.getElementById('szlo'), zh = document.getElementById('szhi');
+  const apply = () => {
+    const [lo,hi] = zAuto(), span = Math.max(0.01, hi-lo);
+    let a = lo + span*(zl.value/1000), b = lo + span*(zh.value/1000);
+    /* Keep them ordered without fighting the user's finger: whichever slider
+       moved last wins, and the other is nudged clear of it. */
+    if(b - a < 0.05) b = a + 0.05;
+    V.zlo = a; V.zhi = b;
+    labelSliders(); invalidate();
+  };
+  zl.addEventListener('input', apply);
+  zh.addEventListener('input', apply);
+}
+function resetDisplay(){
+  V.psize = 1.0; V.zlo = null; V.zhi = null;
+  document.getElementById('spsize').value = 100;
+  document.getElementById('szlo').value = 0;
+  document.getElementById('szhi').value = 1000;
+  labelSliders(); invalidate();
+}
+
 function cycleColor(){
   V.mode = (V.mode+1) % 3;
   document.getElementById('vcolor').textContent = 'Colour: ' + MODES[V.mode];
@@ -2027,6 +2137,7 @@ async function openViewer(name){
     document.getElementById('vstat').textContent = 'Could not load: ' + e.message;
     return;
   }
+  bindSliders();
   resetView();
   keepAwake(true);
 }
