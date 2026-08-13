@@ -1999,13 +1999,20 @@ puck streaming **753 data packets/s from `192.168.1.201`**, decoded and confirme
 frames. `tls_scan.py --check` passes.
 
 **⭐⭐⭐ AND THE FIRST FULL SCAN THEN RAN, 02:05–02:11.** `360° Slow` on the battery to the USB
-stick: **337,280 packets, 0 dropped**, return leg included, **cloud built — 119,354 points**,
-`throttled=0x0` throughout. One bug was found and fixed on the way (**tcpdump cannot chown on vfat —
-`-Z root`**, see below).
+stick: **337,280 packets, 0 dropped**, return leg included, cloud built, `throttled=0x0` throughout.
+One bug was found and fixed on the way (**tcpdump cannot chown on vfat — `-Z root`**, see below).
 
-**Every stage of this machine has now run, together, at least once. A capture from THIS rig finally
-exists**, so the geometry work — `MOUNT_ROLL_DEG` and the instrument height, stuck since
-`driveway.pcap` turned out to be another machine — is unblocked and is the next real job.
+**Every stage of this machine has now run, together, at least once.** `MOUNT_ROLL_DEG = +90` is
+confirmed on this rig and the instrument-height question **dissolved** — the rig is height-agnostic
+by construction. The preview was then substantially rebuilt (fly-through, free roam, sensor pivot,
+Display sliders, per-scan downloads, 119k → **537k points**) and a **lens-cover detector** added.
+
+**⛔ THE TOP JOB NOW IS THE TWO-PASS DISAGREEMENT.** The two halves of a sweep do not agree — pass A's
+overhead surface trends **−14.79°**, pass B's **+0.30°** — which is what the operator sees as tilted
+surfaces that should be horizontal. **Asymmetric, so it is NOT a plain roll error, and no mechanism
+is established.** The plan is a parameter sweep scored on inter-pass disagreement, not another
+hypothesis. **Read the "OPEN, AND THE TOP JOB" section before touching it — two wrong analyses are
+recorded there specifically so they are not repeated.**
 
 | | |
 |---|---|
@@ -2021,6 +2028,121 @@ exists**, so the geometry work — `MOUNT_ROLL_DEG` and the instrument height, s
 | ✅ **Rev 3.2 schematic** | `kicad/` — KiCad 10, one A2 page, **every conductor drawn** (no net labels join anything), **ERC 0 violations**, 1,912 validator checks including a net tracer. Procedure in `WIRING_REV3_BMS.html`. |
 | ✅ **Both charge parts bought and drawn** | 2026-08-11. **`BMS4S`** (Cricklewood, 40 A, balancing) is **COMMON PORT — no `C-` pad**, so the `CHG-` rail is **deleted** and the charge return **is** the star point. **`BCD5A`** buck has **two pots, CV *and* CC**, so the 3R3 series resistor is **deleted**. Chain: PD trigger @ 20 V → BCD5A @ 16.8 V / 1.5 A → the fused node. |
 | ✅ **PD trigger verified @ 20 V** | 2026-08-11. First DIP setting read **15.15 V** — which cannot charge this pack at all, because a buck only steps down. Re-dipped and it reads **20 V**. **Label the board in that position.** |
+
+### ⛔⛔ OPEN, AND THE TOP JOB — the two passes of a sweep DISAGREE — 2026-08-13
+
+**Reported by the operator from the preview, with a screenshot: two surfaces that should both be
+horizontal come back tilted, forming a shallow wedge.** Real, and the largest outstanding question
+about this instrument's output.
+
+**Geometry established while chasing it.** The puck is on its side, so the fan is a **full vertical
+circle**. At pan θ it covers horizontal azimuths **θ+90 and θ−90 at once**, so **a 180° pan sweep
+already covers the whole room — and the second 180° covers it again.** Those two halves are the two
+passes, and that is where the ~2× redundancy comes from.
+
+**Measured on `TLS_26_08_13_03_35_07`** — median height of the overhead surface against horizontal
+range, per pass:
+
+| | trend of the overhead surface |
+|---|---|
+| pass A (pan 0–180°) | **−14.79°** |
+| pass B (pan 180–360°) | **+0.30°** |
+
+**They genuinely disagree, far beyond noise.** But the disagreement is **ASYMMETRIC** — one pass
+essentially level, the other badly sloped. **A pure `MOUNT_ROLL_DEG` error predicts the opposite**:
+two tilts of similar size in opposite directions. **So roll alone does not explain it and no
+mechanism is established. Do not assume roll.**
+
+**⛔ TWO WRONG CUTS WERE MADE AT THIS — do not repeat them:**
+
+1. **Splitting by the puck's own azimuth is meaningless.** Fan side A (`atan2(y,x)` < 180° in the
+   SENSOR frame) holds **every** overhead point — 1.64 M — and side B holds **none**. The fan's
+   halves look up and down; they see different parts of the room, not two views of one surface.
+2. **Reading an angle off a per-range-bin mode histogram of the combined cloud.** In a small
+   cluttered room the "two peaks" are different physical objects — shelf, ceiling, wall tops. It
+   produced confident-looking numbers (7.7°, 3.4°) that mean nothing.
+
+**⚠ THE ROOM CANNOT SUPPORT A LONG-BASELINE FIT.** 99.9% of the points are within 4 m: 96,731 in the
+1–2 m band, **20 points at 4–5 m, zero past 6 m.** The 25 m reach in the bounds is a few strays
+through a doorway. Calibrate at short range, or move to a bigger space.
+
+**THE PLAN — a sweep, not another hypothesis.** Vary `MOUNT_ROLL_DEG`, `MOUNT_PITCH_DEG` and
+`LEVER_X_M`/`LEVER_Y_M`, rebuild, and score each combination by **how much the two pan-halves
+disagree**. Whatever collapses the disagreement is the answer, and it needs no mechanism named first.
+`TLS_26_08_13_03_35_07.pcap` has everything; no new measurement required. The pass-splitting method
+is `tls_pcap.udp_packets` → `tls_cloud.decode_packet` → `track.angle_at(epoch − sweep_start)` →
+`Frame().rotator(pan)`, bucketing on `pan % 360 < 180`.
+
+**⚠ CAVEAT ON THE ROLL RESULT BELOW, WHICH THIS DOES NOT OVERTURN.** The three-surface test confirmed
+the **sign** of `+90` with a 2.8 m margin. It did **not** confirm the angle to better than a degree
+or two: every surface used was 0.2–1.4 m away, where **1° moves a point 2 cm** — inside the tape
+agreement — while **at 25 m the same 1° is 44 cm**. Sign settled; precision not, and that is what the
+sweep is for.
+
+### ✅ Preview and control panel — 2026-08-13
+
+| what | detail |
+|---|---|
+| **Fly-through zoom** | The camera was an orbit rig with a hard 0.6 m floor on the radius, pivoting on a target pinned at the cloud's centre, so it could never pass through anything. Reported as "it stops when it hits a point"; **nothing in the renderer tests points at all.** Below the floor, zoom now pushes the target forward and the eye follows. `FLY_GAIN` is load-bearing — the raw residual is ~1 cm per touchmove. |
+| **Free roam toggle** | Orbit rotates the eye about a target, which is wrong inside a room: a corner can only be circled, never looked into. Free roam holds the eye and rotates about it — same maths, opposite fixed point. Entering pins `dist` short, since `dist` is the gain for pan and the fly step. |
+| **Pivot on the lidar** | `Recentre` centred on the **bounding box**, which is not a place: one wall at 72 m put the pivot **24.8 m out in open air** — that is why rotation felt like dragging the cloud. Now `[0,0,0]`, the sensor. Framing uses the **median** of the four horizontal half-extents, because the max is set by the single furthest stray (102 m vs a useful 34.9 m). |
+| **Point-size + colour-ramp sliders** | Behind a **Display** button. The shader clamped to a fixed 5 px ceiling and at 500k points most points sit *on* it, so scaling size alone changed nothing — `uPSmax` is a uniform now. Ramp ends are stored as **absolute metres**, so toggling scans does not drift colours you just set. |
+| **Download button per scan** | `/api/download?name=&kind=capture\|cloud\|meta`. **Streamed in 256 KB chunks**, not `read()` into memory — a capture is 372 MB. **Range honoured**, verified `206` with exact byte ranges. The traversal guard was generalised into `tls_scanstore.scan_file_path` rather than copied; the extension is always a literal from a fixed dict. |
+
+**⛔ THE VOXEL IS THE BINDING CONSTRAINT ON PREVIEW DENSITY, NOT `MAX_POINTS`.** Six times the budget
+bought 2.2× the points (150k→119,354; 1.5M→267,191) because the 3 cm grid saturates first. Sweeping
+the voxel with the budget high: 3.0 cm→320k, **2.0 cm→702k**, 1.5 cm→1.21M. Now **2 cm with a 900k
+budget**; the real scan rebuilt 119,354 → **537,050 points**. **⚠ Asking for 1 cm silently gives you
+2 cm** — `voxel_average` doubles the edge and retries when the grid exceeds the budget, so a smaller
+number can yield a larger voxel.
+
+**⚠ 2 cm is BELOW the VLP-16's ±3 cm range accuracy.** Deliberate for a *preview*: some extra points
+are range noise rather than new geometry. What justifies it is that this rig's redundancy is only
+~2×, so a 3 cm grid was merging genuinely **distinct** returns.
+
+### ⛔ A LENS COVER LEFT ON REPORTS COMPLETE SUCCESS — detection added 2026-08-13
+
+Caught for real: a full 377° sweep, 186 MB captured, `[COMPLETE]` logged, cloud built,
+`registered: true` — **and the data was worthless, because the cap was on.** Nothing in the rig
+noticed. The same shape as every hard bug here: a component reporting success while the thing itself
+is absent.
+
+**The test is REACH, not point count**, and the distinction was measured:
+
+| | returns/packet | anything beyond 3 m |
+|---|---|---|
+| uncovered, 2% in | 274 | 0 |
+| uncovered, 35% | 291 | 67 |
+| uncovered, 70% | 286 | 2,765 |
+| cover on, 2% | 28 | 0 |
+| cover on, 35% | 123 | **0** |
+| cover on, 70% | 27 | **0** |
+
+**Returns-per-packet OVERLAPS (123 vs 274) so it cannot be the test.** Reach does not overlap at all.
+`tls_scanstore` flags `blocked` when horizontal reach is under `BLOCKED_REACH_M` (3.0 m); the scan
+list shows a **`blocked?`** chip. Verified against all three real captures plus a synthetic tight
+room.
+
+**⚠ DELIBERATELY NOT A PREFLIGHT CHECK.** Before the head turns, a working scan facing a near wall
+also shows no reach — the "uncovered, 2%" row is exactly that. Judging at rest would flag real scans.
+
+### ✅ There was never a WiFi fault — 2026-08-13
+
+Two red herrings, both explained by the operator:
+
+- **Laptop-side latency** (2–3 s API calls, SSH timeouts) — **a VPN was up on the laptop.**
+- **The Pi's own `wlan0` drops** (`reason=0 locally_generated=1`) — **the phone IS the access point,
+  and it was carried into another room.** Nothing was wrong with the Pi.
+
+**⚠ `wifi.powersave` was set to 2 (disable) on the `preconfigured` profile to fix a fault that did
+not exist.** Harmless, but it costs a little idle battery; backup at
+`preconfigured.nmconnection.bak-2026-08-13`. Revert if battery life matters.
+
+**⛔ mDNS IS DEAD ON THIS NETWORK AND CANNOT BE FIXED FROM THE PI.** avahi is healthy — joining the
+group, registering records — but the Pi heard **zero** mDNS traffic in 8 s on a network carrying two
+other devices. That is AP client isolation on the phone hotspot. **`http://tlspie.local:8080/` will
+never work here; use the IP.** The panel itself is fine: `/api/status` serves in **3.2 ms** over
+loopback, the full 62 KB page in 1.8 ms.
 
 ### ⭐⭐ MOUNT GEOMETRY SETTLED ON THIS RIG — 2026-08-13
 
@@ -2266,10 +2388,15 @@ battery investigation ends where it started: **it was only ever a flat battery.*
    battery to USB: **337,280 packets, 0 kernel drops, return leg included, cloud built (119,354
    points, `registered: true`), `throttled=0x0` throughout.** Fixed one bug to get there —
    **tcpdump cannot `chown` on vfat, so `-Z root` is now load-bearing** in `start_capture()`.
-5. **⭐ RE-DERIVE THE MOUNT GEOMETRY — now unblocked, and the top job.** `TLS_26_08_13_02_05_15.pcap`
-   is the first capture that has ever come from **this** rig. Run the ground-plane histogram on it
-   and settle `MOUNT_ROLL_DEG` and the instrument height, both of which are currently inherited from
-   `captures/driveway.pcap` — **a different machine** — so the sign of the roll is still unknown.
+5. ~~Re-derive the mount geometry.~~ **✅ DONE 2026-08-13** — `MOUNT_ROLL_DEG = +90` confirmed
+   against three tape-measured surfaces, and the instrument-height question dissolved: the rig is
+   height-agnostic by construction.
+6. **⛔ THE TOP JOB — CALIBRATE OUT THE TWO-PASS DISAGREEMENT.** The two halves of a sweep do not
+   agree, which is visible in the preview as surfaces that should be horizontal coming back tilted.
+   **Sweep `MOUNT_ROLL_DEG`, `MOUNT_PITCH_DEG`, `LEVER_X_M`, `LEVER_Y_M`, rebuild, and score on
+   inter-pass disagreement.** `TLS_26_08_13_03_35_07.pcap` has everything needed. **Read the "OPEN,
+   AND THE TOP JOB" section first — it records two wrong analyses so they are not repeated, and the
+   fact that 99.9% of that scan lies within 4 m.**
 3. **Fit `D1`** (Schottkys bought 2026-08-11; `20SQ045` or similar, **banded end toward the pack**).
    Then **do not assume its drop** — charge, measure the pack at its own pads, and trim `U12` up
    offline by whatever it falls short of 16.8 V. Nominal is 17.0 V; the pack is the authority.
