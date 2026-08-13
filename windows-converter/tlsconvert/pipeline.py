@@ -174,8 +174,83 @@ def choose_stride(pcap_path, budget):
     return max(1, tls_cloudbuild.choose_stride(expected, budget))
 
 
-def convert(pcap_path, out_path, voxel_m=0.01, budget=None,
+def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
+                     per_laser_azimuth=False):
+    """
+    A cheap decimated pass, purely to work out where the camera was pointing.
+
+    The yaw solve needs the WHOLE scene before any colour can be applied, and
+    the converter streams -- so it cannot be done inline without buffering the
+    cloud. A second decimated walk of the capture costs a few seconds and keeps
+    the streaming design intact, which matters far more at 59 million points.
+    """
+    expected = rig.tls_pcap.estimate_packet_count(pcap_path)
+    stride = max(1, int(expected * 384 // max(max_points, 1)))
+    chunks = []
+    for xyz, _ in decode.stream_world_points(
+            pcap_path, meta, frame, stride=stride,
+            per_laser_azimuth=per_laser_azimuth):
+        chunks.append(xyz)
+    if not chunks:
+        return np.empty((0, 3), dtype=np.float32)
+    return np.concatenate(chunks)
+
+
+def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
+                   camera=(0.0, 0.0, 0.0), per_laser_azimuth=False):
+    """
+    (colouriser or None, info). Never raises -- a colour problem is not a
+    reason to lose the scan, so it degrades to grey and says why.
+    """
+    from . import colour as colour_mod
+
+    info = {"photo": photo, "yaw_deg": None, "confidence": None,
+            "reason": None, "warning": None}
+    if not photo:
+        info["reason"] = "no photo alongside the capture"
+        return None, info
+
+    try:
+        rgb, lum = colour_mod.load_panorama(photo)
+    except Exception as exc:
+        info["reason"] = "could not read %s (%s)" % (os.path.basename(photo),
+                                                     exc)
+        return None, info
+    info["warning"] = colour_mod.aspect_warning(rgb)
+
+    if yaw_deg is not None:
+        info["yaw_deg"] = float(yaw_deg)
+        info["confidence"] = float("inf")
+        return colour_mod.Colouriser(rgb, yaw_deg, camera), info
+
+    pts = sample_for_solve(pcap_path, meta, frame,
+                           per_laser_azimuth=per_laser_azimuth)
+    if pts.shape[0] < 5000:
+        info["reason"] = "too few points to align the photo against"
+        return None, info
+
+    yaw, confidence, _ = colour_mod.solve_yaw(pts, lum, camera=camera)
+    info["yaw_deg"] = yaw
+    info["confidence"] = confidence
+
+    # ⛔ REFUSE RATHER THAN GUESS. A photo from a different room, or a different
+    # setup of the same room, still colours every point and still looks
+    # plausible -- the same failure as a lens cap producing a scan that reports
+    # complete success. What it cannot do is line its edges up with this cloud's
+    # silhouettes, so a flat correlation is the tell.
+    if confidence < colour_mod.MIN_CONFIDENCE:
+        info["reason"] = ("the photo does not line up with this scan "
+                          "(confidence %.1f, need %.1f) -- wrong image, or the "
+                          "camera moved between the scan and the shot"
+                          % (confidence, colour_mod.MIN_CONFIDENCE))
+        return None, info
+
+    return colour_mod.Colouriser(rgb, yaw, camera), info
+
+
+def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
+            colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None):
     """
     Convert one capture. Returns a dict describing what happened.
@@ -194,6 +269,14 @@ def convert(pcap_path, out_path, voxel_m=0.01, budget=None,
     frame = rig.frame_for(meta, per_laser_azimuth=per_laser_azimuth)
     stride = choose_stride(pcap_path, budget)
     voxels = VoxelAccumulator(voxel_m) if voxel_m and voxel_m > 0 else None
+
+    photo = find_photo(pcap_path)
+    colour_info = {"photo": photo, "yaw_deg": None, "confidence": None,
+                   "reason": "colour not requested", "warning": None}
+    if colouriser is None and colour:
+        colouriser, colour_info = prepare_colour(
+            pcap_path, meta, frame, photo=photo, yaw_deg=yaw_deg,
+            camera=camera, per_laser_azimuth=per_laser_azimuth)
 
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
     writer = export.writer_for(out_path, comment=comment)
@@ -243,7 +326,9 @@ def convert(pcap_path, out_path, voxel_m=0.01, budget=None,
         "frame": frame.describe(),
         "pitch_deg": frame.pitch_deg,
         "pitch_was_legacy": getattr(frame, "pitch_is_legacy", False),
-        "photo": find_photo(pcap_path),
+        "photo": photo,
+        "coloured": colouriser is not None,
+        "colour": colour_info,
         "over_budget": over,
         "bounds_m": (None if writer.count == 0
                      else [lo.tolist(), hi.tolist()]),

@@ -29,6 +29,7 @@ from tkinter import filedialog, messagebox, ttk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tlsconvert import pipeline, viewer                           # noqa: E402
+from tlsconvert_cli import colour_lines                           # noqa: E402
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -369,9 +370,8 @@ class App:
             self.say("  NOTE     : more points than the limit asked for. The "
                      "voxel you set was kept rather than doubled behind your "
                      "back — raise it to thin the cloud.")
-        self.say("  colour   : %s"
-                 % (os.path.basename(info["photo"]) if info["photo"]
-                    else "grey from reflectivity (no photo alongside)"))
+        for line in colour_lines(info):
+            self.say("  " + line)
         if os.path.exists(info["out"]):
             self.say("  wrote    : %s in %.1f s"
                      % (human(os.path.getsize(info["out"])), info["seconds"]))

@@ -422,8 +422,8 @@ finally:
 # --- 11. the density default that caused this --------------------------------
 print("\ndensity defaults")
 
-check("the pipeline's default voxel is 1 cm, not 2",
-      close(pipeline.convert.__defaults__[0], 0.01, 1e-9),
+check("the pipeline keeps every return by default",
+      close(pipeline.convert.__defaults__[0], 0.0, 1e-12),
       pipeline.convert.__defaults__[0])
 check("no packet budget by default -- reading every packet",
       pipeline.convert.__defaults__[1] is None)
@@ -452,6 +452,142 @@ default_voxel = dict((label, v) for label, v in
 # must not merge anything away.
 check("the GUI defaults to every return", close(default_voxel, 0.0, 1e-12),
       default_voxel)
+
+# --- 12. colourisation and the yaw solve -------------------------------------
+print("\ncolour: equirectangular sampling")
+
+from tlsconvert import colour                                # noqa: E402
+
+
+def synthetic_room(n=1200000, seed=5):
+    """
+    Points on the walls, floor and ceiling of a box, with one wall recessed.
+
+    The recess matters: the yaw solve keys on depth SILHOUETTES, and a perfectly
+    symmetrical box has no feature to lock onto in any particular direction.
+    """
+    r = np.random.RandomState(seed)
+    pts = []
+    for axis, sign, extent in ((0, +1, 3.0), (0, -1, 3.0),
+                               (1, +1, 4.5), (1, -1, 4.5)):
+        m = n // 8
+        p = np.zeros((m, 3))
+        p[:, axis] = sign * extent
+        other = 1 - axis
+        p[:, other] = r.uniform(-3.0, 3.0, m)
+        p[:, 2] = r.uniform(-1.2, 1.8, m)
+        pts.append(p)
+    # a recessed alcove on one side, the feature the alignment can find
+    m = n // 8
+    p = np.zeros((m, 3))
+    p[:, 0] = 5.2
+    p[:, 1] = r.uniform(-1.0, 1.0, m)
+    p[:, 2] = r.uniform(-1.2, 1.8, m)
+    pts.append(p)
+    for z in (-1.2, 1.8):
+        m = n // 6
+        p = np.zeros((m, 3))
+        p[:, 0] = r.uniform(-3.0, 3.0, m)
+        p[:, 1] = r.uniform(-4.5, 4.5, m)
+        p[:, 2] = z
+        pts.append(p)
+    return np.concatenate(pts).astype(np.float32)
+
+
+def render_lum(xyz, yaw_deg, h=colour.SOLVE_LAT_BINS,
+               w=colour.SOLVE_LON_BINS):
+    """The panorama a camera at the origin, rotated by yaw_deg, would see."""
+    d, rng_ = colour.directions(xyz)
+    lon, lat = colour.to_lonlat(d, yaw_deg)
+    iu = np.clip(((lon / (2 * math.pi)) + 0.5) * w, 0, w - 1).astype(int)
+    iv = np.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(int)
+    flat = iv * w + iu
+    tot = np.bincount(flat, weights=np.log1p(rng_), minlength=h * w)
+    cnt = np.bincount(flat, minlength=h * w)
+    img = np.zeros(h * w)
+    hit = cnt > 0
+    img[hit] = tot[hit] / cnt[hit]
+    # A real camera sees every direction, so the stand-in photo must not carry
+    # the lidar's sampling holes -- otherwise the test is comparing gaps.
+    img = colour.fill_holes(img.reshape(h, w), hit.reshape(h, w))
+    span = img.max() - img.min()
+    return ((img - img.min()) / (span if span else 1) * 255.0).astype(np.float32)
+
+
+room = synthetic_room()
+img_rgb = np.zeros((180, 360, 3), np.uint8)
+check("a 2:1 panorama passes the shape check",
+      colour.aspect_warning(img_rgb) is None)
+check("a flat photo is called out",
+      "equirectangular" in (colour.aspect_warning(np.zeros((100, 130, 3),
+                                                           np.uint8)) or ""))
+
+d_, r_ = colour.directions(room)
+check("directions come back unit length",
+      close(float(np.abs(np.linalg.norm(d_, axis=1) - 1).max()), 0.0, 1e-6))
+check("range is recovered alongside them",
+      close(float(r_.max()), float(np.linalg.norm(room, axis=1).max()), 1e-3))
+
+# A camera OFFSET from the lidar still resolves exactly, because depth is known.
+off = colour.directions(room, camera=(0.0, 0.0, 0.5))[0]
+check("an offset camera changes the rays, as it must",
+      float(np.abs(off - d_).max()) > 1e-3)
+
+print("\ncolour: the yaw solve")
+for truth in (0.0, 37.0, -114.0):
+    lum = render_lum(room, truth)
+    yaw, conf, _ = colour.solve_yaw(room, lum)
+    err = abs(((yaw - truth) + 180) % 360 - 180)
+    check("recovers a %+.0f deg camera heading (got %+.2f, confidence %.0f)"
+          % (truth, yaw, conf), err < 2.0, "error %.2f deg" % err)
+    check("  and is confident about it", conf >= colour.MIN_CONFIDENCE, conf)
+
+# ⛔ THE GUARD. A photo that does not belong to this scan must NOT quietly
+# colour it: that is the lens-cap failure again, a result that looks complete
+# and is nonsense.
+noise = np.random.RandomState(9).uniform(
+    0, 255, (colour.SOLVE_LAT_BINS, colour.SOLVE_LON_BINS)).astype(np.float32)
+_, conf_noise, _ = colour.solve_yaw(room, noise)
+check("an unrelated photo produces no confident alignment",
+      conf_noise < colour.MIN_CONFIDENCE, conf_noise)
+
+# ⚠ A DIFFERENT BUT SIMILAR ROOM IS NOT RELIABLY REJECTED, and asserting that
+# it is would be the more dangerous mistake. This one is the same box squashed
+# along y -- same walls, floor and ceiling in nearly the same places -- and it
+# scores about 4.8 against a true match's 8. The confidence separates them, but
+# not by enough to threshold blindly. What is pinned here is the SEPARATION,
+# which is the real property; the guard's job is an unrelated image, not a
+# plausible one, and the number is printed every run so a person can judge.
+_, conf_true, _ = colour.solve_yaw(room, render_lum(room, 0.0))
+other_room = (synthetic_room(seed=77) * np.array([1.0, 0.35, 1.0])
+              ).astype(np.float32)
+_, conf_other, _ = colour.solve_yaw(room, render_lum(other_room, 0.0))
+check("the right photo scores clearly above a similar wrong one",
+      conf_true > conf_other * 1.4,
+      "right %.1f vs similar-but-wrong %.1f" % (conf_true, conf_other))
+check("noise scores far below both, so the floor still catches nonsense",
+      conf_noise < conf_other * 0.7,
+      "noise %.1f vs wrong-room %.1f" % (conf_noise, conf_other))
+
+print("\ncolour: sampling and refusal")
+grad = np.zeros((180, 360, 3), np.uint8)
+grad[:, :, 0] = np.linspace(0, 255, 360).astype(np.uint8)[None, :]
+col = colour.sample(room, grad, yaw_deg=0.0)
+check("every point gets a colour", col.shape == (room.shape[0], 3), col.shape)
+check("and it varies with bearing, as a gradient must",
+      int(col[:, 0].max()) - int(col[:, 0].min()) > 200)
+check("a yaw of 180 moves the sampling right round",
+      not np.array_equal(col, colour.sample(room, grad, yaw_deg=180.0)))
+
+cph = os.path.join(tmp, "NOPHOTO.pcap")
+open(cph, "wb").close()
+_, cinfo = pipeline.prepare_colour(cph, {}, None, photo=None)
+check("no photo is reported, not treated as an error",
+      "no photo" in cinfo["reason"])
+_, cinfo2 = pipeline.prepare_colour(cph, {}, None,
+                                    photo=os.path.join(tmp, "missing.jpg"))
+check("an unreadable photo degrades to grey with a reason",
+      "could not read" in cinfo2["reason"], cinfo2["reason"])
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

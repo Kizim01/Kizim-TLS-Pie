@@ -84,13 +84,42 @@ SCAN.pcap   SCAN.json   SCAN.jpg
 
 The converter finds it by name. Nothing is uploaded or moved.
 
-The intended workflow is to scan, then swap the lidar for a 360 camera **on the
-same tripod at the same optical-centre height**. That puts the camera where the
-lidar was, which makes occlusion vanish rather than merely be corrected — the
-usual reason colourised clouds bleed colour across edges.
+Export the **equirectangular** image from Insta360 Studio — the 2:1 stitched
+panorama, not a flat photo. A wrong aspect is called out rather than silently
+sampled.
 
-⚠ *Colour sampling is not implemented yet.* The photo is located and reported;
-the equirectangular projection and the yaw solve are the next piece of work.
+The workflow is: scan, then swap the lidar for the 360 camera **on the same
+tripod at the same optical-centre height**, and shoot. Putting the camera where
+the lidar was makes occlusion *vanish* rather than merely be corrected — it is
+the usual reason colourised clouds bleed colour across edges. If the two centres
+do differ, say the camera sits higher, `--camera-z` takes the offset and the
+sampling stays exact, because the depth of every point is known.
+
+**The camera's heading is worked out from the data, not asked for.** Remounting
+loses which way the camera faced, so the converter lines up depth silhouettes in
+the cloud against edges in the photograph and reports what it found:
+
+```
+photo    : SCAN.jpg
+colour   : from the photo, camera heading +64.63 deg (solved, confidence 8.2)
+```
+
+Verified on a real capture against a panorama of known heading: recovered to
+**1.6°**. `--yaw` overrides it if you would rather state it.
+
+⛔ **A photo that does not belong to the scan is refused, not guessed at.**
+Dropping the wrong image in is easy, and it would otherwise produce a fully
+coloured cloud that looks completely fine and is nonsense — the same shape as a
+lens cap producing a scan that reports complete success. A mismatched photo has
+no sharp alignment to find. Measured on the real capture: correct **8.18**,
+noise 3.23, wrong scene 2.66, uniform grey 0.00; the threshold is 6.
+
+⚠ It catches an *unrelated* photo, not a *plausible* one — a different room of
+similar shape still scores about 4.8. That is why the confidence is printed
+every run rather than merely tested: you are the last check.
+
+When colour is refused or absent the cloud still converts, in grey from
+reflectivity, and says why.
 
 ## Density — read this before deciding it lost detail
 

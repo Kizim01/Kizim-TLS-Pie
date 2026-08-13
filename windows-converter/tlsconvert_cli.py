@@ -26,6 +26,34 @@ def human(n):
         n /= 1024.0
 
 
+def colour_lines(info):
+    """
+    What happened to colour, in words, for the CLI and the GUI alike.
+
+    ⭐ THE CONFIDENCE IS ALWAYS SHOWN, not just tested against a threshold. It
+    is calibrated on synthetic data only and cannot separate two similar rooms,
+    so the operator is the last check and needs the number to be that.
+    """
+    c = info.get("colour") or {}
+    photo = info.get("photo")
+    if not photo:
+        return ["colour   : grey from reflectivity "
+                "(no photo alongside the capture)"]
+    out = ["photo    : %s" % os.path.basename(photo)]
+    if c.get("warning"):
+        out.append("WARNING  : %s" % c["warning"])
+    if info.get("coloured"):
+        conf = c.get("confidence")
+        how = ("given" if conf == float("inf")
+               else "solved, confidence %.1f" % (conf or 0.0))
+        out.append("colour   : from the photo, camera heading %+.2f deg (%s)"
+                   % (c.get("yaw_deg") or 0.0, how))
+    else:
+        out.append("colour   : grey from reflectivity -- %s"
+                   % c.get("reason", "unknown"))
+    return out
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         description="Convert a TLS-Pie capture into a point cloud.",
@@ -38,9 +66,11 @@ def build_parser():
     p.add_argument("-f", "--format", default="las",
                    choices=("las", "laz", "ply"),
                    help="output format (default: las)")
-    p.add_argument("--voxel", type=float, default=0.01,
-                   help="voxel edge in metres; 0 disables (default: 0.01). "
-                        "THIS is the density control -- see --max-points.")
+    p.add_argument("--voxel", type=float, default=0.0,
+                   help="voxel edge in metres. THIS is the density control. "
+                        "Default 0 = keep every return, which is what these "
+                        "clouds are modelled from; 0.01 gives ~2.9 M points "
+                        "from a 390 MB capture, 0.02 gives ~880 k.")
     # ASCII only in help text: argparse prints it to a cp1252 console, where a
     # decorative character raises UnicodeEncodeError and --help dies.
     p.add_argument("--max-points", type=int, default=None,
@@ -49,6 +79,12 @@ def build_parser():
                         "the whole scan rather than thinned evenly. Off by "
                         "default; use --voxel instead unless you are "
                         "deliberately sampling a capture quickly.")
+    p.add_argument("--no-colour", dest="colour", action="store_false",
+                   help="ignore any photo beside the capture")
+    p.add_argument("--yaw", type=float, default=None,
+                   help="camera heading in degrees, skipping the solve")
+    p.add_argument("--camera-z", type=float, default=0.0,
+                   help="camera optical centre above the lidar's, metres")
     p.add_argument("--view", action="store_true",
                    help="open the cloud in a viewer when it is finished")
     p.add_argument("--full", action="store_true",
@@ -109,6 +145,8 @@ def main(argv=None):
                 path, out, voxel_m=voxel, budget=budget,
                 per_laser_azimuth=args.per_laser_azimuth,
                 min_range=args.min_range, max_range=args.max_range,
+                colour=args.colour, yaw_deg=args.yaw,
+                camera=(0.0, 0.0, args.camera_z),
                 progress=progress, viewer_sink=sink)
         except Exception as exc:
             if not args.quiet:
@@ -134,10 +172,8 @@ def main(argv=None):
             lo, hi = info["bounds_m"]
             print("  extent   : %.1f x %.1f x %.1f m"
                   % (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]))
-        print("  colour   : %s"
-              % ("grey from reflectivity (no photo alongside the capture)"
-                 if not info["photo"]
-                 else os.path.basename(info["photo"])))
+        for line in colour_lines(info):
+            print("  " + line)
         if info["over_budget"]:
             # Deliberately a message and not a silent re-grid: the Pi's builder
             # doubles the voxel here, which is how asking for 1 cm quietly
