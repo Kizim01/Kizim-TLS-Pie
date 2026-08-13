@@ -128,10 +128,19 @@ import os
 # agreement, NOT lidar error: 119,354 points averaged into a plane beat a
 # hand-held tape, and the finer instrument is the one being confirmed.
 #
-# The residual also has an identifiable home: you cannot tape to the optical
-# centre, which sits inside the puck body. The 18 cm was necessarily taken to
-# some external datum, and ~1 cm is exactly what that produces — so the
-# difference is better read as an ESTIMATE OF THE DATUM OFFSET than an error.
+# The residual also has an identifiable home, CONFIRMED by the operator: the
+# 18 cm was taped to the OUTSIDE OF THE LIDAR ENCLOSURE, not to the optical
+# centre, which sits inside the body where no tape can reach. So the difference
+# is not error at all — it is the datum offset, and the lidar measures it:
+#
+#     optical centre sits ~1.3 cm above the enclosure face the 18 cm was
+#     taken to   (19.3 cm measured by lidar - 18.0 cm taped)
+#
+# ⭐ That inverts the usual relationship. The instrument is fine enough to
+# calibrate the fixture around it, so if the optical centre's position inside
+# the enclosure is ever needed, MEASURE IT THIS WAY rather than from a drawing.
+# Differential figures — like the 0.847 m bench height below — are immune to it
+# entirely, because the datum cancels.
 #
 # Free fourth check that nobody set up: floor to table top comes out at
 # 1.040 - 0.193 = 0.847 m, an ordinary bench height — and being differential,

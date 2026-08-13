@@ -2070,10 +2070,15 @@ break a **binary** ±90 ambiguity, and the margin for that is **2.8 m** — a ce
 is irrelevant to it. Do not read the third column as lidar error; the lidar is by far the finer
 instrument, and 119,354 points averaged into a plane beat a hand-held tape.
 
-**And the residual has an identifiable home: you cannot tape to the optical centre.** It sits inside
-the puck body, invisible to a measuring tape, so the 18 cm was necessarily taken to some external
-datum. **A ~1 cm disagreement is exactly what that produces** — which means the difference is better
-read as an *estimate of the datum offset* than as an error in anything.
+**And the residual has an identifiable home — confirmed by the operator: the 18 cm was taped to the
+OUTSIDE OF THE LIDAR ENCLOSURE**, not to the optical centre, which sits inside the body where no tape
+can reach. So the difference is not error at all, it is the datum offset — and **the lidar measures
+it**: the optical centre sits **~1.3 cm above** the enclosure face the 18 cm was taken to
+(19.3 cm by lidar − 18.0 cm by tape).
+
+**⭐ That inverts the usual relationship: the instrument is fine enough to calibrate the fixture
+around it.** If the optical centre's position inside the enclosure is ever needed, measure it this
+way rather than reading it off a drawing.
 
 **A free fourth check nobody set up:** floor to table top = 1.040 − 0.193 = **0.847 m**, an ordinary
 bench height — and that figure is differential, so the optical-centre datum cancels out of it
