@@ -2033,14 +2033,29 @@ like-for-like (313,626 points against 313,612). 52 tests. See its own section be
 mistakes I made and corrected during the build, both of the "confident number from an invalid
 comparison" kind this project keeps meeting.
 
-**Next on it:** colour sampling with the yaw solve, then registration (which is also when E57 earns
-its place). The colourisation plan is settled: **scan, then swap the lidar for the Insta360 X4 on the
-same tripod at the same optical-centre height**, shoot HDR, drop the equirectangular JPG beside the
-capture sharing its stem. Putting the camera where the lidar was makes occlusion **vanish** rather
-than merely be corrected, and deletes the triggering problem entirely — no SDK, no second WiFi radio.
-⭐ Free bonus: the X4's stitched output is gravity-levelled by its own IMU, so it is an independent
-**vertical reference** — and our clouds are in the RIG's frame, not gravity's, because the pitch
-calibration was differential and **a common tilt of the whole tripod is invisible to it**.
+**The converter is now feature-complete for a SINGLE scan** — full-density decode, calibrated
+geometry, LAS/LAZ/PLY, a viewer that shows all 59 M points, and colour from a 360 photo with the
+camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `0ef395c`, `62b5876`,
+`fc32204`.
+
+**⛔ NEXT: REGISTRATION** — combining scans taken from different positions into one model, which is
+what a terrestrial scanner is ultimately for, and the point at which **E57 earns its place** (its
+advantage over LAS is recording each setup's scan position). `Kizim-velodyne-to-point-cloud` carries
+a `TLS_Multi_Scan_Register.m` worth reading first.
+
+**⛔ TWO THINGS NEED REAL-WORLD TESTING AND CANNOT BE SETTLED FROM THE DESK:**
+
+1. **Does the viewer's 415 MB survive a real GPU?** Everything up to the browser is proven; the
+   upload itself is not, and a refusal is caught and explained rather than left blank.
+2. **Does a REAL photograph align as well as a depth-derived one?** The 8.18 confidence came from a
+   panorama built out of the scan's own depth, so its edges *are* the geometry. A real photo's edges
+   also come from texture, paint and lighting and will score lower — **check the first real one and
+   move `MIN_CONFIDENCE` if it rejects a good photo.**
+
+**⭐ AND A FREE BONUS STILL UNCLAIMED:** the X4's stitched output is gravity-levelled by its own IMU,
+so it is an independent **vertical reference** — which matters because our clouds are in the RIG's
+frame, not gravity's: the pitch calibration was differential, and **a common tilt of the whole tripod
+is invisible to it.**
 
 | | |
 |---|---|
@@ -2224,10 +2239,82 @@ surface is SMALLER than the cell; at a 2 cm voxel against the VLP-16's ±3 cm ra
 not, so the grid has already frozen the error in. Even when noise is well inside the voxel, a surface
 straddling a cell boundary sets the floor. Both regimes are pinned in the tests.
 
-**Colour is located but not yet sampled.** The convention is a sibling sharing the capture's stem
-(`SCAN.pcap` / `SCAN.json` / `SCAN.jpg`); the converter finds it and reports it. With no photo every
-point still gets RGB — grey from reflectivity — so a viewer never falls back to a flat default that
-would make an uncoloured cloud look coloured.
+#### ⛔ DENSITY: `--max-points` THROWS DATA AWAY. THE VOXEL IS THE CONTROL.
+
+The first clouds came out far sparser than the hardware can produce, and the cause was a default of
+mine. **`--max-points` does not cap the output — it skips whole PACKETS before anything is decoded**,
+so the GUI's original 5,000,000 read about **one packet in twenty-four and discarded 96% of the
+capture** before the grid ever saw it. That is a Pi-era compromise (the Pi cannot afford to decode
+everything) and had no business on a workstation. It is now off by default and **absent from the GUI
+entirely**; a test guards it from returning.
+
+Measured on `TLS_26_08_13_02_05_15` (390 MB, **59,343,707 returns**), reading every packet:
+
+| voxel | points | LAZ | LAS | time |
+|---|---|---|---|---|
+| **none — now the default** | **59,343,707** | **393 MB** | ~1.5 GB | 19 s |
+| 5 mm | 11,114,614 | ~75 MB | 275 MB | 27 s |
+| 1 cm | 2,929,122 | ~20 MB | 73 MB | 20 s |
+| 2 cm | 884,322 | ~6 MB | 22 MB | 18 s |
+
+**Every return is the default at the operator's instruction** — these clouds are modelled from and
+usable points are picked by eye, so a merged point is a point that cannot be chosen. **⚠ Use LAZ at
+this density.** Deliberately unlike the Pi: **the voxel you name is the voxel you get** — the Pi's
+builder doubles the edge on overrun, which is how asking for 1 cm quietly gives 2 cm.
+
+#### ✅ A viewer opens on the finished cloud, and it shows ALL of it
+
+WebGL served from `127.0.0.1` (the only GPU renderer on a bare Windows machine, and a `file://` page
+cannot fetch its own point data). The panel's camera, deliberately: zoom **flies through walls**,
+free roam holds the eye and moves the target, pivot on the **sensor at the origin**, framing on a
+90th percentile so one stray return through a doorway cannot throw it.
+
+**All 59.3 M points reach it un-subsampled**, via two things:
+
+- **⭐ int16 positions with a per-axis scale, not float32.** Over the 151 m extent that rounds to
+  ~2 mm against the VLP-16's own **±30 mm** range accuracy — **~15× finer than the instrument**, so
+  it cannot be what limits a model. Cost falls from 15 to **7 bytes/point**: 415 MB, encoded in 4.4 s
+  and served in 0.4 s. Grey collapses to one byte; a real photo colour is detected and kept at three.
+- **⛔ Chunked GPU buffers (4 M each, 15 of them).** WebGL refuses one buffer of tens of millions of
+  vertices and **the failure is a black canvas with nothing reported.**
+
+**⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
+caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
+file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅ Colour from a 360 photo, with the camera's heading SOLVED — 2026-08-13
+
+Drop the **equirectangular** panorama beside the capture sharing its stem (`SCAN.pcap` / `SCAN.json`
+/ `SCAN.jpg`). Verified end to end on the real capture against a panorama of known heading:
+**recovered to 1.6°**, 78% of output points carrying genuine RGB.
+
+**⭐ Why the geometry is easy here:** swapping the lidar for the camera on the same tripod at the same
+optical-centre height puts the camera where the lidar was, so **anything the lidar could see, the
+camera could see — occlusion does not get corrected, it does not arise.** Parallax is not a problem
+either way, since the ray is taken from the *camera's* centre to a point whose 3D position is already
+known; `--camera-z` handles a real offset exactly.
+
+**⛔ FOUR REAL BUGS, EACH CAUGHT BY A TEST FAILING RATHER THAN BY READING THE CODE:**
+
+1. **1° latitude bins left the panorama 50% EMPTY**, so the correlated "edges" were the gaps between
+   laser rings, not the room — a perfectly matching photo came back **56° out**. The lasers sit 2°
+   apart; a finer grid cannot resolve what was never measured.
+2. **Masking the holes did not fix it and could not.** Zeroing the cloud's gradients while the photo
+   keeps its real ones leaves the two describing different things: the correctly aligned pair
+   correlated at **−0.27** and peaked on the room's diagonal. **Filling** the holes gives **+1**.
+3. **The sign.** `irfft(fa·conj(fb))` is `corr(b,a)`, whose peak carries cloud onto image and had to
+   be negated. Backwards it colours a cloud with the scene **mirrored — wrong everywhere and
+   obviously wrong nowhere.**
+4. **The confidence metric was worthless until measured on real data.** Judging the peak against
+   every other lag compares it against its own shoulders (the peak is tens of degrees wide): correct
+   photo **3.67**, pure noise **2.73**. Excluding a ±20° window turns the same data into **8.18 vs
+   3.23** (wrong scene 2.66, uniform grey 0.00). Threshold **6.0**.
+
+**⚠ THE GUARD CATCHES AN UNRELATED PHOTO, NOT A PLAUSIBLE ONE** — a different room of similar shape
+still scores ~4.8. So **the confidence is printed every run**, not merely tested: the operator is the
+last check. A refused or missing photo still converts, in grey, with the reason given. With no photo
+every point still gets RGB (grey from reflectivity), so a viewer never falls back to a flat default
+that would make an uncoloured cloud look coloured.
 
 ### ✅ Preview and control panel — 2026-08-13
 
