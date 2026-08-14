@@ -2058,11 +2058,42 @@ returned **+148° where the answer is +35.5°**, calling itself trustworthy, whi
 fixture stayed green. Reverted. Anything claiming to speed the solver up must be measured against
 **the real capture**, never a made-up room.
 
-**⛔ STILL OPEN:** a wireframe clip box with drag handles ([Potree](https://github.com/potree/potree)
-does this), and point-pair picking to align by matched points (CloudCompare's *Align (point pairs
+**✅ STUDIO IS NOW AN EDITOR TOO — 2026-08-15, 205 tests.** Wireframe clip box with **draggable face
+grips**, **inside/outside** clip inversion, **orthographic + Top/Front/Side**, a **lasso** delete, a
+**preview-detail slider from 2 cm to every return**, a separate **export-detail slider**, **Save clip
+box only**, and **Undo**. Design taken from [CloudCompare]'s Interactive Segmentation (draw a polygon,
+*then* choose inside or outside) and [openlidarviewer]'s honest `shown / total` counter.
+
+**⭐ THE NUMBER THAT PROMPTED IT: the preview was showing ~1% of the capture and never said so.** At
+the 2 cm default, `TLS_26_08_14_01_21_59` draws **1,040,435 of 91,709,044** returns (88x) and
+`01_28_36` **923,743 of 45,507,670** (49x). Nothing was ever lost — export re-reads the captures —
+but a viewer that looks complete while showing a fiftieth of the data is exactly the class of quiet
+wrongness this project keeps meeting. The ratio is now on screen permanently.
+
+**⭐ A LASSO IS STORED AS THE SCREEN POLYGON PLUS THE CAMERA THAT DREW IT**, not as a world solid: a
+freehand outline sweeps a prism that is not convex, so there is no tidy set of planes to keep. At
+export every full-density point goes through the *same* matrix and is tested in 2D. Concave outlines
+work, and lassos drawn from different angles compose. ⛔ **`w > 0` is not optional** — the
+perspective divide flips points behind the eye into the polygon, so a loop round the sofa would take
+a mirrored bite out of the wall behind you. Tested both ways.
+
+**⛔ AND THAT IS WHY ORTHOGRAPHIC EXISTS HERE.** In perspective a lasso cuts a cone that *widens with
+distance*, invisibly to the operator. Top/Front/Side switch to orthographic for that reason, and a
+lasso drawn in perspective now says so. Getting a true plan view also needed a different up vector:
+looking along world Z with world Z as up makes `forward x up` zero and the screen goes blank — the
+old "plan view" dodged it by stopping at 85.9°, which is not a plan view.
+
+**⭐ PREVIEW AND EXPORT ARE PROVEN TO AGREE**, not assumed to: the JS preview test and the Python
+exporter were driven over 24,000 random point/polygon decisions spanning concave outlines and both
+projections — **0 disagreements**. Worth repeating if either side is touched.
+
+**⛔ STILL OPEN:** point-pair picking to align by matched points (CloudCompare's *Align (point pairs
 picking)*, whose wiki notes it is "sometimes the only way" when ICP will not converge). ⭐ Note
-CloudCompare does both today and reads our LAZ. **E57 still earns its place** once several setups
+CloudCompare does this today and reads our LAZ. **E57 still earns its place** once several setups
 share a file. `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
+
+[CloudCompare]: https://www.cloudcompare.org/doc/wiki/index.php/Interactive_Segmentation_Tool
+[openlidarviewer]: https://github.com/Aurtechmx/openlidarviewer
 
 **⛔ TWO THINGS NEED REAL-WORLD TESTING AND CANNOT BE SETTLED FROM THE DESK:**
 

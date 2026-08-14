@@ -137,6 +137,79 @@ class VoxelAccumulator:
         return xyz, refl
 
 
+class Lasso(object):
+    """
+    A shape drawn ON THE SCREEN, kept as the screen polygon and the camera.
+
+    ⭐ WHY NOT CONVERT IT TO A WORLD SHAPE. A lasso is a prism swept along the
+    view rays, and for a non-convex outline that prism is not a convex solid --
+    there is no tidy set of half-space planes to store. Keeping the polygon in
+    the flat, normalised screen space it was drawn in sidesteps the whole
+    problem: at export every full-density point is put through the SAME camera
+    matrix the operator was looking through and tested in 2D. Any outline works,
+    concave ones included, and what is deleted is exactly what was enclosed.
+
+    ⛔ POINTS BEHIND THE EYE MUST BE THROWN OUT FIRST. The perspective divide
+    flips their sign, so geometry behind the camera lands mirrored INSIDE the
+    polygon -- a lasso round the sofa would silently take a bite out of the wall
+    behind you. `w > 0` is the test, and it is not optional.
+    """
+
+    def __init__(self, matrix, polygon, keep=False):
+        self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
+        self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+        self.keep = bool(keep)
+
+    def inside(self, xyz):
+        """True where a point falls within the drawn outline."""
+        xyz = np.asarray(xyz, dtype=np.float64)
+        if len(xyz) == 0 or len(self.polygon) < 3:
+            return np.zeros(len(xyz), dtype=bool)
+        m = self.matrix
+        # column-major, the same convention the page's own matrices use
+        x = xyz[:, 0] * m[0] + xyz[:, 1] * m[4] + xyz[:, 2] * m[8] + m[12]
+        y = xyz[:, 0] * m[1] + xyz[:, 1] * m[5] + xyz[:, 2] * m[9] + m[13]
+        w = xyz[:, 0] * m[3] + xyz[:, 1] * m[7] + xyz[:, 2] * m[11] + m[15]
+        live = w > 1e-9
+        if not live.any():
+            return np.zeros(len(xyz), dtype=bool)
+        sx = np.where(live, x / np.where(live, w, 1.0), 2.0)
+        sy = np.where(live, y / np.where(live, w, 1.0), 2.0)
+        return live & _inside_polygon(sx, sy, self.polygon)
+
+    def as_dict(self):
+        return {"matrix": [float(v) for v in self.matrix],
+                "polygon": [[float(a), float(b)] for a, b in self.polygon],
+                "keep": self.keep}
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["matrix"], data["polygon"], data.get("keep", False))
+
+
+def _inside_polygon(x, y, poly):
+    """
+    Vectorised crossing-number test: odd crossings to the right means inside.
+
+    Handles concave outlines and self-intersections alike, which is the point --
+    a lasso is drawn freehand and is rarely convex.
+    """
+    inside = np.zeros(x.shape, dtype=bool)
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        straddles = (yi > y) != (yj > y)
+        if straddles.any():
+            denom = yj - yi
+            if denom != 0.0:
+                cut = (xj - xi) * (y - yi) / denom + xi
+                inside ^= straddles & (x < cut)
+        j = i
+    return inside
+
+
 class Edit(object):
     """
     What the operator cut away, as OPERATIONS rather than as edited points.
@@ -153,15 +226,26 @@ class Edit(object):
     `keep` boxes are unioned: a point survives if it is inside ANY of them, or
     if there are none. `drop` boxes are then subtracted. Order matters and keep
     goes first, so "keep this room, minus the ceiling" is two boxes and not a
-    puzzle.
+    puzzle. Lassos join the same two piles: a keep lasso widens what survives,
+    a cut lasso takes from it, and both are applied at full density.
     """
 
-    def __init__(self, keep=None, drop=None):
+    def __init__(self, keep=None, drop=None, lassos=None):
         self.keep = [tuple(b) for b in (keep or [])]
         self.drop = [tuple(b) for b in (drop or [])]
+        self.lassos = [l if isinstance(l, Lasso) else Lasso.from_dict(l)
+                       for l in (lassos or [])]
+
+    @property
+    def keep_lassos(self):
+        return [l for l in self.lassos if l.keep]
+
+    @property
+    def cut_lassos(self):
+        return [l for l in self.lassos if not l.keep]
 
     def is_empty(self):
-        return not self.keep and not self.drop
+        return not self.keep and not self.drop and not self.lassos
 
     @staticmethod
     def _inside(xyz, box):
@@ -174,30 +258,45 @@ class Edit(object):
         xyz = np.asarray(xyz)
         if self.is_empty():
             return np.ones(len(xyz), dtype=bool)
-        if self.keep:
+        keepers = self.keep_lassos
+        if self.keep or keepers:
             live = np.zeros(len(xyz), dtype=bool)
             for box in self.keep:
                 live |= self._inside(xyz, box)
+            for shape in keepers:
+                live |= shape.inside(xyz)
         else:
             live = np.ones(len(xyz), dtype=bool)
         for box in self.drop:
             live &= ~self._inside(xyz, box)
+        for shape in self.cut_lassos:
+            live &= ~shape.inside(xyz)
         return live
 
     def as_dict(self):
         return {"keep": [list(map(list, b)) for b in self.keep],
-                "drop": [list(map(list, b)) for b in self.drop]}
+                "drop": [list(map(list, b)) for b in self.drop],
+                "lassos": [l.as_dict() for l in self.lassos]}
 
     @classmethod
     def from_dict(cls, data):
         data = data or {}
-        return cls(keep=data.get("keep"), drop=data.get("drop"))
+        return cls(keep=data.get("keep"), drop=data.get("drop"),
+                   lassos=data.get("lassos"))
 
     def describe(self):
         if self.is_empty():
             return "no edit"
-        return "%d keep box(es), %d cut box(es)" % (len(self.keep),
-                                                    len(self.drop))
+        parts = []
+        if self.keep:
+            parts.append("%d keep box(es)" % len(self.keep))
+        if self.drop:
+            parts.append("%d cut box(es)" % len(self.drop))
+        if self.keep_lassos:
+            parts.append("%d keep lasso(s)" % len(self.keep_lassos))
+        if self.cut_lassos:
+            parts.append("%d cut lasso(s)" % len(self.cut_lassos))
+        return ", ".join(parts)
 
 
 def load_meta(pcap_path):

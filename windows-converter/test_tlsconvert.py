@@ -881,6 +881,83 @@ check("an absent edit reads as empty",
 check("and it says what it will do", "1 keep box" in _cut.describe(),
       _cut.describe())
 
+print("\nediting: a lasso is a screen polygon plus the camera that drew it")
+
+
+def _look_down(scale=0.25):
+    """An orthographic top view: x,y map straight to the screen, z ignored."""
+    m = np.zeros(16)
+    m[0] = scale        # ndc_x = x * scale
+    m[5] = scale        # ndc_y = y * scale
+    m[10] = -0.0001
+    m[15] = 1.0         # w = 1 everywhere, as an ortho projection gives
+    return m
+
+
+# a square from (-1,-1) to (1,1) in NDC covers world x,y in [-4, 4]
+_SQ = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+_lp = np.array([[0.0, 0.0, 0.0],      # dead centre
+                [3.9, 3.9, 12.0],     # inside, and height is irrelevant
+                [6.0, 0.0, 0.0],      # outside to the east
+                [0.0, -6.0, 0.0]])    # outside to the south
+_lasso = pipeline.Lasso(_look_down(), _SQ)
+check("a lasso encloses what was drawn round, at any depth",
+      list(_lasso.inside(_lp)) == [True, True, False, False],
+      list(_lasso.inside(_lp)))
+check("an empty cloud does not trip the polygon test",
+      len(_lasso.inside(np.empty((0, 3)))) == 0)
+check("fewer than three corners encloses nothing",
+      not pipeline.Lasso(_look_down(), [(0.0, 0.0), (1.0, 1.0)])
+      .inside(_lp).any())
+_lrt = pipeline.Lasso.from_dict(_lasso.as_dict())
+check("a lasso survives a round trip through JSON-safe types",
+      list(_lrt.inside(_lp)) == list(_lasso.inside(_lp)))
+
+# ⛔ THE TRAP THIS TEST EXISTS FOR. The perspective divide flips the sign of
+# anything behind the eye, so without a w > 0 gate the wall BEHIND the camera
+# lands mirrored inside the polygon -- a lasso round the sofa silently takes a
+# bite out of the room behind you, and nothing on screen says so.
+_persp = np.zeros(16)
+_persp[0] = 1.0
+_persp[5] = 1.0
+_persp[11] = -1.0            # w = -z, so only z < 0 is in front of the eye
+_front = np.array([[0.5, 0.5, -4.0]])     # in front, well inside the square
+_behind = np.array([[0.5, 0.5, 4.0]])     # its mirror image behind the eye
+_pl = pipeline.Lasso(_persp, _SQ)
+check("a point in front of the eye is enclosed", _pl.inside(_front)[0])
+check("and its mirror image BEHIND the eye is not",
+      not _pl.inside(_behind)[0])
+
+# concave: a C shape, open to the east. The notch must not count as inside.
+_C = [(-1.0, -1.0), (1.0, -1.0), (1.0, -0.5), (-0.5, -0.5),
+      (-0.5, 0.5), (1.0, 0.5), (1.0, 1.0), (-1.0, 1.0)]
+_cpts = np.array([[-3.0, 0.0, 0.0],       # in the spine of the C
+                  [3.0, 0.0, 0.0]])       # in the notch, which is outside
+check("a concave outline keeps its notch outside",
+      list(pipeline.Lasso(_look_down(), _C).inside(_cpts)) == [True, False],
+      list(pipeline.Lasso(_look_down(), _C).inside(_cpts)))
+
+_cutl = pipeline.Edit(lassos=[pipeline.Lasso(_look_down(), _SQ).as_dict()])
+check("a cut lasso deletes what it encloses and leaves the rest",
+      list(_cutl.mask(_lp)) == [False, False, True, True])
+_keepl = pipeline.Edit(
+    lassos=[pipeline.Lasso(_look_down(), _SQ, keep=True).as_dict()])
+check("a keep lasso does the opposite", list(_keepl.mask(_lp))
+      == [True, True, False, False])
+check("an edit holding only a lasso is not empty", not _cutl.is_empty())
+check("and it says which kind it holds", "cut lasso" in _cutl.describe(),
+      _cutl.describe())
+# keep boxes and keep lassos union, exactly as keep boxes do among themselves
+_mixed = pipeline.Edit(keep=[((5.0, -1.0, -1.0), (7.0, 1.0, 1.0))],
+                       lassos=[pipeline.Lasso(_look_down(), _SQ,
+                                              keep=True).as_dict()])
+check("a keep box and a keep lasso union rather than fight",
+      list(_mixed.mask(_lp)) == [True, True, True, False],
+      list(_mixed.mask(_lp)))
+_rt3 = pipeline.Edit.from_dict(_cutl.as_dict())
+check("an Edit carries its lassos through JSON too",
+      list(_rt3.mask(_lp)) == list(_cutl.mask(_lp)))
+
 print("\nregistration: merge and the workbench")
 try:
     pipeline.merge(["only_one.pcap"], os.path.join(tmp, "x.las"))
@@ -910,6 +987,31 @@ try:
           registration.estimate_work(9.0) >= registration.estimate_work(6.0))
     check("the crop controls are on the page",
           all(t in _page for t in ("keepbox", "cutbox", "clearedit")))
+    check("so are the delete tools and undo",
+          all(t in _page for t in ("lasso", "undo", "lassoask")))
+    check("the clip box can be inverted, not only switched off",
+          "clipflip" in _page and "uClipIn" in _page)
+    check("the box is drawn as geometry with grips, not just sliders",
+          all(t in _page for t in ("drawBox", "pickHandle", "slideFace",
+                                   "MIN_BOX")))
+    check("orthographic and the standard views are offered",
+          all(t in _page for t in ("orthoMat", "uOrtho", "'front'", "'side'")))
+    # ⛔ A top view along world Z with world Z as up gives a zero right vector
+    # and a blank screen; the page must switch its up vector, not stop short.
+    check("a true plan view is reachable rather than approximated",
+          "upVec" in _page and "Math.PI/2" in _page)
+    check("both detail sliders exist, for preview and for export",
+          all(t in _page for t in ("applydet", "'density'", "exdet",
+                                   "DETAIL")))
+    check("shown-of-captured is reported rather than implied",
+          "showDensity" in _page and "captured" in _page)
+    check("the clip box can be exported on its own",
+          "saveclip" in _page)
+    # A density change is a re-read of the captures, so it must be able to
+    # answer with no scans open rather than throwing at the operator.
+    _d = _srv.density(0.05)
+    check("changing detail on an empty session is harmless",
+          _d["ok"] and _d["scans"] == [] and _srv.align_voxel == 0.05, _d)
     check("and so is the progress bar",
           "barfill" in _page and "'progress'" in _page)
     check("adding a scan with no path is refused",
