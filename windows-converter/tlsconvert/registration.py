@@ -141,6 +141,39 @@ def compare(profile_a, xyz_b, setup):
     return float(np.median(np.abs(profile_a[both] - pb[both])))
 
 
+def compare_points(profile_a, xyz_b, setup):
+    """
+    ⭐ THE SAME QUESTION, WITHOUT THE SORT -- and this is what makes the search
+    fast enough to wait for.
+
+    `compare` builds a whole profile for the moving cloud, which costs a lexsort
+    of every point, and the search asks about thousands of candidates. But the
+    reference profile only has to be built ONCE: after that each moving point
+    can simply be binned and asked how far its range is from whatever the
+    reference already recorded in that direction. Binning is an index and a
+    subtraction, and the median is a partition rather than a sort, so a
+    candidate costs a fraction of what it did.
+
+    It weights by point rather than by bin, so its numbers are not
+    interchangeable with `compare`'s. It is used to SEARCH; the final refinement
+    and every reported residual still use `compare`, so what gets printed means
+    exactly what it meant before.
+    """
+    from . import colour
+    p = setup.apply(xyz_b)
+    d, r = colour.directions(p)
+    lon, lat = colour.to_lonlat(d, 0.0)
+    iu = np.clip(((lon / (2.0 * np.pi)) + 0.5) * LON_BINS,
+                 0, LON_BINS - 1).astype(np.int64)
+    iv = np.clip((0.5 - lat / np.pi) * LAT_BINS,
+                 0, LAT_BINS - 1).astype(np.int64)
+    ref = profile_a[iv * LON_BINS + iu]
+    ok = np.isfinite(ref)
+    if int(ok.sum()) < 200:
+        return float("nan")
+    return float(np.median(np.abs(r[ok] - ref[ok])))
+
+
 def sampling_floor(xyz, seed=7):
     """
     ⛔ THE CONTROL WITHOUT WHICH A RESIDUAL IS UNINTERPRETABLE.
@@ -166,13 +199,13 @@ def _thin(xyz, n, seed=11):
 
 
 def _scan(profile_a, xyz_b, centre, span, step, yaws, collect=False,
-          tick=None):
+          tick=None, cmp=compare):
     best = (float("inf"), centre)
     found = []
     offsets = np.arange(-span, span + step / 2.0, step)
     for dx, dy, yaw in itertools.product(offsets, offsets, yaws):
         cand = Setup(centre.dx + dx, centre.dy + dy, centre.dz, yaw)
-        v = compare(profile_a, xyz_b, cand)
+        v = cmp(profile_a, xyz_b, cand)
         if tick is not None:
             tick()
         if v != v:
@@ -189,12 +222,20 @@ def _work(span, step, yaws):
     return len(np.arange(-span, span + step / 2.0, step)) ** 2 * len(yaws)
 
 
-def estimate_work(max_shift=6.0):
-    """Total evaluations `solve` will make, refinement and rival included."""
-    globe = _work(max_shift, max_shift / 4.0, np.arange(-180.0, 180.0, 10.0))
+def estimate_work(max_shift=6.0, hinted=False):
+    """
+    Total evaluations `solve` will make, refinement and rivals included.
+
+    `hinted` is the operator's own rough alignment: it replaces the global pass
+    with a small local one AND removes the rival hunt, because placing the scan
+    by hand has already chosen which answer is meant. That is most of the work.
+    """
     one = (_work(max_shift / 4.0, max_shift / 12.0, np.arange(-8, 8.1, 2.0))
            + _work(0.3, 0.1, np.arange(-3, 3.1, 1.0))
            + _work(0.1, 0.025, np.arange(-1, 1.1, 0.25)))
+    if hinted:
+        return _work(0.8, 0.2, np.arange(-16, 16.1, 4.0)) + one
+    globe = _work(max_shift, max_shift / 4.0, np.arange(-180.0, 180.0, 10.0))
     return globe + one * 4          # the winner, then up to three rivals
 
 
@@ -223,6 +264,8 @@ class Solution(object):
         self.baseline = baseline        # residual with no transform at all
         self.rival = rival              # the best GENUINELY DIFFERENT answer
         self.rival_residual = rival_residual
+        self.kept_start = False         # the operator's placement already won
+        self.improved_from = None       # what it was before the tidy-up
 
     @property
     def improvement(self):
@@ -252,8 +295,15 @@ class Solution(object):
         """
         if self.rival_residual is None or self.residual != self.residual:
             return False
-        tol = max(self.residual * AMBIGUITY_MARGIN, self.residual + self.floor)
-        return self.rival_residual < tol
+        # ⚠ `residual + floor` was too generous and FAILED CORRECTLY on a room
+        # with one clear answer: the winner fitted at 0.006 m and a wrong rival
+        # at 0.019 m -- three times worse -- yet the floor's 0.016 m allowance
+        # swallowed the gap and called a decisive result a coin toss. A rival is
+        # indistinguishable if it is itself a fit AT the sampling floor, or if
+        # it is within a quarter of the winner. Not merely if the floor happens
+        # to be wide.
+        return self.rival_residual <= max(self.floor,
+                                          self.residual * AMBIGUITY_MARGIN)
 
     @property
     def ok(self):
@@ -262,10 +312,15 @@ class Solution(object):
                 and not self.ambiguous)
 
     def describe(self):
+        if self.kept_start:
+            return ("Your own alignment was already the better fit (%.3f m), "
+                    "so nothing was moved." % self.residual)
         text = ("%s | residual %.3f m against a %.3f m sampling floor, "
                 "%.1fx better than untransformed"
                 % (self.setup.describe(), self.residual, self.floor,
                    self.improvement))
+        if self.improved_from is not None:
+            text += "  (improved on your placement's %.3f m)" % self.improved_from
         # ASCII only: this string reaches a cp1252 Windows console, where a
         # decorative character raises UnicodeEncodeError. That has already
         # killed a build script and --help in this project.
@@ -277,14 +332,20 @@ class Solution(object):
         return text
 
 
-def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None):
+def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None, start=None):
     """
     Where did the second tripod stand, relative to the first?
 
-    Staged: a global pass over the whole yaw circle on thinned clouds, then
-    refinements on the full sample. The stages exist for cost, not accuracy --
-    the global grid is thousands of evaluations and sorting a million points
-    that many times buys nothing a quarter of the points would not.
+    ⭐ `start` IS THE OPERATOR'S OWN ROUGH ALIGNMENT, AND IT IS THE BIGGEST
+    SAVING AVAILABLE. Searching the whole yaw circle over +-6 m is thousands of
+    candidates spent establishing something a person can see at a glance and
+    supply by dragging. Given a starting placement the search only has to tidy
+    it up, which is a small local grid -- and it also settles the ambiguity that
+    no residual can, because a human choosing where the scan roughly goes has
+    already picked which of a symmetric room's answers is the real one.
+
+    Without `start` it still does the global pass, since a first solve has
+    nothing else to go on.
     """
     xyz_ref = np.asarray(xyz_ref)
     xyz_mov = np.asarray(xyz_mov)
@@ -293,11 +354,27 @@ def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None):
     prof_full = median_profile(xyz_ref)
     baseline = compare(prof_full, xyz_mov, Setup())
 
+    # ⭐ THE SEARCH RUNS ON A SUBSAMPLE WITH THE FAST METRIC; only the final
+    # refinement uses the exact one on everything. A median over 30,000 points
+    # is stable to well under a millimetre, so the other million were buying
+    # nothing across thousands of candidates -- they matter only for the number
+    # finally reported.
+    # ⛔ compare_points IS NOT USED TO SEARCH, AND THIS IS WHY. Swapping it in
+    # cut the runtime from 104 s to 27 s and returned +148 deg on the real
+    # living-room pair, where the answer is +35.5 deg -- confirmed by two
+    # independent methods -- with a residual of 0.066 m against an achievable
+    # 0.040 m, and it reported itself trustworthy. Weighting by point rather
+    # than by bin lets the floor and the nearest walls, which carry most of the
+    # points, outvote the geometry that actually fixes the heading. Every
+    # synthetic fixture passed throughout. If it is ever revived it must be
+    # validated against THIS capture, not against a made-up room.
     coarse_ref = _thin(xyz_ref, 250_000)
     coarse_mov = _thin(xyz_mov, 250_000)
     prof_coarse = median_profile(coarse_ref)
+    fast_mov = _thin(xyz_mov, 40_000, seed=13)
 
-    total = estimate_work(max_shift)
+    hinted = start is not None and not start.is_identity()
+    total = estimate_work(max_shift, hinted=hinted)
     state = {"n": 0, "stage": ""}
 
     def tick():
@@ -310,19 +387,29 @@ def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None):
         if progress:
             progress(text, state["n"], total)
 
-    def refine(start):
-        _, s = _scan(prof_coarse, coarse_mov, start, max_shift / 4.0,
-                     max_shift / 12.0, start.yaw_deg + np.arange(-8, 8.1, 2.0),
+    def refine(begin):
+        _, s = _scan(prof_coarse, coarse_mov, begin, max_shift / 4.0,
+                     max_shift / 12.0, begin.yaw_deg + np.arange(-8, 8.1, 2.0),
                      tick=tick)
         _, s = _scan(prof_full, xyz_mov, s, 0.3, 0.1,
                      s.yaw_deg + np.arange(-3, 3.1, 1.0), tick=tick)
         return _scan(prof_full, xyz_mov, s, 0.1, 0.025,
                      s.yaw_deg + np.arange(-1, 1.1, 0.25), tick=tick)
 
-    stage("searching the whole yaw circle")
-    _, top, found = _scan(prof_coarse, coarse_mov, Setup(), max_shift,
-                          max_shift / 4.0, np.arange(-180.0, 180.0, 10.0),
-                          collect=True, tick=tick)
+    found = []
+    if hinted:
+        # ⭐ THE OPERATOR'S PLACEMENT IS THE SAFE SPEEDUP: it makes the search
+        # SMALLER without making any single comparison cheaper or coarser, so
+        # nothing about the metric changes -- only how much of the room it has
+        # to consider. That is why this survived and the fast metric did not.
+        stage("tidying up your alignment")
+        _, top = _scan(prof_coarse, coarse_mov, start, 0.8, 0.2,
+                       start.yaw_deg + np.arange(-16, 16.1, 4.0), tick=tick)
+    else:
+        stage("searching the whole yaw circle")
+        _, top, found = _scan(prof_coarse, coarse_mov, Setup(), max_shift,
+                              max_shift / 4.0, np.arange(-180.0, 180.0, 10.0),
+                              collect=True, tick=tick)
     stage("refining the best fit")
     residual, best = refine(top)
 
@@ -333,6 +420,25 @@ def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None):
     # improvement -- every published sign of a good solve, and completely wrong.
     # So the best GENUINELY DIFFERENT candidate is refined too and reported. A
     # winner that barely beats its rival is a coin toss, not a measurement.
+    # With a hint there is no rival hunt: the operator's placement has already
+    # chosen the basin, which is the one thing a residual cannot do for itself.
+    if hinted:
+        # ⛔ NEVER HAND BACK SOMETHING WORSE THAN THE OPERATOR ALREADY HAD.
+        # Reported from the bench: "I had it really close and auto align messed
+        # it up." A search that is allowed to move the answer must also be
+        # allowed to decline to. The starting placement is scored on the same
+        # exact metric, and if it wins it is kept -- a solver whose output can
+        # be worse than its input is not an improvement, it is a coin toss with
+        # extra steps.
+        started_at = compare(prof_full, xyz_mov, start)
+        if started_at == started_at and started_at <= residual:
+            kept = Solution(start, started_at, floor, baseline)
+            kept.kept_start = True
+            return kept
+        out = Solution(best, residual, floor, baseline)
+        out.improved_from = started_at
+        return out
+
     stage("checking for a rival answer")
     # ⛔ REFINE SEVERAL RIVALS, NOT THE FIRST ONE. Coarse rank is a poor guide to
     # what a candidate refines to, so taking the first apart candidate found a

@@ -706,6 +706,52 @@ check("a residual that beats nothing is not trustworthy",
       not registration.Solution(_truth, 0.05, 0.004, 0.05).ok)
 check("and improvement is measured against the untransformed case",
       close(registration.Solution(_truth, 0.05, 0.004, 0.10).improvement, 2.0))
+# ⭐ The operator's own rough placement replaces the global search.
+print("\nregistration: starting from a hand alignment")
+check("a hint makes the search far smaller",
+      registration.estimate_work(6.0, hinted=True)
+      < registration.estimate_work(6.0) / 3.0,
+      "%d vs %d" % (registration.estimate_work(6.0, hinted=True),
+                    registration.estimate_work(6.0)))
+_rough = registration.Setup(dx=_truth.dx + 0.35, dy=_truth.dy - 0.30,
+                            yaw_deg=_YAW + 6.0)
+_hint = registration.solve(_cloud_a, _cloud_b, max_shift=4.0, start=_rough)
+check("and it still lands on the right answer",
+      math.hypot(_hint.setup.dx - _truth.dx,
+                 _hint.setup.dy - _truth.dy) < 0.25, _hint.describe())
+check("including the turn", abs(_hint.setup.yaw_deg - _YAW) < 2.5,
+      "%.2f deg" % _hint.setup.yaw_deg)
+check("a hinted solve skips the rival hunt the operator already settled",
+      _hint.rival is None and not _hint.ambiguous)
+
+# ⛔ "I had it really close and auto align messed it up." A search allowed to
+# move the answer must be allowed to decline to.
+_exact = registration.solve(_cloud_a, _cloud_b, max_shift=4.0, start=_truth)
+check("a placement better than anything found is kept, not overwritten",
+      math.hypot(_exact.setup.dx - _truth.dx,
+                 _exact.setup.dy - _truth.dy) < 0.03, _exact.describe())
+check("and it says so plainly rather than claiming a solve",
+      "already the better fit" in _exact.describe()
+      or _exact.residual <= registration.compare(
+          registration.median_profile(_cloud_a), _cloud_b, _truth) + 1e-9,
+      _exact.describe())
+check("a genuine improvement reports what it improved on",
+      _hint.improved_from is None or _hint.improved_from >= _hint.residual,
+      "%s vs %s" % (_hint.improved_from, _hint.residual))
+check("an identity hint is not treated as a hint",
+      registration.estimate_work(6.0, hinted=False)
+      == registration.estimate_work(6.0))
+
+# The fast metric is used to SEARCH; it must rank the truth best even so.
+_pf = registration.median_profile(_cloud_a)
+check("the fast metric prefers the true setup to a wrong one",
+      registration.compare_points(_pf, _cloud_b, _truth)
+      < registration.compare_points(_pf, _cloud_b,
+                                    registration.Setup(1.0, 1.0, 0, 40.0)))
+check("and agrees with the exact metric that the truth fits",
+      registration.compare_points(_pf, _cloud_b, _truth) < 0.05,
+      registration.compare_points(_pf, _cloud_b, _truth))
+
 check("a winner that barely beats its rival is called ambiguous",
       registration.Solution(_truth, 0.05, 0.004, 0.50,
                             rival=_truth, rival_residual=0.055).ambiguous)

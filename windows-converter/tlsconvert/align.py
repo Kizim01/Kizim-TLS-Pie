@@ -187,7 +187,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         try:
             if path == "/solve":
-                return self._json(srv.solve(int(body.get("index", 1))))
+                return self._json(srv.solve(int(body.get("index", 1)),
+                                            body.get("start")))
             if path == "/browse":
                 return self._json(srv.browse())
             if path == "/add":
@@ -262,16 +263,17 @@ class AlignServer(object):
         self._progress = {"stage": stage, "n": n, "total": total,
                           "busy": self._progress.get("busy", False)}
 
-    def solve(self, index):
+    def solve(self, index, start=None):
         if not 0 < index < len(self.scans):
             return {"ok": False, "error": "scan %d cannot be solved against "
                                           "itself" % index}
+        hint = registration.Setup.from_dict(start) if start else None
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
             sol = registration.solve(self.scans[0].sample,
                                      self.scans[index].sample,
-                                     progress=self._note)
+                                     progress=self._note, start=hint)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -498,6 +500,9 @@ PAGE = r"""<!doctype html>
   <label>Turn <span class="num" id="rv">0.0</span>&deg;</label>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
   <button class="go" id="auto">Auto-align</button>
+  <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
+    Drag it roughly into place first — it starts from where you put it, which
+    is far quicker and settles which answer is meant.</div>
   <div class="row"><button id="zero">Reset</button>
     <button id="save">Save merged</button></div>
   <div id="bar"><i id="barfill"></i></div>
@@ -830,13 +835,22 @@ function watch(on){
   }, 200);
 }
 
+function moved(s){
+  return !!(s.setup.x_m || s.setup.y_m || s.setup.z_m || s.setup.yaw_deg);
+}
+/* ⭐ Your rough placement is sent as the starting point. It removes the global
+   search AND the rival hunt -- a hand placement has already decided which of a
+   symmetric room's answers is meant, which is the one thing no residual can
+   settle for itself. Drag it roughly right first and this is far quicker. */
 async function autoAlign(){
   const s=active(); if(!s) return;
-  say('solving…'); watch(true); $('auto').disabled=true;
+  const hint = moved(s) ? s.setup : null;
+  say(hint ? 'tidying up your alignment…' : 'searching from scratch…');
+  watch(true); $('auto').disabled=true;
   try{
     const r=await fetch('solve',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index:s.index})});
+      body:JSON.stringify({index:s.index, start:hint})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
     s.setup=j.setup; syncSliders(); invalidate();
