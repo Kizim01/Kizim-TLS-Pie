@@ -45,7 +45,36 @@ def scanner_dir():
     return rig.SCANNER_MODULE_DIR
 
 
-def main():
+APPS = ((NAME, "tlsconvert_gui.py", True),
+        (STUDIO_NAME, "tlspie_studio.py", True),
+        (CLI_NAME, "tlsconvert_cli.py", False))
+
+
+def main(argv=None):
+    """
+    Build every app, or just the ones named on the command line.
+
+    ⛔ NAMING ONE IS NOT A CONVENIENCE, IT IS THE FIX FOR A REAL BLOCKAGE. A
+    running --onefile app holds its own exe open, so rebuilding while one is
+    running dies with PermissionError -- and because they were built in one
+    loop, a single locked exe took the other two down with it. That happened
+    here: an open converter window blocked the build of a program it has nothing
+    to do with. Build the one you changed:
+
+        python build_exe.py TLS-Pie-Studio
+
+    A locked exe still cannot be replaced; close that app first. Note it runs as
+    bootloader parent AND child, so killing one PID leaves the other holding it.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    wanted = [a for a in argv if not a.startswith("-")]
+    apps = [a for a in APPS if not wanted or a[0] in wanted]
+    if not apps:
+        print("No such app: %s. Known: %s"
+              % (", ".join(wanted), ", ".join(a[0] for a in APPS)),
+              file=sys.stderr)
+        return 2
+
     sys.path.insert(0, HERE)
     src = scanner_dir()
     missing = [m for m in SCANNER_MODULES
@@ -56,9 +85,7 @@ def main():
         return 2
 
     built = []
-    for name, entry, windowed in ((NAME, "tlsconvert_gui.py", True),
-                                  (STUDIO_NAME, "tlspie_studio.py", True),
-                                  (CLI_NAME, "tlsconvert_cli.py", False)):
+    for name, entry, windowed in apps:
         cmd = [sys.executable, "-m", "PyInstaller",
                "--noconfirm", "--clean", "--onefile",
                "--windowed" if windowed else "--console",

@@ -39,6 +39,18 @@ def _exe_path():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    # ⛔ THE ONLY WAY TO SMOKE-TEST THIS BUNDLE. A --windowed exe has no console,
+    # so a missing module produces silence, and the specific failure to fear
+    # here is invisible even when it happens: pywebview picks its backend by
+    # importing it at run time, so if --collect-all webview did not take, the
+    # program starts, finds no native window, and quietly falls back to the
+    # browser -- looking like it works while being exactly what it must not do.
+    # Exit codes carry the answer out of a program that cannot print.
+    if "--selftest" in argv:
+        ok = desktop.have_native()
+        print("native window backend available: %s" % ok)
+        return 0 if ok else 3
+
     if "--associate" in argv:
         exts = desktop.SAFE_EXTS
         if "--with-pcap" in argv:
