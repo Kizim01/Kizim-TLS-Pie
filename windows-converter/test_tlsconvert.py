@@ -806,6 +806,18 @@ try:
           all(t in _page for t in ("keepbox", "cutbox", "clearedit")))
     check("and so is the progress bar",
           "barfill" in _page and "'progress'" in _page)
+    check("adding a scan with no path is refused",
+          not _srv.add([])["ok"])
+    check("adding a file that does not exist is refused",
+          "no such file" in _srv.add(["Z:\\nope.pcap"])["error"])
+    _bad = _srv.add([os.path.join(tmp, "NOPHOTO.pcap")])
+    check("adding an exported cloud is refused with the reason",
+          not _bad["ok"] and "pan track" in _bad["error"], _bad)
+    check("the add control is on the page", "addpath" in _page)
+    check("the panel uses the scanner's own glass tokens",
+          "--glass" in _page and "backdrop-filter" in _page)
+    check("and its palette, so the two programs match",
+          "#0A84FF" in _page and "#F5F5F7" in _page)
 finally:
     _srv.stop()
 

@@ -167,6 +167,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         try:
             if path == "/solve":
                 return self._json(srv.solve(int(body.get("index", 1))))
+            if path == "/add":
+                return self._json(srv.add(body.get("paths") or []))
             if path == "/save":
                 return self._json(srv.save(body.get("setups") or [],
                                            body.get("voxel"),
@@ -185,10 +187,13 @@ class AlignServer(object):
     """Serves the alignment workbench on loopback until stopped."""
 
     def __init__(self, scans, port=0, out_path=None, merge_voxel=0.0,
-                 max_points=viewer.DEFAULT_VIEW_MAX):
+                 max_points=viewer.DEFAULT_VIEW_MAX,
+                 align_voxel=DEFAULT_ALIGN_VOXEL):
         self.scans = list(scans)
         self.out_path = out_path
         self.merge_voxel = merge_voxel
+        self.max_points = max_points
+        self.align_voxel = align_voxel
         self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
         meta = []
@@ -247,6 +252,53 @@ class AlignServer(object):
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
                 "text": sol.describe()}
 
+    def add(self, paths):
+        """
+        Decode more captures into the open session.
+
+        ⛔ NO FILE PICKER FROM HERE. This runs on an HTTP handler thread, and
+        both tkinter and WebView2 want the thread that created them -- a dialog
+        opened here hangs the server rather than failing, which is worse than
+        not offering one. The page sends a path instead, and the launcher, which
+        does own the main thread, is where a picker belongs.
+        """
+        paths = [p for p in paths if p]
+        if not paths:
+            return {"ok": False, "error": "no path given"}
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            return {"ok": False, "error": "no such file: %s"
+                                          % ", ".join(missing)}
+        wrong = [p for p in paths if not p.lower().endswith(".pcap")]
+        if wrong:
+            return {"ok": False,
+                    "error": "%s is not a capture. An exported cloud has "
+                             "already lost the pan track and its own origin, "
+                             "so it cannot be aligned."
+                             % os.path.basename(wrong[0])}
+
+        self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
+        try:
+            fresh = load(paths, voxel_m=self.align_voxel,
+                         progress=lambda m: self._note(m, 0, 1))
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+
+        added = []
+        per = max(1, self.max_points // max(len(self.scans) + len(fresh), 1))
+        for scan in fresh:
+            i = len(self.scans)
+            self.scans.append(scan)
+            buf = scan.buffer(max_points=per)
+            self.blobs.append(buf.encode())
+            added.append({"name": scan.name, "index": i, "points": buf.count,
+                          "tint": _tint(i), "subsampled": buf.subsampled,
+                          "setup": scan.setup.as_dict()})
+        return {"ok": True, "added": added}
+
     def save(self, setups, voxel=None, edit=None):
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
@@ -288,49 +340,98 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <title>Align scans</title>
 <style>
-  html,body{margin:0;height:100%;background:#111;color:#ddd;
-            font:13px/1.45 "Segoe UI",system-ui,sans-serif;overflow:hidden}
+  /* Same tokens as the scanner's control panel in tls_web.py, so the two
+     programs of one instrument look like one instrument. Copied deliberately
+     rather than invented: the operator moves between them in a single session. */
+  :root{
+    --blue:#0A84FF; --red:#FF453A; --green:#30D158; --orange:#FF9F0A;
+    --purple:#BF5AF2; --teal:#40C8E0; --grey:#8E8E93;
+    --text:#F5F5F7; --dim:rgba(235,235,245,.62); --faint:rgba(235,235,245,.32);
+    --glass:rgba(255,255,255,.07);
+    --edge:rgba(255,255,255,.14);
+    --hi:rgba(255,255,255,.20);
+  }
+  html,body{margin:0;height:100%;background:#05060a;color:var(--text);
+    font:13px/1.45 -apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    overflow:hidden}
+  /* ⚠ The cloud is the wallpaper here. The scanner blurs its glass over a
+     gradient; blurring over millions of live points would cost a full-screen
+     readback every frame, so the panel keeps the glass and drops the blur's
+     backdrop to a tint. It reads the same and costs nothing. */
   canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab}
   canvas.drag{cursor:grabbing}
   canvas.move{cursor:move}
-  #hud{position:fixed;top:0;left:0;padding:10px 14px;pointer-events:none;
-       text-shadow:0 1px 3px #000}
-  #hud b{color:#fff;font-size:15px}
-  .pnl{position:fixed;background:rgba(20,20,24,.9);border:1px solid #333;
-       border-radius:8px;padding:11px 13px}
-  #panel{top:10px;right:10px;width:252px;max-height:94vh;overflow:auto}
-  label{display:block;margin:8px 0 2px;color:#9aa;font-size:11.5px}
-  input[type=range]{width:100%}
-  button{background:#26262c;color:#ddd;border:1px solid #3a3a42;
-         border-radius:5px;padding:6px 9px;cursor:pointer;font-size:12px}
-  button:hover{background:#31313a}
-  button.on{background:#2f5d8a;border-color:#3d7ab5;color:#fff}
-  button.go{background:#2c6e49;border-color:#3d8f63;color:#fff;width:100%;
-            padding:8px;font-size:13px;margin-top:4px}
-  .row{display:flex;gap:6px;margin-top:6px}
+  #hud{position:fixed;top:0;left:0;padding:14px 18px;pointer-events:none}
+  #hud b{color:var(--text);font-size:17px;font-weight:600;
+    letter-spacing:-.01em}
+  #hud #stat{color:var(--dim);font-size:12px;margin-top:2px}
+  .pnl{position:fixed;background:rgba(20,22,30,.72);
+    -webkit-backdrop-filter:blur(30px) saturate(180%);
+    backdrop-filter:blur(30px) saturate(180%);
+    border:.5px solid var(--edge);border-radius:24px;padding:16px 16px 18px;
+    box-shadow:0 12px 40px rgba(0,0,0,.42),
+               inset 0 .5px 0 rgba(255,255,255,.16)}
+  #panel{top:14px;right:14px;width:262px;max-height:93vh;overflow:auto}
+  #panel::-webkit-scrollbar{width:8px}
+  #panel::-webkit-scrollbar-thumb{background:var(--edge);border-radius:99px}
+  label{display:block;margin:11px 0 4px;color:var(--dim);font-size:11px;
+    letter-spacing:.02em;text-transform:uppercase}
+  input[type=range]{width:100%;appearance:none;-webkit-appearance:none;
+    height:4px;border-radius:99px;background:rgba(255,255,255,.14);
+    margin:5px 0}
+  input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;
+    width:15px;height:15px;border-radius:50%;background:var(--text);
+    box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer}
+  select{width:100%;font:inherit;font-size:12px;color:var(--text);
+    background:var(--glass);border:.5px solid var(--edge);border-radius:11px;
+    padding:7px 9px;appearance:none;-webkit-appearance:none}
+  input[type=text]{width:100%;font:inherit;font-size:11.5px;color:var(--text);
+    background:var(--glass);border:.5px solid var(--edge);border-radius:11px;
+    padding:7px 9px;box-sizing:border-box}
+  button{font:inherit;font-size:12px;font-weight:500;color:var(--text);
+    cursor:pointer;border-radius:13px;border:.5px solid var(--edge);
+    background:var(--glass);padding:8px 10px;
+    transition:background .12s ease}
+  button:hover{background:var(--hi)}
+  button:active{background:rgba(255,255,255,.26)}
+  button:disabled{opacity:.42;cursor:default}
+  button.on{background:linear-gradient(180deg,rgba(10,132,255,.40),
+    rgba(10,132,255,.24));border-color:rgba(10,132,255,.56)}
+  button.go{width:100%;padding:11px;font-size:13px;font-weight:600;
+    margin-top:8px;border-radius:17px;
+    background:linear-gradient(180deg,rgba(10,132,255,.34),
+      rgba(10,132,255,.20));border-color:rgba(10,132,255,.52)}
+  button.save{background:linear-gradient(180deg,rgba(48,209,88,.30),
+    rgba(48,209,88,.18));border-color:rgba(48,209,88,.50)}
+  .row{display:flex;gap:7px;margin-top:7px}
   .row button{flex:1}
-  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;
-      margin-right:6px;vertical-align:middle}
-  hr{border:0;border-top:1px solid #2c2c33;margin:12px 0 4px}
-  #msg{margin-top:8px;font-size:11.5px;color:#9c9;min-height:2.6em}
-  #msg.bad{color:#f99}
-  #msg.warn{color:#fc9}
-  #bar{height:4px;background:#2c2c33;border-radius:2px;margin-top:8px;
-       overflow:hidden;display:none}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:50%;
+    margin-right:7px;vertical-align:middle;box-shadow:0 0 12px currentColor}
+  #legend div{padding:5px 0;color:var(--dim);font-size:11.5px}
+  hr{border:0;border-top:.5px solid rgba(255,255,255,.09);margin:15px 0 2px}
+  #msg{margin-top:10px;font-size:11.5px;color:var(--dim);min-height:2.8em;
+    line-height:1.45}
+  #msg.bad{color:var(--red)}
+  #msg.warn{color:var(--orange)}
+  #bar{height:8px;background:rgba(255,255,255,.10);border-radius:99px;
+    margin-top:10px;overflow:hidden;display:none}
   #bar.on{display:block}
-  #barfill{display:block;height:100%;width:0;background:#3d8f63;
-           transition:width .2s linear}
-  #editlist{margin-top:6px;font-size:11px;color:#8a8}
-  #editlist div{margin-top:2px}
-  #keys{position:fixed;bottom:8px;left:12px;color:#777;font-size:11px}
+  #barfill{display:block;height:100%;width:0;border-radius:99px;
+    background:linear-gradient(90deg,var(--blue),var(--teal));
+    transition:width .2s linear}
+  #editlist{margin-top:7px;font-size:11px;color:var(--faint)}
+  #keys{position:fixed;bottom:12px;left:18px;color:var(--faint);font-size:11px}
   #err{position:fixed;inset:0;display:none;place-items:center;padding:40px;
-       text-align:center;color:#f88;font-size:15px;background:#111}
+    text-align:center;color:var(--red);font-size:15px;background:#05060a}
   .num{font-variant-numeric:tabular-nums}
 </style>
 <canvas id="cv"></canvas>
 <div id="hud"><b>Align scans</b><div id="stat">loading…</div></div>
 <div class="pnl" id="panel">
   <div id="legend"></div>
+  <label>Add another scan</label>
+  <input type="text" id="addpath" placeholder="paste a .pcap path">
+  <div class="row"><button id="add">Add scan</button></div>
   <hr>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
@@ -710,6 +811,39 @@ function addBox(which){
       'another, or press Save merged.');
 }
 
+function refreshLists(){
+  $('legend').innerHTML = V.scans.map(s=>
+    '<div><span class="sw" style="background:rgb('+s.tint.join(',')+
+    ');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
+    ' &middot; <span class="num">'+s.points.toLocaleString()+'</span></div>')
+    .join('');
+  $('which').innerHTML = V.scans.slice(1).map(s=>
+    '<option value="'+s.index+'"'+(s.index===V.active?' selected':'')+'>'+
+    s.name+'</option>').join('');
+}
+
+async function addScan(){
+  const p=$('addpath').value.trim();
+  if(!p) return say('Paste the full path to a .pcap first. In Explorer, '+
+                    'shift-right-click the file and Copy as path.', 'warn');
+  say('decoding…'); watch(true); $('add').disabled=true;
+  try{
+    const r=await fetch('add',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({paths:[p.replace(/^"|"$/g,'')]})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'could not add it');
+    for(const m of j.added) V.scans.push(await loadScan(m));
+    V.active=j.added[0].index;
+    refreshLists(); syncSliders(); watch(false);
+    $('addpath').value='';
+    say('added '+j.added.map(a=>a.name).join(', ')+
+        '. It is solved against the FIRST scan, not the previous one, so '+
+        'errors do not accumulate down the chain.');
+  }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
+  $('add').disabled=false;
+}
+
 async function saveMerged(){
   if(!OUT) return say('No output file was given.', 'bad');
   say('writing '+OUT+' …'); watch(true); $('save').disabled=true;
@@ -805,6 +939,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     invalidate(); };
   $('ps').oninput=e=>{ V.psize=parseFloat(e.target.value);
     $('psv').textContent=V.psize.toFixed(2); invalidate(); };
+  $('add').onclick=addScan;
+  $('addpath').onkeydown=e=>{ if(e.key==='Enter') addScan(); };
+  $('save').classList.add('save');
   $('keepbox').onclick=()=>addBox('keep');
   $('cutbox').onclick=()=>addBox('drop');
   $('clearedit').onclick=()=>{ V.keep=[]; V.drop=[]; showEdits();
