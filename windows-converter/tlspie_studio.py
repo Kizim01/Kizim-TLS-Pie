@@ -60,36 +60,38 @@ def main(argv=None):
         print(msg)
         return 0 if ok else 1
 
+    # ⛔ NO DIALOG BEFORE THE WINDOW. Launching straight into a file picker made
+    # double-clicking the program feel like it had not started -- the operator
+    # got a folder chooser with no application behind it and reasonably asked
+    # where the program was. A program opens, and THEN you open something in it.
     paths = [a for a in argv if not a.startswith("-")]
-    if not paths:
-        paths = desktop.choose_captures()
-    if not paths:
-        return 0                       # cancelled: a normal outcome, not a fault
-
     missing = [p for p in paths if not os.path.exists(p)]
     if missing:
         print("No such file: %s" % ", ".join(missing), file=sys.stderr)
         return 2
 
     captures = [p for p in paths if p.lower().endswith(".pcap")]
-    if not captures:
+    if paths and not captures:
         print("Nothing to decode. Studio opens scanner captures (.pcap); "
               "an exported cloud has already lost the pan track and the "
               "per-scan origin that alignment needs.", file=sys.stderr)
         return 2
 
-    stem = os.path.splitext(captures[0])[0]
-    out = "%s_merged.laz" % stem
+    out = ("%s_merged.laz" % os.path.splitext(captures[0])[0] if captures
+           else os.path.join(os.path.expanduser("~"), "tlspie_merged.laz"))
 
-    print("Decoding %d capture(s)…" % len(captures))
-    sys.stdout.flush()
-    try:
-        scans = align.load(captures, progress=lambda m: (print("  %s" % m),
-                                                         sys.stdout.flush()))
-    except Exception as exc:                             # noqa: BLE001
-        print("Could not open the captures: %s" % exc, file=sys.stderr)
-        traceback.print_exc()
-        return 1
+    scans = []
+    if captures:
+        print("Decoding %d capture(s)…" % len(captures))
+        sys.stdout.flush()
+        try:
+            scans = align.load(
+                captures,
+                progress=lambda m: (print("  %s" % m), sys.stdout.flush()))
+        except Exception as exc:                         # noqa: BLE001
+            print("Could not open the captures: %s" % exc, file=sys.stderr)
+            traceback.print_exc()
+            return 1
 
     server = align.AlignServer(scans, out_path=out)
     print("Ready. Merged output will go to %s" % out)

@@ -814,6 +814,15 @@ try:
     check("adding an exported cloud is refused with the reason",
           not _bad["ok"] and "pan track" in _bad["error"], _bad)
     check("the add control is on the page", "addpath" in _page)
+    # ⛔ Studio must OPEN, not greet you with a folder chooser and no program
+    # behind it. An empty session has to serve a working page.
+    check("a session with no scans still serves a page",
+          "<canvas" in _page and "Browse" in _page)
+    check("and says so rather than looking broken",
+          "No scans open yet" in _page)
+    _br = _srv.browse()
+    check("Browse refuses cleanly with no native window",
+          not _br["ok"] and "no native window" in _br["error"], _br)
     check("the panel uses the scanner's own glass tokens",
           "--glass" in _page and "backdrop-filter" in _page)
     check("and its palette, so the two programs match",

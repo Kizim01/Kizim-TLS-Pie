@@ -167,6 +167,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         try:
             if path == "/solve":
                 return self._json(srv.solve(int(body.get("index", 1))))
+            if path == "/browse":
+                return self._json(srv.browse())
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or []))
             if path == "/save":
@@ -251,6 +253,23 @@ class AlignServer(object):
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
                 "text": sol.describe()}
+
+    def browse(self):
+        """
+        A native file dialog, asked for by the page.
+
+        ⭐ THIS IS THE ONE WAY TO GET A PICKER OUT OF A PAGE. The server thread
+        cannot make a dialog itself -- tkinter and WebView2 both want the thread
+        that created them, so trying hangs the server rather than failing. The
+        running window can, because pywebview marshals the call onto its own GUI
+        thread. With no native window (the browser fallback) there is no picker
+        at all, and the page falls back to a pasted path.
+        """
+        from . import desktop
+        if desktop.WINDOW[0] is None:
+            return {"ok": False,
+                    "error": "no native window, so no system file dialog"}
+        return {"ok": True, "paths": desktop.pick_files()}
 
     def add(self, paths):
         """
@@ -430,8 +449,10 @@ PAGE = r"""<!doctype html>
 <div class="pnl" id="panel">
   <div id="legend"></div>
   <label>Add another scan</label>
-  <input type="text" id="addpath" placeholder="paste a .pcap path">
-  <div class="row"><button id="add">Add scan</button></div>
+  <div class="row"><button id="browse" class="go">Browse…</button></div>
+  <input type="text" id="addpath" placeholder="…or paste a .pcap path"
+         style="margin-top:7px">
+  <div class="row"><button id="add">Add pasted path</button></div>
   <hr>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
@@ -696,13 +717,29 @@ async function boot(){
   gl.enableVertexAttribArray(loc.aCol);
 
   try{
-    $('stat').textContent='downloading points…';
+    $('stat').textContent = META.length ? 'downloading points…' : '';
     for(const m of META) V.scans.push(await loadScan(m));
   }catch(e){
     return fail('Could not load the clouds: '+e.message+
-      '  If this is a graphics limit, re-run with a larger --align-voxel.');
+      '  If this is a graphics limit, re-open with a larger align voxel.');
   }
+  measure();
+  refreshLists();
+  syncSliders(); clipLabels(); recentre(); draw();
+}
 
+/* Recomputed whenever the set of scans changes, so a scan added mid-session
+   reframes the camera and the clip box instead of sitting outside both. */
+function measure(){
+  if(!V.scans.length){
+    V.ext={lo:[-5,-5,-2],hi:[5,5,3]}; V.box={lo:[-5,-5,-2],hi:[5,5,3]};
+    V.reach=12;
+    $('stat').textContent='No scans open yet — press Browse to add one.';
+    say('This is TLS-Pie Studio. Add a capture to begin: Browse, or paste a '+
+        'path. Add a second one taken from somewhere else in the same room '+
+        'and it can be aligned to the first.');
+    return;
+  }
   const lo=[1e9,1e9,1e9], hi=[-1e9,-1e9,-1e9];
   let total=0, reach=0;
   for(const s of V.scans){
@@ -712,18 +749,9 @@ async function boot(){
   }
   V.ext={lo,hi}; V.box={lo:lo.slice(),hi:hi.slice()};
   V.reach=Math.max(3,reach*1.6);
-
-  $('legend').innerHTML = V.scans.map(s=>
-    '<div><span class="sw" style="background:rgb('+s.tint.join(',')+')"></span>'
-    + s.name + ' &middot; <span class="num">'
-    + s.points.toLocaleString() + '</span></div>').join('');
-  const w=$('which');
-  w.innerHTML = V.scans.slice(1).map(s=>
-    '<option value="'+s.index+'">'+s.name+'</option>').join('');
-  V.active = V.scans.length>1 ? V.scans[1].index : 0;
-  $('stat').textContent = V.scans.length+' scans · '+
-    total.toLocaleString()+' points shown';
-  syncSliders(); clipLabels(); recentre(); draw();
+  V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
+  $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
+    ' · '+total.toLocaleString()+' points shown';
 }
 
 function active(){ return V.scans.find(s=>s.index===V.active); }
@@ -822,26 +850,50 @@ function refreshLists(){
     s.name+'</option>').join('');
 }
 
-async function addScan(){
-  const p=$('addpath').value.trim();
-  if(!p) return say('Paste the full path to a .pcap first. In Explorer, '+
-                    'shift-right-click the file and Copy as path.', 'warn');
-  say('decoding…'); watch(true); $('add').disabled=true;
+async function ingest(paths){
+  say('decoding…'); watch(true);
+  $('add').disabled=true; $('browse').disabled=true;
   try{
     const r=await fetch('add',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({paths:[p.replace(/^"|"$/g,'')]})});
+      body:JSON.stringify({paths})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not add it');
+    const first = V.scans.length===0;
     for(const m of j.added) V.scans.push(await loadScan(m));
-    V.active=j.added[0].index;
-    refreshLists(); syncSliders(); watch(false);
+    measure(); refreshLists(); syncSliders(); clipLabels();
+    if(first) recentre();
+    invalidate(); watch(false);
     $('addpath').value='';
     say('added '+j.added.map(a=>a.name).join(', ')+
-        '. It is solved against the FIRST scan, not the previous one, so '+
-        'errors do not accumulate down the chain.');
+        (V.scans.length>1
+          ? '. Every scan is solved against the FIRST one, never against the '+
+            'previous, so errors do not accumulate down the chain.'
+          : '. Add a second scan from elsewhere in the room to align to it.'));
   }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
-  $('add').disabled=false;
+  $('add').disabled=false; $('browse').disabled=false;
+}
+
+async function browseScan(){
+  try{
+    const r=await fetch('browse',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'no picker available');
+    if(!j.paths.length) return;          /* cancelled: not a failure */
+    await ingest(j.paths);
+  }catch(e){
+    say('The file picker is unavailable ('+e.message+'). Paste a path '+
+        'instead — in Explorer, shift-right-click the file and Copy as path.',
+        'warn');
+  }
+}
+
+function addScan(){
+  const p=$('addpath').value.trim();
+  if(!p) return say('Paste the full path to a .pcap first, or press Browse.',
+                    'warn');
+  return ingest([p.replace(/^"|"$/g,'')]);
 }
 
 async function saveMerged(){
@@ -940,6 +992,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('ps').oninput=e=>{ V.psize=parseFloat(e.target.value);
     $('psv').textContent=V.psize.toFixed(2); invalidate(); };
   $('add').onclick=addScan;
+  $('browse').onclick=browseScan;
   $('addpath').onkeydown=e=>{ if(e.key==='Enter') addScan(); };
   $('save').classList.add('save');
   $('keepbox').onclick=()=>addBox('keep');

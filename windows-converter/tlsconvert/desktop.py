@@ -58,6 +58,28 @@ def choose_captures(title="Choose captures to open"):
         root.destroy()
 
 
+# The live native window, so a request arriving on a server thread can ask it to
+# open a file dialog. pywebview marshals create_file_dialog onto its own GUI
+# thread, which is the only way to get a native picker out of a page: the server
+# thread cannot make one itself without hanging.
+WINDOW = [None]
+
+
+def pick_files(title="Add a scan"):
+    """A native file dialog from the running window. [] if cancelled."""
+    win = WINDOW[0]
+    if win is None:
+        return []
+    try:
+        import webview
+        chosen = win.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=True,
+            file_types=("Scanner captures (*.pcap)", "All files (*.*)"))
+        return list(chosen or [])
+    except Exception:
+        return []
+
+
 def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):
     """
     Open `url` in a native window and block until it is closed.
@@ -76,6 +98,7 @@ def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):
     import webview
     window = webview.create_window(title, url, width=width, height=height,
                                    resizable=True, text_select=False)
+    WINDOW[0] = window
     if on_close is not None:
         window.events.closed += on_close
     try:
