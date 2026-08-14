@@ -775,6 +775,26 @@ else:
     check("solve_best prefers GICP when it is present",
           registration.solve_best(_cloud_a, _cloud_b).iterations is not None)
 
+    # ⛔ "if i press auto align again the cloud doesnt get more accurate."
+    # GICP converges, so the ladder is what makes a second press mean anything.
+    print("\nregistration: the refinement ladder")
+    check("the ladder starts coarse", registration.next_voxel(None)
+          == registration.GICP_LADDER[0])
+    _rungs, _v = [], registration.next_voxel(None)
+    while _v is not None:
+        _rungs.append(_v)
+        _v = registration.next_voxel(_v)
+    check("every press steps strictly finer",
+          all(b < a for a, b in zip(_rungs, _rungs[1:])), _rungs)
+    check("and it bottoms out rather than chasing sensor noise",
+          registration.next_voxel(_rungs[-1]) is None
+          and _rungs[-1] >= 0.005, _rungs)
+    check("scoring gets finer with the voxel, or a refinement is invisible",
+          registration.scoring_bins(0.01)[0]
+          > registration.scoring_bins(0.10)[0])
+    check("a fit is reported with the rung it was made at",
+          registration.solve_gicp(_cloud_a, _cloud_b, voxel=0.02).voxel == 0.02)
+
 check("a genuine improvement reports what it improved on",
       _hint.improved_from is None or _hint.improved_from >= _hint.residual,
       "%s vs %s" % (_hint.improved_from, _hint.residual))

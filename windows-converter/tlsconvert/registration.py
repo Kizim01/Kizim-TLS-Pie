@@ -106,40 +106,61 @@ class Setup(object):
         return "Setup(%s)" % self.describe()
 
 
-def median_profile(xyz):
+def median_profile(xyz, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     """
     Per-bin median range: the room as a distance in every direction.
 
     Median rather than mean so one return through a doorway cannot drag a bin,
     and metres rather than the log range the colour solve uses, because here the
     quantity being compared IS a distance.
+
+    The bin count is a parameter because the resolution has to keep up with the
+    refinement: at 1 x 2 degrees a five-millimetre improvement does not move the
+    number at all, and a guard that only accepts improvements would then reject
+    every one of them.
     """
     from . import colour                      # local: avoids a cycle at import
+    n = lon_bins * lat_bins
     d, r = colour.directions(np.asarray(xyz))
     lon, lat = colour.to_lonlat(d, 0.0)
-    iu = np.clip(((lon / (2.0 * np.pi)) + 0.5) * LON_BINS,
-                 0, LON_BINS - 1).astype(np.int64)
-    iv = np.clip((0.5 - lat / np.pi) * LAT_BINS,
-                 0, LAT_BINS - 1).astype(np.int64)
-    flat = iv * LON_BINS + iu
+    iu = np.clip(((lon / (2.0 * np.pi)) + 0.5) * lon_bins,
+                 0, lon_bins - 1).astype(np.int64)
+    iv = np.clip((0.5 - lat / np.pi) * lat_bins,
+                 0, lat_bins - 1).astype(np.int64)
+    flat = iv * lon_bins + iu
     order = np.lexsort((r, flat))
     flat_s, r_s = flat[order], r[order]
-    starts = np.searchsorted(flat_s, np.arange(NBINS), "left")
-    ends = np.searchsorted(flat_s, np.arange(NBINS), "right")
+    starts = np.searchsorted(flat_s, np.arange(n), "left")
+    ends = np.searchsorted(flat_s, np.arange(n), "right")
     filled = ends > starts
-    med = np.full(NBINS, np.nan)
+    med = np.full(n, np.nan)
     mid = starts[filled] + (ends[filled] - starts[filled]) // 2
     med[filled] = r_s[mid]
     return med
 
 
-def compare(profile_a, xyz_b, setup):
+def compare(profile_a, xyz_b, setup, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     """Median disagreement in metres between a profile and a transformed cloud."""
-    pb = median_profile(setup.apply(xyz_b))
+    pb = median_profile(setup.apply(xyz_b), lon_bins, lat_bins)
     both = np.isfinite(profile_a) & np.isfinite(pb)
     if both.sum() < 500:
         return float("nan")
     return float(np.median(np.abs(profile_a[both] - pb[both])))
+
+
+def scoring_bins(voxel):
+    """
+    How finely to score a fit made at this voxel.
+
+    ⛔ Scoring must out-resolve the thing it judges. Left at the coarse grid, a
+    1 cm refinement measured identically to the 10 cm one it improved on, the
+    "never worse than yours" guard saw no gain, kept the old answer, and the
+    button appeared to do nothing all over again -- the same complaint, one rung
+    further down the ladder.
+    """
+    if voxel <= 0.02:
+        return FINE_LON_BINS, FINE_LAT_BINS
+    return LON_BINS, LAT_BINS
 
 
 def compare_points(profile_a, xyz_b, setup):
@@ -268,6 +289,7 @@ class Solution(object):
         self.kept_start = False         # the operator's placement already won
         self.improved_from = None       # what it was before the tidy-up
         self.iterations = None          # GICP only
+        self.voxel = None               # the ladder rung this was solved at
 
     @property
     def improvement(self):
@@ -334,8 +356,22 @@ class Solution(object):
         return text
 
 
-GICP_VOXEL = 0.05
+# ⛔ PRESSING AUTO-ALIGN AGAIN MUST DO SOMETHING, AND AT ONE VOXEL IT CANNOT.
+# GICP converges, so a second run from its own answer returns that answer -- the
+# button correctly did nothing and looked broken. Each press steps DOWN this
+# ladder instead: a coarse pass gets the room roughly right, and each finer pass
+# asks a harder question of a better starting point. Below about 10 mm the
+# VLP-16's own +/-30 mm range noise is what is being fitted, so the ladder stops.
+GICP_LADDER = (0.10, 0.05, 0.02, 0.01)
+GICP_VOXEL = GICP_LADDER[1]
 GICP_ITERATIONS = 120
+
+# The scoring panorama is refined alongside the ladder. At 1 x 2 degree bins a
+# 5 mm improvement is invisible, so the guard below would reject every genuine
+# refinement as "no better" and the button would stall a second time, one rung
+# further down.
+FINE_LON_BINS = 1440
+FINE_LAT_BINS = 360
 
 
 def have_gicp():
@@ -402,29 +438,51 @@ def solve_gicp(xyz_ref, xyz_mov, start=None, voxel=GICP_VOXEL, progress=None):
     if progress:
         progress("scoring the fit", 1, 1)
 
-    prof = median_profile(ref)
+    lon_b, lat_b = scoring_bins(voxel)
+    prof = median_profile(ref, lon_b, lat_b)
     setup = _setup_from(out.T_target_source)
-    residual = compare(prof, mov, setup)
+    residual = compare(prof, mov, setup, lon_b, lat_b)
     sol = Solution(setup, residual, sampling_floor(ref),
-                   compare(prof, mov, Setup()))
+                   compare(prof, mov, Setup(), lon_b, lat_b))
     sol.iterations = getattr(out, "iterations", None)
+    sol.voxel = voxel
 
     # ⛔ The same guard the grid solver carries, for the same reason: an
     # alignment the operator made by hand must never be quietly replaced by a
     # worse one. "I had it really close and auto align messed it up."
     if start is not None and not start.is_identity():
-        began = compare(prof, mov, start)
+        began = compare(prof, mov, start, lon_b, lat_b)
         if began == began and began <= residual:
             kept = Solution(start, began, sol.floor, sol.baseline)
             kept.kept_start = True
+            kept.voxel = voxel
             return kept
         sol.improved_from = began
     return sol
 
 
-def solve_best(xyz_ref, xyz_mov, start=None, progress=None, max_shift=6.0):
-    """GICP when it is available, and the grid search when it is not."""
-    sol = solve_gicp(xyz_ref, xyz_mov, start=start, progress=progress)
+def next_voxel(previous):
+    """The next rung down, or None once the ladder bottoms out."""
+    if previous is None:
+        return GICP_LADDER[0]
+    for step in GICP_LADDER:
+        if step < previous - 1e-9:
+            return step
+    return None
+
+
+def solve_best(xyz_ref, xyz_mov, start=None, progress=None, max_shift=6.0,
+               voxel=None):
+    """
+    GICP when it is available, and the grid search when it is not.
+
+    `voxel` is the rung of GICP_LADDER to work at. Pressing Auto-align again
+    passes the next one down, which is what makes a second press mean something
+    -- GICP converges, so re-running it at the SAME voxel from its own answer
+    returns that answer and looks like a dead button.
+    """
+    sol = solve_gicp(xyz_ref, xyz_mov, start=start, progress=progress,
+                     voxel=voxel or GICP_VOXEL)
     if sol is not None and sol.residual == sol.residual:
         return sol
     if progress:

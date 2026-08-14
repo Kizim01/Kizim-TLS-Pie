@@ -43,6 +43,12 @@ from . import export, pipeline, registration, viewer
 DEFAULT_ALIGN_VOXEL = 0.02
 
 
+def _same(a, b, tol=1e-6):
+    """Two Setups the operator would call identical."""
+    return (abs(a.dx - b.dx) < tol and abs(a.dy - b.dy) < tol
+            and abs(a.dz - b.dz) < tol and abs(a.yaw_deg - b.yaw_deg) < tol)
+
+
 def _tint(n):
     """Distinguishable at a glance, and still distinguishable when overlaid."""
     return [(255, 176, 64), (96, 190, 255), (150, 255, 150),
@@ -59,6 +65,7 @@ class Scan(object):
         self.rgb = rgb
         self.sample = sample           # decimated, for the solver
         self.setup = setup or registration.Setup()
+        self.rung = None               # how far down the GICP ladder it has got
 
     def buffer(self, max_points=viewer.DEFAULT_VIEW_MAX):
         buf = viewer.ViewerBuffer(max_points=max_points)
@@ -268,12 +275,31 @@ class AlignServer(object):
             return {"ok": False, "error": "scan %d cannot be solved against "
                                           "itself" % index}
         hint = registration.Setup.from_dict(start) if start else None
+        # ⛔ EACH PRESS STEPS DOWN A RUNG. GICP converges, so pressing again at
+        # the same voxel re-derives the same answer and the button looks dead --
+        # which is exactly what was reported. A scan the operator has since
+        # moved by hand starts the ladder over, because their nudge is new
+        # information the previous rung never saw.
+        scan = self.scans[index]
+        if hint is not None and not _same(hint, scan.setup):
+            scan.rung = None
+        scan.rung = registration.next_voxel(getattr(scan, "rung", None))
+        if scan.rung is None:
+            return {"ok": True, "index": index, "setup": scan.setup.as_dict(),
+                    "residual": None, "floor": None, "baseline": None,
+                    "improvement": None, "trustworthy": True,
+                    "ambiguous": False, "exhausted": True,
+                    "text": "Already refined as far as this instrument "
+                            "supports: below 1 cm the VLP-16's own +/-30 mm "
+                            "range noise is what would be fitted. Nudge it by "
+                            "hand to start over."}
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
             sol = registration.solve_best(self.scans[0].sample,
                                           self.scans[index].sample,
-                                          progress=self._note, start=hint)
+                                          progress=self._note, start=hint,
+                                          voxel=scan.rung)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -282,7 +308,9 @@ class AlignServer(object):
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
-                "text": sol.describe()}
+                "voxel": sol.voxel, "exhausted": False,
+                "text": "at a %.0f cm voxel — %s"
+                        % ((sol.voxel or 0) * 100, sol.describe())}
 
     def browse(self):
         """
@@ -855,8 +883,10 @@ async function autoAlign(){
     if(!j.ok) throw new Error(j.error||'solve failed');
     s.setup=j.setup; syncSliders(); invalidate();
     watch(false);
-    say(j.trustworthy ? j.text
-        : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. ')+j.text,
+    if(j.exhausted) say(j.text, 'warn');
+    else say((j.trustworthy ? ''
+        : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. '))+j.text+
+        '  Press again to refine further.',
         j.trustworthy ? null : 'warn');
   }catch(e){ watch(false); say('Auto-align failed: '+e.message, 'bad'); }
   $('auto').disabled=false;
