@@ -745,6 +745,36 @@ check("the warning names the rival so it can be judged",
 check("the ambiguity note is ASCII, for a cp1252 console",
       _sq_sol.describe().encode("cp1252", "strict") is not None)
 
+print("\nediting: crop boxes as operations")
+_pts = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [5.0, 5.0, 5.0],
+                 [1.0, 1.0, 2.5]])
+check("an empty edit keeps everything",
+      pipeline.Edit().mask(_pts).all())
+check("an empty edit knows it is empty", pipeline.Edit().is_empty())
+_keep = pipeline.Edit(keep=[((-0.5, -0.5, -0.5), (2.0, 2.0, 3.0))])
+check("a keep box drops what is outside it",
+      list(_keep.mask(_pts)) == [True, True, False, True])
+_cut = pipeline.Edit(keep=[((-0.5, -0.5, -0.5), (2.0, 2.0, 3.0))],
+                     drop=[((-9, -9, 2.0), (9, 9, 9))])
+check("a cut box then removes the ceiling from what was kept",
+      list(_cut.mask(_pts)) == [True, True, False, False])
+_union = pipeline.Edit(keep=[((-.5, -.5, -.5), (2., 2., 3.)),
+                             ((4., 4., 4.), (6., 6., 6.))])
+check("keep boxes union rather than intersect",
+      _union.mask(_pts).all(),
+      "three points in the first box, the far one in the second: %s"
+      % list(_union.mask(_pts)))
+check("a box given by opposite corners works either way round",
+      list(pipeline.Edit(keep=[((2.0, 2.0, 3.0), (-0.5, -0.5, -0.5))])
+           .mask(_pts)) == [True, True, False, True])
+_rt2 = pipeline.Edit.from_dict(_cut.as_dict())
+check("an Edit survives a round trip through JSON-safe types",
+      list(_rt2.mask(_pts)) == list(_cut.mask(_pts)))
+check("an absent edit reads as empty",
+      pipeline.Edit.from_dict(None).is_empty())
+check("and it says what it will do", "1 keep box" in _cut.describe(),
+      _cut.describe())
+
 print("\nregistration: merge and the workbench")
 try:
     pipeline.merge(["only_one.pcap"], os.path.join(tmp, "x.las"))

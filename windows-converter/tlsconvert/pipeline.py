@@ -137,6 +137,69 @@ class VoxelAccumulator:
         return xyz, refl
 
 
+class Edit(object):
+    """
+    What the operator cut away, as OPERATIONS rather than as edited points.
+
+    ⭐ THIS IS WHY EDITING A 59 MILLION POINT CLOUD IS PRACTICAL. The workbench
+    displays a 2 cm preview so it stays responsive, but an Edit is just a list
+    of boxes and a voxel -- so export re-reads the captures at FULL density and
+    applies the same operations there. What reaches SketchUp is cut from every
+    return, not from the thinned copy that was on screen. Editing the displayed
+    buffer instead would mean either previewing at full density (which no
+    browser will hold while you drag) or exporting the preview (which throws the
+    detail away the moment it matters).
+
+    `keep` boxes are unioned: a point survives if it is inside ANY of them, or
+    if there are none. `drop` boxes are then subtracted. Order matters and keep
+    goes first, so "keep this room, minus the ceiling" is two boxes and not a
+    puzzle.
+    """
+
+    def __init__(self, keep=None, drop=None):
+        self.keep = [tuple(b) for b in (keep or [])]
+        self.drop = [tuple(b) for b in (drop or [])]
+
+    def is_empty(self):
+        return not self.keep and not self.drop
+
+    @staticmethod
+    def _inside(xyz, box):
+        lo, hi = np.asarray(box[0], float), np.asarray(box[1], float)
+        lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)     # any two corners
+        return np.all((xyz >= lo) & (xyz <= hi), axis=1)
+
+    def mask(self, xyz):
+        """True where a point survives the edit."""
+        xyz = np.asarray(xyz)
+        if self.is_empty():
+            return np.ones(len(xyz), dtype=bool)
+        if self.keep:
+            live = np.zeros(len(xyz), dtype=bool)
+            for box in self.keep:
+                live |= self._inside(xyz, box)
+        else:
+            live = np.ones(len(xyz), dtype=bool)
+        for box in self.drop:
+            live &= ~self._inside(xyz, box)
+        return live
+
+    def as_dict(self):
+        return {"keep": [list(map(list, b)) for b in self.keep],
+                "drop": [list(map(list, b)) for b in self.drop]}
+
+    @classmethod
+    def from_dict(cls, data):
+        data = data or {}
+        return cls(keep=data.get("keep"), drop=data.get("drop"))
+
+    def describe(self):
+        if self.is_empty():
+            return "no edit"
+        return "%d keep box(es), %d cut box(es)" % (len(self.keep),
+                                                    len(self.drop))
+
+
 def load_meta(pcap_path):
     path = os.path.splitext(pcap_path)[0] + ".json"
     if not os.path.exists(path):
@@ -252,7 +315,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None,
-            setup=None, writer=None):
+            setup=None, writer=None, edit=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -306,6 +369,15 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # the wrong direction -- a fully coloured cloud that is quietly wrong.
         if setup is not None and not setup.is_identity():
             xyz = setup.apply(xyz)
+        # ⛔ THE EDIT IS APPLIED AFTER THE TRANSFORM, because the operator drew
+        # those boxes around the room as they saw it -- in the merged frame. A
+        # box applied in each scan's own frame would cut a different piece out
+        # of every scan and look like the registration had failed.
+        if edit is not None and not edit.is_empty():
+            live = edit.mask(xyz)
+            xyz, rgb, refl = xyz[live], rgb[live], refl[live]
+            if xyz.shape[0] == 0:
+                return
         writer.write(xyz, rgb, intensity=refl)
         if viewer_sink is not None:
             viewer_sink.add(xyz, rgb)
