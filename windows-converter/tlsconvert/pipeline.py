@@ -456,7 +456,7 @@ def solve_setups(captures, per_laser_azimuth=False, progress=None):
     return results
 
 
-def merge(captures, out_path, setups=None, progress=None, **kwargs):
+def merge(captures, out_path, setups=None, progress=None, edit=None, **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -491,13 +491,14 @@ def merge(captures, out_path, setups=None, progress=None, **kwargs):
             if progress:
                 progress("converting %s" % os.path.basename(path))
             parts.append(convert(path, out_path, setup=setup, writer=writer,
-                                 progress=None, **kwargs))
+                                 progress=None, edit=edit, **kwargs))
     finally:
         writer.close()
 
     return {
         "out": out_path,
         "points": writer.count,
+        "edit": None if edit is None else edit.describe(),
         "captures": captures,
         "setups": [s.as_dict() for s in setups],
         "solutions": [None if s is None else s.describe() for s in solutions],

@@ -145,6 +145,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         srv = self.server_ref
         if path in ("/", "/index.html"):
             self._send(srv.page, "text/html; charset=utf-8")
+        elif path == "/progress":
+            self._json(srv.progress())
         elif path.startswith("/points/"):
             try:
                 i = int(path.rsplit("/", 1)[1].split(".")[0])
@@ -167,7 +169,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.solve(int(body.get("index", 1))))
             if path == "/save":
                 return self._json(srv.save(body.get("setups") or [],
-                                           body.get("voxel")))
+                                           body.get("voxel"),
+                                           body.get("edit")))
         except Exception as exc:                       # noqa: BLE001
             return self._json({"ok": False, "error": str(exc)}, 500)
         self.send_error(404)
@@ -186,6 +189,7 @@ class AlignServer(object):
         self.scans = list(scans)
         self.out_path = out_path
         self.merge_voxel = merge_voxel
+        self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
         meta = []
         per = max(1, max_points // max(len(self.scans), 1))
@@ -208,29 +212,61 @@ class AlignServer(object):
         self.thread.start()
 
     # --- endpoints --------------------------------------------------------
+    def progress(self):
+        """
+        What the solver is doing, for a page that would otherwise just hang.
+
+        A solve is thousands of evaluations and takes long enough that a button
+        which simply stops responding looks broken. The count is real -- the
+        total is computed from the search grid before the first evaluation, not
+        guessed at -- so the bar cannot sit at 90% inventing the rest.
+        """
+        return dict(self._progress)
+
+    def _note(self, stage, n=0, total=0):
+        self._progress = {"stage": stage, "n": n, "total": total,
+                          "busy": self._progress.get("busy", False)}
+
     def solve(self, index):
         if not 0 < index < len(self.scans):
             return {"ok": False, "error": "scan %d cannot be solved against "
                                           "itself" % index}
-        sol = registration.solve(self.scans[0].sample,
-                                 self.scans[index].sample)
+        self._progress = {"stage": "starting", "n": 0, "total": 1,
+                          "busy": True}
+        try:
+            sol = registration.solve(self.scans[0].sample,
+                                     self.scans[index].sample,
+                                     progress=self._note)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
         self.scans[index].setup = sol.setup
         return {"ok": True, "index": index, "setup": sol.setup.as_dict(),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
-                "trustworthy": sol.ok, "text": sol.describe()}
+                "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
+                "text": sol.describe()}
 
-    def save(self, setups, voxel=None):
+    def save(self, setups, voxel=None, edit=None):
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
         for i, data in enumerate(setups):
             if i < len(self.scans):
                 self.scans[i].setup = registration.Setup.from_dict(data)
-        info = pipeline.merge([s.path for s in self.scans], self.out_path,
-                              setups=[s.setup for s in self.scans],
-                              voxel_m=(self.merge_voxel if voxel is None
-                                       else float(voxel)))
-        return {"ok": True, "out": info["out"], "points": info["points"]}
+        plan = pipeline.Edit.from_dict(edit)
+        self._progress = {"stage": "writing the merged cloud", "n": 0,
+                          "total": 1, "busy": True}
+        try:
+            info = pipeline.merge([s.path for s in self.scans], self.out_path,
+                                  setups=[s.setup for s in self.scans],
+                                  edit=None if plan.is_empty() else plan,
+                                  voxel_m=(self.merge_voxel if voxel is None
+                                           else float(voxel)))
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        return {"ok": True, "out": info["out"], "points": info["points"],
+                "edit": info["edit"]}
 
     @property
     def url(self):
@@ -278,6 +314,14 @@ PAGE = r"""<!doctype html>
   hr{border:0;border-top:1px solid #2c2c33;margin:12px 0 4px}
   #msg{margin-top:8px;font-size:11.5px;color:#9c9;min-height:2.6em}
   #msg.bad{color:#f99}
+  #msg.warn{color:#fc9}
+  #bar{height:4px;background:#2c2c33;border-radius:2px;margin-top:8px;
+       overflow:hidden;display:none}
+  #bar.on{display:block}
+  #barfill{display:block;height:100%;width:0;background:#3d8f63;
+           transition:width .2s linear}
+  #editlist{margin-top:6px;font-size:11px;color:#8a8}
+  #editlist div{margin-top:2px}
   #keys{position:fixed;bottom:8px;left:12px;color:#777;font-size:11px}
   #err{position:fixed;inset:0;display:none;place-items:center;padding:40px;
        text-align:center;color:#f88;font-size:15px;background:#111}
@@ -306,6 +350,7 @@ PAGE = r"""<!doctype html>
   <button class="go" id="auto">Auto-align</button>
   <div class="row"><button id="zero">Reset</button>
     <button id="save">Save merged</button></div>
+  <div id="bar"><i id="barfill"></i></div>
   <div id="msg"></div>
   <hr>
   <label>Clip box</label>
@@ -320,6 +365,10 @@ PAGE = r"""<!doctype html>
   <label>Z <span class="num" id="czv"></span></label>
   <input type="range" id="cz0" min="0" max="1" step="0.002" value="0">
   <input type="range" id="cz1" min="0" max="1" step="0.002" value="1">
+  <div class="row"><button id="keepbox">Keep this box</button>
+    <button id="cutbox">Cut this box</button></div>
+  <div class="row"><button id="clearedit">Clear edits</button></div>
+  <div id="editlist"></div>
   <hr>
   <label>Colour</label>
   <div class="row"><button id="mode" class="on">By scan</button>
@@ -336,6 +385,7 @@ const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__;
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
+           keep:[], drop:[],
            box:{lo:[0,0,0],hi:[1,1,1]}, ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, need = true;
 
@@ -597,14 +647,32 @@ function clipLabels(){
   $('cyv').textContent=V.box.lo[1].toFixed(2)+' – '+V.box.hi[1].toFixed(2);
   $('czv').textContent=V.box.lo[2].toFixed(2)+' – '+V.box.hi[2].toFixed(2);
 }
-function say(text, bad){
-  const m=$('msg'); m.textContent=text; m.classList.toggle('bad',!!bad);
+function say(text, kind){
+  const m=$('msg'); m.textContent=text;
+  m.classList.toggle('bad', kind==='bad');
+  m.classList.toggle('warn', kind==='warn');
+}
+
+/* The count is real: the server knows how many evaluations the search grid
+   holds before it starts, so the bar never has to invent the last stretch. */
+let poller=null;
+function watch(on){
+  $('bar').classList.toggle('on', on);
+  if(poller){ clearInterval(poller); poller=null; }
+  if(!on){ $('barfill').style.width='0'; return; }
+  poller=setInterval(async()=>{
+    try{
+      const p=await (await fetch('progress')).json();
+      const frac=p.total ? Math.min(1, p.n/p.total) : 0;
+      $('barfill').style.width=(frac*100).toFixed(1)+'%';
+      if(p.stage) say(p.stage+' — '+Math.round(frac*100)+'%');
+    }catch(e){ /* a poll that misses is not worth reporting */ }
+  }, 250);
 }
 
 async function autoAlign(){
   const s=active(); if(!s) return;
-  say('solving… this reads both scans and searches the whole yaw circle.');
-  $('auto').disabled=true;
+  say('solving…'); watch(true); $('auto').disabled=true;
   try{
     const r=await fetch('solve',{method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -612,23 +680,50 @@ async function autoAlign(){
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
     s.setup=j.setup; syncSliders(); invalidate();
-    say((j.trustworthy?'':'⚠ WEAK — check it by eye. ')+j.text, !j.trustworthy);
-  }catch(e){ say('Auto-align failed: '+e.message, true); }
+    watch(false);
+    say(j.trustworthy ? j.text
+        : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. ')+j.text,
+        j.trustworthy ? null : 'warn');
+  }catch(e){ watch(false); say('Auto-align failed: '+e.message, 'bad'); }
   $('auto').disabled=false;
 }
 
+/* Boxes are sent as OPERATIONS, not as edited points: the export re-reads the
+   captures at full density and cuts there, so what reaches SketchUp is cut
+   from every return rather than from this 2 cm preview. */
+function editPlan(){ return {keep:V.keep, drop:V.drop}; }
+function showEdits(){
+  const n=V.keep.length, m=V.drop.length;
+  $('editlist').innerHTML = (n||m)
+    ? ('<div>'+n+' keep box'+(n===1?'':'es')+', '+m+' cut box'+
+       (m===1?'':'es')+' — applied at full density on save</div>')
+    : '';
+}
+function addBox(which){
+  const b=[V.box.lo.slice(), V.box.hi.slice()];
+  (which==='keep'?V.keep:V.drop).push(b);
+  showEdits();
+  say((which==='keep'?'Keeping':'Cutting')+' a box '+
+      (V.box.hi[0]-V.box.lo[0]).toFixed(1)+' x '+
+      (V.box.hi[1]-V.box.lo[1]).toFixed(1)+' x '+
+      (V.box.hi[2]-V.box.lo[2]).toFixed(1)+' m. Move the sliders and add '+
+      'another, or press Save merged.');
+}
+
 async function saveMerged(){
-  if(!OUT) return say('No output file was given on the command line.', true);
-  say('writing '+OUT+' …');
-  $('save').disabled=true;
+  if(!OUT) return say('No output file was given.', 'bad');
+  say('writing '+OUT+' …'); watch(true); $('save').disabled=true;
   try{
     const r=await fetch('save',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({setups:V.scans.map(s=>s.setup)})});
+      body:JSON.stringify({setups:V.scans.map(s=>s.setup),
+                           edit:editPlan()})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
-    say('saved '+j.points.toLocaleString()+' points to '+j.out);
-  }catch(e){ say('Save failed: '+e.message, true); }
+    watch(false);
+    say('saved '+j.points.toLocaleString()+' points to '+j.out+
+        (j.edit?' ('+j.edit+')':''));
+  }catch(e){ watch(false); say('Save failed: '+e.message, 'bad'); }
   $('save').disabled=false;
 }
 
@@ -710,6 +805,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
     invalidate(); };
   $('ps').oninput=e=>{ V.psize=parseFloat(e.target.value);
     $('psv').textContent=V.psize.toFixed(2); invalidate(); };
+  $('keepbox').onclick=()=>addBox('keep');
+  $('cutbox').onclick=()=>addBox('drop');
+  $('clearedit').onclick=()=>{ V.keep=[]; V.drop=[]; showEdits();
+    say('edits cleared; the whole cloud will be saved.'); };
   $('clipon').onclick=e=>{ V.clip=!V.clip;
     e.target.textContent=V.clip?'On':'Off';
     e.target.classList.toggle('on',V.clip); invalidate(); };

@@ -792,6 +792,20 @@ try:
           not _srv.solve(0)["ok"])
     check("saving with no output path is refused",
           not _srv.save([])["ok"])
+    _pr = _srv.progress()
+    check("progress reports a shape the page can poll",
+          set(_pr) == {"stage", "n", "total", "busy"}, _pr)
+    check("and starts idle rather than pretending to work",
+          not _pr["busy"] and _pr["total"] == 0)
+    check("the solver's total is computed, not guessed",
+          registration.estimate_work(6.0) > 1000,
+          registration.estimate_work(6.0))
+    check("a wider search is more work, so the bar scales with the job",
+          registration.estimate_work(9.0) >= registration.estimate_work(6.0))
+    check("the crop controls are on the page",
+          all(t in _page for t in ("keepbox", "cutbox", "clearedit")))
+    check("and so is the progress bar",
+          "barfill" in _page and "'progress'" in _page)
 finally:
     _srv.stop()
 
