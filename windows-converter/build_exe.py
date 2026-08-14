@@ -31,6 +31,9 @@ NAME = "TLS-Pie-Converter"
 # from a script, and because a --windowed exe has NO console, so a bundling
 # failure in the GUI build is completely silent. This one can be smoke-tested.
 CLI_NAME = "tlsconvert"
+# The one the operator double-clicks: its own window, its own file picker, no
+# command line and no browser tab.
+STUDIO_NAME = "TLS-Pie-Studio"
 
 # Imported through a run-time sys.path entry, so they must be carried along.
 SCANNER_MODULES = ("tls_geometry.py", "tls_pcap.py", "tls_cloud.py",
@@ -54,6 +57,7 @@ def main():
 
     built = []
     for name, entry, windowed in ((NAME, "tlsconvert_gui.py", True),
+                                  (STUDIO_NAME, "tlspie_studio.py", True),
                                   (CLI_NAME, "tlsconvert_cli.py", False)):
         cmd = [sys.executable, "-m", "PyInstaller",
                "--noconfirm", "--clean", "--onefile",
@@ -70,6 +74,15 @@ def main():
                "--exclude-module", "pytest"]
         if windowed:
             cmd += ["--collect-all", "tkinterdnd2"]   # ships a Tcl extension
+        if name == STUDIO_NAME:
+            # ⛔ LOAD-BEARING, like the --add-data lines. pywebview picks its
+            # backend at run time by importing it, so static analysis sees no
+            # reference to the Edge/WebView2 bridge and leaves it out -- giving
+            # an exe that starts, finds no native window, and silently drops
+            # back to the browser, which is the one thing this build exists to
+            # avoid. clr/pythonnet is the CLR bridge those backends need.
+            cmd += ["--collect-all", "webview",
+                    "--hidden-import", "clr"]
         else:
             cmd += ["--exclude-module", "tkinter",
                     "--exclude-module", "tkinterdnd2"]
