@@ -251,7 +251,8 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
 def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
-            colouriser=None, progress=None, viewer_sink=None):
+            colouriser=None, progress=None, viewer_sink=None,
+            setup=None, writer=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -259,6 +260,10 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     added without this function knowing anything about panoramas. It is applied
     AFTER voxel averaging, so colour is sampled at the position finally written
     rather than at a raw return that was averaged away.
+
+    `setup` is a registration.Setup placing this capture in another scan's
+    frame; `writer` lets several captures share one output file. Together they
+    are how `merge` works, and both default to the single-scan behaviour.
     """
     meta, meta_path = load_meta(pcap_path)
     if meta is None:
@@ -279,7 +284,10 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             camera=camera, per_laser_azimuth=per_laser_azimuth)
 
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
-    writer = export.writer_for(out_path, comment=comment)
+    own_writer = writer is None
+    if own_writer:
+        writer = export.writer_for(out_path, comment=comment)
+    before = writer.count
 
     started = time.time()
     decoded = 0
@@ -292,6 +300,12 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             return
         rgb = (colouriser(xyz) if colouriser is not None
                else export.intensity_to_grey(refl))
+        # ⛔ COLOUR FIRST, THEN MOVE. The colouriser samples a panorama shot
+        # from THIS scan's own origin, so it has to see the points where the
+        # sensor saw them. Transform first and every colour is looked up from
+        # the wrong direction -- a fully coloured cloud that is quietly wrong.
+        if setup is not None and not setup.is_identity():
+            xyz = setup.apply(xyz)
         writer.write(xyz, rgb, intensity=refl)
         if viewer_sink is not None:
             viewer_sink.add(xyz, rgb)
@@ -313,12 +327,13 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         if voxels is not None:
             emit(*voxels.result())
     finally:
-        writer.close()
+        if own_writer:
+            writer.close()
 
     over = bool(budget and writer.count > budget * 1.15)
     return {
         "out": out_path,
-        "points": writer.count,
+        "points": writer.count - before,
         "decoded": decoded,
         "packet_stride": stride,
         "voxel_m": voxel_m,
@@ -330,6 +345,89 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         "coloured": colouriser is not None,
         "colour": colour_info,
         "over_budget": over,
+        "setup": None if setup is None else setup.describe(),
         "bounds_m": (None if writer.count == 0
                      else [lo.tolist(), hi.tolist()]),
+    }
+
+
+def solve_setups(captures, per_laser_azimuth=False, progress=None):
+    """
+    Where each tripod stood, relative to the FIRST capture's.
+
+    The first capture defines the frame and is never moved, so its own setup is
+    the identity by definition rather than by solving. Every other capture is
+    solved against it directly -- not chained through its predecessor, which
+    would accumulate each solve's error into the next.
+    """
+    from . import registration
+
+    clouds = []
+    for path in captures:
+        meta, meta_path = load_meta(path)
+        if meta is None:
+            raise ValueError(
+                "No sidecar (%s). Registration needs the pan track."
+                % os.path.basename(meta_path))
+        frame = rig.frame_for(meta, per_laser_azimuth=per_laser_azimuth)
+        if progress:
+            progress("reading %s" % os.path.basename(path))
+        clouds.append(sample_for_solve(path, meta, frame,
+                                       per_laser_azimuth=per_laser_azimuth))
+
+    results = [(registration.Setup(), None)]
+    for path, cloud in zip(captures[1:], clouds[1:]):
+        if progress:
+            progress("solving %s" % os.path.basename(path))
+        sol = registration.solve(clouds[0], cloud, progress=progress)
+        results.append((sol.setup, sol))
+    return results
+
+
+def merge(captures, out_path, setups=None, progress=None, **kwargs):
+    """
+    Several captures into ONE cloud, each transformed into the first's frame.
+
+    ⛔ Without the transform this is not a merge, it is a double exposure: every
+    scan puts its own tripod at the origin, so concatenating them stacks two
+    different viewpoints on the same spot and every surface appears twice,
+    slightly rotated. That looks like a ruined scan rather than like the
+    bookkeeping error it is, which is exactly why it is worth refusing to do.
+    """
+    from . import registration
+
+    captures = list(captures)
+    if len(captures) < 2:
+        raise ValueError("merge needs at least two captures")
+
+    if setups is None:
+        solved = solve_setups(
+            captures, per_laser_azimuth=kwargs.get("per_laser_azimuth", False),
+            progress=progress)
+        setups = [s for s, _ in solved]
+        solutions = [sol for _, sol in solved]
+    else:
+        setups = [registration.Setup.from_dict(s)
+                  if isinstance(s, dict) else s for s in setups]
+        solutions = [None] * len(setups)
+
+    comment = "merged: %s" % ", ".join(os.path.basename(c) for c in captures)
+    writer = export.writer_for(out_path, comment=comment)
+    parts = []
+    try:
+        for path, setup in zip(captures, setups):
+            if progress:
+                progress("converting %s" % os.path.basename(path))
+            parts.append(convert(path, out_path, setup=setup, writer=writer,
+                                 progress=None, **kwargs))
+    finally:
+        writer.close()
+
+    return {
+        "out": out_path,
+        "points": writer.count,
+        "captures": captures,
+        "setups": [s.as_dict() for s in setups],
+        "solutions": [None if s is None else s.describe() for s in solutions],
+        "parts": parts,
     }

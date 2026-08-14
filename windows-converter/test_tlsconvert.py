@@ -589,5 +589,181 @@ _, cinfo2 = pipeline.prepare_colour(cph, {}, None,
 check("an unreadable photo degrades to grey with a reason",
       "could not read" in cinfo2["reason"], cinfo2["reason"])
 
+# --- registration: two setups into one frame -------------------------------
+from tlsconvert import align, registration              # noqa: E402
+
+print("\nregistration: Setup arithmetic")
+check("an identity Setup is recognised", registration.Setup().is_identity())
+check("and leaves points untouched",
+      np.array_equal(registration.Setup().apply(np.ones((5, 3))),
+                     np.ones((5, 3))))
+
+_s = registration.Setup(dx=2.0, dy=-1.0, yaw_deg=90.0)
+_m = _s.apply(np.array([[1.0, 0.0, 3.0]]))
+check("yaw turns before the shift is added",
+      close(_m[0][0], 2.0, 1e-6) and close(_m[0][1], 0.0, 1e-6), _m)
+check("z is untouched by a yaw", close(_m[0][2], 3.0, 1e-9))
+_rt = registration.Setup.from_dict(_s.as_dict())
+check("a Setup survives the sidecar round trip",
+      close(_rt.dx, _s.dx) and close(_rt.yaw_deg, _s.yaw_deg))
+check("the sidecar shape is the one the scanner reserves",
+      set(_s.as_dict()) >= {"x_m", "y_m", "z_m", "yaw_deg", "method"})
+check("an absent alignment reads as identity",
+      registration.Setup.from_dict(None).is_identity())
+
+print("\nregistration: solving a known move")
+_rs = np.random.RandomState(23)
+
+
+def _room(n=36000):
+    """An L-shaped room with a table: no symmetry, so one yaw fits and no other."""
+    pts = []
+    for (x0, x1, y0, y1) in ((0.0, 5.0, 0.0, 3.0), (0.0, 2.0, 3.0, 5.5)):
+        for side in (0, 1):
+            u = _rs.uniform(x0, x1, n // 12)
+            pts.append(np.stack([u, np.full_like(u, y0 if side else y1),
+                                 _rs.uniform(0, 2.4, u.size)], 1))
+            v = _rs.uniform(y0, y1, n // 12)
+            pts.append(np.stack([np.full_like(v, x0 if side else x1), v,
+                                 _rs.uniform(0, 2.4, v.size)], 1))
+    # ⛔ FLOOR POINTS INSIDE THE L, NOT ACROSS ITS BOUNDING BOX. Filling the
+    # whole rectangle made the fixture centrally symmetric, and the solver duly
+    # returned a setup 180 deg and 3.8 m out with a residual near the sampling
+    # floor -- a genuinely ambiguous room, correctly solved twice. That is now
+    # its own test below; this one is meant to have exactly one answer.
+    f = _rs.uniform(0, 1, (n, 2)) * [5.0, 5.5]
+    f = f[(f[:, 1] <= 3.0) | (f[:, 0] <= 2.0)][:n // 3]
+    pts.append(np.stack([f[:, 0], f[:, 1], np.zeros(len(f))], 1))
+    t = _rs.uniform(0, 1, (n // 8, 2)) * [1.2, 0.8] + [2.6, 1.1]
+    pts.append(np.stack([t[:, 0], t[:, 1], np.full(len(t), 0.75)], 1))
+    return np.concatenate(pts).astype(np.float64)
+
+
+_world = _room()
+_A, _B, _YAW = np.array([1.2, 1.0, 1.35]), np.array([3.4, 2.1, 1.35]), 25.0
+_cloud_a = _world - _A
+_ang = math.radians(-_YAW)
+_rot = np.array([[math.cos(_ang), -math.sin(_ang), 0.0],
+                 [math.sin(_ang), math.cos(_ang), 0.0], [0.0, 0.0, 1.0]])
+_cloud_b = (_world - _B) @ _rot.T
+_truth = registration.Setup(dx=(_B - _A)[0], dy=(_B - _A)[1], yaw_deg=_YAW)
+check("the fixture is genuinely one room seen from two places",
+      np.allclose(_truth.apply(_cloud_b), _cloud_a, atol=1e-9))
+
+_floor = registration.sampling_floor(_cloud_a)
+check("the sampling floor is small for a scan against itself",
+      _floor < 0.05, "floor %.4f m" % _floor)
+
+_sol = registration.solve(_cloud_a, _cloud_b, max_shift=4.0)
+_err = math.hypot(_sol.setup.dx - _truth.dx, _sol.setup.dy - _truth.dy)
+check("solve recovers the tripod's move", _err < 0.25,
+      "%.3f m out (%s)" % (_err, _sol.setup.describe()))
+check("solve recovers the tripod's turn",
+      abs(_sol.setup.yaw_deg - _YAW) < 2.5,
+      "%.2f deg out" % abs(_sol.setup.yaw_deg - _YAW))
+check("and reports beating the untransformed case", _sol.ok, _sol.describe())
+
+# ⛔ THE REGRESSION TEST FOR A REAL MISREADING, 2026-08-14. Sweeping yaw ALONE
+# across a genuinely translated pair gives a FLAT curve -- rotating a cloud
+# about its own origin cannot undo a sideways move -- and that flatness was read
+# as "the two scans are from the same position". It is not evidence of
+# alignment; it is evidence that the wrong parameter was being varied. This pins
+# the shape of the curve so the claim can never be made from it again.
+print("\nregistration: a rotation-only search cannot see a translation")
+_prof = registration.median_profile(_cloud_a)
+_spread = [registration.compare(_prof, _cloud_b, registration.Setup(yaw_deg=y))
+           for y in range(-40, 41, 10)]
+check("yaw alone never gets near the true fit",
+      min(_spread) > _sol.residual * 3.0,
+      "yaw-only best %.3f m vs full solve %.3f m" % (min(_spread),
+                                                     _sol.residual))
+
+# ⚠ FLATNESS IS NOT UNIVERSAL, and asserting it here first FAILED CORRECTLY:
+# across the 2.46 m move above the yaw-only curve spans 0.44..0.90 m, because a
+# move that large re-shapes the whole profile. The flat curve belongs to a SHORT
+# baseline -- which is the dangerous case, since a short move is also the one
+# most easily mistaken for no move at all. So it gets its own fixture, sized to
+# the real living-room pair that caused the misreading: 0.6 m and 36 degrees.
+_near = np.array([1.75, 1.28, 1.35])
+_nang = math.radians(-36.0)
+_nrot = np.array([[math.cos(_nang), -math.sin(_nang), 0.0],
+                  [math.sin(_nang), math.cos(_nang), 0.0], [0.0, 0.0, 1.0]])
+_cloud_c = (_world - _near) @ _nrot.T
+_short = [registration.compare(_prof, _cloud_c, registration.Setup(yaw_deg=y))
+          for y in range(-40, 41, 5)]
+check("over a SHORT baseline the yaw-only curve really is flat",
+      (max(_short) - min(_short)) < max(_short) * 0.5,
+      "spans %.3f..%.3f m" % (min(_short), max(_short)))
+_solc = registration.solve(_cloud_a, _cloud_c, max_shift=3.0)
+check("and the full solve finds the move the flat curve hid",
+      math.hypot(_solc.setup.dx - (_near - _A)[0],
+                 _solc.setup.dy - (_near - _A)[1]) < 0.25,
+      _solc.describe())
+check("including its turn", abs(_solc.setup.yaw_deg - 36.0) < 2.5,
+      "%.2f deg" % _solc.setup.yaw_deg)
+
+check("a residual that beats nothing is not trustworthy",
+      not registration.Solution(_truth, 0.05, 0.004, 0.05).ok)
+check("and improvement is measured against the untransformed case",
+      close(registration.Solution(_truth, 0.05, 0.004, 0.10).improvement, 2.0))
+check("a winner that barely beats its rival is called ambiguous",
+      registration.Solution(_truth, 0.05, 0.004, 0.50,
+                            rival=_truth, rival_residual=0.055).ambiguous)
+check("and ambiguity alone makes a solve untrustworthy",
+      not registration.Solution(_truth, 0.05, 0.004, 0.50,
+                                rival=_truth, rival_residual=0.055).ok)
+check("a clear winner is not called ambiguous",
+      not registration.Solution(_truth, 0.05, 0.004, 0.50,
+                                rival=_truth, rival_residual=0.30).ambiguous)
+check("with no rival found there is nothing to be ambiguous about",
+      not registration.Solution(_truth, 0.05, 0.004, 0.50).ambiguous)
+
+# ⛔ THE SYMMETRIC ROOM, kept as a fixture because it is a REAL limit and not a
+# bug: a plain rectangle is unchanged by a 180 degree turn about its centre, so
+# two setups fit it equally well and no residual can separate them. The solver
+# must say so rather than pick one and sound certain.
+print("\nregistration: a symmetric room has two answers, and must say so")
+_sq = np.concatenate([
+    np.stack([_rs.uniform(0, 4, 6000), np.zeros(6000),
+              _rs.uniform(0, 2.4, 6000)], 1),
+    np.stack([_rs.uniform(0, 4, 6000), np.full(6000, 4.0),
+              _rs.uniform(0, 2.4, 6000)], 1),
+    np.stack([np.zeros(6000), _rs.uniform(0, 4, 6000),
+              _rs.uniform(0, 2.4, 6000)], 1),
+    np.stack([np.full(6000, 4.0), _rs.uniform(0, 4, 6000),
+              _rs.uniform(0, 2.4, 6000)], 1)])
+_sq_a = _sq - np.array([1.3, 1.3, 1.2])
+_sq_b = _sq - np.array([2.7, 2.7, 1.2])           # the mirrored position
+_sq_sol = registration.solve(_sq_a, _sq_b, max_shift=3.0)
+check("the symmetric room is reported as ambiguous", _sq_sol.ambiguous,
+      _sq_sol.describe())
+check("and so is not treated as trustworthy", not _sq_sol.ok)
+check("a rival answer was actually found and refined",
+      _sq_sol.rival is not None and _sq_sol.rival_residual is not None)
+check("the warning names the rival so it can be judged",
+      "AMBIGUOUS" in _sq_sol.describe())
+check("the ambiguity note is ASCII, for a cp1252 console",
+      _sq_sol.describe().encode("cp1252", "strict") is not None)
+
+print("\nregistration: merge and the workbench")
+try:
+    pipeline.merge(["only_one.pcap"], os.path.join(tmp, "x.las"))
+    check("merge refuses a single capture", False, "no error raised")
+except ValueError as exc:
+    check("merge refuses a single capture", "at least two" in str(exc))
+
+_srv = align.AlignServer([], out_path=None)
+try:
+    _page = _srv.page.decode("utf-8")
+    check("the workbench page is fully substituted",
+          not any(t in _page for t in ("__META__", "__CHUNK__", "__OUT__")))
+    check("it binds loopback only", _srv.url.startswith("http://127.0.0.1:"))
+    check("solving scan 0 against itself is refused",
+          not _srv.solve(0)["ok"])
+    check("saving with no output path is refused",
+          not _srv.save([])["ok"])
+finally:
+    _srv.stop()
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

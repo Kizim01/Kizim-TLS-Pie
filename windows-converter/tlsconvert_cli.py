@@ -92,10 +92,57 @@ def build_parser():
     p.add_argument("--per-laser-azimuth", action="store_true",
                    help="decode each laser's own azimuth. ~4%% thinner "
                         "surfaces; shifts pitch by the calibrated delta.")
+    p.add_argument("--align", action="store_true",
+                   help="open two or more captures together in the alignment "
+                        "workbench: drag them into place or press Auto-align, "
+                        "clip into the room to check, then save one merged "
+                        "cloud. Needs -o for the merged output.")
+    p.add_argument("--align-voxel", type=float, default=None,
+                   help="voxel for the alignment DISPLAY only, metres "
+                        "(default 0.02). The merged file uses --voxel.")
     p.add_argument("--min-range", type=float, default=0.4)
     p.add_argument("--max-range", type=float, default=120.0)
     p.add_argument("--quiet", action="store_true")
     return p
+
+
+def run_align(args, paths):
+    """Serve the alignment workbench and block until the operator stops it."""
+    from tlsconvert import align
+
+    if len(paths) < 2:
+        print("--align needs at least two captures; %d given." % len(paths),
+              file=sys.stderr)
+        return 2
+    out = args.out
+    if not out:
+        stem = os.path.splitext(paths[0])[0]
+        out = "%s_merged.%s" % (stem, args.format)
+        print("No -o given; the merged cloud will go to %s" % out)
+
+    voxel = (align.DEFAULT_ALIGN_VOXEL if args.align_voxel is None
+             else args.align_voxel)
+    scans = align.load(paths, voxel_m=voxel, colour=args.colour,
+                       per_laser_azimuth=args.per_laser_azimuth,
+                       progress=None if args.quiet
+                       else lambda m: print("  %s" % m))
+    server = align.AlignServer(scans, out_path=out, merge_voxel=args.voxel)
+    url = server.open()
+    print("\nAlignment workbench: %s" % url)
+    print("Displaying at a %.0f cm voxel; the merged file is written from the "
+          "captures at --voxel %g." % (voxel * 100, args.voxel))
+    print("Press Ctrl+C here when you are done.")
+    # ⛔ A redirected stdout is block-buffered, and the process then blocks
+    # forever serving with the URL still sitting unflushed in the buffer.
+    sys.stdout.flush()
+    try:
+        while True:
+            server.thread.join(1.0)
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    finally:
+        server.stop()
+    return 0
 
 
 def main(argv=None):
@@ -109,6 +156,8 @@ def main(argv=None):
     if missing:
         print("No such capture: %s" % ", ".join(missing), file=sys.stderr)
         return 2
+    if args.align:
+        return run_align(args, paths)
     if args.out and len(paths) > 1:
         print("--out takes a single input; %d were given." % len(paths),
               file=sys.stderr)
