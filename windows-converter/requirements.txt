@@ -4,3 +4,8 @@ numpy>=2.0
 laspy>=2.7          # LAS/LAZ writing
 lazrs>=0.6          # the LAZ compression backend laspy defers to
 pillow>=10.0        # reads the equirectangular photo for colourisation
+small_gicp           # GICP alignment: 0.24 s on the real pair where the grid
+                     # search took ~100 s, and a BETTER fit (0.0345 m vs
+                     # 0.0401 m). ~110 MB installed, which is most of why
+                     # TLS-Pie-Studio.exe is the large one. Optional at run
+                     # time -- registration.solve_best falls back to the grid.

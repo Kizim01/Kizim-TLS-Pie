@@ -102,6 +102,10 @@ def main(argv=None):
         if windowed:
             cmd += ["--collect-all", "tkinterdnd2"]   # ships a Tcl extension
         if name == STUDIO_NAME:
+            # small_gicp is a compiled extension; PyInstaller needs telling.
+            # It is optional at run time -- solve_best falls back to the grid
+            # search -- but a Studio without it is the slow one by 400x.
+            cmd += ["--collect-all", "small_gicp"]
             # ⛔ LOAD-BEARING, like the --add-data lines. pywebview picks its
             # backend at run time by importing it, so static analysis sees no
             # reference to the Edge/WebView2 bridge and leaves it out -- giving

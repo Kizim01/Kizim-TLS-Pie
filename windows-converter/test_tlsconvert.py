@@ -735,6 +735,46 @@ check("and it says so plainly rather than claiming a solve",
       or _exact.residual <= registration.compare(
           registration.median_profile(_cloud_a), _cloud_b, _truth) + 1e-9,
       _exact.describe())
+print("\nregistration: GICP")
+if not registration.have_gicp():
+    check("small_gicp is installed", False, "pip install small_gicp")
+else:
+    # ⚠ 0.35 m, NOT 0.25, AND THE LOOSER BAR IS THE FINDING. From a cold start
+    # on this fixture GICP lands about 0.26 m out with the yaw exact -- the
+    # fixture is uniform random points on surfaces, which gives its covariance
+    # estimation no real local structure to bite on. On the REAL capture, from
+    # a rough placement, it beat the grid solver outright (0.0345 m against
+    # 0.0401 m). So: trust it with a hint, and expect a cold start to be
+    # approximate.
+    _g = registration.solve_gicp(_cloud_a, _cloud_b)
+    check("GICP finds the move from nothing at all",
+          _g is not None and math.hypot(_g.setup.dx - _truth.dx,
+                                        _g.setup.dy - _truth.dy) < 0.35,
+          None if _g is None else _g.describe())
+    _gh = registration.solve_gicp(
+        _cloud_a, _cloud_b,
+        start=registration.Setup(dx=_truth.dx + 0.3, dy=_truth.dy - 0.3,
+                                 yaw_deg=_YAW + 8.0))
+    check("and a hint gets it closer than a cold start does",
+          math.hypot(_gh.setup.dx - _truth.dx, _gh.setup.dy - _truth.dy)
+          <= math.hypot(_g.setup.dx - _truth.dx, _g.setup.dy - _truth.dy),
+          "%s vs %s" % (_gh.setup.describe(), _g.setup.describe()))
+    check("and the turn", abs(_g.setup.yaw_deg - _YAW) < 2.5,
+          "%.2f deg" % _g.setup.yaw_deg)
+    check("it reports a residual scored by OUR metric, not its own",
+          _g.residual == registration.compare(
+              registration.median_profile(_cloud_a), _cloud_b, _g.setup))
+    check("it solves height too, which the planar grid cannot express",
+          hasattr(_g.setup, "dz"))
+    # The same guard: a good hand placement must survive the button.
+    _gk = registration.solve_gicp(_cloud_a, _cloud_b, start=_truth)
+    check("GICP also declines to make a good placement worse",
+          _gk.residual <= registration.compare(
+              registration.median_profile(_cloud_a), _cloud_b, _truth) + 1e-9,
+          _gk.describe())
+    check("solve_best prefers GICP when it is present",
+          registration.solve_best(_cloud_a, _cloud_b).iterations is not None)
+
 check("a genuine improvement reports what it improved on",
       _hint.improved_from is None or _hint.improved_from >= _hint.residual,
       "%s vs %s" % (_hint.improved_from, _hint.residual))

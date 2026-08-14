@@ -271,9 +271,9 @@ class AlignServer(object):
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
-            sol = registration.solve(self.scans[0].sample,
-                                     self.scans[index].sample,
-                                     progress=self._note, start=hint)
+            sol = registration.solve_best(self.scans[0].sample,
+                                          self.scans[index].sample,
+                                          progress=self._note, start=hint)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
