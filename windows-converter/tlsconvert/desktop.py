@@ -24,6 +24,29 @@ import sys
 import webbrowser
 
 
+def silence_missing_console():
+    """
+    ⛔ A --windowed PyInstaller APP HAS NO stdout, AND IT IS None, NOT A SINK.
+
+    So the first `print()` raises AttributeError and the program dies before its
+    window ever appears -- which is exactly what happened: the console twin ran
+    perfectly while the windowed build showed "Unhandled exception in script",
+    and the only difference between them was the flag. This is the same shape as
+    the ASCII bug already on the record twice here: console output killing a
+    program that has no console.
+
+    Call this FIRST, before anything prints. Returns True if it patched.
+    """
+    patched = False
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+        patched = True
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+        patched = True
+    return patched
+
+
 def have_native():
     """Can a native window actually be shown here?"""
     try:

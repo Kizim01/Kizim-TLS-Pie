@@ -23,6 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tlsconvert import align, desktop                    # noqa: E402
 
+# ⛔ BEFORE ANYTHING PRINTS. A --windowed build has sys.stdout is None, so a
+# single print() kills the program before its window opens. See the note on
+# desktop.silence_missing_console.
+desktop.silence_missing_console()
+
 
 def _bundle_dir():
     """Where our files live, PyInstaller one-file bundle included."""
@@ -80,20 +85,12 @@ def main(argv=None):
     out = ("%s_merged.laz" % os.path.splitext(captures[0])[0] if captures
            else os.path.join(os.path.expanduser("~"), "tlspie_merged.laz"))
 
-    scans = []
-    if captures:
-        print("Decoding %d capture(s)…" % len(captures))
-        sys.stdout.flush()
-        try:
-            scans = align.load(
-                captures,
-                progress=lambda m: (print("  %s" % m), sys.stdout.flush()))
-        except Exception as exc:                         # noqa: BLE001
-            print("Could not open the captures: %s" % exc, file=sys.stderr)
-            traceback.print_exc()
-            return 1
-
-    server = align.AlignServer(scans, out_path=out)
+    # ⛔ NOTHING IS DECODED BEFORE THE WINDOW EXISTS. A minute of silence with no
+    # program on screen is indistinguishable from a program that failed to
+    # start. The captures go in as PENDING and the page asks for them the moment
+    # it loads, so the same progress bar covers a double-click, a Browse and a
+    # file association alike.
+    server = align.AlignServer([], out_path=out, pending=captures)
     print("Ready. Merged output will go to %s" % out)
     sys.stdout.flush()
     try:

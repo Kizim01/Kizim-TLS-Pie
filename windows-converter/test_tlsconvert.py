@@ -814,12 +814,51 @@ try:
     check("adding an exported cloud is refused with the reason",
           not _bad["ok"] and "pan track" in _bad["error"], _bad)
     check("the add control is on the page", "addpath" in _page)
+    check("a load reports point counts, not just a stage name",
+          "PENDING" in _page and "barfill" in _page)
+finally:
+    _srv.stop()
+
+# ⛔ Captures named on the command line must arrive as PENDING, not pre-loaded.
+# Decoding before the window exists means a minute of silence that cannot be
+# told apart from a program that failed to start.
+_srv2 = align.AlignServer([], out_path=None,
+                          pending=["A.pcap", "B.pcap"])
+try:
+    _p2 = _srv2.page.decode("utf-8")
+    check("pending captures reach the page so the bar can cover them",
+          '"A.pcap"' in _p2 and '"B.pcap"' in _p2)
+    check("and an empty session leaves the pending list empty",
+          "__PENDING__" not in _p2)
+finally:
+    _srv2.stop()
+
+_srv = align.AlignServer([], out_path=None)
+try:
+    _page = _srv.page.decode("utf-8")
     # ⛔ Studio must OPEN, not greet you with a folder chooser and no program
     # behind it. An empty session has to serve a working page.
     check("a session with no scans still serves a page",
           "<canvas" in _page and "Browse" in _page)
     check("and says so rather than looking broken",
           "No scans open yet" in _page)
+    # ⛔ THE BUG THAT MADE THE WINDOWED BUILD DIE BEFORE ITS WINDOW APPEARED.
+    # PyInstaller's --windowed mode leaves sys.stdout as None, not as a sink, so
+    # one print() raises AttributeError. The console twin ran perfectly; only
+    # the flag differed.
+    from tlsconvert import desktop as _dt
+    _real_out, _real_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout = sys.stderr = None
+        check("a missing console is patched, not left as None",
+              _dt.silence_missing_console())
+        sys.stdout.write("this would have raised AttributeError\n")
+        check("and printing afterwards is safe", sys.stdout is not None)
+    finally:
+        sys.stdout, sys.stderr = _real_out, _real_err
+    check("with a real console it changes nothing",
+          not _dt.silence_missing_console())
+
     _br = _srv.browse()
     check("Browse refuses cleanly with no native window",
           not _br["ok"] and "no native window" in _br["error"], _br)

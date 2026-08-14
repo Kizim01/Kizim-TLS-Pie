@@ -78,10 +78,27 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
     comes out the far end is written from the captures at whatever density is
     asked for; the voxel here only ever affected the picture.
     """
-    scans = []
+    # Estimated up front so ONE bar can span every scan being added, rather than
+    # a bar that fills, resets, and fills again with no way to tell how many
+    # more times it means to do that.
+    expect = []
     for path in paths:
+        try:
+            expect.append(pipeline.rig.tls_pcap.estimate_packet_count(path)
+                          * 384)
+        except Exception:                                 # noqa: BLE001
+            expect.append(0)
+    grand = sum(expect) or 1
+    seen = [0]
+
+    def report(stage, extra=0):
         if progress:
-            progress("reading %s" % os.path.basename(path))
+            progress(stage, min(seen[0] + extra, grand), grand)
+
+    scans = []
+    for path, budget in zip(paths, expect):
+        name = os.path.basename(path)
+        report("reading %s" % name)
         meta, meta_path = pipeline.load_meta(path)
         if meta is None:
             raise ValueError(
@@ -91,12 +108,16 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
                                        per_laser_azimuth=per_laser_azimuth)
         acc = pipeline.VoxelAccumulator(voxel_m) if voxel_m else None
         chunks = []
+        done = 0
         for xyz, refl in pipeline.decode.stream_world_points(
                 path, meta, frame, per_laser_azimuth=per_laser_azimuth):
             if acc is None:
                 chunks.append((xyz, refl))
             else:
                 acc.add(xyz, refl)
+            done += xyz.shape[0]
+            report("reading %s" % name, done)
+        seen[0] += budget or done
         if acc is not None:
             xyz, refl = acc.result()
         else:
@@ -111,11 +132,11 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             if colouriser is not None:
                 rgb = colouriser(xyz)
 
-        if progress:
-            progress("solving sample for %s" % os.path.basename(path))
+        report("preparing %s for alignment" % name)
         sample = pipeline.sample_for_solve(path, meta, frame,
                                            per_laser_azimuth=per_laser_azimuth)
         scans.append(Scan(path, xyz, rgb, sample))
+    report("ready")
     return scans
 
 
@@ -190,7 +211,7 @@ class AlignServer(object):
 
     def __init__(self, scans, port=0, out_path=None, merge_voxel=0.0,
                  max_points=viewer.DEFAULT_VIEW_MAX,
-                 align_voxel=DEFAULT_ALIGN_VOXEL):
+                 align_voxel=DEFAULT_ALIGN_VOXEL, pending=None):
         self.scans = list(scans)
         self.out_path = out_path
         self.merge_voxel = merge_voxel
@@ -206,7 +227,14 @@ class AlignServer(object):
             meta.append({"name": scan.name, "index": i, "points": buf.count,
                          "tint": _tint(i), "subsampled": buf.subsampled,
                          "setup": scan.setup.as_dict()})
+        # ⭐ CAPTURES NAMED ON THE COMMAND LINE ARE PENDING, NOT PRE-LOADED.
+        # Decoding them before the window existed meant the operator stared at
+        # nothing for a minute with no way to tell the program had started --
+        # the exact complaint. The window opens first and asks for them, so the
+        # very same progress bar covers a double-click, a Browse, and a file
+        # association alike.
         self.page = (PAGE
+                     .replace("__PENDING__", json.dumps(list(pending or [])))
                      .replace("__META__", json.dumps(meta))
                      .replace("__CHUNK__", str(viewer.CHUNK_POINTS))
                      .replace("__OUT__", json.dumps(out_path or ""))
@@ -299,7 +327,7 @@ class AlignServer(object):
         self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
         try:
             fresh = load(paths, voxel_m=self.align_voxel,
-                         progress=lambda m: self._note(m, 0, 1))
+                         progress=self._note)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
@@ -503,7 +531,8 @@ PAGE = r"""<!doctype html>
   &middot; R roam &middot; F recentre</div>
 <div id="err"></div>
 <script>
-const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__;
+const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__,
+      PENDING = __PENDING__;
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
@@ -726,6 +755,7 @@ async function boot(){
   measure();
   refreshLists();
   syncSliders(); clipLabels(); recentre(); draw();
+  if(PENDING.length) ingest(PENDING);
 }
 
 /* Recomputed whenever the set of scans changes, so a scan added mid-session
@@ -795,8 +825,9 @@ function watch(on){
       const frac=p.total ? Math.min(1, p.n/p.total) : 0;
       $('barfill').style.width=(frac*100).toFixed(1)+'%';
       if(p.stage) say(p.stage+' — '+Math.round(frac*100)+'%');
+      $('stat').textContent=p.stage||'working…';
     }catch(e){ /* a poll that misses is not worth reporting */ }
-  }, 250);
+  }, 200);
 }
 
 async function autoAlign(){
