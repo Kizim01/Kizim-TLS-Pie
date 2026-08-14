@@ -2038,10 +2038,31 @@ geometry, LAS/LAZ/PLY, a viewer that shows all 59 M points, and colour from a 36
 camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `0ef395c`, `62b5876`,
 `fc32204`.
 
-**⛔ NEXT: REGISTRATION** — combining scans taken from different positions into one model, which is
-what a terrestrial scanner is ultimately for, and the point at which **E57 earns its place** (its
-advantage over LAS is recording each setup's scan position). `Kizim-velodyne-to-point-cloud` carries
-a `TLS_Multi_Scan_Register.m` worth reading first.
+**✅ REGISTRATION IS BUILT — and it ships as `TLS-Pie-Studio.exe`. 2026-08-15, commits `79a4e34`
+→ `4dd9452`, 183 tests.** Double-click, Browse, decode with a live bar, both scans tinted by origin,
+align by drag or by button, clip to a box, save one merged cloud for SketchUp. Its own section is
+below; the four things it cost are worth reading before touching the solver.
+
+**⭐ THE SOLVER IS `small_gicp`, NOT MINE.** My grid search took ~100 s and reached 0.0401 m;
+[GICP](https://github.com/koide3/small_gicp) takes **0.24 s** and reaches **0.0345 m** — faster and
+better, scored with our own metric. It is full 6-DOF, so a tripod at a different height is
+expressible, which the planar grid never was. Mine survives as an automatic fallback.
+
+**⛔ THE MISREADING TO NOT REPEAT: a search finds only the degrees of freedom it varies.** I swept
+rotation alone across a genuinely translated pair, got a flat curve, and reported the two scans as
+being from the same position. Flatness is not evidence of alignment — it is evidence the wrong
+parameter was varied. The operator was right and said so. Full account in the Studio section.
+
+**⛔ AND THE ONE THAT ALL 168 TESTS MISSED:** a "faster" point-weighted metric cut 104 s to 27 s and
+returned **+148° where the answer is +35.5°**, calling itself trustworthy, while every synthetic
+fixture stayed green. Reverted. Anything claiming to speed the solver up must be measured against
+**the real capture**, never a made-up room.
+
+**⛔ STILL OPEN:** a wireframe clip box with drag handles ([Potree](https://github.com/potree/potree)
+does this), and point-pair picking to align by matched points (CloudCompare's *Align (point pairs
+picking)*, whose wiki notes it is "sometimes the only way" when ICP will not converge). ⭐ Note
+CloudCompare does both today and reads our LAZ. **E57 still earns its place** once several setups
+share a file. `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
 
 **⛔ TWO THINGS NEED REAL-WORLD TESTING AND CANNOT BE SETTLED FROM THE DESK:**
 
