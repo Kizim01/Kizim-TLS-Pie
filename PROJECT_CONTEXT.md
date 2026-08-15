@@ -2038,10 +2038,12 @@ geometry, LAS/LAZ/PLY, a viewer that shows all 59 M points, and colour from a 36
 camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `0ef395c`, `62b5876`,
 `fc32204`.
 
-**✅ REGISTRATION IS BUILT — and it ships as `TLS-Pie-Studio.exe`. 2026-08-15, commits `79a4e34`
-→ `4dd9452`, 183 tests.** Double-click, Browse, decode with a live bar, both scans tinted by origin,
-align by drag or by button, clip to a box, save one merged cloud for SketchUp. Its own section is
-below; the four things it cost are worth reading before touching the solver.
+**✅ REGISTRATION IS BUILT, AND STUDIO IS AN EDITOR TOO — `TLS-Pie-Studio.exe`. 2026-08-15, commits
+`79a4e34` → `914115d`, 245 tests.** Double-click, Browse, decode with a live bar, both scans tinted
+by origin, align by drag or by button, then **edit**: a turnable clip box with drag grips, lasso and
+rectangle deletes, orthographic Top/Front/Side, a clickable world-axes widget, a camera-only mode,
+separate preview and export detail, and **Save project (`.tlspie`)** to carry on tomorrow. Its own
+section is below; the four things the solver cost are worth reading before touching it.
 
 **⭐ THE SOLVER IS `small_gicp`, NOT MINE.** My grid search took ~100 s and reached 0.0401 m;
 [GICP](https://github.com/koide3/small_gicp) takes **0.24 s** and reaches **0.0345 m** — faster and
