@@ -88,19 +88,34 @@ def choose_captures(title="Choose captures to open"):
 WINDOW = [None]
 
 
+# ⛔⛔ NO PUNCTUATION IN A FILTER DESCRIPTION. pywebview validates every one of
+# these against `^([\w ]+)\((\*(?:\.(?:\w+|\*))*...)\)$` before it opens
+# anything -- word characters and spaces only -- so the perfectly ordinary
+# "TLS-Pie project (*.tlspie)" raised ValueError on the HYPHEN, and Save project
+# did nothing at all. The captures filter had no hyphen in it, which is why
+# Browse went on working and made the fault look like it belonged to projects.
+# These are checked against pywebview's own parser by the test suite, because a
+# rule this arbitrary will not be remembered.
+CAPTURE_FILTERS = ("Scanner captures (*.pcap)", "All files (*.*)")
+PROJECT_FILTERS = ("TLS Pie project (*.tlspie)", "All files (*.*)")
+
+
 def pick_files(title="Add a scan"):
-    """A native file dialog from the running window. [] if cancelled."""
+    """
+    A native file dialog from the running window. [] if cancelled.
+
+    ⛔ A FAILURE IS NOT A CANCELLATION. This used to answer both with [], so a
+    dialog that raised was indistinguishable from an operator who changed their
+    mind -- and the page, quite correctly, did nothing about it. Errors are
+    raised now; the route turns them into a message on screen.
+    """
     win = WINDOW[0]
     if win is None:
         return []
-    try:
-        import webview
-        chosen = win.create_file_dialog(
-            webview.OPEN_DIALOG, allow_multiple=True,
-            file_types=("Scanner captures (*.pcap)", "All files (*.*)"))
-        return list(chosen or [])
-    except Exception:
-        return []
+    import webview
+    chosen = win.create_file_dialog(
+        webview.OPEN_DIALOG, allow_multiple=True, file_types=CAPTURE_FILTERS)
+    return list(chosen or [])
 
 
 def pick_project(save=False, title=None):
@@ -111,27 +126,30 @@ def pick_project(save=False, title=None):
     one returns a plain string while the open one returns a tuple -- pywebview
     does not smooth that over, and treating the string as a sequence gives you
     its first character as a path.
+
+    ⛔ AND IT NO LONGER SWALLOWS ITS OWN FAILURES. `except Exception: return ""`
+    meant a raised dialog and a cancelled one arrived at the page identically,
+    and "cancelled is not a failure" is the one branch that must stay silent --
+    so a real fault was routed straight into the only path designed to say
+    nothing. That is how a broken Save button looked like a working one.
     """
     win = WINDOW[0]
     if win is None:
         return ""
-    try:
-        import webview
-        kinds = ("TLS-Pie project (*.tlspie)", "All files (*.*)")
-        if save:
-            chosen = win.create_file_dialog(
-                webview.SAVE_DIALOG, save_filename="scan project.tlspie",
-                file_types=kinds)
-        else:
-            chosen = win.create_file_dialog(
-                webview.OPEN_DIALOG, allow_multiple=False, file_types=kinds)
-        if not chosen:
-            return ""
-        if isinstance(chosen, str):
-            return chosen
-        return chosen[0]
-    except Exception:
+    import webview
+    if save:
+        chosen = win.create_file_dialog(
+            webview.SAVE_DIALOG, save_filename="scan project.tlspie",
+            file_types=PROJECT_FILTERS)
+    else:
+        chosen = win.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=False,
+            file_types=PROJECT_FILTERS)
+    if not chosen:
         return ""
+    if isinstance(chosen, str):
+        return chosen
+    return chosen[0]
 
 
 def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):

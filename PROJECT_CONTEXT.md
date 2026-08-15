@@ -2265,6 +2265,31 @@ reads as a sharp line, a leaning one as a band.
 The readout is driven straight out of the built page against hand-worked cases (12 assertions, DOM
 stubbed), because that number is what turns "looks about right" into something to act on.
 
+**⛔⛔ SAVE PROJECT DID NOTHING AT ALL, AND THE CAUSE WAS A HYPHEN — reported by the operator and fixed
+2026-08-15.** pywebview validates every file-filter string *before* it opens anything, against
+`^([\w ]+)\((\*(?:\.(?:\w+|\*))*…)\)$` — word characters and spaces in the description, **nothing
+else**. So the entirely ordinary `"TLS-Pie project (*.tlspie)"` raised `ValueError` on the hyphen in
+our own product name. The captures filter, `"Scanner captures (*.pcap)"`, has no hyphen — **which is
+why Browse kept working and made the fault look like it belonged to projects.**
+
+**⛔ AND WHAT MADE IT SILENT IS THE REAL LESSON: `except Exception: return ""` ROUTED A CRASH INTO THE
+ONE ANSWER THE PAGE IS BUILT TO IGNORE.** `""` means *cancelled*, and cancelled is deliberately the
+branch that says nothing — `if(!path) return; /* cancelled is not a failure */`. A broken button was
+therefore indistinguishable from a working one the operator had thought better of. The pickers let
+their exceptions out now, and the route turns them into a message on screen. **Never let a failure
+path land on the same value as a legitimate no-op** — the same rule the stale-session interlock was
+built on, arrived at from the opposite direction.
+
+Guarded permanently: the suite runs **every filter string through pywebview's own `parse_file_type`**
+and asserts the old hyphenated one *still* fails, so the check has teeth. Also pinned by test: **a
+SAVE dialog returns a bare string while OPEN returns a tuple** — treat the string as a sequence and
+the path becomes `'C'`.
+
+**⛔ AND A FAILED BUILD LEAVES A PASSING SELFTEST BEHIND.** `PermissionError: Access is denied` on
+`dist\TLS-Pie-Studio.exe` means the app is **running** (parent *and* child PID hold it). The previous
+binary stays on disk, so `--selftest` still returns 0 and the size still looks right — **a green check
+on yesterday's build.** Check the build's own exit code and the file's mtime, never the selftest alone.
+
 **⛔ STILL OPEN:** **E57 earns its place** once several setups share a file.
 `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
 

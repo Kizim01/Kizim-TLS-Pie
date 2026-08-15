@@ -1578,6 +1578,65 @@ try:
     _br = _srv.browse()
     check("Browse refuses cleanly with no native window",
           not _br["ok"] and "no native window" in _br["error"], _br)
+
+    # ⛔⛔ THE BUG THAT MADE SAVE PROJECT DO NOTHING AT ALL. pywebview validates
+    # every file-filter string before it opens anything, against a pattern that
+    # allows word characters and spaces in the description and nothing else --
+    # so "TLS-Pie project (*.tlspie)" raised ValueError on the HYPHEN. The
+    # picker swallowed it and returned "", the page reads "" as cancelled, and a
+    # broken button was indistinguishable from a working one. The captures
+    # filter has no hyphen, which is why Browse kept working and the fault
+    # looked like it belonged to projects.
+    from webview.util import parse_file_type as _pft         # noqa: E402
+    for _group in ("CAPTURE_FILTERS", "PROJECT_FILTERS"):
+        for _f in getattr(_dt, _group):
+            try:
+                _pft(_f)
+                _ok = True
+            except ValueError:
+                _ok = False
+            check("%s: pywebview accepts %r" % (_group, _f), _ok)
+    # ...and the check has teeth: the string that broke it must still break.
+    try:
+        _pft("TLS-Pie project (*.tlspie)")
+        check("a hyphen in a filter description really is rejected", False)
+    except ValueError:
+        check("a hyphen in a filter description really is rejected", True)
+
+    # ⛔ AND A FAILURE MUST NOT ARRIVE AS A CANCELLATION. "cancelled" is the one
+    # answer the page is built to act on by doing nothing, so routing a fault
+    # into it is the most effective way to hide one.
+    class _AngryWin(object):
+        def create_file_dialog(self, *a, **k):
+            raise ValueError("dialog exploded")
+
+    class _SaveWin(object):
+        """SAVE returns a bare string; OPEN returns a tuple. pywebview's own
+        asymmetry, and treating the string as a sequence yields 'C'."""
+
+        def create_file_dialog(self, kind, **k):
+            return "C:\\scans\\room.tlspie" if kind == 30 else ("C:\\a.tlspie",)
+
+    _dt.WINDOW[0] = _AngryWin()
+    try:
+        _dt.pick_project(save=True)
+        check("a dialog that raises is not reported as a cancellation", False)
+    except ValueError:
+        check("a dialog that raises is not reported as a cancellation", True)
+    try:
+        _dt.pick_files()
+        check("...and the same goes for Browse", False)
+    except ValueError:
+        check("...and the same goes for Browse", True)
+    _dt.WINDOW[0] = _SaveWin()
+    check("a Save dialog's bare string is returned whole, not its first letter",
+          _dt.pick_project(save=True) == "C:\\scans\\room.tlspie",
+          _dt.pick_project(save=True))
+    check("and an Open dialog's tuple gives up its first entry",
+          _dt.pick_project(save=False) == "C:\\a.tlspie")
+    _dt.WINDOW[0] = None
+    check("with no window at all it is still a quiet cancel",
+          _dt.pick_project(save=True) == "" and _dt.pick_files() == [])
     check("the panel uses the scanner's own glass tokens",
           "--glass" in _page and "backdrop-filter" in _page)
     check("and its palette, so the two programs match",
