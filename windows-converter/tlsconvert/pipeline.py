@@ -503,7 +503,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None,
-            setup=None, writer=None, edit=None):
+            setup=None, writer=None, edit=None, level=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -557,6 +557,17 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # the wrong direction -- a fully coloured cloud that is quietly wrong.
         if setup is not None and not setup.is_identity():
             xyz = setup.apply(xyz)
+        # ⛔ LEVELLING COMES AFTER THE PLACEMENT AND BEFORE THE EDIT, and that
+        # order is the whole reason it works. A Setup puts every scan into one
+        # merged frame; the level then straightens THAT frame against gravity,
+        # once, for all of them -- so a tilt common to both setups is removed
+        # without either scan moving relative to the other. Applied per scan
+        # before the placement instead, it would rotate each cloud about its own
+        # sensor and pull the alignment apart. And it is before the edit because
+        # the operator drew those boxes on the room as it appeared on screen,
+        # which is the levelled room.
+        if level is not None and not level.is_identity():
+            xyz = level.apply(xyz)
         # ⛔ THE EDIT IS APPLIED AFTER THE TRANSFORM, because the operator drew
         # those boxes around the room as they saw it -- in the merged frame. A
         # box applied in each scan's own frame would cut a different piece out
@@ -644,7 +655,8 @@ def solve_setups(captures, per_laser_azimuth=False, progress=None):
     return results
 
 
-def merge(captures, out_path, setups=None, progress=None, edit=None, **kwargs):
+def merge(captures, out_path, setups=None, progress=None, edit=None,
+          level=None, **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -671,6 +683,9 @@ def merge(captures, out_path, setups=None, progress=None, edit=None, **kwargs):
                   if isinstance(s, dict) else s for s in setups]
         solutions = [None] * len(setups)
 
+    if isinstance(level, dict):
+        level = registration.Level.from_dict(level)
+
     comment = "merged: %s" % ", ".join(os.path.basename(c) for c in captures)
     writer = export.writer_for(out_path, comment=comment)
     parts = []
@@ -679,7 +694,8 @@ def merge(captures, out_path, setups=None, progress=None, edit=None, **kwargs):
             if progress:
                 progress("converting %s" % os.path.basename(path))
             parts.append(convert(path, out_path, setup=setup, writer=writer,
-                                 progress=None, edit=edit, **kwargs))
+                                 progress=None, edit=edit, level=level,
+                                 **kwargs))
     finally:
         writer.close()
 
@@ -687,6 +703,7 @@ def merge(captures, out_path, setups=None, progress=None, edit=None, **kwargs):
         "out": out_path,
         "points": writer.count,
         "edit": None if edit is None else edit.describe(),
+        "level": None if level is None else level.describe(),
         "captures": captures,
         "setups": [s.as_dict() for s in setups],
         "solutions": [None if s is None else s.describe() for s in solutions],

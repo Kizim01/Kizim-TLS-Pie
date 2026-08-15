@@ -778,3 +778,226 @@ def pairs_setup(ref, mov):
                                     float(rc[2] - turned[2]))
     errors = np.linalg.norm(setup.apply(mov) - ref, axis=1)
     return PairFit(setup, errors, spread)
+
+
+# ---- levelling against gravity ---------------------------------------------
+#
+# ⛔ THE CLOUDS ARE IN THE RIG'S FRAME, NOT GRAVITY'S, and nothing upstream
+# knows the difference. The pitch calibration was DIFFERENTIAL -- it measured
+# the lasers against each other -- so a common tilt of the whole tripod is
+# invisible to it, and a room scanned off a slightly out-of-level tripod comes
+# out leaning by exactly that amount with every internal check still passing.
+# Name a surface you know to be horizontal and the tilt becomes measurable.
+#
+# ⭐ A LEVEL IS HELD AS THE MEASURED UP VECTOR, NOT AS ANGLES. Three Euler
+# angles do not name an orientation without a composition order, and this
+# project has already paid for that once with the clip box, where the shader and
+# the exporter could have turned the same box into two different rooms with no
+# residual able to say so. A normal and a pivot have no order to get wrong: the
+# rotation is derived from them the same way everywhere, by the one rule below.
+
+# How far the picks must spread across the surface, in the direction of their
+# SECOND-largest extent. ⛔ THIS IS THE DEGENERACY, NOT TIDINESS. Three points
+# along a line -- the edge of a step, a skirting board -- lie on infinitely many
+# planes, a whole pencil of them hinged on that line. A fit still returns one,
+# chosen arbitrarily from the pencil, and levels the room by however much that
+# arbitrary choice happens to lean. The residual is zero either way.
+MIN_LEVEL_SPREAD = 0.30
+
+# What a picked surface can be expected to be flat to. The VLP-16's own range
+# noise is +/-30 mm and a real floor is not a plane, so a residual under this is
+# measuring the instrument and the building, not a bad pick.
+LEVEL_FLAT = 0.05
+
+# Past this, the "floor" is a wall. A tripod is not set down 30 degrees out.
+MAX_LEVEL_TILT = 30.0
+
+# And past THIS it is worth saying so, even though it is still applied: a
+# levelled tripod should be within a degree or two, so a larger answer means
+# either the tripod really was left leaning or the surface is not horizontal.
+ODD_LEVEL_TILT = 10.0
+
+
+class Level(object):
+    """
+    The rotation that puts a measured up-vector back along +Z.
+
+    Held apart from `Setup` on purpose, and that is not an implementation
+    detail. ⛔ FOLDED INTO THE SETUPS, THE NEXT AUTO-ALIGN WOULD SILENTLY UNDO
+    IT: a Setup carries yaw and translation only, so the solver's answer has no
+    tilt in it, and writing that answer back over a levelled placement would
+    return the room to leaning with nothing to show for it. A Setup says where
+    one tripod stood relative to another; a Level says how the merged frame
+    relates to gravity. They answer different questions -- and a tilt common to
+    both scans cancels between them, so the solver neither disturbs the level
+    nor is disturbed by it.
+    """
+
+    def __init__(self, normal=(0.0, 0.0, 1.0), pivot=(0.0, 0.0, 0.0)):
+        n = np.asarray(normal, dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(n))
+        if length < 1e-12:
+            raise ValueError("a level needs a direction, and that one has no "
+                             "length at all")
+        # ⛔ ORIENTED INTO THE UPPER HEMISPHERE FIRST. A plane's normal is only
+        # defined up to sign, and the wrong one is not a small error: the
+        # minimal rotation onto +Z would turn the whole room upside down. It is
+        # also what makes picking a CEILING work -- its true normal points down,
+        # and flipping it is exactly right.
+        self.normal = n / length * (-1.0 if n[2] < 0 else 1.0)
+        self.pivot = np.asarray(pivot, dtype=np.float64).reshape(3).copy()
+
+    @property
+    def tilt_deg(self):
+        """How far off level the frame was, in degrees."""
+        return float(np.degrees(np.arccos(
+            min(1.0, max(-1.0, float(self.normal[2]))))))
+
+    def is_identity(self):
+        return self.tilt_deg < 1e-12
+
+    def matrix(self):
+        """
+        The MINIMAL rotation taking the measured up onto +Z -- Rodrigues.
+
+        ⛔ MINIMAL, AND THAT IS A DELIBERATE DEPARTURE FROM CloudCompare, whose
+        Level tool makes the first-to-second pick the new X axis. Here yaw
+        already means something: it is the heading the world-axes widget
+        reports, and the frame every scan's placement is expressed in. A
+        levelling tool that also reassigned X would spin the alignment as a side
+        effect of straightening the floor. This one changes the tilt and
+        nothing else.
+        """
+        n = self.normal
+        v = np.array([n[1], -n[0], 0.0])     # n x z
+        c = float(n[2])
+        s2 = float(v @ v)
+        if s2 < 1e-24:                       # already vertical
+            return np.eye(3)
+        K = np.array([[0.0, -v[2], v[1]],
+                      [v[2], 0.0, -v[0]],
+                      [-v[1], v[0], 0.0]])
+        # (1 - c) / s^2 written as 1 / (1 + c): the same number without the
+        # cancellation that costs precision as the tilt goes to zero -- which is
+        # the case this is used in nearly every time.
+        return np.eye(3) + K + K @ K / (1.0 + c)
+
+    def apply(self, xyz):
+        """Rotate about the pivot, so the surface that was named stays put."""
+        xyz = np.asarray(xyz)
+        if self.is_identity():
+            return xyz
+        return (xyz - self.pivot) @ self.matrix().T + self.pivot
+
+    def as_dict(self):
+        return {"normal": [float(v) for v in self.normal],
+                "pivot": [float(v) for v in self.pivot],
+                "tilt_deg": self.tilt_deg}
+
+    @classmethod
+    def from_dict(cls, data):
+        if not data:
+            return cls()
+        return cls(normal=data.get("normal") or (0.0, 0.0, 1.0),
+                   pivot=data.get("pivot") or (0.0, 0.0, 0.0))
+
+    def describe(self):
+        if self.is_identity():
+            return "already level"
+        return ("the frame leans %.2f deg; levelled about (%.2f, %.2f, %.2f)"
+                % (self.tilt_deg, self.pivot[0], self.pivot[1], self.pivot[2]))
+
+
+class LevelFit(object):
+    """A Level measured off picked points, and how flat those points were."""
+
+    def __init__(self, level, errors, spread):
+        self.level = level
+        self.errors = np.asarray(errors, dtype=np.float64)
+        self.spread = float(spread)
+
+    @property
+    def count(self):
+        return int(self.errors.size)
+
+    @property
+    def flatness(self):
+        """RMS distance of the picks from the plane they were fitted to."""
+        if not self.errors.size:
+            return float("nan")
+        return float(np.sqrt(np.mean(self.errors ** 2)))
+
+    @property
+    def worst(self):
+        i = int(np.argmax(np.abs(self.errors)))
+        return (i, float(self.errors[i]))
+
+    @property
+    def ok(self):
+        return (self.flatness <= LEVEL_FLAT
+                and self.level.tilt_deg <= ODD_LEVEL_TILT)
+
+    def describe(self):
+        # ASCII only: this string reaches a cp1252 console, where a decorative
+        # character raises UnicodeEncodeError.
+        text = ("%s | %d points, flat to %.3f m"
+                % (self.level.describe(), self.count, self.flatness))
+        if self.count < 4:
+            # ⚠ Three points define a plane exactly, so the residual is zero by
+            # construction and says nothing whatever about the surface. The
+            # fourth pick is the first one that can disagree.
+            text += ("  (three points fit a plane exactly, so that 0.000 m is "
+                     "arithmetic, not evidence. A fourth pick is the first one "
+                     "that can disagree.)")
+        elif self.flatness > LEVEL_FLAT:
+            i, d = self.worst
+            text += ("  Those points are not on one plane -- pick %d is %.3f m "
+                     "off it. Is the surface really flat, or did a pick land "
+                     "on something standing on it?" % (i + 1, abs(d)))
+        if self.level.tilt_deg > ODD_LEVEL_TILT:
+            text += ("  %.1f deg is a lot for a tripod: check the surface you "
+                     "picked really is horizontal." % self.level.tilt_deg)
+        return text
+
+
+def level_from_points(points):
+    """
+    The Level that makes the named surface horizontal.
+
+    `points` are in the merged frame BEFORE any levelling, so the answer is
+    always the tilt of the raw frame and applying it twice cannot compound.
+
+    The plane comes from the smallest singular vector of the centred picks --
+    the total-least-squares fit, which measures distance PERPENDICULAR to the
+    plane. ⛔ Not a least-squares fit of z against x and y: that one measures
+    VERTICAL distance instead, so it weights a steep surface differently from a
+    shallow one and cannot represent a plane through the vertical at all --
+    which is precisely the case the tilt guard below exists to catch.
+    """
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if pts.shape[0] < 3:
+        raise ValueError("three points at least -- two can only give a line, "
+                         "and a line lies on infinitely many planes")
+    centre = pts.mean(axis=0)
+    _u, sv, vh = np.linalg.svd(pts - centre, full_matrices=False)
+
+    # The second singular value IS the extent across the surface: near zero
+    # means the picks fell in a line and the plane is one of a pencil.
+    spread = float(sv[1] / np.sqrt(pts.shape[0]))
+    if spread < MIN_LEVEL_SPREAD:
+        raise ValueError(
+            "those points are spread only %.2f m across the surface (%.2f m "
+            "needed), so they are effectively in a line -- and a line lies on "
+            "infinitely many planes, any of which would fit them perfectly "
+            "while levelling the room by a different amount. Spread the picks "
+            "out over the floor, not along an edge."
+            % (spread, MIN_LEVEL_SPREAD))
+
+    level = Level(normal=vh[2], pivot=centre)
+    if level.tilt_deg > MAX_LEVEL_TILT:
+        raise ValueError(
+            "that surface is %.1f deg from level, which is a wall rather than "
+            "a floor. Levelling to it would tip the room on its side."
+            % level.tilt_deg)
+    errors = (pts - centre) @ level.normal
+    return LevelFit(level, errors, spread)

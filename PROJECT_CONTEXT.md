@@ -2184,9 +2184,56 @@ the scan is doing, its marker follows the cloud it was picked on — so the two 
 each other as the alignment improves — and what the server returns is a `Setup` outright rather than a
 correction to be composed with a placement that has since moved.
 
+**✅ AND THE ROOM CAN BE LEVELLED AGAINST GRAVITY — name a surface you know is horizontal (G).**
+Click three or more points on a floor or worktop, spread well apart, then **Level to these**. This
+closes a gap flagged in this file long before it had a tool: ⛔ **the clouds are in the RIG's frame,
+not gravity's.** The pitch calibration was *differential* — it measured the lasers against each other
+— so **a common tilt of the whole tripod is invisible to it**, and a room scanned off a slightly
+out-of-level tripod comes out leaning by exactly that much with every internal check still passing.
+
+**⛔ THE DEGENERACY AGAIN, IN A NEW SHAPE: three points along a line lie on infinitely many planes.**
+A skirting board, the edge of a step — the picks look careful, a plane still comes back, and it is one
+arbitrary member of a whole *pencil* hinged on that line, levelling the room by however much that
+choice happens to lean. **The residual is zero either way.** Refused below 0.30 m of spread across the
+surface. Also refused: a surface more than 30° off level, which is a wall — levelling to it would tip
+the room on its side. ⛔ **A plane normal is only defined up to sign**, and the wrong one is not a
+small error: the minimal rotation onto +Z would turn the room *upside down*. Oriented into the upper
+hemisphere first, which is also exactly what makes picking a **ceiling** work.
+
+**⛔ AND IT IS THE MINIMAL ROTATION — a deliberate departure from [CloudCompare's Level tool], which
+makes the first-to-second pick the new X axis.** Any rotation landing the normal on +Z levels the
+room; all but one of them *also spin it about Z*. Here yaw already means something — it is the heading
+the world-axes widget reports and the frame every placement is written in — so a levelling tool that
+quietly reassigned X would move the alignment as a side effect of straightening the floor. Proven: the
+rotation axis comes back unturned to **4.4e-16 rad** over 3,000 random tilts.
+
+**⭐ A LEVEL IS HELD AS THE MEASURED UP-VECTOR PLUS A PIVOT, NOT AS ANGLES** — so unlike the clip box
+there is no composition order to get wrong between the shader and the exporter. **⭐ And the picks are
+always measured on the frame BEFORE levelling**, which is what makes pressing the button twice return
+the same answer instead of compounding a second rotation onto the first.
+
+**⛔ THE LEVEL IS NOT PART OF ANY SCAN'S PLACEMENT, and that is the load-bearing choice.** Folded into
+the Setups, **the next press of Auto-align would silently undo it** — a `Setup` carries yaw and
+translation only, so the solver's answer has no tilt in it and would write the room back to leaning
+with nothing to show for it. A Setup says where one tripod stood relative to another; a Level says how
+the merged frame relates to gravity. A tilt common to both scans cancels between them, so the solver
+neither disturbs the level nor is disturbed by it — tested on the distances themselves.
+
+**⭐ AND IT FORCED A REAL CLEAN-UP: `local -> world` had grown THREE separate copies** — the edit
+mask, the picker and the pair markers — none of which would have known about levelling. All three now
+read one `affine(s)`, so whatever is folded into a scan's matrix reaches every one of them at once.
+Cross-checked page-against-exporter over **3,000 random tilts, agreeing to 1e-6 m**; composing the
+level before the placement instead of after makes the same check report **10.1 m**.
+
+⚠ **Level before you cut.** Edits already made stay where they are while the cloud straightens under
+them, and the page says so when it happens. ⚠ And one honest limit: this levels the *merged frame*. If
+the two tripods leaned differently from each other, that difference is not something a `Setup` can
+express — pick floor points on **both** clouds and the flatness residual will show it.
+
 **⛔ STILL OPEN:** **E57 earns its place** once several setups share a file.
 `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
 
+[CloudCompare's Level tool]: https://www.cloudcompare.org/doc/wiki/index.php?title=Level
 [three-orientation-gizmo]: https://github.com/jrj2211/three-orientation-gizmo
 [three.js `misc_boxselection`]: https://github.com/mrdoob/three.js/blob/dev/examples/misc_boxselection.html
 
@@ -2205,7 +2252,9 @@ correction to be composed with a placement that has since moved.
 **⭐ AND A FREE BONUS STILL UNCLAIMED:** the X4's stitched output is gravity-levelled by its own IMU,
 so it is an independent **vertical reference** — which matters because our clouds are in the RIG's
 frame, not gravity's: the pitch calibration was differential, and **a common tilt of the whole tripod
-is invisible to it.**
+is invisible to it.** ⭐ Studio's **Level to a surface** (above) now measures that tilt by hand from
+picked floor points; the X4 route would supply the same number automatically, and — better — is the
+one way to *check* the hand-picked answer against something that is not the operator's own eye.
 
 | | |
 |---|---|

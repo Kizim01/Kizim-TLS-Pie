@@ -1140,6 +1140,129 @@ try:
 finally:
     _qsrv.stop()
 
+print("\nlevelling the merged frame against gravity")
+
+# A genuinely flat floor, then leaned over -- which is what an out-of-level
+# tripod does to a whole capture without anything upstream being able to tell.
+_rs = np.random.RandomState(4242)
+_floor = _rs.uniform(-4.0, 4.0, (9, 3))
+_floor[:, 2] = 1.5
+_lean = registration.Level(normal=(0.031, -0.019, 1.0))
+_tilted = _floor @ _lean.matrix()
+_lfit = registration.level_from_points(_tilted)
+check("the tilt of a leaning frame is recovered",
+      close(_lfit.level.tilt_deg, _lean.tilt_deg, 1e-9), _lfit.describe())
+check("and levelling flattens it: the surface comes back to one height",
+      float(np.ptp(_lfit.level.apply(_tilted)[:, 2])) < 1e-9)
+check("the named surface stays put -- the pivot is the picks' own centroid",
+      float(np.max(np.abs(_lfit.level.apply(_tilted).mean(axis=0)
+                          - _tilted.mean(axis=0)))) < 1e-9)
+
+# ⛔ MINIMAL, WHICH IS A DELIBERATE DEPARTURE FROM CloudCompare -- its Level
+# tool makes the first-to-second pick the new X axis. Here yaw already means
+# something (the heading the widget reports, the frame every placement is
+# written in), so a level that also reassigned X would spin the alignment as a
+# side effect of straightening the floor.
+_ax = np.array([_lfit.level.normal[1], -_lfit.level.normal[0], 0.0])
+_ax /= np.linalg.norm(_ax)
+check("levelling introduces no yaw: it is the minimal rotation",
+      float(np.max(np.abs(_lfit.level.matrix() @ _ax - _ax))) < 1e-12)
+
+# ⭐ IDEMPOTENT BY CONSTRUCTION, because the picks are always measured on the
+# frame BEFORE levelling. Pressing the button twice must not lean the room the
+# other way.
+check("measuring an already-levelled surface finds no tilt left",
+      registration.level_from_points(
+          _lfit.level.apply(_tilted)).level.tilt_deg < 1e-9)
+
+# ⛔ THE DEGENERACY. Three points along a line lie on infinitely many planes --
+# a whole pencil hinged on that line -- and a fit still returns one of them,
+# chosen arbitrarily, levelling the room by however much it happens to lean.
+# The residual is zero either way, so nothing downstream could notice.
+_line = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [-3.0, 0.0, 0.0],
+                  [5.0, 0.0, 0.0]])
+try:
+    registration.level_from_points(_line)
+    check("points in a line are refused, not fitted", False)
+except ValueError as _exc:
+    check("points in a line are refused, not fitted",
+          "infinitely many planes" in str(_exc), str(_exc))
+try:
+    registration.level_from_points(_floor[:2])
+    check("two points are refused: they can only give a line", False)
+except ValueError:
+    check("two points are refused: they can only give a line", True)
+# A wall is not a floor, and levelling to one would tip the room on its side.
+_wall = np.array([[0.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 1.0, 2.5],
+                  [0.0, -2.0, 1.0]])
+try:
+    registration.level_from_points(_wall)
+    check("a wall is refused with the angle named", False)
+except ValueError as _exc:
+    check("a wall is refused with the angle named",
+          "wall rather than a floor" in str(_exc), str(_exc))
+
+# ⛔ A NORMAL IS ONLY DEFINED UP TO SIGN, and the wrong one is not a small
+# error -- the minimal rotation onto +Z would turn the room upside down. It is
+# also what makes picking a CEILING work: its true normal points down.
+_ceiling = registration.Level(normal=(-0.031, 0.019, -1.0))
+check("a downward normal is flipped, not obeyed",
+      _ceiling.normal[2] > 0 and close(_ceiling.tilt_deg, _lean.tilt_deg, 1e-9))
+check("so levelling to a ceiling is levelling, not a somersault",
+      float(_ceiling.matrix()[2, 2]) > 0.99)
+
+# Flatness is a real check only once there are four points.
+check("three points admit they fit a plane exactly",
+      "arithmetic, not evidence" in
+      registration.level_from_points(_tilted[:3]).describe())
+_bump = _tilted.copy()
+_bump[4] += _lfit.level.normal * 0.22          # a pick on something standing on
+_bfit = registration.level_from_points(_bump)  # the floor, not on the floor
+check("a pick that is not on the surface is named",
+      _bfit.worst[0] == 4 and not _bfit.ok, _bfit.describe())
+# ⚠ Named at 0.108 m, not at the 0.22 m it was moved by: the plane re-fits and
+# tilts toward the outlier, absorbing about half of it. That is worth knowing --
+# a residual understates a single bad pick, and the more picks there are the
+# more it understates it.
+check("and the operator is told which one to look at",
+      "pick 5 is" in _bfit.describe() and _bfit.worst[1] > 0.1,
+      _bfit.describe())
+
+# ⛔ A Level is held as the measured up-vector and a pivot: no Euler triple, so
+# no composition order to get wrong between the shader and the exporter -- the
+# trap the clip box had to be rescued from.
+_rt = registration.Level.from_dict(_lfit.level.as_dict())
+check("a level round-trips through JSON as a vector, not as angles",
+      "normal" in _lfit.level.as_dict() and
+      float(np.max(np.abs(_rt.matrix() - _lfit.level.matrix()))) < 1e-15)
+
+_lsrv = align.AlignServer([], out_path=None)
+try:
+    _lgot = _lsrv.level([list(p) for p in _tilted])
+    check("the server measures a level from picked points",
+          _lgot["ok"] and close(_lgot["tilt_deg"], _lean.tilt_deg, 1e-9), _lgot)
+    check("and hands back a per-point error for the panel",
+          len(_lgot["errors"]) == 9 and _lgot["trustworthy"])
+finally:
+    _lsrv.stop()
+
+# ⛔ THE LEVEL IS NOT PART OF ANY SCAN'S PLACEMENT. Folded into the Setups, the
+# next Auto-align would silently undo it: a Setup carries yaw and translation
+# only, so the solver's answer has no tilt in it at all.
+check("a Setup still cannot express a tilt, which is why a Level is separate",
+      not hasattr(registration.Setup(), "pitch_deg"))
+# ...and a tilt common to both scans cancels between them. Every residual this
+# program computes is built from distances between the two clouds, and one
+# rotation applied to both leaves all of them exactly as they were -- so a level
+# cannot move a solve, and a solve cannot disturb a level.
+_ca = _rs.uniform(-5, 5, (200, 3))
+_cb = registration.Setup(1.0, -0.5, 0.2, 22.0).apply(_ca)
+_both = registration.Level(normal=(0.05, -0.03, 1.0), pivot=(0.4, -1.1, 0.0))
+check("a tilt common to both scans leaves every distance between them alone",
+      float(np.max(np.abs(
+          np.linalg.norm(_both.apply(_ca) - _both.apply(_cb), axis=1)
+          - np.linalg.norm(_ca - _cb, axis=1)))) < 1e-12)
+
 print("\nprojects: a pointer file, not a copy of the cloud")
 _proj = os.path.join(tmp, "living room.tlspie")
 
@@ -1181,8 +1304,12 @@ try:
                          {"x_m": -0.5, "y_m": 0.08, "z_m": 0.0,
                           "yaw_deg": -35.5}],
               "edits": _edits,
-              "pairs": [{"ref": [1.0, 2.0, 0.5], "mov": [0.0, 1.0, 0.5],
-                         "si": 1}],
+              "pairs": [{"ri": 0, "rp": [1.0, 2.0, 0.5],
+                         "si": 1, "mp": [0.0, 1.0, 0.5]}],
+              "level": _lfit.level.as_dict(),
+              "level_points": [{"si": 0, "p": [1.0, 0.0, -1.2]},
+                               {"si": 1, "p": [-2.0, 3.0, -1.1]},
+                               {"si": 0, "p": [0.5, -2.5, -1.3]}],
               "box": {"o": [0, 0, 0], "lo": [-2, -2, -1], "hi": [2, 2, 1],
                       "yaw": 12.0, "pitch": 0.0, "roll": 0.0, "on": True,
                       "inside": False, "wire": True},
@@ -1217,6 +1344,13 @@ try:
     _psrv.save_project(_nopairs, {"setups": _state["setups"]})
     check("a project saved before any were picked reads back an empty list",
           _psrv.read_project(_nopairs)["body"]["pairs"] == [])
+    # ⛔ Reopen without the level and the room comes back leaning, with every
+    # edit still applied and nothing on screen to say anything is missing.
+    check("the levelling is saved, measurement and picks alike",
+          _body["level"]["normal"] == _lfit.level.as_dict()["normal"] and
+          len(_body["level_points"]) == 3, _body.get("level"))
+    check("and a project made before levelling existed still opens",
+          _psrv.read_project(_nopairs)["body"]["level"] is None)
     # ⭐ A project is a POINTER file: relative first, so the folder can move.
     check("captures are pointed at, not copied in",
           os.path.getsize(_proj) < 20000 and
@@ -1336,6 +1470,21 @@ try:
           "PICK_TIGHT" in _page and "PICK_WIDE" in _page)
     check("the moving half of a pair is kept in the scan's own coordinates",
           "never in world" in _page and "pairEnds" in _page)
+    check("the room can be levelled to a surface the operator names",
+          all(t in _page for t in ("'level'", "Pick level points", "applyLevel",
+                                   "levelRot", "lvllist", "'level'")))
+    # ⛔ The level is folded into each scan's model matrix, so the clip box and
+    # every edit are tested against the levelled room -- the same room the
+    # exporter writes. Applied in the view matrix instead, the preview would
+    # look right and the file would be cut somewhere else.
+    check("the level rides in the model matrix, not the view",
+          "function model(s){" in _page and "L ? mul(L,M) : M" in _page)
+    # ⛔ Three copies of local->world had grown up (edit mask, picker, pair
+    # markers) and a fourth is how a preview and an exporter drift apart.
+    check("there is one home for local-to-world, and everything reads it",
+          "function affine(s){" in _page and "ONE HOME" in _page)
+    check("levelling picks are measured on the frame BEFORE levelling",
+          "preLevel" in _page and "instead of compounding" in _page)
     check("a camera-only mode exists and overrides the tools",
           all(t in _page for t in ("setNav", "V.nav", "'nav'",
                                    "Camera only")))

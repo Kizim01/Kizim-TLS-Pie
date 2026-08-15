@@ -258,6 +258,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/pairs":
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
                                                   body.get("pairs") or []))
+            if path == "/level":
+                return self._json(srv.level(body.get("points") or []))
             if path == "/browse":
                 return self._json(srv.browse())
             if path == "/add":
@@ -274,7 +276,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/save":
                 return self._json(srv.save(body.get("setups") or [],
                                            body.get("voxel"),
-                                           body.get("edit")))
+                                           body.get("edit"),
+                                           body.get("level")))
         except Exception as exc:                       # noqa: BLE001
             return self._json({"ok": False, "error": str(exc)}, 500)
         self.send_error(404)
@@ -429,6 +432,22 @@ class AlignServer(object):
                 "trustworthy": fit.ok, "pairs": fit.count,
                 "text": fit.describe()}
 
+    def level(self, points):
+        """
+        Measure the frame's tilt off a surface the operator says is horizontal.
+
+        The points arrive in the merged frame BEFORE any levelling, so the
+        answer is always the tilt of the raw frame and pressing the button twice
+        cannot compound. Nothing is stored on the scans: a level belongs to the
+        merged frame, not to any one capture -- see `registration.Level`.
+        """
+        fit = registration.level_from_points(points)
+        return {"ok": True, "level": fit.level.as_dict(),
+                "tilt_deg": fit.level.tilt_deg, "flatness": fit.flatness,
+                "errors": [float(e) for e in fit.errors],
+                "worst": fit.worst[0], "points": fit.count,
+                "trustworthy": fit.ok, "text": fit.describe()}
+
     def browse(self):
         """
         A native file dialog, asked for by the page.
@@ -561,6 +580,11 @@ class AlignServer(object):
                 # are scaffolding that took an eye and a careful hand, and
                 # dropping them on save would throw that away silently.
                 "pairs": (state or {}).get("pairs") or [],
+                # ⛔ THE LEVEL IS PART OF THE PROJECT, not of any scan. Reopen
+                # without it and the room comes back leaning, with every edit
+                # still applied and no sign that anything is missing.
+                "level": (state or {}).get("level"),
+                "level_points": (state or {}).get("level_points") or [],
                 "box": (state or {}).get("box"),
                 "view": (state or {}).get("view"),
                 "align_voxel": self.align_voxel,
@@ -639,6 +663,8 @@ class AlignServer(object):
         return {"ok": True, "scans": self._rebuild(), "path": path,
                 "edits": body.get("edits") or [], "box": body.get("box"),
                 "pairs": body.get("pairs") or [],
+                "level": body.get("level"),
+                "level_points": body.get("level_points") or [],
                 "view": body.get("view"), "voxel": voxel,
                 "saved": body.get("saved")}
 
@@ -649,12 +675,13 @@ class AlignServer(object):
                     "error": "no native window, so no system file dialog"}
         return {"ok": True, "path": desktop.pick_project(save=save)}
 
-    def save(self, setups, voxel=None, edit=None):
+    def save(self, setups, voxel=None, edit=None, level=None):
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
         for i, data in enumerate(setups):
             if i < len(self.scans):
                 self.scans[i].setup = registration.Setup.from_dict(data)
+        lvl = registration.Level.from_dict(level)
         plan = pipeline.Edit.from_dict(edit)
         self._progress = {"stage": "writing the merged cloud", "n": 0,
                           "total": 1, "busy": True}
@@ -662,13 +689,14 @@ class AlignServer(object):
             info = pipeline.merge([s.path for s in self.scans], self.out_path,
                                   setups=[s.setup for s in self.scans],
                                   edit=None if plan.is_empty() else plan,
+                                  level=None if lvl.is_identity() else lvl,
                                   voxel_m=(self.merge_voxel if voxel is None
                                            else float(voxel)))
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         return {"ok": True, "out": info["out"], "points": info["points"],
-                "edit": info["edit"]}
+                "edit": info["edit"], "level": info["level"]}
 
     @property
     def url(self):
@@ -829,6 +857,21 @@ PAGE = r"""<!doctype html>
     the other cannot say which way the scan is facing.</div>
   <div id="pairlist" style="font-size:10.5px;color:var(--faint)"></div>
   <hr>
+  <label>Level to a surface</label>
+  <div class="row"><button id="level">Pick level points</button>
+    <button id="lvlgo" class="go">Level to these</button></div>
+  <div class="row"><button id="lvlundo">Undo point</button>
+    <button id="lvlclear">Clear levelling</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    The clouds come out in the <b>rig's</b> frame, not gravity's — the pitch
+    calibration measured the lasers against each other, so a tripod left
+    leaning tilts the whole room and nothing upstream can tell. Click three or
+    more points on a surface you know is horizontal (a floor, a worktop),
+    spread well apart, then <b>Level to these</b>. Do it before you start
+    cutting: edits already made stay put while the cloud straightens under
+    them.</div>
+  <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
+  <hr>
   <label>View</label>
   <div class="row"><button id="nav" class="go">Camera</button>
     <button id="ortho">Perspective</button></div>
@@ -906,7 +949,7 @@ PAGE = r"""<!doctype html>
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
   &middot; M rectangle &middot; L lasso &middot; P pick pairs
-  &middot; B hide box &middot; Ctrl-Z undo
+  &middot; G level points &middot; B hide box &middot; Ctrl-Z undo
   &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
@@ -918,7 +961,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
-           perr:null, ptol:0,
+           perr:null, ptol:0, level:null, lvl:[], lerr:null,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
@@ -1029,12 +1072,74 @@ function look(e,c,u){
     -(v[0]*e[0]+v[1]*e[1]+v[2]*e[2]), f[0]*e[0]+f[1]*e[1]+f[2]*e[2],1]);
 }
 /* yaw about the sensor's vertical axis, then translate -- the same order the
-   solver uses, so a number typed here means what it means there. */
-function model(s){
+   solver uses, so a number typed here means what it means there. This is the
+   scan's PLACEMENT: it puts the cloud into the merged frame and stops there. */
+function place(s){
   const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
   return new Float32Array([c,sn,0,0, -sn,c,0,0, 0,0,1,0,
                            s.setup.x_m, s.setup.y_m, s.setup.z_m, 1]);
 }
+/* The minimal rotation taking the measured up-vector back onto +Z -- Rodrigues,
+   and the same rule registration.Level uses. ⛔ MINIMAL matters: any rotation
+   that lands the normal on +Z would level the room, and all but this one also
+   SPIN it about Z. Yaw here is the heading the world widget reports and the
+   frame every placement is written in, so a level that quietly reassigned it
+   would move the alignment as a side effect of straightening the floor. */
+function levelRot(){
+  if(!V.level) return null;
+  const n=V.level.normal, c=n[2];
+  const v=[n[1],-n[0],0];                       /* n x z */
+  if(v[0]*v[0]+v[1]*v[1] < 1e-24) return null;  /* already vertical */
+  const K=[[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]];
+  const k=1/(1+c), R=[[1,0,0],[0,1,0],[0,0,1]];
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    let kk=0; for(let m=0;m<3;m++) kk+=K[i][m]*K[m][j];
+    R[i][j]+=K[i][j]+kk*k;
+  }
+  return R;
+}
+function levelMat(){
+  const R=levelRot(); if(!R) return null;
+  const p=V.level.pivot;                        /* turn about the named surface */
+  const t=[0,0,0];
+  for(let i=0;i<3;i++) t[i]=p[i]-(R[i][0]*p[0]+R[i][1]*p[1]+R[i][2]*p[2]);
+  return new Float32Array([R[0][0],R[1][0],R[2][0],0,
+                           R[0][1],R[1][1],R[2][1],0,
+                           R[0][2],R[1][2],R[2][2],0,
+                           t[0],t[1],t[2],1]);
+}
+/* Placement, then level. The exporter composes them in this order too, and the
+   clip box and every edit are tested against the result -- so what is cut on
+   screen is what is cut in the file. */
+function model(s){
+  const L=levelMat(), M=place(s);
+  return L ? mul(L,M) : M;
+}
+/* ⛔ ONE HOME FOR local -> world. Three separate copies of this arithmetic had
+   grown up -- the edit mask, the picker, the pair markers -- and none of them
+   would have known about levelling; a fourth copy is how a preview and an
+   exporter drift apart while both look right. Everything reads the scan's own
+   matrix now, so whatever is folded into it reaches all of them at once. */
+function affine(s){
+  const m=model(s);
+  return [m[0],m[4],m[8],m[12], m[1],m[5],m[9],m[13], m[2],m[6],m[10],m[14]];
+}
+function put(A,x,y,z){
+  return [A[0]*x+A[1]*y+A[2]*z+A[3],
+          A[4]*x+A[5]*y+A[6]*z+A[7],
+          A[8]*x+A[9]*y+A[10]*z+A[11]];
+}
+/* Where a picked point sits in the merged frame BEFORE levelling -- which is
+   the frame a Setup lands in, and the frame a level is measured in. ⭐ That is
+   what makes pressing Level twice return the same answer instead of compounding
+   a second rotation onto the first. */
+function preLevel(s,p){
+  const m=place(s);
+  return [m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],
+          m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],
+          m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]];
+}
+function scanAt(i){ return V.scans.find(z=>z.index===i) || null; }
 
 const VS = `
 attribute vec3 aPos; attribute vec3 aCol; attribute float aLive;
@@ -1334,7 +1439,8 @@ function drawDraft(){
      ov.height!==Math.floor(innerHeight*dpr)){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
-  if(!path && !V.gizmo && !V.pairs.length){ ov.style.display='none'; return; }
+  if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length){
+    ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
@@ -1743,17 +1849,17 @@ function recomputeLive(){
     const n=s.points, live=s.live;
     total+=n;
     if(!V.edits.length){ live.fill(1); alive+=n; upload(s); continue; }
-    const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
-    const ox=+s.setup.x_m, oy=+s.setup.y_m, oz=+s.setup.z_m;
+    const A=affine(s);          /* placement AND level, exactly as the GPU has it */
     for(let base=0;base<n;base+=BLOCK){
       const k=Math.min(BLOCK,n-base);
       for(let i=0;i<k;i++){
         const j=(base+i)*3;
         const x=s.raw[j]*s.scale[0]+s.offset[0];
         const y=s.raw[j+1]*s.scale[1]+s.offset[1];
-        _wx[i]=c*x - sn*y + ox;
-        _wy[i]=sn*x + c*y + oy;
-        _wz[i]=s.raw[j+2]*s.scale[2]+s.offset[2] + oz;
+        const z=s.raw[j+2]*s.scale[2]+s.offset[2];
+        _wx[i]=A[0]*x+A[1]*y+A[2]*z+A[3];
+        _wy[i]=A[4]*x+A[5]*y+A[6]*z+A[7];
+        _wz[i]=A[8]*x+A[9]*y+A[10]*z+A[11];
       }
       const seg=live.subarray(base,base+k);
       seg.fill(keepers?0:1);
@@ -1858,7 +1964,8 @@ function setTool(t){
   if(t) V.nav=false;
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
-  [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs']]
+  [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs'],
+   ['level','Pick level points']]
     .forEach(([id,label])=>{
       const b=$(id); if(!b) return;
       b.classList.toggle('on', t===id);
@@ -1918,13 +2025,14 @@ function commitLasso(mode){
    guessed correspondence with a known one. CloudCompare's own wiki says of the
    equivalent tool that it is "sometimes the only way to get a fine result".
 
-   ⛔ THE MOVING HALF IS STORED IN THE SCAN'S OWN COORDINATES, never in world.
-   A pick made against a placement, then kept as world, silently means something
-   different the moment the scan is nudged -- and the fit would come back with a
-   plausible residual for the wrong room. Held local, a pair means the same
-   thing whatever the scan is doing, its marker follows the cloud it was picked
-   on, and what the server returns is a Setup outright rather than a correction
-   to be composed with a placement that has since moved. */
+   ⛔ EVERY PICK IS STORED IN ITS SCAN'S OWN COORDINATES, never in world. A pick
+   made against a placement, then kept as world, silently means somewhere else
+   the moment that scan is nudged or the room is levelled -- and the fit would
+   come back with a plausible residual for a room that no longer exists. Held
+   local, a pick means the same thing whatever happens around it, its marker
+   follows the cloud it was taken from, and what the server returns is a Setup
+   outright rather than a correction to be composed with a placement that has
+   since moved. The same machinery serves the levelling picks below. */
 function clipCtx(){
   if(!V.clip) return null;
   return {c:boxCentre(), h:boxHalf(), R:boxRot(), inv:V.inside};
@@ -1957,9 +2065,7 @@ function pickPoint(mx,my){
   for(const s of V.scans){
     if(V.only>=0 && s.index!==V.only) continue;
     const m=mul(V.vp, model(s)), n=s.points, raw=s.raw,
-          sc=s.scale, of=s.offset, live=s.live;
-    const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
-    const ox=+s.setup.x_m, oy=+s.setup.y_m, oz=+s.setup.z_m;
+          sc=s.scale, of=s.offset, live=s.live, A=affine(s);
     for(let i=0;i<n;i++){
       if(live[i]<0.5) continue;               /* already deleted: not pickable */
       const j=i*3;
@@ -1972,7 +2078,8 @@ function pickPoint(mx,my){
       const py=(0.5-(m[1]*x+m[5]*y+m[9]*z+m[13])/w*0.5)*innerHeight;
       const dy=py-my; if(dy<-PICK_WIDE||dy>PICK_WIDE) continue;
       const d2=dx*dx+dy*dy; if(d2>PICK_WIDE*PICK_WIDE) continue;
-      const wx=c*x-sn*y+ox, wy=sn*x+c*y+oy, wz=z+oz;
+      const wx=A[0]*x+A[1]*y+A[2]*z+A[3], wy=A[4]*x+A[5]*y+A[6]*z+A[7],
+            wz=A[8]*x+A[9]*y+A[10]*z+A[11];
       if(clipHides(q,wx,wy,wz)) continue;     /* clipped away: not pickable */
       const hit={scan:s, local:[x,y,z], world:[wx,wy,wz]};
       if(d2<=PICK_TIGHT*PICK_TIGHT){
@@ -1999,8 +2106,8 @@ function pairWant(){
    before the next paint, so the message would still be invisible during the
    freeze it exists to explain. */
 function takePick(mx,my){
-  if(!pairWant()) return;
-  if(active() === V.scans[0]) return say(
+  if(!V.scans.length) return;
+  if(V.tool==='pair' && active() === V.scans[0]) return say(
     'The first scan is the reference — everything is aligned TO it. Choose a '+
     'different moving scan above before picking pairs.', 'warn');
   let n=0; for(const s of V.scans) n+=s.points;
@@ -2010,22 +2117,30 @@ function takePick(mx,my){
   } else runPick(mx,my);
 }
 function runPick(mx,my){
-  const want=pairWant();
-  if(!want) return;
   const hit=pickPoint(mx,my);
   if(!hit) return say('No point close enough to that click. Zoom in, or turn '+
                       'the point size up, and click straight onto a feature.',
                       'warn');
+  /* levelling takes a point off ANY cloud -- the floor is the floor, and picks
+     spanning both is what reveals a tilt between the two setups */
+  if(V.tool==='level') return levelPick(hit);
+  const want=pairWant();
+  if(!want) return;
   if(hit.scan!==want) return say(
     'That point is on '+hit.scan.name.slice(0,16)+', and this click wanted '+
     want.name.slice(0,16)+'. Pairs alternate: reference first, then the same '+
     'feature on the moving scan. Where the two clouds overlap, the button '+
     'under Colour that says Both will show one at a time.', 'warn');
   if(!V.half){
-    V.half={ref:hit.world.slice()};
+    V.half={ri:hit.scan.index, rp:hit.local.slice()};
     say('Now click the SAME feature on '+active().name.slice(0,16)+'.');
   } else {
-    V.pairs.push({ref:V.half.ref, mov:hit.local.slice(), si:active().index});
+    /* ⛔ BOTH HALVES ARE HELD IN THEIR OWN SCAN'S COORDINATES. Stored as world,
+       a pick would silently start meaning somewhere else the moment its cloud
+       was nudged OR the room was levelled -- and the fit would come back with a
+       plausible residual for a room that no longer exists. */
+    V.pairs.push({ri:V.half.ri, rp:V.half.rp,
+                  si:active().index, mp:hit.local.slice()});
     V.half=null; V.perr=null;
     say(V.pairs.length<3
         ? V.pairs.length+' of 3 — a third pair is what checks the other two.'
@@ -2034,27 +2149,38 @@ function runPick(mx,my){
   }
   showPairs(); invalidate();
 }
-/* World position of each half, for the markers. The reference half is already
-   in the merged frame; the moving half is put through its scan's CURRENT
-   placement, so the two markers visibly close on each other as the alignment
-   improves -- which is the whole feedback this tool offers. */
+/* Where each half sits on screen right now: both put through their own scan's
+   current placement, so the two markers visibly close on each other as the
+   alignment improves -- which is the whole feedback this tool offers. */
 function pairEnds(p){
-  const s=V.scans.find(z=>z.index===p.si) || active();
-  if(!s) return null;
-  const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
-  return [p.ref, [c*p.mov[0]-sn*p.mov[1]+(+s.setup.x_m),
-                  sn*p.mov[0]+c*p.mov[1]+(+s.setup.y_m),
-                  p.mov[2]+(+s.setup.z_m)]];
+  const r=scanAt(p.ri), m=scanAt(p.si);
+  if(!r || !m) return null;
+  return [put(affine(r),p.rp[0],p.rp[1],p.rp[2]),
+          put(affine(m),p.mp[0],p.mp[1],p.mp[2])];
+}
+/* And what goes to the solver: the reference half in the merged frame BEFORE
+   levelling, because that is the frame a Setup lands in. */
+function pairWire(p){
+  const r=scanAt(p.ri);
+  return r ? {ref:preLevel(r,p.rp), mov:p.mp.slice()} : null;
+}
+function halfAt(){
+  const s=V.half && scanAt(V.half.ri);
+  return s ? put(affine(s),V.half.rp[0],V.half.rp[1],V.half.rp[2]) : null;
 }
 function drawPairs(vp){
-  if(!V.pairs.length && !V.half) return;
-  const pts=[], lines=[];
+  if(!V.pairs.length && !V.half && !V.lvl.length) return;
+  const pts=[], lines=[], green=[];
   for(const p of V.pairs){
     const e=pairEnds(p); if(!e) continue;
     pts.push(e[0], e[1]);
     lines.push(e[0], e[1]);
   }
-  if(V.half) pts.push(V.half.ref);
+  const h=halfAt(); if(h) pts.push(h);
+  for(const q of V.lvl){
+    const s=scanAt(q.si); if(!s) continue;
+    green.push(put(affine(s),q.p[0],q.p[1],q.p[2]));
+  }
   gl.useProgram(lprog);
   gl.uniformMatrix4fv(lloc.uVP,false,vp);
   gl.disableVertexAttribArray(loc.aCol);
@@ -2072,10 +2198,20 @@ function drawPairs(vp){
     gl.drawArrays(gl.LINES,0,lines.length);
   }
   const dpr=Math.min(devicePixelRatio||1,2);
-  gl.bufferData(gl.ARRAY_BUFFER, flat(pts), gl.DYNAMIC_DRAW);
-  gl.uniform1f(lloc.uSize, 12*dpr);
-  gl.uniform4f(lloc.uCol, 1.0,0.78,0.30,1.0);
-  gl.drawArrays(gl.POINTS,0,pts.length);
+  if(pts.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pts), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize, 12*dpr);
+    gl.uniform4f(lloc.uCol, 1.0,0.78,0.30,1.0);
+    gl.drawArrays(gl.POINTS,0,pts.length);
+  }
+  /* levelling picks in green, so a floor pick is never mistaken for one half
+     of a pair sitting a few centimetres away on the same skirting board */
+  if(green.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(green), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize, 12*dpr);
+    gl.uniform4f(lloc.uCol, 0.42,0.92,0.52,1.0);
+    gl.drawArrays(gl.POINTS,0,green.length);
+  }
   gl.enable(gl.DEPTH_TEST);
   gl.enableVertexAttribArray(loc.aCol);
   gl.enableVertexAttribArray(loc.aLive);
@@ -2083,9 +2219,17 @@ function drawPairs(vp){
 /* The numbers, on the 2D overlay. A marker with no number cannot be matched to
    the line in the panel that says which pair is 40 cm out. */
 function labelPairs(){
-  if(!V.pairs.length || !V.vp) return;
+  if((!V.pairs.length && !V.lvl.length) || !V.vp) return;
   oc.font='600 11px ui-sans-serif,system-ui,sans-serif';
   oc.textAlign='center';
+  V.lvl.forEach((q,i)=>{
+    const s=scanAt(q.si); if(!s) return;
+    const off = V.lerr && V.lerr.length===V.lvl.length &&
+                Math.abs(V.lerr[i]) > 0.05;
+    oc.fillStyle = off ? 'rgba(255,110,110,.95)' : 'rgba(120,235,140,.9)';
+    const w=project(put(affine(s),q.p[0],q.p[1],q.p[2]), V.vp);
+    if(w) oc.fillText('L'+(i+1), w[0], w[1]-11);
+  });
   V.pairs.forEach((p,i)=>{
     const e=pairEnds(p); if(!e) return;
     const worst = V.perr && V.perr.length===V.pairs.length &&
@@ -2127,15 +2271,85 @@ async function alignPairs(){
   if(mine.length!==V.pairs.length) return say(
     'Some of those pairs were picked on a different moving scan. Clear them '+
     'and pick again for '+s.name.slice(0,16)+'.', 'warn');
+  const wire=mine.map(pairWire);
+  if(wire.some(w=>!w)) return say('A pair points at a scan that is no longer '+
+                                  'open. Clear them and pick again.', 'warn');
   const r=await fetch('pairs',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({index:s.index, pairs:mine})});
+    body:JSON.stringify({index:s.index, pairs:wire})});
   const j=await r.json();
   if(!j.ok) return say(j.error||'that fit could not be made', 'warn');
   s.setup=j.setup; s.rung=null;
   V.perr=j.errors; V.ptol=j.tolerance;
   syncSliders(); invalidate(); editsFollow(); showPairs(); dirty();
   say(j.text, j.trustworthy ? null : 'warn');
+}
+
+/* ---- levelling against gravity ----
+   ⛔ THE CLOUDS ARE IN THE RIG'S FRAME, NOT GRAVITY'S. The pitch calibration
+   was differential -- lasers measured against each other -- so a common tilt of
+   the whole tripod is invisible to it, and a room scanned off a slightly
+   out-of-level tripod comes out leaning by exactly that much with every
+   internal check still passing. Naming a surface you KNOW to be horizontal is
+   what makes the tilt measurable at all.
+
+   ⛔ THE LEVEL IS NOT PART OF ANY SCAN'S PLACEMENT. Folded into the Setups, the
+   next press of Auto-align would silently undo it -- a Setup carries yaw and
+   translation only, so the solver's answer has no tilt in it and would write
+   the room back to leaning with nothing to show for it. */
+function levelPick(hit){
+  V.lvl.push({si:hit.scan.index, p:hit.local.slice()});
+  V.lerr=null;
+  say(V.lvl.length<3
+      ? V.lvl.length+' of 3 on the level surface — spread them out.'
+      : V.lvl.length+' points. Press Level to it.' +
+        (V.lvl.length<4 ? ' A fourth pick is the first one that can disagree '+
+                          'with the other three.' : ''));
+  showLevel(); invalidate(); dirty();
+}
+function showLevel(){
+  const box=$('lvllist'); if(!box) return;
+  const bits=[];
+  if(V.level) bits.push('<b style="color:#8fd694">levelled — was '+
+    (+V.level.tilt_deg).toFixed(2)+'° off</b>');
+  if(V.lvl.length) bits.push(V.lvl.length+' point'+
+    (V.lvl.length===1?'':'s')+' picked' +
+    (V.lerr ? ' · worst '+Math.max(...V.lerr.map(Math.abs)).toFixed(3)+' m '+
+              'off the plane' : ''));
+  box.innerHTML = bits.join('<br>') || '';
+}
+async function applyLevel(){
+  if(V.lvl.length<3) return say(
+    'Three points at least, on one surface you know is horizontal — two can '+
+    'only give a line, and a line lies on infinitely many planes.', 'warn');
+  const pts=[];
+  for(const q of V.lvl){
+    const s=scanAt(q.si);
+    if(!s) return say('A levelling pick points at a scan that is no longer '+
+                      'open. Clear them and pick again.', 'warn');
+    pts.push(preLevel(s,q.p));       /* measured on the RAW frame, always */
+  }
+  if(V.edits.length) say('note: the edits already made stay where they are '+
+                         'while the cloud straightens under them.', 'warn');
+  const r=await fetch('level',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({points:pts})});
+  const j=await r.json();
+  if(!j.ok) return say(j.error||'that surface could not be levelled to','warn');
+  V.level=j.level; V.lerr=j.errors;
+  showLevel(); recomputeLive(); invalidate(); dirty();
+  say(j.text, j.trustworthy ? null : 'warn');
+}
+function clearLevel(){
+  const had=!!V.level;
+  V.level=null; V.lvl=[]; V.lerr=null;
+  showLevel(); recomputeLive(); invalidate(); dirty();
+  say(had ? 'Levelling removed — the room is back in the rig’s own frame.'
+          : 'Levelling picks cleared.');
+}
+function undoLevelPick(){
+  if(!V.lvl.length) return;
+  V.lvl.pop(); V.lerr=null; showLevel(); invalidate(); dirty();
 }
 
 /* ---- projects ----
@@ -2149,6 +2363,7 @@ async function alignPairs(){
 function projectState(){
   return {setups: V.scans.map(s=>s.setup),
           edits: V.edits, pairs: V.pairs,
+          level: V.level, level_points: V.lvl,
           box: {o:V.box.o, lo:V.box.lo, hi:V.box.hi, yaw:V.box.yaw,
                 pitch:V.box.pitch, roll:V.box.roll,
                 on:V.clip, inside:V.inside, wire:V.wire},
@@ -2212,7 +2427,13 @@ async function openProject(path){
     }
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
     V.pairs=[]; V.half=null; V.perr=null;
+    V.level=null; V.lvl=[]; V.lerr=null;
     for(const m of j.scans) V.scans.push(await loadScan(m));
+    /* ⛔ The level goes back before anything is drawn or masked. Left until
+       after the edits, the clip box and every lasso would be applied for one
+       pass against a room still leaning -- and the counts on screen would be
+       for a crop nobody ever made. */
+    V.level=j.level||null; V.lvl=j.level_points||[];
     measure();                          /* extents first: the box needs them */
     if(j.box){
       V.box.o=j.box.o; V.box.lo=j.box.lo; V.box.hi=j.box.hi;
@@ -2238,7 +2459,6 @@ async function openProject(path){
        because they belonged to a fit made against a placement this project has
        since had written over it. A stale number beside a pair would be read as
        this project's. */
-    V.pairs=j.pairs||[];
     $('clipon').textContent=V.clip?'On':'Off';
     $('clipon').classList.toggle('on',V.clip);
     $('clipflip').textContent=V.inside?'Hiding inside':'Hiding outside';
@@ -2246,7 +2466,8 @@ async function openProject(path){
     $('wire').textContent=V.wire?'Box shown':'Box hidden';
     $('wire').classList.toggle('on',V.wire);
     refreshLists(); syncSliders(); syncClipSliders(); showTurn();
-    clipLabels(); showEdits(); showPairs(); recomputeLive(); recentre();
+    clipLabels(); showEdits(); showPairs(); showLevel();
+    recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
@@ -2380,12 +2601,13 @@ async function saveMerged(clipOnly){
     const r=await fetch('save',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({setups:V.scans.map(s=>s.setup),
-                           voxel:step.v, edit:plan})});
+                           voxel:step.v, edit:plan, level:V.level})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
     watch(false);
     say('saved '+j.points.toLocaleString()+' points to '+j.out+
-        ' at '+step.t+(j.edit&&j.edit!=='no edit'?' — '+j.edit:''));
+        ' at '+step.t+(j.edit&&j.edit!=='no edit'?' — '+j.edit:'')+
+        (j.level?' — '+j.level:''));
   }catch(e){ watch(false); say('Save failed: '+e.message, 'bad'); }
   $('save').disabled=false; $('saveclip').disabled=false;
 }
@@ -2536,6 +2758,7 @@ function syncClipSliders(){
     else if(k==='l'||k==='L') setTool(V.tool==='lasso'?'':'lasso');
     else if(k==='m'||k==='M') setTool(V.tool==='rect'?'':'rect');
     else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
+    else if(k==='g'||k==='G') setTool(V.tool==='level'?'':'level');
     else if(k==='b'||k==='B') $('wire').onclick({target:$('wire')});
     else return;
     e.preventDefault();
@@ -2578,6 +2801,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('pairgo').onclick=alignPairs;
   $('pairundo').onclick=undoPair;
   $('pairclear').onclick=clearPairs;
+  $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
+  $('lvlgo').onclick=applyLevel;
+  $('lvlundo').onclick=undoLevelPick;
+  $('lvlclear').onclick=clearLevel;
   $('gizmo').onclick=e=>{ V.gizmo=!V.gizmo;
     e.target.classList.toggle('on',V.gizmo); invalidate(); };
   $('undo').onclick=undoEdit;
