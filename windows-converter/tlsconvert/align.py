@@ -596,10 +596,14 @@ PAGE = r"""<!doctype html>
   <div id="msg"></div>
   <hr>
   <label>View</label>
-  <div class="row"><button id="ortho">Perspective</button>
-    <button id="plan">Top</button>
+  <div class="row"><button id="nav" class="go">Camera</button>
+    <button id="ortho">Perspective</button></div>
+  <div class="row"><button id="plan">Top</button>
     <button id="front">Front</button>
     <button id="side">Side</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
+    <b>Camera</b> (C) gives the whole window to the view — no grips, no
+    tools, nothing to catch a drag. Picking any tool leaves it again.</div>
   <hr>
   <label>Preview detail <span class="num" id="detv">2 cm</span></label>
   <input type="range" id="det" min="0" max="5" step="1" value="2">
@@ -666,7 +670,7 @@ PAGE = r"""<!doctype html>
 <canvas id="ov"></canvas>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
-  &middot; R roam &middot; F recentre &middot; O orthographic
+  &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
   &middot; M rectangle &middot; L lasso &middot; B hide box &middot; Ctrl-Z undo</div>
 <div id="err"></div>
 <script>
@@ -677,6 +681,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
+           nav:false,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
@@ -933,7 +938,7 @@ function project(p, vp){
   return [(x/w*0.5+0.5)*innerWidth, (0.5-y/w*0.5)*innerHeight];
 }
 function pickHandle(mx,my){
-  if(!V.wire || !V.scans.length) return -1;
+  if(V.nav || !V.wire || !V.scans.length) return -1;
   let best=-1, bd=15;
   handles().forEach((k,i)=>{
     const s=project(k.p, V.vp); if(!s) return;
@@ -964,19 +969,30 @@ function drawBox(vp){
   ev[arm*3+3]=turn[0]; ev[arm*3+4]=turn[1];   ev[arm*3+5]=turn[2];
   gl.bufferData(gl.ARRAY_BUFFER, ev, gl.DYNAMIC_DRAW);
   gl.uniform1f(lloc.uSize, 1.0);
-  gl.uniform4f(lloc.uCol, 0.38,0.74,1.0, V.clip?1.0:0.55);
+  /* toward the clear colour, for the same reason as the grips below */
+  const q = V.clip?1.0:0.55, g0=0.07;
+  gl.uniform4f(lloc.uCol, g0+(0.38-g0)*q, g0+(0.74-g0)*q, g0+(1.0-g0)*q, 1.0);
   gl.drawArrays(gl.LINES,0,EDGES.length+2);
 
   const hv=new Float32Array(hs.length*3);
   hs.forEach((k,i)=>{ hv[i*3]=k.p[0]; hv[i*3+1]=k.p[1]; hv[i*3+2]=k.p[2]; });
   const dpr=Math.min(devicePixelRatio||1,2);
+  /* ⛔ DIMMED BY SCALING THE COLOUR, NOT BY ALPHA. Nothing enables blending in
+     this program, so an alpha below 1 lands in the framebuffer's alpha channel
+     and changes precisely nothing on screen -- a fade that silently does not
+     fade. Toward the clear colour is what actually reads as dimmer.
+     Grips are inert in camera mode, and a grip that looks live but ignores the
+     pointer is worse than no grip at all. */
+  const f = V.nav ? 0.34 : 1.0, sz = V.nav ? 0.6 : 1.0, bg = 0.07;
+  const dim = (r,g,b) => gl.uniform4f(lloc.uCol, bg+(r-bg)*f, bg+(g-bg)*f,
+                                      bg+(b-bg)*f, 1.0);
   gl.disable(gl.DEPTH_TEST);
   gl.bufferData(gl.ARRAY_BUFFER, hv, gl.DYNAMIC_DRAW);
-  gl.uniform1f(lloc.uSize, 11*dpr);
-  gl.uniform4f(lloc.uCol, 0.38,0.74,1.0,1.0);
+  gl.uniform1f(lloc.uSize, 11*dpr*sz);
+  dim(0.38,0.74,1.0);
   gl.drawArrays(gl.POINTS,0,6);                    /* the six face grips */
-  gl.uniform1f(lloc.uSize, 13*dpr);                /* the turn grip, apart */
-  gl.uniform4f(lloc.uCol, 0.60,1.00,0.62,1.0);
+  gl.uniform1f(lloc.uSize, 13*dpr*sz);             /* the turn grip, apart */
+  dim(0.60,1.00,0.62);
   gl.drawArrays(gl.POINTS,6,1);
   if(V.hot>=0 && V.hot<hs.length){
     gl.bufferData(gl.ARRAY_BUFFER,
@@ -1571,7 +1587,36 @@ function markLasso(seg,k,l,to){
    same screen-space storage, same camera matrix, same crossing-number test at
    export. Giving the rectangle its own world-space maths would be a second
    thing to keep in step with the exporter for no gain at all. */
+/* ⭐ CAMERA MODE IS AN OVERRIDE, NOT ANOTHER TOOL. With a box small enough to
+   be useful its grips cover the points being inspected, and every drag near one
+   grabs the grip instead of the view; the lasso takes the whole canvas outright.
+   This hands the window back to the camera in one press.
+
+   ⛔ AND IT LETS GO OF ITSELF. A mode that silently swallows the next button
+   press is the failure this project keeps meeting -- a tool that does nothing
+   reads as a tool that is broken. So choosing a tool, or Drag to move, turns
+   camera mode OFF rather than being ignored by it, and the grips are drawn
+   dimmed and smaller while it is on so their being inert is visible. */
+function setNav(on){
+  V.nav=!!on;
+  if(V.nav){
+    setTool('');
+    if(V.grab){ V.grab=false; $('grab').classList.remove('on');
+                $('grab').textContent='Drag to move';
+                cv.classList.remove('move'); }
+    V.hot=-1;
+  }
+  const b=$('nav');
+  if(b) b.classList.toggle('on', V.nav);
+  cv.style.cursor='';
+  invalidate();
+  say(V.nav ? 'Camera only — drag to orbit, shift-drag to pan, wheel to zoom. '+
+              'Nothing else will catch the pointer.'
+            : 'Tools are live again.');
+}
 function setTool(t){
+  if(t) V.nav=false;
+  const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
   [['lasso','Lasso'],['rect','Rectangle']].forEach(([id,label])=>{
     const b=$(id); if(!b) return;
@@ -1826,7 +1871,9 @@ function syncClipSliders(){
     lx=e.clientX; ly=e.clientY;
     down=true; grip=null; lassoing=false; spin=null;
     panning=(e.button===2||e.shiftKey);
-    if(!panning && V.tool){
+    if(V.nav){
+      /* one branch, deliberately: in camera mode nothing else is consulted */
+    } else if(!panning && V.tool){
       lassoing=true; startDraft(e.clientX,e.clientY);
     } else if(!panning){
       /* grips win over everything: they sit on top and are small targets */
@@ -1836,7 +1883,7 @@ function syncClipSliders(){
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
       }
     }
-    moving = V.grab && !panning && !grip && !lassoing;
+    moving = !V.nav && V.grab && !panning && !grip && !lassoing;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -1877,6 +1924,7 @@ function syncClipSliders(){
     if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoEdit();
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
                            setTool(''); invalidate(); }
+    else if(k==='c'||k==='C') setNav(!V.nav);
     else if(k==='ArrowLeft')  nudge(-0.05,0,0);
     else if(k==='ArrowRight') nudge(0.05,0,0);
     else if(k==='ArrowUp')    nudge(0,0.05,0);
@@ -1904,9 +1952,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   bind('ty','y_m',v=>v.toFixed(2),'yv');
   bind('tz','z_m',v=>v.toFixed(2),'zv2');
   bind('rz','yaw_deg',v=>v.toFixed(1),'rv');
+  $('nav').onclick=()=>setNav(!V.nav);
   $('grab').onclick=e=>{ V.grab=!V.grab; e.target.classList.toggle('on',V.grab);
     e.target.textContent=V.grab?'Moving scan':'Drag to move';
-    cv.classList.toggle('move',V.grab); };
+    cv.classList.toggle('move',V.grab);
+    if(V.grab) setNav(false); };
   $('plan').onclick=planView;
   $('front').onclick=()=>preset(-Math.PI/2, 0);
   $('side').onclick=()=>preset(0, 0);

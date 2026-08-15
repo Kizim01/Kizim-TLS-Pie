@@ -2097,6 +2097,17 @@ while leaving the clipping on, because once the box is small its grips sit over 
 being inspected and steal every drag. Also a **Rectangle** marquee ([three.js `misc_boxselection`]),
 which is the lasso's own machinery with four corners rather than a second thing to keep in step.
 
+**✅ AND A DEDICATED CAMERA MODE (C).** One press hands the whole window to the view — no grips, no
+tools, nothing to catch a drag. ⛔ **It lets go of itself**: choosing a tool, or Drag to move, turns
+camera mode *off* rather than being ignored by it, because a mode that silently swallows the next
+button press is this project's recurring failure — **a tool that does nothing reads as a tool that is
+broken**. The grips are drawn dimmed and smaller while it is on, so their being inert is visible.
+
+**⛔ AND A BUG THAT BUILDING IT EXPOSED: nothing in the workbench enables blending**, so every
+`gl.uniform4f(..., alpha)` below 1 landed in the framebuffer's alpha channel and changed *nothing* on
+screen — a fade that silently does not fade. That was already shipping on the clip-box outline's
+"switched off" state. Dimming is now done by scaling toward the clear colour.
+
 **⛔ THE BOUNDS ARE HELD IN THE BOX'S OWN FRAME, from a world pivot.** Held as world `lo`/`hi`
 instead, dragging the +X face of a *turned* box pushes the face along its own normal while sliding
 the centre along **world** x — the box creeps sideways as you resize it, which reads as a shaky hand

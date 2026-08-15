@@ -1074,6 +1074,17 @@ try:
                                    "X east")))
     check("a rectangle marquee is offered as well as a lasso",
           "'rect'" in _page and "Rectangle" in _page)
+    check("a camera-only mode exists and overrides the tools",
+          all(t in _page for t in ("setNav", "V.nav", "'nav'",
+                                   "Camera only")))
+    # ⛔ A mode that silently swallows the next button press is the failure
+    # this project keeps meeting: a tool that does nothing reads as broken.
+    check("and picking a tool leaves camera mode rather than being ignored",
+          "if(t) V.nav=false;" in _page)
+    # ⛔ Nothing enables blending, so an alpha below 1 changes nothing on
+    # screen -- a fade that silently does not fade.
+    check("the inert grips are dimmed toward the clear colour, not by alpha",
+          "not by alpha" in _page.lower() or "NOT BY ALPHA" in _page)
     # A density change is a re-read of the captures, so it must be able to
     # answer with no scans open rather than throwing at the operator.
     _d = _srv.density(0.05)
