@@ -2039,11 +2039,12 @@ camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `
 `fc32204`.
 
 **✅ REGISTRATION IS BUILT, AND STUDIO IS AN EDITOR TOO — `TLS-Pie-Studio.exe`. 2026-08-15, commits
-`79a4e34` → `914115d`, 245 tests.** Double-click, Browse, decode with a live bar, both scans tinted
-by origin, align by drag or by button, then **edit**: a turnable clip box with drag grips, lasso and
-rectangle deletes, orthographic Top/Front/Side, a clickable world-axes widget, a camera-only mode,
-separate preview and export detail, and **Save project (`.tlspie`)** to carry on tomorrow. Its own
-section is below; the four things the solver cost are worth reading before touching it.
+`79a4e34` → `f5f57e3`, 270 tests.** Double-click, Browse, decode with a live bar, both scans tinted
+by origin, align by drag, by button, or by **picking matched point pairs** when the solver will not
+converge, then **edit**: a turnable clip box with drag grips, lasso and rectangle deletes,
+orthographic Top/Front/Side, a clickable world-axes widget, a camera-only mode, separate preview and
+export detail, and **Save project (`.tlspie`)** to carry on tomorrow. Its own section is below; the
+four things the solver cost are worth reading before touching it.
 
 **⭐ THE SOLVER IS `small_gicp`, NOT MINE.** My grid search took ~100 s and reached 0.0401 m;
 [GICP](https://github.com/koide3/small_gicp) takes **0.24 s** and reaches **0.0345 m** — faster and
@@ -2137,10 +2138,54 @@ random point/box decisions across 80 turned boxes, 0 disagreements**, plus a rou
 drawn wireframe, the preview mask and the exporter describe one box. The shader's `uClipRT` is the
 **transpose**: world-to-box undoes the turn rather than repeating it.
 
-**⛔ STILL OPEN:** point-pair picking to align by matched points (CloudCompare's *Align (point pairs
-picking)*, whose wiki notes it is "sometimes the only way" when ICP will not converge). ⭐ Note
-CloudCompare does this today and reads our LAZ. **E57 still earns its place** once several setups
-share a file. `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
+**✅ AND WHEN THE SOLVER WILL NOT CONVERGE, NAME THE CORRESPONDENCES YOURSELF — point-pair picking
+(P).** Click a feature on the reference cloud, the same feature on the moving one, three times, then
+**Align from pairs**. GICP only works from a start close enough that its nearest-neighbour guesses
+are mostly right, and two setups with little overlap — or a corridor that looks the same from either
+end — will not give it one. Modelled on [CloudCompare]'s *Align (point pairs picking)*, whose wiki
+says it is "sometimes the only way to get a fine result".
+
+**⛔ THE DEGENERACY IS THE WHOLE POINT OF THE GUARD, AND IT SCORES PERFECTLY.** Pick the top and
+bottom of the same door frame and the picks share a position in plan, so turning the cloud about that
+position moves them not at all: a fit is still available, it just carries **no heading** — yaw 0,
+residual *zero*, every published sign of success. That is this project's oldest failure (*a search
+finds only the degrees of freedom it varies*) wearing a new hat, and the only defence is refusing the
+question. Picks must spread ≥ 0.30 m horizontally or the fit is refused with the reason. A test
+asserts the refusal **and** that the answer it refuses would have scored perfectly.
+
+**⛔ FITTED IN THE FAMILY THAT CAN BE APPLIED, NOT IN SO(3).** The textbook Umeyama fit returns a full
+3-D rotation and a `Setup` carries yaw only, so fitting freely and then reading the yaw out of the
+matrix reports the residual of a transform this program never applies — **flattering by exactly the
+tilt it silently dropped**. Yaw and translation are solved together, in closed form, and the number
+returned is the error of `setup.apply` itself. ⭐ Checked against a **200,000-step brute-force yaw
+sweep with the translation re-optimised at every angle**, over 400 random cases: worst disagreement
+**0.0009°** against a 0.0018° sweep step — the quantisation limit. (A sweep is legitimate *here*
+precisely because the other freedom is not held fixed; that is what made the original one worthless.)
+
+**⛔ AND THE AUTO-ALIGN LADDER IS RESET BY A HAND PLACEMENT.** Each press of Auto-align steps down
+`GICP_LADDER` and the rung is remembered. Left alone, the very next press after a pair alignment would
+refine **at 1 cm a placement that had just moved by metres** — a fine way to converge confidently onto
+the wrong wall. A pick is new information, exactly as a nudge is.
+
+**⭐ THE PICKER TAKES THE FRONT-MOST POINT UNDER THE CROSSHAIR, NOT THE NEAREST ON SCREEN** — screen
+distance alone happily picks the wall *through* the chair standing in front of it. Two radii: nearest
+*to the eye* within 5 px, falling back to nearest *on screen* within 16 px for a click that lands in
+the gaps between points. ⛔ `w > 0` first, as ever. Deleted and clipped-away points are not pickable.
+⭐ The projection is cross-checked against the shader's own route over **40,000 random placements in
+both projections — worst disagreement 0.00017 px**; the same check reports **5,244 px** if `mul`'s
+operands are swapped, which is how a composed matrix goes wrong while still drawing a plausible
+picture. The pick is taken on **release**, so a drag still orbits: picking pairs means getting round
+to the other side of the feature between nearly every click.
+
+**⛔ AND THE MOVING HALF OF A PAIR IS STORED IN THE SCAN'S OWN COORDINATES, never in world.** Kept as
+world, a pick would silently mean something else the moment the scan was nudged, and the fit would
+come back with a plausible residual for the wrong room. Held local, it means the same thing whatever
+the scan is doing, its marker follows the cloud it was picked on — so the two markers visibly close on
+each other as the alignment improves — and what the server returns is a `Setup` outright rather than a
+correction to be composed with a placement that has since moved.
+
+**⛔ STILL OPEN:** **E57 earns its place** once several setups share a file.
+`Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
 
 [three-orientation-gizmo]: https://github.com/jrj2211/three-orientation-gizmo
 [three.js `misc_boxselection`]: https://github.com/mrdoob/three.js/blob/dev/examples/misc_boxselection.html

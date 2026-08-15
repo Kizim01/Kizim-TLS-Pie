@@ -10,6 +10,12 @@ second. So the operator gets the same transform the solver does, can drag it
 themselves, and can see the residual move as they do; the button is a shortcut,
 not an oracle.
 
+⭐ AND WHEN THE SOLVER WILL NOT CONVERGE AT ALL, the operator can name the
+correspondences instead of leaving them to be guessed: click a feature on one
+cloud, the same feature on the other, three times. GICP only works from a start
+close enough that its nearest-neighbour guesses are mostly right, and two setups
+with little overlap will not give it one. See `registration.pairs_setup`.
+
 ⭐ THE CLOUDS ARE TINTED BY SCAN, and that is the default colour mode rather
 than a novelty. Two greyscale clouds of the same room overlap into one greyscale
 cloud, and the one thing alignment work needs to see is WHICH points came from
@@ -249,6 +255,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/solve":
                 return self._json(srv.solve(int(body.get("index", 1)),
                                             body.get("start")))
+            if path == "/pairs":
+                return self._json(srv.align_pairs(int(body.get("index", 1)),
+                                                  body.get("pairs") or []))
             if path == "/browse":
                 return self._json(srv.browse())
             if path == "/add":
@@ -387,6 +396,39 @@ class AlignServer(object):
                 "text": "at a %.0f cm voxel — %s"
                         % ((sol.voxel or 0) * 100, sol.describe())}
 
+    def align_pairs(self, index, pairs):
+        """
+        Place a scan from named correspondences instead of from a search.
+
+        The page sends each pair as a point in the merged frame and its mate in
+        the moving scan's OWN coordinates, so what comes back is a Setup
+        outright rather than a correction to be composed with the placement the
+        picks were made against -- one less frame to get wrong.
+        """
+        if not 0 < index < len(self.scans):
+            return {"ok": False,
+                    "error": "scan %d is the reference; it is what everything "
+                             "else is aligned TO" % index}
+        pairs = list(pairs or [])
+        ref = [p.get("ref") for p in pairs]
+        mov = [p.get("mov") for p in pairs]
+        if any(r is None or m is None for r, m in zip(ref, mov)):
+            return {"ok": False, "error": "a pair is missing one of its halves"}
+        fit = registration.pairs_setup(ref, mov)
+        scan = self.scans[index]
+        scan.setup = fit.setup
+        # ⛔ AND THE LADDER STARTS OVER. Auto-align steps down GICP_LADDER on
+        # each press and remembers the rung; leaving it alone would let the very
+        # next press refine at 1 cm a placement that has just moved by metres,
+        # which is a fine way to converge confidently onto the wrong wall. A
+        # placement made by hand is new information, exactly as a nudge is.
+        scan.rung = None
+        return {"ok": True, "index": index, "setup": fit.setup.as_dict(),
+                "rms": fit.rms, "errors": [float(e) for e in fit.errors],
+                "worst": fit.worst[0], "tolerance": fit.tolerance,
+                "trustworthy": fit.ok, "pairs": fit.count,
+                "text": fit.describe()}
+
     def browse(self):
         """
         A native file dialog, asked for by the page.
@@ -515,6 +557,10 @@ class AlignServer(object):
                 "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "scans": scans,
                 "edits": (state or {}).get("edits") or [],
+                # Half-picked pairs are scaffolding, not a result -- but they
+                # are scaffolding that took an eye and a careful hand, and
+                # dropping them on save would throw that away silently.
+                "pairs": (state or {}).get("pairs") or [],
                 "box": (state or {}).get("box"),
                 "view": (state or {}).get("view"),
                 "align_voxel": self.align_voxel,
@@ -592,6 +638,7 @@ class AlignServer(object):
         self.project_path = path
         return {"ok": True, "scans": self._rebuild(), "path": path,
                 "edits": body.get("edits") or [], "box": body.get("box"),
+                "pairs": body.get("pairs") or [],
                 "view": body.get("view"), "voxel": voxel,
                 "saved": body.get("saved")}
 
@@ -770,6 +817,17 @@ PAGE = r"""<!doctype html>
     is far quicker and settles which answer is meant.</div>
   <div id="bar"><i id="barfill"></i></div>
   <div id="msg"></div>
+  <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
+    <button id="pairgo" class="go">Align from pairs</button></div>
+  <div class="row"><button id="pairundo">Undo pair</button>
+    <button id="pairclear">Clear pairs</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    When Auto-align will not converge — little overlap, or a room that looks
+    the same from both ends — name three features that appear in
+    <b>both</b> scans. Click one on the reference cloud, then the same one on
+    the moving cloud. Spread them across the floor: picks stacked one above
+    the other cannot say which way the scan is facing.</div>
+  <div id="pairlist" style="font-size:10.5px;color:var(--faint)"></div>
   <hr>
   <label>View</label>
   <div class="row"><button id="nav" class="go">Camera</button>
@@ -847,7 +905,8 @@ PAGE = r"""<!doctype html>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
-  &middot; M rectangle &middot; L lasso &middot; B hide box &middot; Ctrl-Z undo
+  &middot; M rectangle &middot; L lasso &middot; P pick pairs
+  &middot; B hide box &middot; Ctrl-Z undo
   &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
@@ -858,7 +917,8 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
-           nav:false, project:null, dirty:false,
+           nav:false, project:null, dirty:false, pairs:[], half:null,
+           perr:null, ptol:0,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
@@ -1274,11 +1334,12 @@ function drawDraft(){
      ov.height!==Math.floor(innerHeight*dpr)){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
-  if(!path && !V.gizmo){ ov.style.display='none'; return; }
+  if(!path && !V.gizmo && !V.pairs.length){ ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
   drawGizmo();
+  labelPairs();
   if(!path || path.length<2) return;
   oc.beginPath();
   oc.moveTo(path[0][0],path[0][1]);
@@ -1349,6 +1410,7 @@ function draw(){
     }
   }
   drawBox(vp);
+  drawPairs(vp);
   drawDraft();
 }
 
@@ -1796,11 +1858,12 @@ function setTool(t){
   if(t) V.nav=false;
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
-  [['lasso','Lasso'],['rect','Rectangle']].forEach(([id,label])=>{
-    const b=$(id); if(!b) return;
-    b.classList.toggle('on', t===id);
-    b.textContent = t===id ? label+' on' : label;
-  });
+  [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs']]
+    .forEach(([id,label])=>{
+      const b=$(id); if(!b) return;
+      b.classList.toggle('on', t===id);
+      b.textContent = t===id ? label+' on' : label;
+    });
   cv.style.cursor = t ? 'crosshair' : '';
 }
 function askLasso(on){
@@ -1847,6 +1910,234 @@ function commitLasso(mode){
                     : 'Deleted the points inside the outline.');
 }
 
+/* ---- point-pair picking ----
+   ⭐ FOR WHEN THE SOLVER WILL NOT CONVERGE. GICP needs a start close enough
+   that its nearest-neighbour guesses are mostly right; two setups with little
+   overlap, or a corridor that looks the same from either end, will not give it
+   one. Naming the same feature in both clouds three times replaces every
+   guessed correspondence with a known one. CloudCompare's own wiki says of the
+   equivalent tool that it is "sometimes the only way to get a fine result".
+
+   ⛔ THE MOVING HALF IS STORED IN THE SCAN'S OWN COORDINATES, never in world.
+   A pick made against a placement, then kept as world, silently means something
+   different the moment the scan is nudged -- and the fit would come back with a
+   plausible residual for the wrong room. Held local, a pair means the same
+   thing whatever the scan is doing, its marker follows the cloud it was picked
+   on, and what the server returns is a Setup outright rather than a correction
+   to be composed with a placement that has since moved. */
+function clipCtx(){
+  if(!V.clip) return null;
+  return {c:boxCentre(), h:boxHalf(), R:boxRot(), inv:V.inside};
+}
+function clipHides(q,x,y,z){
+  if(!q) return false;
+  const dx=x-q.c[0], dy=y-q.c[1], dz=z-q.c[2], R=q.R;   /* transposed: world
+                                                           into the box's frame */
+  const ax=R[0][0]*dx+R[1][0]*dy+R[2][0]*dz;
+  const ay=R[0][1]*dx+R[1][1]*dy+R[2][1]*dz;
+  const az=R[0][2]*dx+R[1][2]*dy+R[2][2]*dz;
+  const out = ax<-q.h[0]||ax>q.h[0] || ay<-q.h[1]||ay>q.h[1] ||
+              az<-q.h[2]||az>q.h[2];
+  return q.inv ? !out : out;
+}
+/* Two radii, and they answer two different questions. Nearest-to-the-EYE inside
+   a tight radius is "the thing under the crosshair", which is what a click on a
+   wall with a chair in front of it means -- screen distance alone would happily
+   pick the wall THROUGH the chair. Nearest-on-SCREEN inside a wider one is the
+   fallback for a click that landed in the gaps between points, where insisting
+   on the front-most would return whatever fleck of foreground drifted nearest.
+   ⛔ w > 0 first, always: the perspective divide flips everything behind the eye
+   round to the front, and it is the same divide that put a mirrored bite in a
+   lasso here once already. */
+const PICK_TIGHT = 5, PICK_WIDE = 16;
+function pickPoint(mx,my){
+  if(!V.vp) return null;
+  const e=eye(), q=clipCtx();
+  let tight=null, td=Infinity, wide=null, wd=PICK_WIDE*PICK_WIDE;
+  for(const s of V.scans){
+    if(V.only>=0 && s.index!==V.only) continue;
+    const m=mul(V.vp, model(s)), n=s.points, raw=s.raw,
+          sc=s.scale, of=s.offset, live=s.live;
+    const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
+    const ox=+s.setup.x_m, oy=+s.setup.y_m, oz=+s.setup.z_m;
+    for(let i=0;i<n;i++){
+      if(live[i]<0.5) continue;               /* already deleted: not pickable */
+      const j=i*3;
+      const x=raw[j]*sc[0]+of[0], y=raw[j+1]*sc[1]+of[1],
+            z=raw[j+2]*sc[2]+of[2];
+      const w=m[3]*x+m[7]*y+m[11]*z+m[15];
+      if(w<=1e-6) continue;
+      const px=((m[0]*x+m[4]*y+m[8]*z+m[12])/w*0.5+0.5)*innerWidth;
+      const dx=px-mx; if(dx<-PICK_WIDE||dx>PICK_WIDE) continue;
+      const py=(0.5-(m[1]*x+m[5]*y+m[9]*z+m[13])/w*0.5)*innerHeight;
+      const dy=py-my; if(dy<-PICK_WIDE||dy>PICK_WIDE) continue;
+      const d2=dx*dx+dy*dy; if(d2>PICK_WIDE*PICK_WIDE) continue;
+      const wx=c*x-sn*y+ox, wy=sn*x+c*y+oy, wz=z+oz;
+      if(clipHides(q,wx,wy,wz)) continue;     /* clipped away: not pickable */
+      const hit={scan:s, local:[x,y,z], world:[wx,wy,wz]};
+      if(d2<=PICK_TIGHT*PICK_TIGHT){
+        const ed=(wx-e[0])*(wx-e[0])+(wy-e[1])*(wy-e[1])+(wz-e[2])*(wz-e[2]);
+        if(ed<td){ td=ed; tight=hit; }
+      }
+      if(d2<wd){ wd=d2; wide=hit; }
+    }
+  }
+  return tight || wide;
+}
+/* Which cloud the next click has to land on. Alternating strictly is what makes
+   a pair a pair; two picks off the SAME cloud would fit perfectly and mean
+   nothing, and nothing downstream could notice. */
+function pairWant(){
+  if(!V.scans.length) return null;
+  return V.half ? active() : V.scans[0];
+}
+/* ⛔ A LONG SEARCH THAT SAYS NOTHING READS AS A CRASH. Every previewed point is
+   projected to find the one under the cursor, which is a fifth of a second at
+   the 2 cm default and several seconds at full density -- and a window that
+   locks solid the moment you click is the failure this project keeps meeting.
+   The two frames are not superstition: one only guarantees the callback runs
+   before the next paint, so the message would still be invisible during the
+   freeze it exists to explain. */
+function takePick(mx,my){
+  if(!pairWant()) return;
+  if(active() === V.scans[0]) return say(
+    'The first scan is the reference — everything is aligned TO it. Choose a '+
+    'different moving scan above before picking pairs.', 'warn');
+  let n=0; for(const s of V.scans) n+=s.points;
+  if(n>4000000){
+    say('searching '+n.toLocaleString()+' points for what you clicked…');
+    requestAnimationFrame(()=>requestAnimationFrame(()=>runPick(mx,my)));
+  } else runPick(mx,my);
+}
+function runPick(mx,my){
+  const want=pairWant();
+  if(!want) return;
+  const hit=pickPoint(mx,my);
+  if(!hit) return say('No point close enough to that click. Zoom in, or turn '+
+                      'the point size up, and click straight onto a feature.',
+                      'warn');
+  if(hit.scan!==want) return say(
+    'That point is on '+hit.scan.name.slice(0,16)+', and this click wanted '+
+    want.name.slice(0,16)+'. Pairs alternate: reference first, then the same '+
+    'feature on the moving scan. Where the two clouds overlap, the button '+
+    'under Colour that says Both will show one at a time.', 'warn');
+  if(!V.half){
+    V.half={ref:hit.world.slice()};
+    say('Now click the SAME feature on '+active().name.slice(0,16)+'.');
+  } else {
+    V.pairs.push({ref:V.half.ref, mov:hit.local.slice(), si:active().index});
+    V.half=null; V.perr=null;
+    say(V.pairs.length<3
+        ? V.pairs.length+' of 3 — a third pair is what checks the other two.'
+        : V.pairs.length+' pairs. Press Align from pairs.');
+    dirty();
+  }
+  showPairs(); invalidate();
+}
+/* World position of each half, for the markers. The reference half is already
+   in the merged frame; the moving half is put through its scan's CURRENT
+   placement, so the two markers visibly close on each other as the alignment
+   improves -- which is the whole feedback this tool offers. */
+function pairEnds(p){
+  const s=V.scans.find(z=>z.index===p.si) || active();
+  if(!s) return null;
+  const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
+  return [p.ref, [c*p.mov[0]-sn*p.mov[1]+(+s.setup.x_m),
+                  sn*p.mov[0]+c*p.mov[1]+(+s.setup.y_m),
+                  p.mov[2]+(+s.setup.z_m)]];
+}
+function drawPairs(vp){
+  if(!V.pairs.length && !V.half) return;
+  const pts=[], lines=[];
+  for(const p of V.pairs){
+    const e=pairEnds(p); if(!e) continue;
+    pts.push(e[0], e[1]);
+    lines.push(e[0], e[1]);
+  }
+  if(V.half) pts.push(V.half.ref);
+  gl.useProgram(lprog);
+  gl.uniformMatrix4fv(lloc.uVP,false,vp);
+  gl.disableVertexAttribArray(loc.aCol);
+  gl.disableVertexAttribArray(loc.aLive);
+  gl.enableVertexAttribArray(lloc.aP);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lbuf);
+  gl.vertexAttribPointer(lloc.aP,3,gl.FLOAT,false,0,0);
+  gl.disable(gl.DEPTH_TEST);       /* a marker inside a wall is still a marker */
+  const flat=a=>{ const f=new Float32Array(a.length*3);
+    a.forEach((v,i)=>{ f[i*3]=v[0]; f[i*3+1]=v[1]; f[i*3+2]=v[2]; }); return f; };
+  if(lines.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(lines), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize,1.0);
+    gl.uniform4f(lloc.uCol, 1.0,0.78,0.30,1.0);
+    gl.drawArrays(gl.LINES,0,lines.length);
+  }
+  const dpr=Math.min(devicePixelRatio||1,2);
+  gl.bufferData(gl.ARRAY_BUFFER, flat(pts), gl.DYNAMIC_DRAW);
+  gl.uniform1f(lloc.uSize, 12*dpr);
+  gl.uniform4f(lloc.uCol, 1.0,0.78,0.30,1.0);
+  gl.drawArrays(gl.POINTS,0,pts.length);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enableVertexAttribArray(loc.aCol);
+  gl.enableVertexAttribArray(loc.aLive);
+}
+/* The numbers, on the 2D overlay. A marker with no number cannot be matched to
+   the line in the panel that says which pair is 40 cm out. */
+function labelPairs(){
+  if(!V.pairs.length || !V.vp) return;
+  oc.font='600 11px ui-sans-serif,system-ui,sans-serif';
+  oc.textAlign='center';
+  V.pairs.forEach((p,i)=>{
+    const e=pairEnds(p); if(!e) return;
+    const worst = V.perr && V.perr.length===V.pairs.length &&
+                  V.perr[i] > (V.ptol||0);
+    oc.fillStyle = worst ? 'rgba(255,110,110,.95)' : 'rgba(255,200,110,.95)';
+    e.forEach(w=>{ const s=project(w, V.vp);
+                   if(s) oc.fillText(String(i+1), s[0], s[1]-11); });
+  });
+}
+function showPairs(){
+  const box=$('pairlist'); if(!box) return;
+  if(!V.pairs.length && !V.half){ box.textContent=''; return; }
+  const rows=V.pairs.map((p,i)=>{
+    const e = V.perr && V.perr.length===V.pairs.length
+      ? ' — <b style="color:'+(V.perr[i]>(V.ptol||0)?'#ff7070':'#8fd694')+'">'+
+        V.perr[i].toFixed(3)+' m</b>' : '';
+    return 'pair '+(i+1)+e;
+  });
+  if(V.half) rows.push('<i>waiting for the moving scan…</i>');
+  box.innerHTML=rows.join('<br>');
+}
+function undoPair(){
+  if(V.half){ V.half=null; say('Dropped the half-made pair.'); }
+  else if(V.pairs.length){ V.pairs.pop(); say('Dropped the last pair.'); }
+  else return;
+  V.perr=null; showPairs(); invalidate(); dirty();
+}
+function clearPairs(){
+  V.pairs=[]; V.half=null; V.perr=null;
+  showPairs(); invalidate(); dirty(); say('Pairs cleared.');
+}
+async function alignPairs(){
+  if(V.pairs.length<2) return say(
+    'Two pairs at least — one pair can only slide the scan across, it cannot '+
+    'say which way it is facing. Three is what lets the residual check itself.',
+    'warn');
+  const s=active(); if(!s) return;
+  const mine=V.pairs.filter(p=>p.si===s.index);
+  if(mine.length!==V.pairs.length) return say(
+    'Some of those pairs were picked on a different moving scan. Clear them '+
+    'and pick again for '+s.name.slice(0,16)+'.', 'warn');
+  const r=await fetch('pairs',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({index:s.index, pairs:mine})});
+  const j=await r.json();
+  if(!j.ok) return say(j.error||'that fit could not be made', 'warn');
+  s.setup=j.setup; s.rung=null;
+  V.perr=j.errors; V.ptol=j.tolerance;
+  syncSliders(); invalidate(); editsFollow(); showPairs(); dirty();
+  say(j.text, j.trustworthy ? null : 'warn');
+}
+
 /* ---- projects ----
    ⭐ THE PROJECT SAVES THE WORK, NOT THE POINTS. What took the time is the
    alignment and the edits; the captures are already on disk and are the only
@@ -1857,7 +2148,7 @@ function commitLasso(mode){
    silently opening a smaller project under the same name. */
 function projectState(){
   return {setups: V.scans.map(s=>s.setup),
-          edits: V.edits,
+          edits: V.edits, pairs: V.pairs,
           box: {o:V.box.o, lo:V.box.lo, hi:V.box.hi, yaw:V.box.yaw,
                 pitch:V.box.pitch, roll:V.box.roll,
                 on:V.clip, inside:V.inside, wire:V.wire},
@@ -1920,6 +2211,7 @@ async function openProject(path){
       gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
     }
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
+    V.pairs=[]; V.half=null; V.perr=null;
     for(const m of j.scans) V.scans.push(await loadScan(m));
     measure();                          /* extents first: the box needs them */
     if(j.box){
@@ -1942,6 +2234,11 @@ async function openProject(path){
       setOrtho(!!j.view.ortho);
     }
     V.edits=j.edits||[];
+    /* Pairs saved half-finished come back half-finished: the residuals do not,
+       because they belonged to a fit made against a placement this project has
+       since had written over it. A stale number beside a pair would be read as
+       this project's. */
+    V.pairs=j.pairs||[];
     $('clipon').textContent=V.clip?'On':'Off';
     $('clipon').classList.toggle('on',V.clip);
     $('clipflip').textContent=V.inside?'Hiding inside':'Hiding outside';
@@ -1949,7 +2246,7 @@ async function openProject(path){
     $('wire').textContent=V.wire?'Box shown':'Box hidden';
     $('wire').classList.toggle('on',V.wire);
     refreshLists(); syncSliders(); syncClipSliders(); showTurn();
-    clipLabels(); showEdits(); recomputeLive(); recentre();
+    clipLabels(); showEdits(); showPairs(); recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
@@ -2152,16 +2449,23 @@ function syncClipSliders(){
 }
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
-      spin=null, lx=0, ly=0;
+      spin=null, lx=0, ly=0, picking=null, drift=0;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
     /* the world widget is a control, and it is drawn over the canvas */
     if(gizmoClick(e.clientX,e.clientY)) return;
     lx=e.clientX; ly=e.clientY;
-    down=true; grip=null; lassoing=false; spin=null;
+    down=true; grip=null; lassoing=false; spin=null; picking=null; drift=0;
     panning=(e.button===2||e.shiftKey);
     if(V.nav){
       /* one branch, deliberately: in camera mode nothing else is consulted */
+    } else if(!panning && V.tool==='pair'){
+      /* ⛔ TAKEN ON RELEASE, NOT ON PRESS. Picking pairs means orbiting between
+         nearly every click -- you have to get round to the other side of the
+         feature -- so a tool that consumed the button down would cost the
+         camera. A press that ends where it began is a pick; anything that
+         travelled is a drag, and falls through to the orbit below. */
+      picking=[e.clientX,e.clientY];
     } else if(!panning && V.tool){
       lassoing=true; startDraft(e.clientX,e.clientY);
     } else if(!panning){
@@ -2184,6 +2488,7 @@ function syncClipSliders(){
       return;
     }
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
+    drift+=Math.abs(dx)+Math.abs(dy);
     if(lassoing) extendDraft(e.clientX,e.clientY);
     else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
@@ -2197,6 +2502,8 @@ function syncClipSliders(){
     else orbit(dx,dy);
   });
   addEventListener('pointerup', ()=>{
+    if(picking && drift<5) takePick(picking[0],picking[1]);
+    picking=null;
     if(lassoing) finishDraft();
     if(moving && V.edits.length) recomputeLive();   /* the cut follows the
                                                        scan it was made on */
@@ -2214,6 +2521,7 @@ function syncClipSliders(){
     else if((e.ctrlKey||e.metaKey) && (k==='o'||k==='O')) openProject(null);
     else if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoEdit();
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
+                           V.half=null; showPairs();
                            setTool(''); invalidate(); }
     else if(k==='c'||k==='C') setNav(!V.nav);
     else if(k==='ArrowLeft')  nudge(-0.05,0,0);
@@ -2227,6 +2535,7 @@ function syncClipSliders(){
     else if(k==='o'||k==='O') setOrtho(!V.ortho);
     else if(k==='l'||k==='L') setTool(V.tool==='lasso'?'':'lasso');
     else if(k==='m'||k==='M') setTool(V.tool==='rect'?'':'rect');
+    else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
     else if(k==='b'||k==='B') $('wire').onclick({target:$('wire')});
     else return;
     e.preventDefault();
@@ -2234,7 +2543,10 @@ function syncClipSliders(){
 }
 document.addEventListener('DOMContentLoaded', ()=>{
   $('which').onchange=e=>{ V.active=parseInt(e.target.value,10);
-                           syncSliders(); invalidate(); };
+                           /* a half-made pair belongs to the scan it was
+                              started against, not to whichever is chosen next */
+                           V.half=null; V.perr=null;
+                           syncSliders(); showPairs(); invalidate(); };
   const bind=(id,key,fmt,lbl)=>{ $(id).oninput=e=>{
     const s=active(); if(!s) return;
     s.setup[key]=parseFloat(e.target.value);
@@ -2262,6 +2574,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');
   $('rect').onclick=()=>setTool(V.tool==='rect'?'':'rect');
+  $('pair').onclick=()=>setTool(V.tool==='pair'?'':'pair');
+  $('pairgo').onclick=alignPairs;
+  $('pairundo').onclick=undoPair;
+  $('pairclear').onclick=clearPairs;
   $('gizmo').onclick=e=>{ V.gizmo=!V.gizmo;
     e.target.classList.toggle('on',V.gizmo); invalidate(); };
   $('undo').onclick=undoEdit;

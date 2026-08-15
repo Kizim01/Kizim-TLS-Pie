@@ -1012,6 +1012,134 @@ _rt3 = pipeline.Edit.from_dict(_cutl.as_dict())
 check("an Edit carries its lassos through JSON too",
       list(_rt3.mask(_lp)) == list(_cutl.mask(_lp)))
 
+print("\naligning from hand-picked point pairs")
+
+
+class _FakeScanPair(object):
+    """Enough of a Scan for align_pairs, without decoding a capture."""
+
+    def __init__(self, name):
+        self.path = os.path.join(tmp, name)
+        self.name = name
+        self.setup = registration.Setup()
+        self.rung = None
+        self.total = 1000
+
+
+# Four features round a room, and the setup that is to be recovered from them.
+_feat = np.array([[3.0, 1.0, 0.2], [-2.5, 2.0, 1.4],
+                  [0.5, -3.5, -0.3], [-3.0, -1.5, 0.9]])
+_true = registration.Setup(1.35, -0.72, 0.11, 137.0)
+_fit = registration.pairs_setup(_true.apply(_feat), _feat)
+check("a setup is recovered from four clean pairs",
+      close(_fit.setup.yaw_deg, 137.0, 1e-6) and
+      close(_fit.setup.dx, 1.35, 1e-9) and close(_fit.setup.dy, -0.72, 1e-9) and
+      close(_fit.setup.dz, 0.11, 1e-9), _fit.setup.describe())
+check("and it says so: the residual of clean pairs is zero",
+      _fit.rms < 1e-9 and _fit.ok, _fit.rms)
+check("every pair gets its own error, not just the total",
+      _fit.count == 4 and len(_fit.errors) == 4)
+
+# ⛔ THE DEGENERACY, AND IT SCORES PERFECTLY. Features picked one above the
+# other -- the top and bottom of a door frame -- share a position in plan, so
+# turning the cloud about that position moves them not at all. A fit is still
+# available, it just carries NO HEADING: yaw 0 with a residual of zero, which
+# is every published sign of success. This is the project's oldest failure
+# wearing a new hat, and the only defence is refusing the question.
+_stack = np.array([[2.0, 1.0, -0.4], [2.0, 1.0, 0.6], [2.0, 1.0, 1.7]])
+_turned = registration.Setup(0.0, 0.0, 0.0, 40.0).apply(_stack)
+_null = registration.Setup(yaw_deg=0.0)
+_null.dx, _null.dy, _null.dz = (_turned.mean(axis=0) - _stack.mean(axis=0))
+check("a heading-free fit of stacked picks really would score perfectly",
+      float(np.max(np.linalg.norm(_null.apply(_stack) - _turned, axis=1)))
+      < 1e-9)
+try:
+    registration.pairs_setup(_turned, _stack)
+    check("stacked picks are refused, not scored", False)
+except ValueError as _exc:
+    check("stacked picks are refused, not scored",
+          "which way" in str(_exc) and "0.30" in str(_exc), str(_exc))
+try:
+    registration.pairs_setup(_true.apply(_feat[:1]), _feat[:1])
+    check("one pair is refused: it cannot say which way the scan faces", False)
+except ValueError as _exc:
+    check("one pair is refused: it cannot say which way the scan faces",
+          "two pairs at least" in str(_exc), str(_exc))
+try:
+    registration.pairs_setup(_true.apply(_feat), _feat[:3])
+    check("a pair missing a half is refused", False)
+except ValueError:
+    check("a pair missing a half is refused", True)
+
+# ⛔ FITTED IN THE FAMILY THAT CAN BE APPLIED. Umeyama returns a full 3-D
+# rotation; a Setup carries yaw only. Fit freely, read the yaw out, and the
+# residual reported would be the free fit's -- flattering by exactly the tilt
+# silently dropped on the way to the screen. So the number returned must be the
+# error of setup.apply itself, on pairs a yaw cannot fit.
+_tilt = math.radians(9.0)
+_tilted = np.stack([_feat[:, 0],
+                    _feat[:, 1] * math.cos(_tilt) - _feat[:, 2] * math.sin(_tilt),
+                    _feat[:, 1] * math.sin(_tilt) + _feat[:, 2] * math.cos(_tilt)],
+                   axis=1)
+_tfit = registration.pairs_setup(_tilted, _feat)
+check("a tilt a Setup cannot express shows up as residual, not as flattery",
+      _tfit.rms > 0.05, _tfit.rms)
+check("and the residual is the error of the transform actually applied",
+      close(_tfit.rms,
+            float(np.sqrt(np.mean(np.sum(
+                (_tfit.setup.apply(_feat) - _tilted) ** 2, axis=1)))), 1e-12))
+
+# One bad pick among four good ones. RMS alone would hide it; the operator
+# needs to be told WHICH one to re-pick.
+_slip = _true.apply(_feat).copy()
+_slip[1] += np.array([0.40, -0.30, 0.10])
+_sfit = registration.pairs_setup(_slip, _feat)
+check("one careless pick is named, not averaged away",
+      _sfit.worst[0] == 1 and _sfit.worst[1] > 0.2, _sfit.describe())
+check("and the fit reports itself untrustworthy",
+      not _sfit.ok and "Re-pick pair 2" in _sfit.describe(), _sfit.describe())
+check("hand-sized jitter still counts as a good fit",
+      registration.pairs_setup(
+          _true.apply(_feat) + np.array([[0.01, -0.02, 0.01], [-0.02, 0.01, 0.0],
+                                         [0.02, 0.02, -0.01], [0.0, -0.01, 0.02]]),
+          _feat).ok)
+check("two pairs say plainly what two pairs can and cannot check",
+      "two pairs only" in
+      registration.pairs_setup(_true.apply(_feat[:2]), _feat[:2]).describe())
+
+_qsrv = align.AlignServer([], out_path=None)
+try:
+    _qsrv.scans = [_FakeScanPair("A.pcap"), _FakeScanPair("B.pcap")]
+    _pairs = [{"ref": list(r), "mov": list(m)}
+              for r, m in zip(_true.apply(_feat), _feat)]
+    _qsrv.scans[1].rung = 0.01          # as if Auto-align had run to the bottom
+    _got = _qsrv.align_pairs(1, _pairs)
+    check("the server places a scan from pairs",
+          _got["ok"] and close(_got["setup"]["yaw_deg"], 137.0, 1e-6), _got)
+    check("and the placement lands on the scan itself",
+          close(_qsrv.scans[1].setup.dx, 1.35, 1e-9))
+    # ⛔ AND THE AUTO-ALIGN LADDER STARTS OVER. Each press of Auto-align steps
+    # down GICP_LADDER and the rung is remembered; left alone, the very next
+    # press would refine at 1 cm a placement that has just moved by metres --
+    # converging confidently onto the wrong wall.
+    check("a placement made by hand resets the Auto-align ladder",
+          _qsrv.scans[1].rung is None)
+    # ⛔ Not asserted off the clean fit: with every error down at 1e-16 the
+    # worst one is whichever way the floating point fell, and a test that
+    # happened to pass on that would be asserting nothing. The careless pick
+    # is what the panel exists to point at, so that is what is checked.
+    _sgot = _qsrv.align_pairs(1, [{"ref": list(r), "mov": list(m)}
+                                  for r, m in zip(_slip, _feat)])
+    check("every pair's error comes back, and the careless one is named",
+          len(_sgot["errors"]) == 4 and _sgot["worst"] == 1 and
+          not _sgot["trustworthy"], _sgot)
+    check("the reference scan cannot be aligned to itself",
+          not _qsrv.align_pairs(0, _pairs)["ok"])
+    check("a pair missing a half is refused by the server too",
+          not _qsrv.align_pairs(1, [{"ref": [0, 0, 0]}])["ok"])
+finally:
+    _qsrv.stop()
+
 print("\nprojects: a pointer file, not a copy of the cloud")
 _proj = os.path.join(tmp, "living room.tlspie")
 
@@ -1053,6 +1181,8 @@ try:
                          {"x_m": -0.5, "y_m": 0.08, "z_m": 0.0,
                           "yaw_deg": -35.5}],
               "edits": _edits,
+              "pairs": [{"ref": [1.0, 2.0, 0.5], "mov": [0.0, 1.0, 0.5],
+                         "si": 1}],
               "box": {"o": [0, 0, 0], "lo": [-2, -2, -1], "hi": [2, 2, 1],
                       "yaw": 12.0, "pitch": 0.0, "roll": 0.0, "on": True,
                       "inside": False, "wire": True},
@@ -1079,6 +1209,14 @@ try:
           _body["edits"] == _edits)
     check("the clip box and the view are saved too",
           _body["box"]["yaw"] == 12.0 and _body["view"]["ortho"] is True)
+    # Half-finished pairs are scaffolding, but scaffolding that took an eye and
+    # a steady hand -- dropping them on save would throw that away silently.
+    check("hand-picked pairs survive a save",
+          _body["pairs"] == _state["pairs"], _body.get("pairs"))
+    _nopairs = os.path.join(tmp, "before picking.tlspie")
+    _psrv.save_project(_nopairs, {"setups": _state["setups"]})
+    check("a project saved before any were picked reads back an empty list",
+          _psrv.read_project(_nopairs)["body"]["pairs"] == [])
     # ⭐ A project is a POINTER file: relative first, so the folder can move.
     check("captures are pointed at, not copied in",
           os.path.getsize(_proj) < 20000 and
@@ -1184,6 +1322,20 @@ try:
                                    "psaveas")))
     check("and a project named on the command line reaches the page",
           "OPEN" in _page and "__OPEN__" not in _page)
+    check("point pairs can be picked, fitted and cleared from the page",
+          all(t in _page for t in ("'pair'", "Pick pairs", "'pairs'",
+                                   "alignPairs", "pickPoint", "pairlist")))
+    # ⛔ Picking means orbiting between nearly every click -- you have to get
+    # round to the other side of the feature. A tool that consumed the button
+    # down would cost the camera, so the pick is taken on release.
+    check("a pick is taken on release, so a drag still orbits",
+          "picking && drift<5" in _page)
+    # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
+    # distance alone picks the wall THROUGH the chair in front of it.
+    check("and the front-most point under the crosshair wins, not the nearest",
+          "PICK_TIGHT" in _page and "PICK_WIDE" in _page)
+    check("the moving half of a pair is kept in the scan's own coordinates",
+          "never in world" in _page and "pairEnds" in _page)
     check("a camera-only mode exists and overrides the tools",
           all(t in _page for t in ("setNav", "V.nav", "'nav'",
                                    "Camera only")))

@@ -626,3 +626,155 @@ def solve(xyz_ref, xyz_mov, max_shift=6.0, progress=None, start=None):
         best, residual, rival, rival_residual = (rival, rival_residual,
                                                  best, residual)
     return Solution(best, residual, floor, baseline, rival, rival_residual)
+
+
+# ---- point-pair picking ----------------------------------------------------
+#
+# ⭐ SOMETIMES THE ONLY WAY. ICP and GICP both need a starting guess close
+# enough that nearest-neighbour correspondences are mostly right; two setups
+# facing opposite walls of a long room, or a pair with little overlap, will not
+# give them one, and the operator's own dragging can only get so close. Naming
+# three features that appear in both clouds solves the transform outright, from
+# correspondences that are KNOWN rather than guessed. CloudCompare's own wiki
+# says of its point-pair aligner that it is "sometimes the only way to get a
+# fine result"; this is that tool.
+
+# How far apart the picks must spread, horizontally, before a heading can be
+# read off them. ⛔ THIS IS NOT A TIDINESS CHECK -- IT IS THE DEGENERACY. Two
+# features picked one above the other (the top and bottom of the same door
+# frame) share an xy position, so turning the cloud about that position changes
+# nothing, and the fit below would return yaw 0 with a residual of zero: a
+# perfect score for an answer carrying no heading at all. That is this project's
+# oldest failure wearing a new hat -- a measurement that only ever varied the
+# parameters it could not constrain. Refused, loudly, rather than scored.
+MIN_PAIR_SPREAD = 0.30
+
+# What a hand-made pick can possibly be worth. The preview is voxelised (2 cm by
+# default) and the VLP-16's own range noise is +/-30 mm, so a residual below
+# this is measuring the operator's mouse and the instrument's noise, not the
+# alignment. Judging picks against a tighter number would mark good work bad.
+PAIR_FLOOR = 0.10
+
+
+class PairFit(object):
+    """A Setup fitted to hand-picked correspondences, and how far each one is out."""
+
+    def __init__(self, setup, errors, spread):
+        self.setup = setup
+        self.errors = np.asarray(errors, dtype=np.float64)
+        self.spread = float(spread)
+
+    @property
+    def count(self):
+        return int(self.errors.size)
+
+    @property
+    def rms(self):
+        if not self.errors.size:
+            return float("nan")
+        return float(np.sqrt(np.mean(self.errors ** 2)))
+
+    @property
+    def worst(self):
+        """(which pair, how far out) -- the one to re-pick, named."""
+        if not self.errors.size:
+            return (-1, float("nan"))
+        i = int(np.argmax(self.errors))
+        return (i, float(self.errors[i]))
+
+    @property
+    def tolerance(self):
+        """
+        What counts as a good fit here, and it is a flat number on purpose.
+
+        The tempting move is to scale it with how far apart the picks are, the
+        way `improvement` scales the solver's verdict. ⛔ IT WOULD BE WRONG, AND
+        LOOSE EXACTLY WHERE IT MATTERS. What limits a hand-made pick is the
+        spacing of the previewed points and the instrument's own range noise --
+        both absolute, and neither cares how big the room is. Scaled at a
+        quarter of the pick spread, a living room came out with a 68 cm
+        tolerance and passed a pair that was half a metre onto the wrong
+        feature: the check reported nothing wrong with the one thing it exists
+        to catch.
+        """
+        return PAIR_FLOOR
+
+    @property
+    def ok(self):
+        return self.rms == self.rms and self.rms <= self.tolerance
+
+    def describe(self):
+        # ASCII only -- this reaches a cp1252 console, where a decorative
+        # character raises UnicodeEncodeError and has already killed a script.
+        i, d = self.worst
+        text = ("%s | %d pairs, %.3f m RMS, worst is pair %d at %.3f m"
+                % (self.setup.describe(), self.count, self.rms, i + 1, d))
+        if self.count < 3:
+            # ⚠ Two pairs and four unknowns leaves the residual testing exactly
+            # one thing: whether the two features really are the same distance
+            # apart in both clouds. That is a genuine check and it is the ONLY
+            # one two pairs can give -- it cannot notice that both picks landed
+            # on the wrong door.
+            text += ("  (two pairs only: the residual can tell you the two "
+                     "features are the same distance apart in both scans, and "
+                     "nothing else. A third pair is what checks the answer.)")
+        elif not self.ok:
+            text += ("  The pairs disagree with each other by more than %.3f m."
+                     " Re-pick pair %d, or drop it." % (self.tolerance, i + 1))
+        return text
+
+
+def pairs_setup(ref, mov):
+    """
+    The Setup that best carries hand-picked `mov` points onto their `ref` mates.
+
+    `ref` are points in the merged frame (where the reference scan already
+    lies); `mov` are points in the moving scan's OWN coordinates, before any
+    placement -- which is what makes the answer a Setup outright rather than a
+    correction to be composed with whatever the scan's placement happens to be.
+
+    ⛔ FITTED IN THE FAMILY THAT CAN BE APPLIED, NOT IN SO(3). The classical
+    Umeyama fit returns a full 3-D rotation, and a Setup carries yaw only, so
+    fitting freely and then reading the yaw out of the matrix would report the
+    residual of a transform this program never applies -- flattering by exactly
+    the tilt it silently dropped. Yaw and translation are solved together here,
+    and the residual returned is the residual of the transform that actually
+    lands on the screen.
+    """
+    ref = np.asarray(ref, dtype=np.float64).reshape(-1, 3)
+    mov = np.asarray(mov, dtype=np.float64).reshape(-1, 3)
+    if ref.shape[0] != mov.shape[0]:
+        raise ValueError("every pair needs both halves: %d reference points "
+                         "against %d on the moving scan"
+                         % (ref.shape[0], mov.shape[0]))
+    if ref.shape[0] < 2:
+        raise ValueError("two pairs at least -- one pair can only slide the "
+                         "scan across, it cannot say which way it is facing")
+
+    rc, mc = ref.mean(axis=0), mov.mean(axis=0)
+    r, m = ref - rc, mov - mc
+
+    # The yaw that best turns m onto r about the vertical, in closed form: the
+    # sum of cross and dot products in the ground plane IS the mean turn.
+    dot = float(np.sum(m[:, 0] * r[:, 0] + m[:, 1] * r[:, 1]))
+    cross = float(np.sum(m[:, 0] * r[:, 1] - m[:, 1] * r[:, 0]))
+
+    # Measured on both sides: picks bunched on EITHER cloud leave the heading
+    # unconstrained, whichever one the operator was careless with.
+    spread = min(float(np.sqrt(np.mean(np.sum(r[:, :2] ** 2, axis=1)))),
+                 float(np.sqrt(np.mean(np.sum(m[:, :2] ** 2, axis=1)))))
+    if spread < MIN_PAIR_SPREAD or np.hypot(dot, cross) < 1e-12:
+        raise ValueError(
+            "these picks are stacked within %.2f m of each other in plan (%.2f m "
+            "needed), so they cannot say which way the scan is turned -- a fit "
+            "from them would score perfectly while carrying no heading at all. "
+            "Pick features well apart across the floor, not one above the other."
+            % (spread, MIN_PAIR_SPREAD))
+
+    setup = Setup(yaw_deg=float(np.degrees(np.arctan2(cross, dot))))
+    turned = setup.apply(mc.reshape(1, 3))[0]     # yaw only: dx/dy/dz still 0
+    setup.dx, setup.dy, setup.dz = (float(rc[0] - turned[0]),
+                                    float(rc[1] - turned[1]),
+                                    float(rc[2] - turned[2]))
+    errors = np.linalg.norm(setup.apply(mov) - ref, axis=1)
+    return PairFit(setup, errors, spread)
