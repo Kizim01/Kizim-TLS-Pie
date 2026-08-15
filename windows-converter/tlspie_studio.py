@@ -8,7 +8,8 @@ choose a density, and write one cloud for SketchUp.
 
     TLS-Pie-Studio.exe                 pick captures in a dialog
     TLS-Pie-Studio.exe A.pcap B.pcap   open these
-    TLS-Pie-Studio.exe --associate     open .las/.laz/.ply with this program
+    TLS-Pie-Studio.exe room.tlspie     reopen a saved project
+    TLS-Pie-Studio.exe --associate     open .tlspie/.las/.laz/.ply with this
 
 ⛔ THE WINDOW OPENS ON THE MAIN THREAD and the HTTP server runs behind it, not
 the other way round. WebView2 and tkinter both want the thread that created
@@ -75,14 +76,25 @@ def main(argv=None):
         print("No such file: %s" % ", ".join(missing), file=sys.stderr)
         return 2
 
+    # A saved project reopens the whole session, so it takes precedence over
+    # anything else on the command line -- it already names its own captures.
+    projects = [p for p in paths
+                if p.lower().endswith(align.PROJECT_EXT)]
     captures = [p for p in paths if p.lower().endswith(".pcap")]
-    if paths and not captures:
-        print("Nothing to decode. Studio opens scanner captures (.pcap); "
-              "an exported cloud has already lost the pan track and the "
-              "per-scan origin that alignment needs.", file=sys.stderr)
+    if paths and not captures and not projects:
+        print("Nothing to decode. Studio opens scanner captures (.pcap) and "
+              "its own projects (%s); an exported cloud has already lost the "
+              "pan track and the per-scan origin that alignment needs."
+              % align.PROJECT_EXT, file=sys.stderr)
         return 2
 
-    out = ("%s_merged.laz" % os.path.splitext(captures[0])[0] if captures
+    if projects:
+        base = projects[0]
+    elif captures:
+        base = captures[0]
+    else:
+        base = None
+    out = ("%s_merged.laz" % os.path.splitext(base)[0] if base
            else os.path.join(os.path.expanduser("~"), "tlspie_merged.laz"))
 
     # ⛔ NOTHING IS DECODED BEFORE THE WINDOW EXISTS. A minute of silence with no
@@ -90,7 +102,8 @@ def main(argv=None):
     # start. The captures go in as PENDING and the page asks for them the moment
     # it loads, so the same progress bar covers a double-click, a Browse and a
     # file association alike.
-    server = align.AlignServer([], out_path=out, pending=captures)
+    server = align.AlignServer([], out_path=out, pending=captures,
+                               open_project=(projects[0] if projects else None))
     print("Ready. Merged output will go to %s" % out)
     sys.stdout.flush()
     try:

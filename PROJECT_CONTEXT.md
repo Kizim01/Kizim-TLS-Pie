@@ -2097,6 +2097,20 @@ while leaving the clipping on, because once the box is small its grips sit over 
 being inspected and steal every drag. Also a **Rectangle** marquee ([three.js `misc_boxselection`]),
 which is the lasso's own machinery with four corners rather than a second thing to keep in step.
 
+**✅ SESSIONS SAVE AND REOPEN — `.tlspie`, Ctrl-S / Ctrl-O, and double-clickable.** Alignment, every
+edit, the clip box and its turn, the view and both detail settings. ⭐ **A PROJECT IS A POINTER FILE,
+NOT A COPY.** The captures are hundreds of megabytes and are the only real record of the scan;
+copying them in would double the disk and quietly create a second, staler version of the truth. Both
+a path *relative to the project* and the original absolute one are stored, **relative tried first** —
+that is the one that survives the whole folder being copied to another machine.
+
+**⛔ A MISSING CAPTURE IS REFUSED LOUDLY, NEVER SKIPPED.** Opening the three scans still present and
+saying nothing about the fourth restores a *different* project under the same name — with every edit
+still applied, so the result looks deliberate. **⛔ And the setups written are the PAGE's, not
+`self.scans`**: the server only hears a placement when asked to act on it, so saving its own copy
+would store the alignment as of the last Auto-align and lose the hand-tuning done after it, which is
+the slow part.
+
 **✅ AND A DEDICATED CAMERA MODE (C).** One press hands the whole window to the view — no grips, no
 tools, nothing to catch a drag. ⛔ **It lets go of itself**: choosing a tool, or Drag to move, turns
 camera mode *off* rather than being ignored by it, because a mode that silently swallows the next

@@ -103,6 +103,37 @@ def pick_files(title="Add a scan"):
         return []
 
 
+def pick_project(save=False, title=None):
+    """
+    A native dialog for a .tlspie project file. '' if cancelled.
+
+    ⚠ SAVE AND OPEN ARE THE SAME CALL WITH A DIFFERENT DIALOG TYPE, and the save
+    one returns a plain string while the open one returns a tuple -- pywebview
+    does not smooth that over, and treating the string as a sequence gives you
+    its first character as a path.
+    """
+    win = WINDOW[0]
+    if win is None:
+        return ""
+    try:
+        import webview
+        kinds = ("TLS-Pie project (*.tlspie)", "All files (*.*)")
+        if save:
+            chosen = win.create_file_dialog(
+                webview.SAVE_DIALOG, save_filename="scan project.tlspie",
+                file_types=kinds)
+        else:
+            chosen = win.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False, file_types=kinds)
+        if not chosen:
+            return ""
+        if isinstance(chosen, str):
+            return chosen
+        return chosen[0]
+    except Exception:
+        return ""
+
+
 def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):
     """
     Open `url` in a native window and block until it is closed.
@@ -144,7 +175,8 @@ def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):
 # and quietly taking it from someone who also does network work would be a
 # genuinely annoying thing to do behind their back. It is offered separately.
 PROG_ID = "KizimTLSPie.Cloud"
-SAFE_EXTS = (".las", ".laz", ".ply")
+# .tlspie is ours alone -- nothing else on earth claims it -- so it leads.
+SAFE_EXTS = (".tlspie", ".las", ".laz", ".ply")
 CONTESTED_EXTS = (".pcap",)
 
 

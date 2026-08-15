@@ -37,6 +37,7 @@ import json
 import os
 import socketserver
 import threading
+import time
 import webbrowser
 
 import numpy as np
@@ -46,6 +47,39 @@ from . import export, pipeline, registration, viewer
 # A clip box is for seeing INTO a room, so it starts wide open. Anything else
 # and the operator's first impression is a cloud with pieces missing.
 DEFAULT_ALIGN_VOXEL = 0.02
+
+
+PROJECT_EXT = ".tlspie"
+PROJECT_VERSION = 1
+
+
+def project_paths(entry, project_path):
+    """
+    Where a saved scan might be now, best guess first.
+
+    ⭐ A PROJECT IS A POINTER FILE, NOT A COPY. The captures are hundreds of
+    megabytes each and are the only real record of the scan; duplicating them
+    into a project would double the disk for no gain and quietly create a second
+    version of the truth. What follows from that is that the captures can MOVE,
+    so both a path relative to the project and the original absolute one are
+    stored, and the relative one is tried FIRST -- that is the one that survives
+    the whole folder being copied to another machine, which is the case that
+    actually happens.
+    """
+    out = []
+    rel = entry.get("rel")
+    if rel and project_path:
+        out.append(os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(project_path)), rel)))
+    if entry.get("path"):
+        out.append(entry["path"])
+    seen, unique = set(), []
+    for p in out:
+        key = os.path.normcase(p)
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique
 
 
 def _same(a, b, tol=1e-6):
@@ -221,6 +255,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.add(body.get("paths") or []))
             if path == "/density":
                 return self._json(srv.density(body.get("voxel")))
+            if path == "/project/save":
+                return self._json(srv.save_project(body.get("path"),
+                                                   body.get("state")))
+            if path == "/project/open":
+                return self._json(srv.open_project(body.get("path")))
+            if path == "/project/browse":
+                return self._json(srv.browse_project(bool(body.get("save"))))
             if path == "/save":
                 return self._json(srv.save(body.get("setups") or [],
                                            body.get("voxel"),
@@ -240,12 +281,14 @@ class AlignServer(object):
 
     def __init__(self, scans, port=0, out_path=None, merge_voxel=0.0,
                  max_points=viewer.DEFAULT_VIEW_MAX,
-                 align_voxel=DEFAULT_ALIGN_VOXEL, pending=None):
+                 align_voxel=DEFAULT_ALIGN_VOXEL, pending=None,
+                 open_project=None):
         self.scans = list(scans)
         self.out_path = out_path
         self.merge_voxel = merge_voxel
         self.max_points = max_points
         self.align_voxel = align_voxel
+        self.project_path = None
         self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
         meta = self._rebuild()
@@ -255,7 +298,11 @@ class AlignServer(object):
         # the exact complaint. The window opens first and asks for them, so the
         # very same progress bar covers a double-click, a Browse, and a file
         # association alike.
+        # A project named on the command line arrives the same way captures do:
+        # the window opens first and asks for it, so the progress bar covers a
+        # double-clicked .tlspie exactly as it covers a double-clicked capture.
         self.page = (PAGE
+                     .replace("__OPEN__", json.dumps(open_project or ""))
                      .replace("__PENDING__", json.dumps(list(pending or [])))
                      .replace("__META__", json.dumps(meta))
                      .replace("__CHUNK__", str(viewer.CHUNK_POINTS))
@@ -433,6 +480,128 @@ class AlignServer(object):
         self.align_voxel = voxel
         return {"ok": True, "scans": self._rebuild(), "voxel": voxel}
 
+    # --- projects ---------------------------------------------------------
+    def save_project(self, path, state):
+        """
+        Write the session: which captures, where each sits, and every edit.
+
+        ⛔ THE SETUPS COME FROM THE PAGE, NOT FROM self.scans. The operator may
+        have nudged a scan since the last solve, and the server only hears about
+        a placement when it is asked to do something with it -- writing our own
+        copy would silently save the alignment as it stood at the last press of
+        Auto-align and lose the hand-tuning done after it, which is the part
+        that took the longest.
+        """
+        if not path:
+            return {"ok": False, "error": "no project file was chosen"}
+        if not self.scans:
+            return {"ok": False, "error": "there is nothing open to save"}
+        if not os.path.splitext(path)[1]:
+            path += PROJECT_EXT
+        folder = os.path.dirname(os.path.abspath(path))
+        setups = list((state or {}).get("setups") or [])
+        scans = []
+        for i, scan in enumerate(self.scans):
+            full = os.path.abspath(scan.path)
+            try:
+                rel = os.path.relpath(full, folder)
+            except ValueError:          # a different drive: no relative form
+                rel = None
+            setup = (setups[i] if i < len(setups)
+                     else scan.setup.as_dict())
+            scans.append({"path": full, "rel": rel, "name": scan.name,
+                          "setup": setup})
+        body = {"format": "TLS-Pie project", "version": PROJECT_VERSION,
+                "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "scans": scans,
+                "edits": (state or {}).get("edits") or [],
+                "box": (state or {}).get("box"),
+                "view": (state or {}).get("view"),
+                "align_voxel": self.align_voxel,
+                "out_path": self.out_path}
+        tmp = path + ".part"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(body, handle, indent=1)
+        os.replace(tmp, path)           # never a half-written project
+        self.project_path = path
+        return {"ok": True, "path": path, "scans": len(scans),
+                "edits": len(body["edits"])}
+
+    def read_project(self, path):
+        """Parse a project and say plainly what is missing, without loading."""
+        if not path or not os.path.exists(path):
+            return {"ok": False, "error": "no such project file: %s" % path}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                body = json.load(handle)
+        except ValueError as exc:
+            return {"ok": False,
+                    "error": "that file is not a TLS-Pie project (%s)" % exc}
+        if body.get("format") != "TLS-Pie project":
+            return {"ok": False, "error": "that file is not a TLS-Pie project"}
+        if int(body.get("version", 0)) > PROJECT_VERSION:
+            return {"ok": False,
+                    "error": "that project was written by a newer version of "
+                             "this program (%s), which this one cannot read"
+                             % body.get("version")}
+        found, missing = [], []
+        for entry in body.get("scans") or []:
+            hit = next((p for p in project_paths(entry, path)
+                        if os.path.exists(p)), None)
+            (found if hit else missing).append(hit or entry.get("name")
+                                               or entry.get("path"))
+        return {"ok": True, "body": body, "found": found, "missing": missing}
+
+    def open_project(self, path):
+        """
+        Re-decode the captures a project names and restore the session onto them.
+
+        ⛔ A MISSING CAPTURE IS REPORTED, NEVER SKIPPED. Loading the three scans
+        that are still there and saying nothing about the fourth would restore a
+        DIFFERENT project under the same name -- and every edit would still be
+        applied, so the result would look deliberate.
+        """
+        read = self.read_project(path)
+        if not read["ok"]:
+            return read
+        body, missing = read["body"], read["missing"]
+        if missing:
+            return {"ok": False,
+                    "error": "these captures are not where the project left "
+                             "them: %s. Put them back, or move the project "
+                             "file next to them." % ", ".join(
+                                 os.path.basename(str(m)) for m in missing)}
+        paths = read["found"]
+        if not paths:
+            return {"ok": False, "error": "that project has no scans in it"}
+        voxel = body.get("align_voxel", self.align_voxel)
+        self._progress = {"stage": "opening project", "n": 0, "total": 1,
+                          "busy": True}
+        try:
+            fresh = load(paths, voxel_m=voxel or None, progress=self._note,
+                         max_points=self.max_points)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        for scan, entry in zip(fresh, body.get("scans") or []):
+            scan.setup = registration.Setup.from_dict(entry.get("setup"))
+        self.scans = fresh
+        self.align_voxel = voxel
+        self.project_path = path
+        return {"ok": True, "scans": self._rebuild(), "path": path,
+                "edits": body.get("edits") or [], "box": body.get("box"),
+                "view": body.get("view"), "voxel": voxel,
+                "saved": body.get("saved")}
+
+    def browse_project(self, save=False):
+        from . import desktop
+        if desktop.WINDOW[0] is None:
+            return {"ok": False,
+                    "error": "no native window, so no system file dialog"}
+        return {"ok": True, "path": desktop.pick_project(save=save)}
+
     def save(self, setups, voxel=None, edit=None):
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
@@ -567,6 +736,13 @@ PAGE = r"""<!doctype html>
 <div id="hud"><b>Align scans</b><div id="stat">loading…</div></div>
 <div class="pnl" id="panel">
   <div id="legend"></div>
+  <label>Project</label>
+  <div class="row"><button id="psave">Save project</button>
+    <button id="psaveas">Save as…</button>
+    <button id="popen">Open…</button></div>
+  <div id="pname" style="font-size:10.5px;color:var(--faint);margin-top:4px">
+  </div>
+  <hr>
   <label>Add another scan</label>
   <div class="row"><button id="browse" class="go">Browse…</button></div>
   <input type="text" id="addpath" placeholder="…or paste a .pcap path"
@@ -671,17 +847,18 @@ PAGE = r"""<!doctype html>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
-  &middot; M rectangle &middot; L lasso &middot; B hide box &middot; Ctrl-Z undo</div>
+  &middot; M rectangle &middot; L lasso &middot; B hide box &middot; Ctrl-Z undo
+  &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
 const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__,
-      PENDING = __PENDING__;
+      PENDING = __PENDING__, OPEN = __OPEN__;
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
-           nav:false,
+           nav:false, project:null, dirty:false,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
@@ -893,7 +1070,7 @@ function setTurn(yaw,pitch,roll){
   V.box.yaw=yaw; V.box.pitch=pitch; V.box.roll=roll;
   const m=rmul(boxRot(), boxMid());
   V.box.o=[c[0]-m[0], c[1]-m[1], c[2]-m[2]];
-  showTurn(); clipLabels(); invalidate();
+  showTurn(); clipLabels(); invalidate(); dirty();
 }
 function showTurn(){
   $('byaw').value=V.box.yaw; $('bpitch').value=V.box.pitch;
@@ -1280,7 +1457,8 @@ async function boot(){
   refreshLists();
   syncSliders(); syncClipSliders(); showTurn(); clipLabels();
   recentre(); draw();
-  if(PENDING.length) ingest(PENDING);
+  if(OPEN) openProject(OPEN);
+  else if(PENDING.length) ingest(PENDING);
 }
 
 /* Recomputed whenever the set of scans changes, so a scan added mid-session
@@ -1341,7 +1519,7 @@ function nudge(dx,dy,dyaw,dz){
   s.setup.x_m=+s.setup.x_m+dx; s.setup.y_m=+s.setup.y_m+dy;
   s.setup.z_m=+s.setup.z_m+(dz||0);
   s.setup.yaw_deg=+s.setup.yaw_deg+dyaw;
-  syncSliders(); invalidate(); editsFollow();
+  syncSliders(); invalidate(); editsFollow(); dirty();
 }
 /* An edit is applied in the merged frame, so moving a scan moves it through
    whatever was cut. Recomputed on a trailing timer rather than per frame: at
@@ -1417,7 +1595,7 @@ async function autoAlign(){
       body:JSON.stringify({index:s.index, start:hint})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
-    s.setup=j.setup; syncSliders(); invalidate(); editsFollow();
+    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
     watch(false);
     if(j.exhausted) say(j.text, 'warn');
     else say((j.trustworthy ? ''
@@ -1454,12 +1632,12 @@ function showEdits(){
   $('editlist').innerHTML = rows +
     '<div style="margin-top:4px">applied at full density on save</div>';
 }
-function pushEdit(e){ V.edits.push(e); showEdits(); recomputeLive(); }
+function pushEdit(e){ V.edits.push(e); showEdits(); recomputeLive(); dirty(); }
 function undoEdit(){
   if(V.pending){ V.pending=null; V.tool=''; setTool(''); invalidate(); return; }
   if(!V.edits.length) return say('Nothing to undo.', 'warn');
   const e=V.edits.pop();
-  showEdits(); recomputeLive();
+  showEdits(); recomputeLive(); dirty();
   say('undid '+(e.mode==='keep'?'keep':'delete')+' '+e.kind+'.');
 }
 /* ⛔ SENT AS CENTRE +/- HALF, NOT AS THE LOCAL BOUNDS. The exporter takes a
@@ -1669,6 +1847,117 @@ function commitLasso(mode){
                     : 'Deleted the points inside the outline.');
 }
 
+/* ---- projects ----
+   ⭐ THE PROJECT SAVES THE WORK, NOT THE POINTS. What took the time is the
+   alignment and the edits; the captures are already on disk and are the only
+   real record of the scan. So the file is small, opening it re-reads the
+   captures, and there is never a second, staler copy of the cloud to wonder
+   about. ⛔ It also means a project can be opened onto captures that have MOVED
+   -- which is handled -- or DELETED, which is refused loudly rather than
+   silently opening a smaller project under the same name. */
+function projectState(){
+  return {setups: V.scans.map(s=>s.setup),
+          edits: V.edits,
+          box: {o:V.box.o, lo:V.box.lo, hi:V.box.hi, yaw:V.box.yaw,
+                pitch:V.box.pitch, roll:V.box.roll,
+                on:V.clip, inside:V.inside, wire:V.wire},
+          view: {detail:V.detail, exdet:V.exdet, mode:V.mode,
+                 psize:V.psize, ortho:V.ortho, gizmo:V.gizmo}};
+}
+function showProject(){
+  const p=V.project;
+  $('pname').textContent = p
+    ? p.replace(/^.*[\\\/]/,'') + (V.dirty ? ' — unsaved changes' : ' — saved')
+    : 'not saved yet — Save as… writes a .tlspie you can reopen';
+}
+/* Touched by anything that would be lost, so the name can say so. The flag is
+   deliberately coarse: a false "unsaved" costs one press, a false "saved"
+   costs the afternoon. */
+function dirty(){ V.dirty=true; showProject(); }
+async function pickProject(save){
+  const r=await fetch('project/browse',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({save:!!save})});
+  const j=await r.json();
+  if(!j.ok) throw new Error(j.error||'no picker available');
+  return j.path||'';
+}
+async function saveProject(as){
+  if(!V.scans.length) return say('Open a scan before saving a project.','warn');
+  try{
+    let path=V.project;
+    if(as||!path) path=await pickProject(true);
+    if(!path) return;                       /* cancelled is not a failure */
+    say('saving project…');
+    const r=await fetch('project/save',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path, state:projectState()})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'save failed');
+    V.project=j.path; V.dirty=false; showProject();
+    say('project saved — '+j.scans+' scan'+(j.scans===1?'':'s')+', '+
+        j.edits+' edit'+(j.edits===1?'':'s')+'. The captures stay where they '+
+        'are; this file just points at them.');
+  }catch(e){ say('Could not save the project: '+e.message, 'bad'); }
+}
+async function openProject(path){
+  try{
+    if(!path) path=await pickProject(false);
+    if(!path) return;
+    if(V.dirty && V.armedOpen!==path){
+      V.armedOpen=path;
+      return say('This session has unsaved changes. Press Open again to '+
+                 'discard them and load '+path.replace(/^.*[\\\/]/,'')+'.',
+                 'warn');
+    }
+    V.armedOpen=null;
+    say('opening project…'); watch(true);
+    const r=await fetch('project/open',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'could not open it');
+    for(const s of V.scans) for(const c of s.chunks){
+      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
+    }
+    V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
+    for(const m of j.scans) V.scans.push(await loadScan(m));
+    measure();                          /* extents first: the box needs them */
+    if(j.box){
+      V.box.o=j.box.o; V.box.lo=j.box.lo; V.box.hi=j.box.hi;
+      V.box.yaw=j.box.yaw||0; V.box.pitch=j.box.pitch||0;
+      V.box.roll=j.box.roll||0;
+      V.clip=!!j.box.on; V.inside=!!j.box.inside;
+      V.wire=j.box.wire!==false;
+    }
+    if(j.view){
+      V.detail=j.view.detail|0; V.exdet=j.view.exdet|0; V.mode=j.view.mode|0;
+      V.psize=j.view.psize||1.2; V.gizmo=j.view.gizmo!==false;
+      $('det').value=V.detail; $('ex').value=V.exdet;
+      $('detv').textContent=detailText(V.detail);
+      $('exv').textContent=detailText(V.exdet);
+      $('ps').value=V.psize; $('psv').textContent=V.psize.toFixed(2);
+      $('mode').textContent=['By scan','Height','Photo / intensity'][V.mode];
+      $('mode').classList.toggle('on',V.mode===0);
+      $('gizmo').classList.toggle('on',V.gizmo);
+      setOrtho(!!j.view.ortho);
+    }
+    V.edits=j.edits||[];
+    $('clipon').textContent=V.clip?'On':'Off';
+    $('clipon').classList.toggle('on',V.clip);
+    $('clipflip').textContent=V.inside?'Hiding inside':'Hiding outside';
+    $('clipflip').classList.toggle('on',V.inside);
+    $('wire').textContent=V.wire?'Box shown':'Box hidden';
+    $('wire').classList.toggle('on',V.wire);
+    refreshLists(); syncSliders(); syncClipSliders(); showTurn();
+    clipLabels(); showEdits(); recomputeLive(); recentre();
+    V.project=j.path; V.dirty=false; showProject();
+    watch(false);
+    say('opened '+j.path.replace(/^.*[\\\/]/,'')+
+        (j.saved?' (saved '+j.saved+')':'')+' — '+V.scans.length+
+        ' scan'+(V.scans.length===1?'':'s')+' back where you left them.');
+  }catch(e){ watch(false); say('Could not open it: '+e.message, 'bad'); }
+}
+
 /* ---- preview density ---- */
 function detailText(i){ return DETAIL[i].t; }
 async function applyDetail(){
@@ -1746,7 +2035,7 @@ async function ingest(paths){
     syncClipSliders(); showTurn(); clipLabels();
     if(V.edits.length) recomputeLive();
     if(first) recentre();
-    invalidate(); watch(false);
+    invalidate(); watch(false); dirty();
     $('addpath').value='';
     say('added '+j.added.map(a=>a.name).join(', ')+
         (V.scans.length>1
@@ -1921,7 +2210,9 @@ function syncClipSliders(){
     const t=(e.target.tagName||'').toLowerCase();
     if(t==='input'||t==='select') return;
     const k=e.key;
-    if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoEdit();
+    if((e.ctrlKey||e.metaKey) && (k==='s'||k==='S')) saveProject(e.shiftKey);
+    else if((e.ctrlKey||e.metaKey) && (k==='o'||k==='O')) openProject(null);
+    else if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoEdit();
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
                            setTool(''); invalidate(); }
     else if(k==='c'||k==='C') setNav(!V.nav);
@@ -1947,12 +2238,17 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const bind=(id,key,fmt,lbl)=>{ $(id).oninput=e=>{
     const s=active(); if(!s) return;
     s.setup[key]=parseFloat(e.target.value);
-    $(lbl).textContent=fmt(s.setup[key]); invalidate(); editsFollow(); }; };
+    $(lbl).textContent=fmt(s.setup[key]);
+    invalidate(); editsFollow(); dirty(); }; };
   bind('tx','x_m',v=>v.toFixed(2),'xv');
   bind('ty','y_m',v=>v.toFixed(2),'yv');
   bind('tz','z_m',v=>v.toFixed(2),'zv2');
   bind('rz','yaw_deg',v=>v.toFixed(1),'rv');
   $('nav').onclick=()=>setNav(!V.nav);
+  $('psave').onclick=()=>saveProject(false);
+  $('psaveas').onclick=()=>saveProject(true);
+  $('popen').onclick=()=>openProject(null);
+  showProject();
   $('grab').onclick=e=>{ V.grab=!V.grab; e.target.classList.toggle('on',V.grab);
     e.target.textContent=V.grab?'Moving scan':'Drag to move';
     cv.classList.toggle('move',V.grab);

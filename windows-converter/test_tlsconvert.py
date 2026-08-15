@@ -10,6 +10,7 @@ the copy is checked against the original over the full range of the geometry,
 including the calibrated pitch and a deliberately awkward mount.
 """
 
+import json
 import math
 import os
 import struct
@@ -1011,6 +1012,109 @@ _rt3 = pipeline.Edit.from_dict(_cutl.as_dict())
 check("an Edit carries its lassos through JSON too",
       list(_rt3.mask(_lp)) == list(_cutl.mask(_lp)))
 
+print("\nprojects: a pointer file, not a copy of the cloud")
+_proj = os.path.join(tmp, "living room.tlspie")
+
+
+def _newer(folder):
+    """A project claiming a format version this build has never heard of."""
+    path = os.path.join(folder, "from_the_future.tlspie")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"format": "TLS-Pie project",
+                   "version": align.PROJECT_VERSION + 5, "scans": []}, handle)
+    return path
+
+
+class _FakeScan(object):
+    """Enough of a Scan for the project code, without decoding anything."""
+
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.setup = registration.Setup(0.5, -0.25, 0.0, -35.5)
+        self.total = 1000
+
+
+_psrv = align.AlignServer([], out_path=None)
+try:
+    check("saving with nothing open is refused, not written empty",
+          not _psrv.save_project(_proj, {})["ok"])
+    _psrv.scans = [_FakeScan(os.path.join(tmp, "A.pcap")),
+                   _FakeScan(os.path.join(tmp, "B.pcap"))]
+    for _n in ("A.pcap", "B.pcap"):
+        with open(os.path.join(tmp, _n), "wb") as _h:
+            _h.write(b"not really a capture")
+    _edits = [{"kind": "box", "mode": "drop",
+               "box": {"lo": [-1, -1, -1], "hi": [1, 1, 1], "yaw_deg": 30.0,
+                       "pitch_deg": 0.0, "roll_deg": 0.0}},
+              {"kind": "lasso", "mode": "cut", "matrix": [1.0] * 16,
+               "poly": [[0, 0], [1, 0], [1, 1]]}]
+    _state = {"setups": [{"x_m": 0.0, "y_m": 0.0, "z_m": 0.0, "yaw_deg": 0.0},
+                         {"x_m": -0.5, "y_m": 0.08, "z_m": 0.0,
+                          "yaw_deg": -35.5}],
+              "edits": _edits,
+              "box": {"o": [0, 0, 0], "lo": [-2, -2, -1], "hi": [2, 2, 1],
+                      "yaw": 12.0, "pitch": 0.0, "roll": 0.0, "on": True,
+                      "inside": False, "wire": True},
+              "view": {"detail": 2, "exdet": 3, "ortho": True}}
+    _w = _psrv.save_project(_proj, _state)
+    check("a project writes, naming its scans and edits",
+          _w["ok"] and _w["scans"] == 2 and _w["edits"] == 2, _w)
+    check("an extension is added when the operator leaves it off",
+          _psrv.save_project(os.path.join(tmp, "noext"),
+                             _state)["path"].endswith(align.PROJECT_EXT))
+    check("no half-written project is left behind on the way",
+          not os.path.exists(_proj + ".part"))
+    with open(_proj, "r", encoding="utf-8") as _h:
+        _body = json.load(_h)
+    # ⛔ THE PAGE'S SETUPS WIN. The operator nudges scans between solves, and
+    # the server only hears a placement when asked to act on it -- writing our
+    # own copy would save the alignment as of the last Auto-align and lose
+    # every hand adjustment made after it, which is the slow part.
+    check("the placement saved is the page's, not the server's stale copy",
+          _body["scans"][1]["setup"]["yaw_deg"] == -35.5 and
+          _body["scans"][0]["setup"]["yaw_deg"] == 0.0,
+          [s["setup"]["yaw_deg"] for s in _body["scans"]])
+    check("edits are saved whole, turned boxes and lassos alike",
+          _body["edits"] == _edits)
+    check("the clip box and the view are saved too",
+          _body["box"]["yaw"] == 12.0 and _body["view"]["ortho"] is True)
+    # ⭐ A project is a POINTER file: relative first, so the folder can move.
+    check("captures are pointed at, not copied in",
+          os.path.getsize(_proj) < 20000 and
+          "A.pcap" in json.dumps(_body))
+    check("a path relative to the project is stored as well as the absolute",
+          _body["scans"][0]["rel"] == "A.pcap" and
+          os.path.isabs(_body["scans"][0]["path"]))
+    check("and the relative one is tried first, so a moved folder still opens",
+          align.project_paths(_body["scans"][0], _proj)[0]
+          == os.path.join(tmp, "A.pcap"))
+
+    _read = _psrv.read_project(_proj)
+    check("reading a project finds its captures", _read["ok"] and
+          not _read["missing"], _read.get("missing"))
+    # ⛔ A MISSING CAPTURE IS REPORTED, NEVER SKIPPED: opening the rest would
+    # restore a DIFFERENT project under the same name, with every edit still
+    # applied, and it would look deliberate.
+    os.remove(os.path.join(tmp, "B.pcap"))
+    _read2 = _psrv.read_project(_proj)
+    check("a capture that has gone is noticed", _read2["missing"] == ["B.pcap"],
+          _read2["missing"])
+    _bad = _psrv.open_project(_proj)
+    check("and opening is refused loudly rather than loading a subset",
+          not _bad["ok"] and "B.pcap" in _bad["error"], _bad)
+    check("a file that is not a project is refused by name",
+          "not a TLS-Pie project" in
+          _psrv.read_project(os.path.join(tmp, "A.pcap"))["error"])
+    check("a project from a newer version is refused, not half-read",
+          "newer version" in _psrv.read_project(_newer(tmp))["error"])
+    check("a project that is not there is refused",
+          not _psrv.read_project(os.path.join(tmp, "nope.tlspie"))["ok"])
+    check("browsing for a project with no window fails cleanly",
+          not _psrv.browse_project()["ok"])
+finally:
+    _psrv.stop()
+
 print("\nregistration: merge and the workbench")
 try:
     pipeline.merge(["only_one.pcap"], os.path.join(tmp, "x.las"))
@@ -1074,6 +1178,12 @@ try:
                                    "X east")))
     check("a rectangle marquee is offered as well as a lasso",
           "'rect'" in _page and "Rectangle" in _page)
+    check("projects can be saved and reopened from the page",
+          all(t in _page for t in ("saveProject", "openProject",
+                                   "'project/save'", "'project/open'",
+                                   "psaveas")))
+    check("and a project named on the command line reaches the page",
+          "OPEN" in _page and "__OPEN__" not in _page)
     check("a camera-only mode exists and overrides the tools",
           all(t in _page for t in ("setNav", "V.nav", "'nav'",
                                    "Camera only")))
