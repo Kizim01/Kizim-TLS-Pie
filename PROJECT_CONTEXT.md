@@ -2039,7 +2039,7 @@ camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `
 `fc32204`.
 
 **✅ REGISTRATION IS BUILT, AND STUDIO IS AN EDITOR TOO — `TLS-Pie-Studio.exe`. 2026-08-15, commits
-`79a4e34` → `098400e`, 294 tests.** Double-click, Browse, decode with a live bar, both scans tinted
+`79a4e34` → `8163b6f`, 298 tests.** Double-click, Browse, decode with a live bar, both scans tinted
 by origin, align by drag, by button, or by **picking matched point pairs** when the solver will not
 converge, then **edit**: a turnable clip box with drag grips, lasso and rectangle deletes,
 orthographic Top/Front/Side, a clickable world-axes widget, a camera-only mode, separate preview and
