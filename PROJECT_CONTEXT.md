@@ -2087,10 +2087,36 @@ old "plan view" dodged it by stopping at 85.9°, which is not a plan view.
 exporter were driven over 24,000 random point/polygon decisions spanning concave outlines and both
 projections — **0 disagreements**. Worth repeating if either side is touched.
 
+**✅ THE CLIP BOX CAN BE TURNED, AND THERE IS A WORLD-AXES WIDGET — 223 tests.** A scan comes out in
+the SENSOR's frame and a tripod is not set down parallel to the room, so an axis-aligned box cuts
+diagonally across every wall. The box now carries yaw/tilt/roll: a green grip turns it, **Square to
+view** snaps it to the wall you are facing, and a Blender-style clickable axis widget
+([three-orientation-gizmo]) says which way East, North and Up are — plus the moving scan's own
+heading, the number easiest to lose. **Box shown / Box hidden** hides the outline *and its grips*
+while leaving the clipping on, because once the box is small its grips sit over the very points
+being inspected and steal every drag. Also a **Rectangle** marquee ([three.js `misc_boxselection`]),
+which is the lasso's own machinery with four corners rather than a second thing to keep in step.
+
+**⛔ THE BOUNDS ARE HELD IN THE BOX'S OWN FRAME, from a world pivot.** Held as world `lo`/`hi`
+instead, dragging the +X face of a *turned* box pushes the face along its own normal while sliding
+the centre along **world** x — the box creeps sideways as you resize it, which reads as a shaky hand
+rather than a bug. Turning is about the box's own centre (the pivot is moved to keep it still), or a
+corner box swings across the room.
+
+**⛔ THE TURN ORDER IS PART OF THE FORMAT — Rz, then Ry, then Rx.** Three angles do not name an
+orientation on their own: composed one way in the shader and another in the exporter, the preview and
+the written cloud are different rooms and no residual can say so. Proven, not assumed — **24,000
+random point/box decisions across 80 turned boxes, 0 disagreements**, plus a round trip showing the
+drawn wireframe, the preview mask and the exporter describe one box. The shader's `uClipRT` is the
+**transpose**: world-to-box undoes the turn rather than repeating it.
+
 **⛔ STILL OPEN:** point-pair picking to align by matched points (CloudCompare's *Align (point pairs
 picking)*, whose wiki notes it is "sometimes the only way" when ICP will not converge). ⭐ Note
 CloudCompare does this today and reads our LAZ. **E57 still earns its place** once several setups
 share a file. `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
+
+[three-orientation-gizmo]: https://github.com/jrj2211/three-orientation-gizmo
+[three.js `misc_boxselection`]: https://github.com/mrdoob/three.js/blob/dev/examples/misc_boxselection.html
 
 [CloudCompare]: https://www.cloudcompare.org/doc/wiki/index.php/Interactive_Segmentation_Tool
 [openlidarviewer]: https://github.com/Aurtechmx/openlidarviewer

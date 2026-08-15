@@ -881,6 +881,59 @@ check("an absent edit reads as empty",
 check("and it says what it will do", "1 keep box" in _cut.describe(),
       _cut.describe())
 
+print("\nediting: a box that can be turned to face a wall")
+_bpts = np.array([[0.0, 0.0, 0.0],       # centre
+                  [1.3, 1.3, 0.0],       # a diagonal corner
+                  [1.9, 0.0, 0.0]])      # out along +x
+_square = pipeline.Box((-1.5, -1.5, -1.0), (1.5, 1.5, 1.0))
+check("an unturned box behaves exactly as the old pair of corners did",
+      list(_square.inside(_bpts)) == [True, True, False],
+      list(_square.inside(_bpts)))
+check("and knows it is not turned", not _square.turned())
+# ⭐ 45 deg about Z pulls the corners in along the diagonals: (1.3, 1.3) is
+# 1.84 m from centre, past the 1.5 m half-width once the box is turned to
+# meet it, while (1.9, 0) comes INSIDE because that face swung out to 2.12.
+_turned = pipeline.Box((-1.5, -1.5, -1.0), (1.5, 1.5, 1.0), yaw_deg=45.0)
+check("turning the box changes which points it holds",
+      list(_turned.inside(_bpts)) == [True, False, True],
+      list(_turned.inside(_bpts)))
+check("a turned box says so", _turned.turned() and
+      "turned" in _turned.describe(), _turned.describe())
+check("360 degrees is the same box again",
+      list(pipeline.Box((-1.5, -1.5, -1.0), (1.5, 1.5, 1.0), yaw_deg=360.0)
+           .inside(_bpts)) == list(_square.inside(_bpts)))
+# ⛔ THE TURN IS UNDONE, NOT APPLIED. Turning the points the same way as the
+# box turns them together and tests nothing -- every answer stays as it was.
+check("the turn is undone rather than applied to the points too",
+      list(_turned.inside(_bpts)) != list(_square.inside(_bpts)))
+# a turn about the box's OWN centre must not move the centre
+_off = pipeline.Box((2.0, 2.0, -1.0), (6.0, 4.0, 1.0), yaw_deg=37.0)
+check("a turn is about the box's own centre, so the centre stays put",
+      _off.inside(np.array([_off.centre]))[0] and
+      abs(_off.centre[0] - 4.0) < 1e-9 and abs(_off.centre[1] - 3.0) < 1e-9,
+      list(_off.centre))
+check("pitch and roll are carried too",
+      pipeline.Box((-1, -1, -0.2), (1, 1, 0.2), pitch_deg=90.0)
+      .inside(np.array([[0.0, 0.0, 0.9], [0.9, 0.0, 0.0]])).tolist()
+      == [True, False])
+_brt = pipeline.Box.parse(_turned.as_dict())
+check("a turned box survives a round trip through JSON-safe types",
+      list(_brt.inside(_bpts)) == list(_turned.inside(_bpts)))
+check("and the plain pair of corners still parses, for older plans",
+      list(pipeline.Box.parse(((-1.5, -1.5, -1.0), (1.5, 1.5, 1.0)))
+           .inside(_bpts)) == list(_square.inside(_bpts)))
+check("an Edit accepts turned boxes in keep and drop alike",
+      list(pipeline.Edit(drop=[_turned.as_dict()]).mask(_bpts))
+      == [False, True, False])
+# the rotation itself: columns are the box's axes, and it is orthonormal
+_R = pipeline.box_rotation(30.0, 20.0, 10.0)
+check("the box rotation is orthonormal",
+      np.allclose(_R @ _R.T, np.eye(3)) and abs(np.linalg.det(_R) - 1) < 1e-9)
+check("yaw alone turns x towards y, the same way the scans' yaw does",
+      np.allclose(pipeline.box_rotation(90.0) @ np.array([1.0, 0, 0]),
+                  [0, 1, 0], atol=1e-9),
+      list(pipeline.box_rotation(90.0) @ np.array([1.0, 0, 0])))
+
 print("\nediting: a lasso is a screen polygon plus the camera that drew it")
 
 
@@ -1007,6 +1060,20 @@ try:
           "showDensity" in _page and "captured" in _page)
     check("the clip box can be exported on its own",
           "saveclip" in _page)
+    check("the box can be turned, by grip and by slider",
+          all(t in _page for t in ("turnBox", "setTurn", "byaw", "bfit",
+                                   "uClipRT")))
+    check("the turn order matches the exporter's, Rz then Ry then Rx",
+          "rotOf" in _page and "cz*sy*sx - sz*cx" in _page)
+    # ⭐ The outline and the clipping are separate switches: with the box small,
+    # its grips sit over the very points being inspected and steal every drag.
+    check("the outline can be hidden with the clipping left on",
+          "Box hidden" in _page and "clipping is still" in _page)
+    check("the world axes widget is there, and can be switched off",
+          all(t in _page for t in ("drawGizmo", "gizmoClick", "'gizmo'",
+                                   "X east")))
+    check("a rectangle marquee is offered as well as a lasso",
+          "'rect'" in _page and "Rectangle" in _page)
     # A density change is a re-read of the captures, so it must be able to
     # answer with no scans open rather than throwing at the operator.
     _d = _srv.density(0.05)

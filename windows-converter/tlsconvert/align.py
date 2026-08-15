@@ -611,25 +611,39 @@ PAGE = r"""<!doctype html>
   <label>Clip box</label>
   <div class="row"><button id="clipon">Off</button>
     <button id="clipfit">Fit to view</button>
-    <button id="wire" class="on">Outline</button>
     <button id="clipflip">Hiding outside</button></div>
-  <div style="font-size:10.5px;color:var(--faint);margin-bottom:5px">
-    Drag the blue grips on the outline to pull a face in or out.</div>
-  <label>X <span class="num" id="cxv"></span></label>
+  <div class="row"><button id="wire" class="on">Box shown</button>
+    <button id="gizmo" class="on">World axes</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    Drag a blue grip to pull a face in or out, or the green one to turn the
+    box. <b>Box shown</b> hides the outline and its grips without switching
+    the clipping off — press it when the grips are in your way.</div>
+  <div id="boxat" style="font-size:10.5px;color:var(--faint);margin-bottom:4px">
+  </div>
+  <label>Width <span class="num" id="cxv"></span></label>
   <input type="range" id="cx0" min="0" max="1" step="0.002" value="0">
   <input type="range" id="cx1" min="0" max="1" step="0.002" value="1">
-  <label>Y <span class="num" id="cyv"></span></label>
+  <label>Depth <span class="num" id="cyv"></span></label>
   <input type="range" id="cy0" min="0" max="1" step="0.002" value="0">
   <input type="range" id="cy1" min="0" max="1" step="0.002" value="1">
-  <label>Z <span class="num" id="czv"></span></label>
+  <label>Height <span class="num" id="czv"></span></label>
   <input type="range" id="cz0" min="0" max="1" step="0.002" value="0">
   <input type="range" id="cz1" min="0" max="1" step="0.002" value="1">
+  <label>Turn <span class="num" id="byawv">0.0</span>&deg;</label>
+  <input type="range" id="byaw" min="-180" max="180" step="0.5" value="0">
+  <label>Tilt <span class="num" id="bpitchv">0.0</span>&deg;</label>
+  <input type="range" id="bpitch" min="-45" max="45" step="0.5" value="0">
+  <label>Roll <span class="num" id="brollv">0.0</span>&deg;</label>
+  <input type="range" id="broll" min="-45" max="45" step="0.5" value="0">
+  <div class="row"><button id="bfit">Square to view</button>
+    <button id="bzero">Square to world</button></div>
   <hr>
   <label>Delete points</label>
   <div class="row"><button id="cutbox">Cut the box</button>
     <button id="keepbox">Keep only the box</button></div>
-  <div class="row"><button id="lasso">Lasso</button>
-    <button id="undo">Undo</button>
+  <div class="row"><button id="rect">Rectangle</button>
+    <button id="lasso">Lasso</button></div>
+  <div class="row"><button id="undo">Undo</button>
     <button id="clearedit">Clear all</button></div>
   <div id="lassoask" style="display:none">
     <div class="row"><button id="lin" class="go">Delete inside</button>
@@ -653,7 +667,7 @@ PAGE = r"""<!doctype html>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; R roam &middot; F recentre &middot; O orthographic
-  &middot; L lasso &middot; Ctrl-Z undo</div>
+  &middot; M rectangle &middot; L lasso &middot; B hide box &middot; Ctrl-Z undo</div>
 <div id="err"></div>
 <script>
 const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__,
@@ -662,8 +676,9 @@ const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
-           tool:'', draft:null, pending:null, detail:2, exdet:2,
-           box:{lo:[0,0,0],hi:[1,1,1]}, ext:{lo:[0,0,0],hi:[1,1,1]}};
+           tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
+           box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
+           ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
 let lprog, lloc, lbuf;
 /* A face may be pulled up to this close to its opposite number and no closer:
@@ -782,7 +797,7 @@ function model(s){
 const VS = `
 attribute vec3 aPos; attribute vec3 aCol; attribute float aLive;
 uniform mat4 uVP, uModel; uniform vec3 uScale, uOffset, uTint;
-uniform vec3 uClipLo, uClipHi;
+uniform vec3 uClipC, uClipH; uniform mat3 uClipRT;
 uniform float uPS, uPSmax, uMode, uZlo, uZhi, uGrey, uClipOn, uClipIn,
               uOrtho, uOrthoW;
 varying vec3 vCol; varying float vKill;
@@ -796,7 +811,11 @@ void main(){
   if(uMode < 0.5)      vCol = uTint * (0.45 + 0.75*base.r);
   else if(uMode < 1.5) vCol = ramp((p.z-uZlo)/max(uZhi-uZlo,1e-4));
   else                 vCol = base;
-  bool out_ = any(lessThan(p,uClipLo)) || any(greaterThan(p,uClipHi));
+  /* Into the box's OWN frame first, so a box turned to face a wall clips to
+     that wall. uClipRT is the transpose of the box's axes: undoing the turn,
+     not repeating it. */
+  vec3 q = uClipRT * (p - uClipC);
+  bool out_ = any(lessThan(q,-uClipH)) || any(greaterThan(q,uClipH));
   bool hide = (uClipIn > 0.5) ? !out_ : out_;
   vKill = ((uClipOn>0.5 && hide) || aLive < 0.5) ? 1.0 : 0.0;
   /* In an orthographic view every w is 1, so dividing by it would give every
@@ -819,24 +838,88 @@ void main(){ gl_Position = uVP * vec4(aP,1.0); gl_PointSize = uSize; }`;
 const LFS = `precision mediump float; uniform vec4 uCol;
 void main(){ gl_FragColor = uCol; }`;
 
+/* ⛔ THE TURN ORDER IS PART OF THE FORMAT: Rz, then Ry, then Rx, matching
+   pipeline.box_rotation exactly. Three angles do not name an orientation on
+   their own -- composed one way here and another way in the exporter, the
+   preview and the written cloud would be different rooms and no residual could
+   say so. Columns are the box's own axes in world. */
+function rotOf(yawDeg,pitchDeg,rollDeg){
+  const z=yawDeg*Math.PI/180, y=pitchDeg*Math.PI/180, x=rollDeg*Math.PI/180;
+  const cz=Math.cos(z), sz=Math.sin(z), cy=Math.cos(y), sy=Math.sin(y),
+        cx=Math.cos(x), sx=Math.sin(x);
+  return [
+    [cz*cy,  cz*sy*sx - sz*cx,  cz*sy*cx + sz*sx],
+    [sz*cy,  sz*sy*sx + cz*cx,  sz*sy*cx - cz*sx],
+    [-sy,    cy*sx,             cy*cx]];
+}
+function boxRot(){ return rotOf(V.box.yaw, V.box.pitch, V.box.roll); }
+function boxTurned(){ return !!(V.box.yaw||V.box.pitch||V.box.roll); }
+/* ⛔ THE BOUNDS ARE IN THE BOX'S OWN FRAME, measured from a world pivot. Held
+   as world lo/hi instead, dragging the +X face of a TURNED box would push the
+   face along its own normal while sliding the centre along WORLD x -- the box
+   would creep sideways as you resized it, which looks like a shaky hand rather
+   than a bug and is that much harder to notice. */
+function rmul(R,v){
+  return [R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],
+          R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],
+          R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];
+}
+function boxMid(){ return [(V.box.lo[0]+V.box.hi[0])/2,
+                           (V.box.lo[1]+V.box.hi[1])/2,
+                           (V.box.lo[2]+V.box.hi[2])/2]; }
+function boxHalf(){ return [(V.box.hi[0]-V.box.lo[0])/2,
+                            (V.box.hi[1]-V.box.lo[1])/2,
+                            (V.box.hi[2]-V.box.lo[2])/2]; }
+function boxCentre(){
+  const o=V.box.o, m=rmul(boxRot(), boxMid());
+  return [o[0]+m[0], o[1]+m[1], o[2]+m[2]];
+}
+/* Local offset from the box centre out into the world. */
+function boxPoint(off){
+  const c=boxCentre(), d=rmul(boxRot(), off);
+  return [c[0]+d[0], c[1]+d[1], c[2]+d[2]];
+}
+function boxAxis(a){ const R=boxRot(); return [R[0][a],R[1][a],R[2][a]]; }
+/* Turning happens about the box's OWN centre, so the pivot is moved to keep
+   that centre still. Turning about the pivot would swing a corner box across
+   the room and leave the operator chasing it. */
+function setTurn(yaw,pitch,roll){
+  const c=boxCentre();
+  V.box.yaw=yaw; V.box.pitch=pitch; V.box.roll=roll;
+  const m=rmul(boxRot(), boxMid());
+  V.box.o=[c[0]-m[0], c[1]-m[1], c[2]-m[2]];
+  showTurn(); clipLabels(); invalidate();
+}
+function showTurn(){
+  $('byaw').value=V.box.yaw; $('bpitch').value=V.box.pitch;
+  $('broll').value=V.box.roll;
+  $('byawv').textContent=(+V.box.yaw).toFixed(1);
+  $('bpitchv').textContent=(+V.box.pitch).toFixed(1);
+  $('brollv').textContent=(+V.box.roll).toFixed(1);
+}
+
 /* i&1 = x, i&2 = y, i&4 = z, so 0-3 is the bottom face and 4-7 the top. */
 const EDGES = [0,1, 1,3, 3,2, 2,0,  4,5, 5,7, 7,6, 6,4,  0,4, 1,5, 2,6, 3,7];
 function boxCorners(){
-  const l=V.box.lo, h=V.box.hi, c=[];
+  const h=boxHalf(), c=[];
   for(let i=0;i<8;i++)
-    c.push([(i&1)?h[0]:l[0], (i&2)?h[1]:l[1], (i&4)?h[2]:l[2]]);
+    c.push(boxPoint([(i&1)?h[0]:-h[0], (i&2)?h[1]:-h[1], (i&4)?h[2]:-h[2]]));
   return c;
 }
 /* One grip per face, at its centre: six handles move six faces, which is the
-   whole of an axis-aligned box. Corner handles would move two faces at once
-   and give the operator no way to say which one they meant. */
+   whole of a box. Corner handles would move two faces at once and give the
+   operator no way to say which one they meant. The seventh grip TURNS the box:
+   it sits out past the +X face on the same line, so it reads as "the direction
+   this box is facing" rather than as another face to pull. */
 function handles(){
-  const l=V.box.lo, h=V.box.hi, out=[];
+  const h=boxHalf(), out=[];
   for(let a=0;a<3;a++) for(let side=0;side<2;side++){
-    const p=[(l[0]+h[0])/2,(l[1]+h[1])/2,(l[2]+h[2])/2];
-    p[a] = side ? h[a] : l[a];
-    out.push({axis:a, side:side, p:p});
+    const off=[0,0,0];
+    off[a] = side ? h[a] : -h[a];
+    out.push({axis:a, side:side, p:boxPoint(off)});
   }
+  out.push({turn:true, axis:-1, side:0,
+            p:boxPoint([h[0]+Math.max(0.25, Math.max(h[0],h[1])*0.22), 0, 0])});
   return out;
 }
 /* World point to CSS pixels. Returns null behind the eye, where the divide by
@@ -871,26 +954,34 @@ function drawBox(vp){
   gl.bindBuffer(gl.ARRAY_BUFFER, lbuf);
   gl.vertexAttribPointer(lloc.aP,3,gl.FLOAT,false,0,0);
 
-  const c=boxCorners(), ev=new Float32Array(EDGES.length*3);
+  const hs=handles();
+  const c=boxCorners(), ev=new Float32Array((EDGES.length+2)*3);
   EDGES.forEach((ci,i)=>{ ev[i*3]=c[ci][0]; ev[i*3+1]=c[ci][1];
                           ev[i*3+2]=c[ci][2]; });
+  /* the arm out to the turn grip, so it reads as attached to the box */
+  const arm=EDGES.length, face=hs[1].p, turn=hs[6].p;
+  ev[arm*3]=face[0];   ev[arm*3+1]=face[1];   ev[arm*3+2]=face[2];
+  ev[arm*3+3]=turn[0]; ev[arm*3+4]=turn[1];   ev[arm*3+5]=turn[2];
   gl.bufferData(gl.ARRAY_BUFFER, ev, gl.DYNAMIC_DRAW);
   gl.uniform1f(lloc.uSize, 1.0);
   gl.uniform4f(lloc.uCol, 0.38,0.74,1.0, V.clip?1.0:0.55);
-  gl.drawArrays(gl.LINES,0,EDGES.length);
+  gl.drawArrays(gl.LINES,0,EDGES.length+2);
 
-  const hs=handles(), hv=new Float32Array(hs.length*3);
+  const hv=new Float32Array(hs.length*3);
   hs.forEach((k,i)=>{ hv[i*3]=k.p[0]; hv[i*3+1]=k.p[1]; hv[i*3+2]=k.p[2]; });
   const dpr=Math.min(devicePixelRatio||1,2);
   gl.disable(gl.DEPTH_TEST);
   gl.bufferData(gl.ARRAY_BUFFER, hv, gl.DYNAMIC_DRAW);
   gl.uniform1f(lloc.uSize, 11*dpr);
   gl.uniform4f(lloc.uCol, 0.38,0.74,1.0,1.0);
-  gl.drawArrays(gl.POINTS,0,hs.length);
+  gl.drawArrays(gl.POINTS,0,6);                    /* the six face grips */
+  gl.uniform1f(lloc.uSize, 13*dpr);                /* the turn grip, apart */
+  gl.uniform4f(lloc.uCol, 0.60,1.00,0.62,1.0);
+  gl.drawArrays(gl.POINTS,6,1);
   if(V.hot>=0 && V.hot<hs.length){
     gl.bufferData(gl.ARRAY_BUFFER,
                   hv.subarray(V.hot*3,V.hot*3+3), gl.DYNAMIC_DRAW);
-    gl.uniform1f(lloc.uSize, 16*dpr);
+    gl.uniform1f(lloc.uSize, 17*dpr);
     gl.uniform4f(lloc.uCol, 1.0,0.72,0.28,1.0);
     gl.drawArrays(gl.POINTS,0,1);
   }
@@ -899,18 +990,103 @@ function drawBox(vp){
   gl.enableVertexAttribArray(loc.aLive);
 }
 
+/* ---- the 2D overlay: the world widget, and the outline being drawn ---- */
+const GIZ = {r:52, pad:74};
+function gizmoAt(){ return [GIZ.pad, innerHeight-GIZ.pad]; }
+/* World axis -> a point on the widget. Only the camera's ROTATION is used:
+   this says which way the world is facing, not where it is. */
+function gizmoDir(v){
+  const b=basis();
+  return [ v[0]*b.right[0]+v[1]*b.right[1]+v[2]*b.right[2],
+          -(v[0]*b.up[0]   +v[1]*b.up[1]   +v[2]*b.up[2]),
+           v[0]*b.dir[0]   +v[1]*b.dir[1]  +v[2]*b.dir[2]];
+}
+/* ⭐ THE WIDGET EXISTS BECAUSE THE SCANS ARE NOT SQUARE TO THE WORLD. Every
+   number in this program -- the setup's yaw, the box's turn, the sliders -- is
+   in world axes, while what you SEE is a room set down at whatever angle the
+   tripod happened to face. Without something on screen saying which way East
+   and North are, "turn it 35 degrees" is a guess. Axes point away from the
+   viewer when they are behind the scene, and clicking one looks down it, which
+   is the [three-orientation-gizmo] behaviour and the reason it is clickable. */
+const AXES = [{v:[1,0,0], n:'X', t:'East', c:'#ff6b6b'},
+              {v:[0,1,0], n:'Y', t:'North', c:'#7ddc7d'},
+              {v:[0,0,1], n:'Z', t:'Up',   c:'#6bb6ff'}];
+function gizmoBalls(){
+  const [cx,cy]=gizmoAt(), out=[];
+  for(const a of AXES) for(const s of [1,-1]){
+    const d=gizmoDir([a.v[0]*s, a.v[1]*s, a.v[2]*s]);
+    out.push({x:cx+d[0]*GIZ.r, y:cy+d[1]*GIZ.r, z:d[2],
+              pos:s>0, axis:a, sign:s});
+  }
+  return out;
+}
+function drawGizmo(){
+  if(!V.gizmo) return;
+  const [cx,cy]=gizmoAt();
+  const balls=gizmoBalls().sort((p,q)=>p.z-q.z);   /* far ones first */
+  for(const b of balls){
+    if(b.pos){
+      oc.beginPath(); oc.moveTo(cx,cy); oc.lineTo(b.x,b.y);
+      oc.strokeStyle=b.axis.c; oc.globalAlpha=b.z<0?0.45:1;
+      oc.lineWidth=2; oc.setLineDash([]); oc.stroke();
+    }
+    oc.globalAlpha = b.z<0 ? 0.5 : 1;
+    oc.beginPath(); oc.arc(b.x,b.y, b.pos?9:6, 0, 6.2832);
+    oc.fillStyle = b.pos ? b.axis.c : 'rgba(20,22,30,.92)';
+    oc.fill();
+    if(!b.pos){ oc.strokeStyle=b.axis.c; oc.lineWidth=1.6; oc.stroke(); }
+    if(b.pos){
+      oc.fillStyle='#0b0c11'; oc.font='600 10px ui-sans-serif,system-ui';
+      oc.textAlign='center'; oc.textBaseline='middle';
+      oc.fillText(b.axis.n, b.x, b.y+0.5);
+    }
+  }
+  oc.globalAlpha=1;
+  oc.fillStyle='rgba(255,255,255,.42)'; oc.textAlign='center';
+  oc.font='10px ui-sans-serif,system-ui';
+  oc.fillText('X east · Y north · Z up', cx, cy+GIZ.r+22);
+  /* the moving scan's own heading, which is the number that is easy to lose */
+  const s=active();
+  if(s && +s.setup.yaw_deg){
+    oc.fillStyle='rgba(255,176,64,.9)';
+    oc.fillText(s.name.slice(0,16)+' turned '+
+                (+s.setup.yaw_deg).toFixed(1)+'°', cx, cy+GIZ.r+36);
+  }
+}
+function gizmoClick(mx,my){
+  if(!V.gizmo) return false;
+  const [cx,cy]=gizmoAt();
+  if(Math.hypot(mx-cx,my-cy) > GIZ.r+16) return false;
+  let best=null, bd=14;
+  for(const b of gizmoBalls()){
+    const d=Math.hypot(mx-b.x,my-b.y);
+    if(d<bd){ bd=d; best=b; }
+  }
+  if(!best) return true;      /* inside the widget but not on a ball: swallow */
+  const v=[best.axis.v[0]*best.sign, best.axis.v[1]*best.sign,
+           best.axis.v[2]*best.sign];
+  /* look ALONG the axis, so the camera sits on the opposite side of it */
+  if(v[2]) preset(-Math.PI/2, v[2]>0 ? Math.PI/2 : -Math.PI/2);
+  else preset(Math.atan2(v[1],v[0]), 0);
+  say('looking down world '+(best.sign>0?'+':'-')+best.axis.n+
+      ' ('+best.axis.t+').');
+  return true;
+}
+
 /* The outline being drawn right now, and the one awaiting a keep-or-cut. */
 function drawDraft(){
   const path = V.draft || (V.pending && V.pending.screen);
-  if(!path || path.length<2){ ov.style.display='none'; return; }
   const dpr=Math.min(devicePixelRatio||1,2);
   if(ov.width!==Math.floor(innerWidth*dpr)||
      ov.height!==Math.floor(innerHeight*dpr)){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
+  if(!path && !V.gizmo){ ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
+  drawGizmo();
+  if(!path || path.length<2) return;
   oc.beginPath();
   oc.moveTo(path[0][0],path[0][1]);
   for(let i=1;i<path.length;i++) oc.lineTo(path[i][0],path[i][1]);
@@ -952,8 +1128,15 @@ function draw(){
   gl.uniform1f(loc.uClipIn, V.inside?1.0:0.0);
   gl.uniform1f(loc.uOrtho, V.ortho?1.0:0.0);
   gl.uniform1f(loc.uOrthoW, Math.max(viewHeight()*2.0, 0.05));
-  gl.uniform3fv(loc.uClipLo, V.box.lo);
-  gl.uniform3fv(loc.uClipHi, V.box.hi);
+  gl.uniform3fv(loc.uClipC, boxCentre());
+  gl.uniform3fv(loc.uClipH, boxHalf());
+  /* transposed on the way in: WebGL takes mat3 column-major, and what the
+     shader wants is world-to-box, which is the transpose of the box's axes */
+  const R=boxRot();
+  gl.uniformMatrix3fv(loc.uClipRT,false,
+    new Float32Array([R[0][0],R[0][1],R[0][2],
+                      R[1][0],R[1][1],R[1][2],
+                      R[2][0],R[2][1],R[2][2]]));
   for(const s of V.scans){
     if(V.only>=0 && s.index!==V.only) continue;
     gl.uniformMatrix4fv(loc.uModel,false,model(s));
@@ -1054,8 +1237,8 @@ async function boot(){
   }catch(e){ return fail('Shader failed: '+e.message); }
   loc={};
   for(const u of ['uVP','uModel','uScale','uOffset','uTint','uPS','uPSmax',
-                  'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipLo',
-                  'uClipHi','uOrtho','uOrthoW'])
+                  'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipC',
+                  'uClipH','uClipRT','uOrtho','uOrthoW'])
     loc[u]=gl.getUniformLocation(prog,u);
   loc.aPos=gl.getAttribLocation(prog,'aPos');
   loc.aCol=gl.getAttribLocation(prog,'aCol');
@@ -1079,7 +1262,8 @@ async function boot(){
   }
   measure();
   refreshLists();
-  syncSliders(); clipLabels(); recentre(); draw();
+  syncSliders(); syncClipSliders(); showTurn(); clipLabels();
+  recentre(); draw();
   if(PENDING.length) ingest(PENDING);
 }
 
@@ -1087,7 +1271,7 @@ async function boot(){
    reframes the camera and the clip box instead of sitting outside both. */
 function measure(){
   if(!V.scans.length){
-    V.ext={lo:[-5,-5,-2],hi:[5,5,3]}; V.box={lo:[-5,-5,-2],hi:[5,5,3]};
+    V.ext={lo:[-5,-5,-2],hi:[5,5,3]}; resetBox();
     V.reach=12;
     $('stat').textContent='No scans open yet — press Browse to add one.';
     say('This is TLS-Pie Studio. Add a capture to begin: Browse, or paste a '+
@@ -1102,7 +1286,7 @@ function measure(){
                           hi[a]=Math.max(hi[a],s.hi[a]); }
     total+=s.points; reach=Math.max(reach,s.reach);
   }
-  V.ext={lo,hi}; V.box={lo:lo.slice(),hi:hi.slice()};
+  V.ext={lo,hi}; resetBox();
   V.reach=Math.max(3,reach*1.6);
   V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
   $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
@@ -1153,10 +1337,27 @@ function editsFollow(){
   if(followTimer) clearTimeout(followTimer);
   followTimer=setTimeout(()=>{ followTimer=null; recomputeLive(); }, 250);
 }
+/* Wide open, square to the world, pivoted at the middle of everything. The
+   sliders read 0..1 across the scene, so this is the state they describe. */
+function resetBox(){
+  const lo=V.ext.lo, hi=V.ext.hi;
+  V.box.o=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2];
+  V.box.lo=[-(hi[0]-lo[0])/2, -(hi[1]-lo[1])/2, -(hi[2]-lo[2])/2];
+  V.box.hi=[ (hi[0]-lo[0])/2,  (hi[1]-lo[1])/2,  (hi[2]-lo[2])/2];
+  V.box.yaw=0; V.box.pitch=0; V.box.roll=0;
+}
+/* Sizes, not world coordinates: once the box can be turned, "x from -2.1 to
+   3.4" is a statement about an axis that is no longer the world's x, and
+   reading it as one would be worse than not showing it. */
 function clipLabels(){
-  $('cxv').textContent=V.box.lo[0].toFixed(2)+' – '+V.box.hi[0].toFixed(2);
-  $('cyv').textContent=V.box.lo[1].toFixed(2)+' – '+V.box.hi[1].toFixed(2);
-  $('czv').textContent=V.box.lo[2].toFixed(2)+' – '+V.box.hi[2].toFixed(2);
+  const h=boxHalf(), c=boxCentre();
+  $('cxv').textContent=(2*h[0]).toFixed(2)+' m';
+  $('cyv').textContent=(2*h[1]).toFixed(2)+' m';
+  $('czv').textContent=(2*h[2]).toFixed(2)+' m';
+  const at=$('boxat');
+  if(at) at.textContent='centre '+c[0].toFixed(2)+', '+c[1].toFixed(2)+', '+
+    c[2].toFixed(2)+' m'+(boxTurned()?' · turned '+
+      (+V.box.yaw).toFixed(1)+'°':' · square to the world');
 }
 function say(text, kind){
   const m=$('msg'); m.textContent=text;
@@ -1245,12 +1446,24 @@ function undoEdit(){
   showEdits(); recomputeLive();
   say('undid '+(e.mode==='keep'?'keep':'delete')+' '+e.kind+'.');
 }
+/* ⛔ SENT AS CENTRE +/- HALF, NOT AS THE LOCAL BOUNDS. The exporter takes a
+   world-aligned lo/hi and turns it about its own centre; the workbench holds
+   local bounds about a pivot. Those describe the same box only when the lo/hi
+   handed over is the one centred where this box actually is. */
+function boxSpec(){
+  const c=boxCentre(), h=boxHalf();
+  return {lo:[c[0]-h[0], c[1]-h[1], c[2]-h[2]],
+          hi:[c[0]+h[0], c[1]+h[1], c[2]+h[2]],
+          yaw_deg:V.box.yaw, pitch_deg:V.box.pitch, roll_deg:V.box.roll};
+}
 function addBox(which){
-  const lo=V.box.lo.slice(), hi=V.box.hi.slice();
-  pushEdit({kind:'box', mode:which, box:[lo,hi]});
+  const b=boxSpec(), h=boxHalf();
+  pushEdit({kind:'box', mode:which, box:b});
   say((which==='keep'?'Keeping only':'Deleting')+' a box '+
-      (hi[0]-lo[0]).toFixed(1)+' x '+(hi[1]-lo[1]).toFixed(1)+' x '+
-      (hi[2]-lo[2]).toFixed(1)+' m. Undo puts it back.');
+      (2*h[0]).toFixed(1)+' x '+(2*h[1]).toFixed(1)+' x '+
+      (2*h[2]).toFixed(1)+' m'+(boxTurned()
+        ? ', turned '+(+V.box.yaw).toFixed(1)+'°' : '')+
+      '. Undo puts it back.');
 }
 
 /* ⛔ RECOMPUTED FROM SCRATCH, NEVER APPLIED INCREMENTALLY. A delete that only
@@ -1308,14 +1521,27 @@ function upload(s){
     gl.bufferSubData(gl.ARRAY_BUFFER,0,s.live.subarray(c.at,c.at+c.n));
   }
 }
+/* The same test pipeline.Box.inside runs, in the same turn order. */
 function markBox(seg,k,b,to){
-  const lo=[Math.min(b[0][0],b[1][0]),Math.min(b[0][1],b[1][1]),
-            Math.min(b[0][2],b[1][2])];
-  const hi=[Math.max(b[0][0],b[1][0]),Math.max(b[0][1],b[1][1]),
-            Math.max(b[0][2],b[1][2])];
-  for(let i=0;i<k;i++)
-    if(_wx[i]>=lo[0]&&_wx[i]<=hi[0]&&_wy[i]>=lo[1]&&_wy[i]<=hi[1]&&
-       _wz[i]>=lo[2]&&_wz[i]<=hi[2]) seg[i]=to;
+  const lo=[Math.min(b.lo[0],b.hi[0]),Math.min(b.lo[1],b.hi[1]),
+            Math.min(b.lo[2],b.hi[2])];
+  const hi=[Math.max(b.lo[0],b.hi[0]),Math.max(b.lo[1],b.hi[1]),
+            Math.max(b.lo[2],b.hi[2])];
+  const c=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2];
+  const h=[(hi[0]-lo[0])/2,(hi[1]-lo[1])/2,(hi[2]-lo[2])/2];
+  const turned = b.yaw_deg||b.pitch_deg||b.roll_deg;
+  const R = turned ? rotOf(b.yaw_deg||0, b.pitch_deg||0, b.roll_deg||0) : null;
+  for(let i=0;i<k;i++){
+    let dx=_wx[i]-c[0], dy=_wy[i]-c[1], dz=_wz[i]-c[2];
+    if(R){                       /* undo the turn: R transposed, not R */
+      const qx=R[0][0]*dx+R[1][0]*dy+R[2][0]*dz;
+      const qy=R[0][1]*dx+R[1][1]*dy+R[2][1]*dz;
+      const qz=R[0][2]*dx+R[1][2]*dy+R[2][2]*dz;
+      dx=qx; dy=qy; dz=qz;
+    }
+    if(dx>=-h[0]&&dx<=h[0]&&dy>=-h[1]&&dy<=h[1]&&dz>=-h[2]&&dz<=h[2])
+      seg[i]=to;
+  }
 }
 /* The same crossing-number test the exporter runs, through the same matrix, so
    what is previewed and what is written cannot disagree. */
@@ -1340,26 +1566,41 @@ function markLasso(seg,k,l,to){
 }
 
 /* ---- lasso ---- */
+/* ⭐ THE RECTANGLE AND THE LASSO ARE THE SAME TOOL WITH A DIFFERENT OUTLINE.
+   A marquee is a four-cornered polygon, so it goes down the identical path --
+   same screen-space storage, same camera matrix, same crossing-number test at
+   export. Giving the rectangle its own world-space maths would be a second
+   thing to keep in step with the exporter for no gain at all. */
 function setTool(t){
   V.tool=t;
-  const b=$('lasso');
-  if(b){ b.classList.toggle('on', t==='lasso');
-         b.textContent = t==='lasso' ? 'Lasso on' : 'Lasso'; }
-  cv.style.cursor = t==='lasso' ? 'crosshair' : '';
+  [['lasso','Lasso'],['rect','Rectangle']].forEach(([id,label])=>{
+    const b=$(id); if(!b) return;
+    b.classList.toggle('on', t===id);
+    b.textContent = t===id ? label+' on' : label;
+  });
+  cv.style.cursor = t ? 'crosshair' : '';
 }
 function askLasso(on){
   $('lassoask').style.display = on ? 'block' : 'none';
 }
-function startDraft(x,y){ V.draft=[[x,y]]; }
+function startDraft(x,y){ V.draft=[[x,y]]; V.anchor=[x,y]; }
 function extendDraft(x,y){
+  if(V.tool==='rect'){
+    /* dragged from the corner it was started at, the way a marquee reads */
+    const [ax,ay]=V.anchor;
+    V.draft=[[ax,ay],[x,ay],[x,y],[ax,y]];
+    return invalidate();
+  }
   const p=V.draft[V.draft.length-1];
   if(Math.hypot(x-p[0],y-p[1]) < 3) return;   /* freehand, not every pixel */
   V.draft.push([x,y]); invalidate();
 }
 function finishDraft(){
   const path=V.draft; V.draft=null;
-  if(!path || path.length<3){ invalidate(); return say(
-    'That outline was too small to enclose anything. Drag a loop around the '+
+  const tiny = path && path.length===4 &&
+    Math.abs(path[1][0]-path[0][0])<4 && Math.abs(path[2][1]-path[1][1])<4;
+  if(!path || path.length<3 || tiny){ invalidate(); return say(
+    'That outline was too small to enclose anything. Drag it out across the '+
     'points you mean.', 'warn'); }
   /* Frozen HERE, with the matrix that drew it. Orbit afterwards and the cut
      still lands where it was drawn, which is what makes several lassos from
@@ -1456,7 +1697,8 @@ async function ingest(paths){
     V.scans=[];
     for(const m of (j.scans||j.added)) V.scans.push(await loadScan(m));
     V.scans.forEach((s,i)=>{ if(setups[i]) s.setup=setups[i]; });
-    measure(); refreshLists(); syncSliders(); clipLabels();
+    measure(); refreshLists(); syncSliders();
+    syncClipSliders(); showTurn(); clipLabels();
     if(V.edits.length) recomputeLive();
     if(first) recentre();
     invalidate(); watch(false);
@@ -1499,7 +1741,7 @@ async function saveMerged(clipOnly){
   if(!OUT) return say('No output file was given.', 'bad');
   if(!V.scans.length) return say('Nothing to save yet.', 'warn');
   const plan=editPlan();
-  if(clipOnly) plan.keep.push([V.box.lo.slice(), V.box.hi.slice()]);
+  if(clipOnly) plan.keep.push(boxSpec());
   const step=DETAIL[V.exdet];
   say('writing '+OUT+' at '+step.t+' …'); watch(true);
   $('save').disabled=true; $('saveclip').disabled=true;
@@ -1527,49 +1769,79 @@ document.addEventListener('contextmenu', e=>e.preventDefault());
    the grip sliding out from under the pointer as the view turns. */
 function slideFace(axis,side,dx,dy){
   const hs=handles();
-  const h=hs.find(k=>k.axis===axis && k.side===side);
+  const h=hs.find(k=>!k.turn && k.axis===axis && k.side===side);
   const at=project(h.p, V.vp); if(!at) return;
   const step=Math.max(0.05, V.cam.dist*0.02);
-  const probe=h.p.slice(); probe[axis]+=step;
-  const to=project(probe, V.vp); if(!to) return;
+  const d=boxAxis(axis);       /* the face's OWN normal, not the world's */
+  const to=project([h.p[0]+d[0]*step, h.p[1]+d[1]*step, h.p[2]+d[2]*step],
+                   V.vp);
+  if(!to) return;
   const ax=to[0]-at[0], ay=to[1]-at[1], len=Math.hypot(ax,ay);
   if(len<0.5) return;      /* edge-on: no honest pixels-to-metres to be had */
   const move=((dx*ax + dy*ay)/len) * (step/len);
-  const lo=V.ext.lo[axis], hi=V.ext.hi[axis];
-  if(side) V.box.hi[axis]=Math.min(hi,
+  const lim=span(axis)*1.5;    /* room to overshoot the scene, not to lose it */
+  if(side) V.box.hi[axis]=Math.min(lim,
       Math.max(V.box.lo[axis]+MIN_BOX, V.box.hi[axis]+move));
-  else     V.box.lo[axis]=Math.max(lo,
+  else     V.box.lo[axis]=Math.max(-lim,
       Math.min(V.box.hi[axis]-MIN_BOX, V.box.lo[axis]+move));
   syncClipSliders(); clipLabels(); invalidate();
 }
+/* ⛔ A TURN IS AN ANGLE ABOUT A POINT, NOT A DISTANCE, so it is measured as
+   one: the angle of the pointer about the box's centre ON SCREEN, against the
+   angle the grip was at. Screen y grows downward, so a turn that looks
+   anticlockwise is a DECREASING screen angle -- and seen from underneath the
+   scene the same drag means the opposite turn, which is what the dir[2] sign
+   is for. Exact in a top view, which is where this gets used. */
+function turnBox(mx,my,fromAngle){
+  const c=project(boxCentre(), V.vp); if(!c) return fromAngle;
+  const now=Math.atan2(my-c[1], mx-c[0]);
+  if(fromAngle===null) return now;
+  let d=(now-fromAngle)*180/Math.PI;
+  while(d>180) d-=360;
+  while(d<-180) d+=360;
+  const sign = basis().dir[2] >= 0 ? -1 : 1;
+  let deg=V.box.yaw + sign*d;
+  deg=((deg+180)%360+360)%360-180;
+  setTurn(+deg.toFixed(2), V.box.pitch, V.box.roll);
+  return now;
+}
+/* Slider 0..1 maps to the box's OWN axis, measured across the scene's size and
+   centred on the pivot -- so at zero turn it reads exactly as it always did. */
+function span(a){ return Math.max(V.ext.hi[a]-V.ext.lo[a], 1e-6); }
+function fromSlider(a,u){ return (u-0.5)*span(a); }
+function toSlider(a,v){ return v/span(a) + 0.5; }
 function syncClipSliders(){
   [['cx0','cx1',0],['cy0','cy1',1],['cz0','cz1',2]].forEach(([a,b,ax])=>{
-    const s=V.ext.lo[ax], span=Math.max(V.ext.hi[ax]-s,1e-6);
-    $(a).value=(V.box.lo[ax]-s)/span;
-    $(b).value=(V.box.hi[ax]-s)/span;
+    $(a).value=toSlider(ax, V.box.lo[ax]);
+    $(b).value=toSlider(ax, V.box.hi[ax]);
   });
 }
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
-      lx=0, ly=0;
+      spin=null, lx=0, ly=0;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
+    /* the world widget is a control, and it is drawn over the canvas */
+    if(gizmoClick(e.clientX,e.clientY)) return;
     lx=e.clientX; ly=e.clientY;
-    down=true; grip=null; lassoing=false;
+    down=true; grip=null; lassoing=false; spin=null;
     panning=(e.button===2||e.shiftKey);
-    if(!panning && V.tool==='lasso'){
+    if(!panning && V.tool){
       lassoing=true; startDraft(e.clientX,e.clientY);
     } else if(!panning){
       /* grips win over everything: they sit on top and are small targets */
       const i=pickHandle(e.clientX,e.clientY);
-      if(i>=0) grip=handles()[i];
+      if(i>=0){
+        grip=handles()[i];
+        if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
+      }
     }
     moving = V.grab && !panning && !grip && !lassoing;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
     if(!down){
-      const over = e.target.id==='cv' && V.tool!=='lasso';
+      const over = e.target.id==='cv' && !V.tool;
       const was=V.hot;
       V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;
       if(was!==V.hot) invalidate();
@@ -1577,6 +1849,7 @@ function syncClipSliders(){
     }
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
     if(lassoing) extendDraft(e.clientX,e.clientY);
+    else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
     else if(moving){
       /* move in the GROUND plane along the camera's own axes, so dragging
@@ -1614,6 +1887,8 @@ function syncClipSliders(){
     else if(k==='f'||k==='F') recentre();
     else if(k==='o'||k==='O') setOrtho(!V.ortho);
     else if(k==='l'||k==='L') setTool(V.tool==='lasso'?'':'lasso');
+    else if(k==='m'||k==='M') setTool(V.tool==='rect'?'':'rect');
+    else if(k==='b'||k==='B') $('wire').onclick({target:$('wire')});
     else return;
     e.preventDefault();
   });
@@ -1640,6 +1915,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('save').onclick=()=>saveMerged(false);
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');
+  $('rect').onclick=()=>setTool(V.tool==='rect'?'':'rect');
+  $('gizmo').onclick=e=>{ V.gizmo=!V.gizmo;
+    e.target.classList.toggle('on',V.gizmo); invalidate(); };
   $('undo').onclick=undoEdit;
   $('lin').onclick=()=>commitLasso('cut');
   $('lout').onclick=()=>commitLasso('keep');
@@ -1676,8 +1954,16 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('clearedit').onclick=()=>{ V.edits=[]; V.pending=null; askLasso(false);
     showEdits(); recomputeLive();
     say('edits cleared; the whole cloud will be saved.'); };
-  $('wire').onclick=e=>{ V.wire=!V.wire;
-    e.target.classList.toggle('on',V.wire); invalidate(); };
+  /* ⭐ THE OUTLINE AND THE CLIPPING ARE SEPARATE ON PURPOSE. Once the box is
+     small the grips sit over the very points being inspected, and any drag
+     near one grabs it instead of the camera. Hiding the outline hides the
+     grips WITH it and leaves the clipping exactly as it was. */
+  $('wire').onclick=e=>{ V.wire=!V.wire; V.hot=-1;
+    e.target.textContent=V.wire?'Box shown':'Box hidden';
+    e.target.classList.toggle('on',V.wire); invalidate();
+    say(V.wire ? 'Box outline and grips back on.'
+               : 'Box hidden — clipping is still '+(V.clip?'ON':'off')+
+                 ', and the camera has the whole window.'); };
   $('clipflip').onclick=e=>{ V.inside=!V.inside;
     e.target.textContent=V.inside?'Hiding inside':'Hiding outside';
     e.target.classList.toggle('on',V.inside);
@@ -1690,11 +1976,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('clipfit').onclick=()=>{
     /* Snap the box to the room and switch on, so one press does something
        visible -- a clip box that starts wide open looks broken otherwise. */
-    for(let a=0;a<3;a++){
-      const mid=(V.ext.lo[a]+V.ext.hi[a])/2, half=(V.ext.hi[a]-V.ext.lo[a])/2;
-      V.box.lo[a]=mid-half*0.6; V.box.hi[a]=mid+half*0.6;
-    }
-    V.box.hi[2]=V.ext.lo[2]+(V.ext.hi[2]-V.ext.lo[2])*0.55;
+    const turn=[V.box.yaw,V.box.pitch,V.box.roll];
+    resetBox();
+    for(let a=0;a<3;a++){ V.box.lo[a]*=0.6; V.box.hi[a]*=0.6; }
+    V.box.hi[2]=V.box.lo[2]/0.6 + span(2)*0.55;   /* lid just above head height */
+    setTurn(turn[0],turn[1],turn[2]);
     syncClipSliders();
     V.clip=true; $('clipon').textContent='On';
     $('clipon').classList.add('on');
@@ -1702,11 +1988,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
   [['cx0','cx1',0],['cy0','cy1',1],['cz0','cz1',2]].forEach(([a,b,ax])=>{
     const f=()=>{
       const u=parseFloat($(a).value), v=parseFloat($(b).value);
-      const s=V.ext.lo[ax], e=V.ext.hi[ax];
-      V.box.lo[ax]=s+(e-s)*Math.min(u,v);
-      V.box.hi[ax]=s+(e-s)*Math.max(u,v);
+      V.box.lo[ax]=fromSlider(ax, Math.min(u,v));
+      V.box.hi[ax]=fromSlider(ax, Math.max(u,v));
       clipLabels(); invalidate(); };
     $(a).oninput=f; $(b).oninput=f; });
+  $('bfit').onclick=()=>{
+    /* Square the box to the way you are looking, which after a Front or Side
+       view is square to the wall you were looking at. */
+    let deg = -V.cam.yaw*180/Math.PI;
+    deg = ((deg+180)%360+360)%360-180;
+    setTurn(+deg.toFixed(1), 0, 0);
+    say('box turned to '+(+V.box.yaw).toFixed(1)+'°, square to this view.'); };
+  $('bzero').onclick=()=>{ setTurn(0,0,0);
+    say('box squared back to the world axes.'); };
+  [['byaw','yaw','byawv'],['bpitch','pitch','bpitchv'],
+   ['broll','roll','brollv']].forEach(([id,key,lbl])=>{
+    $(id).oninput=e=>{
+      const t={yaw:V.box.yaw, pitch:V.box.pitch, roll:V.box.roll};
+      t[key]=parseFloat(e.target.value);
+      setTurn(t.yaw,t.pitch,t.roll); $(lbl).textContent=t[key].toFixed(1); }; });
 });
 </script>
 """

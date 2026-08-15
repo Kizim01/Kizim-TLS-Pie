@@ -137,6 +137,97 @@ class VoxelAccumulator:
         return xyz, refl
 
 
+def box_rotation(yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    """
+    The box's own axes as the columns of a 3x3, from three turns in a fixed order.
+
+    ⛔ THE ORDER IS PART OF THE FORMAT. Rz then Ry then Rx, each about the axis
+    the PREVIOUS turns have already moved -- the same order the workbench uses
+    to build its shader matrix. Three angles do not name an orientation on their
+    own; a stored yaw that is composed one way here and another way on screen
+    puts the preview and the export in different rooms, and the residual has no
+    way to complain.
+    """
+    cz, sz = np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg))
+    cy, sy = np.cos(np.radians(pitch_deg)), np.sin(np.radians(pitch_deg))
+    cx, sx = np.cos(np.radians(roll_deg)), np.sin(np.radians(roll_deg))
+    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    return rz @ ry @ rx
+
+
+class Box(object):
+    """
+    A box that need not be square to the world -- it can be turned to a wall.
+
+    ⭐ WHY THIS EXISTS. The scans come out in the SENSOR's frame, and a tripod is
+    not set down parallel to the room. An axis-aligned box therefore cuts
+    diagonally across every wall, and the operator ends up trimming a corner at
+    a time. Turning the box lets one box be the room.
+
+    Stored as the two bounds the sliders produce plus the turn, rather than as a
+    centre and half-extents, so an unturned box is byte-for-byte what the older
+    axis-aligned form was and reads back the same.
+    """
+
+    def __init__(self, lo, hi, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+        lo = np.asarray(lo, dtype=float)
+        hi = np.asarray(hi, dtype=float)
+        self.lo = np.minimum(lo, hi)          # any two opposite corners
+        self.hi = np.maximum(lo, hi)
+        self.yaw_deg = float(yaw_deg)
+        self.pitch_deg = float(pitch_deg)
+        self.roll_deg = float(roll_deg)
+
+    @property
+    def centre(self):
+        return (self.lo + self.hi) / 2.0
+
+    @property
+    def half(self):
+        return (self.hi - self.lo) / 2.0
+
+    def turned(self):
+        return bool(self.yaw_deg or self.pitch_deg or self.roll_deg)
+
+    def inside(self, xyz):
+        """True where a point falls within the box, turn included."""
+        xyz = np.asarray(xyz, dtype=float)
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        rel = xyz - self.centre
+        if self.turned():
+            # ⛔ THE TURN IS UNDONE, NOT APPLIED. The box's axes are the columns
+            # of R, so world-to-box is R transposed -- turning the POINTS the
+            # same way as the box turns them both together and tests nothing.
+            rel = rel @ box_rotation(self.yaw_deg, self.pitch_deg,
+                                     self.roll_deg)
+        h = self.half
+        return np.all((rel >= -h) & (rel <= h), axis=1)
+
+    def as_dict(self):
+        return {"lo": list(map(float, self.lo)), "hi": list(map(float, self.hi)),
+                "yaw_deg": self.yaw_deg, "pitch_deg": self.pitch_deg,
+                "roll_deg": self.roll_deg}
+
+    @classmethod
+    def parse(cls, data):
+        """Either the turned form, or the plain pair of corners it grew from."""
+        if isinstance(data, Box):
+            return data
+        if isinstance(data, dict):
+            return cls(data["lo"], data["hi"], data.get("yaw_deg", 0.0),
+                       data.get("pitch_deg", 0.0), data.get("roll_deg", 0.0))
+        return cls(data[0], data[1])
+
+    def describe(self):
+        size = self.hi - self.lo
+        text = "%.1f x %.1f x %.1f m" % tuple(size)
+        return text + (" turned %.1f deg" % self.yaw_deg if self.turned()
+                       else "")
+
+
 class Lasso(object):
     """
     A shape drawn ON THE SCREEN, kept as the screen polygon and the camera.
@@ -231,8 +322,8 @@ class Edit(object):
     """
 
     def __init__(self, keep=None, drop=None, lassos=None):
-        self.keep = [tuple(b) for b in (keep or [])]
-        self.drop = [tuple(b) for b in (drop or [])]
+        self.keep = [Box.parse(b) for b in (keep or [])]
+        self.drop = [Box.parse(b) for b in (drop or [])]
         self.lassos = [l if isinstance(l, Lasso) else Lasso.from_dict(l)
                        for l in (lassos or [])]
 
@@ -249,9 +340,7 @@ class Edit(object):
 
     @staticmethod
     def _inside(xyz, box):
-        lo, hi = np.asarray(box[0], float), np.asarray(box[1], float)
-        lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)     # any two corners
-        return np.all((xyz >= lo) & (xyz <= hi), axis=1)
+        return Box.parse(box).inside(xyz)
 
     def mask(self, xyz):
         """True where a point survives the edit."""
@@ -274,8 +363,8 @@ class Edit(object):
         return live
 
     def as_dict(self):
-        return {"keep": [list(map(list, b)) for b in self.keep],
-                "drop": [list(map(list, b)) for b in self.drop],
+        return {"keep": [b.as_dict() for b in self.keep],
+                "drop": [b.as_dict() for b in self.drop],
                 "lassos": [l.as_dict() for l in self.lassos]}
 
     @classmethod
