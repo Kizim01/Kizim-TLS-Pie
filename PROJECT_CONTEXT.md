@@ -2039,7 +2039,7 @@ camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `
 `fc32204`.
 
 **✅ REGISTRATION IS BUILT, AND STUDIO IS A FULL WORKBENCH NOW — `TLS-Pie-Studio.exe`. 2026-08-15,
-commits `79a4e34` → `4a7b201`, 314 tests, exe rebuilt 12:18.** Double-click, Browse, decode with a
+commits `79a4e34` → `1f80dba`, 314 tests, exe rebuilt 12:18.** Double-click, Browse, decode with a
 live bar, both scans tinted by origin, then:
 
 1. **Align** — by drag, by **Auto-align** (GICP), or by **picking matched point pairs** (`P`) when
