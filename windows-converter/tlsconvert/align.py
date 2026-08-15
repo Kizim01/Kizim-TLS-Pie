@@ -872,6 +872,20 @@ PAGE = r"""<!doctype html>
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
   <hr>
+  <label>Plumb &amp; level reference</label>
+  <div class="row"><button id="ref">Reference lines</button>
+    <button id="plumb">Place / measure</button></div>
+  <div class="row"><button id="refclear">Clear reference</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    A true vertical, a level cross and a metre grid, drawn through a point you
+    click — hold them up against a door jamb or a worktop to see how far the
+    room is out. Click a second point and it says by how much, in millimetres
+    over the run. <b>Level the room first:</b> unlevelled, this line is the
+    <i>rig's</i> vertical, so a leaning room would look perfectly true against
+    it. And use <b>O</b> then <b>Front</b>/<b>Side</b> — in perspective a world
+    vertical does not draw as a vertical on screen.</div>
+  <div id="reflist" style="font-size:10.5px;color:var(--faint)"></div>
+  <hr>
   <label>View</label>
   <div class="row"><button id="nav" class="go">Camera</button>
     <button id="ortho">Perspective</button></div>
@@ -949,7 +963,8 @@ PAGE = r"""<!doctype html>
   shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
   &middot; M rectangle &middot; L lasso &middot; P pick pairs
-  &middot; G level points &middot; B hide box &middot; Ctrl-Z undo
+  &middot; G level points &middot; T reference lines
+  &middot; B hide box &middot; Ctrl-Z undo
   &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
@@ -962,6 +977,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
+           ref:false, plumb:{a:null,b:null},
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
@@ -1036,6 +1052,9 @@ function setOrtho(on){
   const b=$('ortho');
   if(b){ b.textContent=V.ortho?'Orthographic':'Perspective';
          b.classList.toggle('on',V.ortho); }
+  /* the reference panel's warning about perspective is only true in one of
+     these two states, so it is re-stated rather than left to go stale */
+  showPlumb();
   invalidate();
 }
 /* Each preset also leaves the camera orbiting the scene rather than roaming
@@ -1516,6 +1535,7 @@ function draw(){
     }
   }
   drawBox(vp);
+  drawRef(vp);
   drawPairs(vp);
   drawDraft();
 }
@@ -1623,7 +1643,7 @@ async function boot(){
   }
   measure();
   refreshLists();
-  syncSliders(); syncClipSliders(); showTurn(); clipLabels();
+  syncSliders(); syncClipSliders(); showTurn(); clipLabels(); showPlumb();
   recentre(); draw();
   if(OPEN) openProject(OPEN);
   else if(PENDING.length) ingest(PENDING);
@@ -1965,7 +1985,7 @@ function setTool(t){
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
   [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs'],
-   ['level','Pick level points']]
+   ['level','Pick level points'],['plumb','Place / measure']]
     .forEach(([id,label])=>{
       const b=$(id); if(!b) return;
       b.classList.toggle('on', t===id);
@@ -2124,6 +2144,7 @@ function runPick(mx,my){
   /* levelling takes a point off ANY cloud -- the floor is the floor, and picks
      spanning both is what reveals a tilt between the two setups */
   if(V.tool==='level') return levelPick(hit);
+  if(V.tool==='plumb') return plumbPick(hit);
   const want=pairWant();
   if(!want) return;
   if(hit.scan!==want) return say(
@@ -2337,19 +2358,157 @@ async function applyLevel(){
   const j=await r.json();
   if(!j.ok) return say(j.error||'that surface could not be levelled to','warn');
   V.level=j.level; V.lerr=j.errors;
-  showLevel(); recomputeLive(); invalidate(); dirty();
+  showLevel(); showPlumb(); recomputeLive(); invalidate(); dirty();
   say(j.text, j.trustworthy ? null : 'warn');
 }
 function clearLevel(){
   const had=!!V.level;
   V.level=null; V.lvl=[]; V.lerr=null;
-  showLevel(); recomputeLive(); invalidate(); dirty();
+  showLevel(); showPlumb(); recomputeLive(); invalidate(); dirty();
   say(had ? 'Levelling removed — the room is back in the rig’s own frame.'
           : 'Levelling picks cleared.');
 }
 function undoLevelPick(){
   if(!V.lvl.length) return;
   V.lvl.pop(); V.lerr=null; showLevel(); invalidate(); dirty();
+}
+
+/* ---- plumb and level reference ----
+   ⭐ A STRAIGHT EDGE YOU CAN HOLD UP TO THE ROOM. A plumb line and a level
+   cross through a point you choose, plus a metre grid on the horizontal plane
+   through it, drawn as real geometry in the world.
+
+   ⛔ IT IS ONLY A PLUMB LINE IF THE ROOM HAS BEEN LEVELLED. Unlevelled, the
+   world's +Z is the RIG's vertical, not gravity's -- so the line would be
+   perfectly consistent with a room that is leaning, and comparing a wall to it
+   would confirm nothing except that the wall and the tripod agree. That is the
+   quiet failure this whole pair of tools exists to catch, so the panel says so
+   whenever the level has not been set.
+
+   ⛔ AND IN PERSPECTIVE, A WORLD VERTICAL DOES NOT PROJECT TO A SCREEN
+   VERTICAL. Only a line through the exact centre of the view does; everything
+   else leans, correctly, toward its vanishing point. So the reference is drawn
+   as geometry to be compared against -- never as a screen overlay, which would
+   be straight by construction and would quietly disagree with the room for
+   reasons that have nothing to do with the room. Press O and Front or Side for
+   an orthographic elevation, where a plumb wall really is parallel to the line
+   and to the window edge alike. */
+function refAt(q){
+  const s=q && scanAt(q.si);
+  return s ? put(affine(s),q.p[0],q.p[1],q.p[2]) : null;
+}
+function refOrigin(){
+  return refAt(V.plumb.a) || V.cam.t.slice();
+}
+function refSpan(){
+  return {z:Math.max(V.ext.hi[2]-V.ext.lo[2], 3.0),
+          r:Math.min(Math.max((V.reach||10)*0.5, 3.0), 15.0)};
+}
+function drawRef(vp){
+  if(!V.ref || !V.scans.length) return;
+  const o=refOrigin(), sp=refSpan(), g=Math.round(sp.r);
+  const grid=[], cross=[], plumb=[];
+  /* a metre grid on the horizontal plane through the anchor: the floor as it
+     WOULD be if the room were true, laid over the floor as it was measured */
+  for(let i=-g;i<=g;i++){
+    grid.push([o[0]+i,o[1]-g,o[2]],[o[0]+i,o[1]+g,o[2]]);
+    grid.push([o[0]-g,o[1]+i,o[2]],[o[0]+g,o[1]+i,o[2]]);
+  }
+  cross.push([o[0]-sp.r,o[1],o[2]],[o[0]+sp.r,o[1],o[2]]);
+  cross.push([o[0],o[1]-sp.r,o[2]],[o[0],o[1]+sp.r,o[2]]);
+  plumb.push([o[0],o[1],o[2]-sp.z],[o[0],o[1],o[2]+sp.z]);
+  const b=refAt(V.plumb.b);
+  gl.useProgram(lprog);
+  gl.uniformMatrix4fv(lloc.uVP,false,vp);
+  gl.disableVertexAttribArray(loc.aCol);
+  gl.disableVertexAttribArray(loc.aLive);
+  gl.enableVertexAttribArray(lloc.aP);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lbuf);
+  gl.vertexAttribPointer(lloc.aP,3,gl.FLOAT,false,0,0);
+  /* ⛔ Depth off. A reference you cannot see the moment it goes behind the wall
+     you are holding it against is not a reference. It reads as a straight edge
+     laid over the view, which is what it is. */
+  gl.disable(gl.DEPTH_TEST);
+  const flat=a=>{ const f=new Float32Array(a.length*3);
+    a.forEach((v,i)=>{ f[i*3]=v[0]; f[i*3+1]=v[1]; f[i*3+2]=v[2]; }); return f; };
+  const line=(pts,r,gg,bb)=>{
+    if(!pts.length) return;
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pts), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize,1.0);
+    gl.uniform4f(lloc.uCol,r,gg,bb,1.0);
+    gl.drawArrays(gl.LINES,0,pts.length);
+  };
+  line(grid, 0.16,0.24,0.30);          /* faint: it must not read as data */
+  line(cross, 0.30,0.85,0.95);
+  line(plumb, 0.55,0.98,1.00);
+  if(b){
+    const o2=refOrigin();
+    /* the run and the rise drawn separately, so the number in the panel is
+       something you can see rather than something you have to trust */
+    line([o2,[b[0],b[1],o2[2]]], 1.00,0.72,0.28);
+    line([[b[0],b[1],o2[2]],b], 1.00,0.45,0.45);
+  }
+  const dpr=Math.min(devicePixelRatio||1,2);
+  const marks=[o]; if(b) marks.push(b);
+  gl.bufferData(gl.ARRAY_BUFFER, flat(marks), gl.DYNAMIC_DRAW);
+  gl.uniform1f(lloc.uSize, 11*dpr);
+  gl.uniform4f(lloc.uCol, 0.55,0.98,1.00,1.0);
+  gl.drawArrays(gl.POINTS,0,marks.length);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enableVertexAttribArray(loc.aCol);
+  gl.enableVertexAttribArray(loc.aLive);
+}
+/* ⛔ BELOW THIS, THE ANSWER IS THE PICK ERROR AND NOTHING ELSE. Out-of-plumb is
+   a wander divided by a rise, so a short baseline multiplies the error in both
+   picks straight into the angle: 2 cm of pick error over a 10 cm rise is 11
+   degrees of pure noise, reported to two decimal places. Hold the two picks
+   well apart, top and bottom of a door frame rather than two points on one
+   brick. */
+const MIN_TRUE_BASE = 0.30;
+function plumbPick(hit){
+  const q={si:hit.scan.index, p:hit.local.slice()};
+  if(!V.plumb.a || V.plumb.b){ V.plumb={a:q, b:null}; }
+  else V.plumb.b=q;
+  V.ref=true; $('ref').classList.add('on');
+  showPlumb(); invalidate();
+}
+function showPlumb(){
+  const box=$('reflist'); if(!box) return;
+  const bits=[];
+  if(!V.level) bits.push('<b style="color:#ffb84c">not levelled yet — this '+
+    'line is the rig’s vertical, not gravity’s</b>');
+  const a=refAt(V.plumb.a), b=refAt(V.plumb.b);
+  if(!V.plumb.a) bits.push('reference sits at the view centre — click a point '+
+                           'to put it somewhere you mean');
+  if(a && b){
+    const dx=b[0]-a[0], dy=b[1]-a[1], dz=b[2]-a[2];
+    const run=Math.hypot(dx,dy), rise=Math.abs(dz);
+    const D=Math.hypot(run,rise);
+    if(D < MIN_TRUE_BASE){
+      bits.push('<b style="color:#ff7070">those two picks are only '+
+        (D*1000).toFixed(0)+' mm apart</b> — closer than '+
+        (MIN_TRUE_BASE*1000).toFixed(0)+' mm the answer is your own aim, not '+
+        'the building. Pick them further apart.');
+    } else if(rise >= run){
+      /* mostly one above the other: the meaningful reading is plumb */
+      bits.push('<b>out of plumb '+(run*1000).toFixed(0)+' mm over '+
+        rise.toFixed(2)+' m</b> — '+
+        (Math.atan2(run,rise)*180/Math.PI).toFixed(2)+'°');
+    } else {
+      bits.push('<b>out of level '+(rise*1000).toFixed(0)+' mm over '+
+        run.toFixed(2)+' m</b> — '+
+        (Math.atan2(rise,run)*180/Math.PI).toFixed(2)+'°');
+    }
+  } else if(V.plumb.a){
+    bits.push('click a second point to measure it against the first');
+  }
+  if(!V.ortho) bits.push('<span style="color:#ffb84c">perspective view: a '+
+    'world vertical does not look vertical on screen. Press O, then Front or '+
+    'Side.</span>');
+  box.innerHTML=bits.join('<br>');
+}
+function clearPlumb(){
+  V.plumb={a:null,b:null}; showPlumb(); invalidate();
 }
 
 /* ---- projects ----
@@ -2367,8 +2526,12 @@ function projectState(){
           box: {o:V.box.o, lo:V.box.lo, hi:V.box.hi, yaw:V.box.yaw,
                 pitch:V.box.pitch, roll:V.box.roll,
                 on:V.clip, inside:V.inside, wire:V.wire},
+          /* the straight edge rides in `view` rather than as a key of its own:
+             it is something you set up to LOOK with, not a measurement, and the
+             server passes the whole block through untouched */
           view: {detail:V.detail, exdet:V.exdet, mode:V.mode,
-                 psize:V.psize, ortho:V.ortho, gizmo:V.gizmo}};
+                 psize:V.psize, ortho:V.ortho, gizmo:V.gizmo,
+                 ref:V.ref, plumb:V.plumb}};
 }
 function showProject(){
   const p=V.project;
@@ -2452,6 +2615,8 @@ async function openProject(path){
       $('mode').textContent=['By scan','Height','Photo / intensity'][V.mode];
       $('mode').classList.toggle('on',V.mode===0);
       $('gizmo').classList.toggle('on',V.gizmo);
+      V.ref=!!j.view.ref; V.plumb=j.view.plumb||{a:null,b:null};
+      $('ref').classList.toggle('on',V.ref);
       setOrtho(!!j.view.ortho);
     }
     V.edits=j.edits||[];
@@ -2466,7 +2631,7 @@ async function openProject(path){
     $('wire').textContent=V.wire?'Box shown':'Box hidden';
     $('wire').classList.toggle('on',V.wire);
     refreshLists(); syncSliders(); syncClipSliders(); showTurn();
-    clipLabels(); showEdits(); showPairs(); showLevel();
+    clipLabels(); showEdits(); showPairs(); showLevel(); showPlumb();
     recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
@@ -2759,6 +2924,8 @@ function syncClipSliders(){
     else if(k==='m'||k==='M') setTool(V.tool==='rect'?'':'rect');
     else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
     else if(k==='g'||k==='G') setTool(V.tool==='level'?'':'level');
+    else if(k==='t'||k==='T'){ V.ref=!V.ref;
+      $('ref').classList.toggle('on',V.ref); showPlumb(); invalidate(); }
     else if(k==='b'||k==='B') $('wire').onclick({target:$('wire')});
     else return;
     e.preventDefault();
@@ -2801,6 +2968,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('pairgo').onclick=alignPairs;
   $('pairundo').onclick=undoPair;
   $('pairclear').onclick=clearPairs;
+  $('ref').onclick=e=>{ V.ref=!V.ref; e.target.classList.toggle('on',V.ref);
+    showPlumb(); invalidate(); };
+  $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
+  $('refclear').onclick=clearPlumb;
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
   $('lvlgo').onclick=applyLevel;
   $('lvlundo').onclick=undoLevelPick;

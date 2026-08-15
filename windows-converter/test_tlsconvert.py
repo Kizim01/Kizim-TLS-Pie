@@ -1485,6 +1485,25 @@ try:
           "function affine(s){" in _page and "ONE HOME" in _page)
     check("levelling picks are measured on the frame BEFORE levelling",
           "preLevel" in _page and "instead of compounding" in _page)
+    check("a plumb and level straight edge can be laid over the room",
+          all(t in _page for t in ("drawRef", "'plumb'", "showPlumb",
+                                   "out of plumb", "out of level", "reflist")))
+    # ⛔ Drawn as world geometry, never as a screen overlay: a screen line is
+    # straight by construction and would disagree with the room for reasons
+    # that have nothing to do with the room.
+    check("and it is world geometry, so perspective is called out rather than "
+          "papered over",
+          "does not project to a screen" in _page.lower() or
+          "does not look vertical on screen" in _page)
+    # ⛔ Unlevelled, +Z is the RIG's vertical -- a leaning room would look
+    # perfectly true against it. The tool says so rather than letting the
+    # reference quietly confirm the tilt it was meant to reveal.
+    check("an unlevelled reference admits it is not a plumb line",
+          "ONLY A PLUMB LINE IF THE ROOM HAS BEEN LEVELLED" in _page)
+    # ⛔ Out-of-plumb is a wander over a rise, so a short baseline multiplies
+    # both picks' error straight into the angle.
+    check("and a baseline too short to measure anything is refused",
+          "MIN_TRUE_BASE" in _page and "your own aim" in _page)
     check("a camera-only mode exists and overrides the tools",
           all(t in _page for t in ("setNav", "V.nav", "'nav'",
                                    "Camera only")))

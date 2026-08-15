@@ -2230,10 +2230,46 @@ them, and the page says so when it happens. ⚠ And one honest limit: this level
 the two tripods leaned differently from each other, that difference is not something a `Setup` can
 express — pick floor points on **both** clouds and the flatness residual will show it.
 
+**✅ AND A STRAIGHT EDGE TO HOLD UP AGAINST THE ROOM — plumb line, level cross, metre grid (T).**
+Drawn through a point you click, as real geometry in the levelled world. Click a second point and it
+says by how far: **"out of plumb 8 mm over 2.40 m — 0.19°"**, or out of level in mm over the run.
+Millimetres over the run is how a builder states it; the degrees are there too.
+
+**⛔ IT IS ONLY A PLUMB LINE IF THE ROOM HAS BEEN LEVELLED — and that is the trap this whole pair of
+tools exists for.** Unlevelled, world +Z is the *rig's* vertical. The reference would then be
+perfectly consistent with a room that is leaning, and holding a wall up to it would confirm nothing
+except that the wall and the tripod agree with each other. The panel says so, in orange, whenever the
+level has not been set.
+
+**⛔ AND IN PERSPECTIVE A WORLD VERTICAL DOES NOT PROJECT TO A SCREEN VERTICAL** — only a line through
+the exact centre of the view does; everything else leans, correctly, toward its vanishing point. So
+the reference is drawn as **geometry to compare against, never as a screen overlay**: an overlay would
+be straight by construction and would disagree with the room for reasons that have nothing to do with
+the room. The panel says to press **O** then **Front**/**Side**, where a plumb wall really is parallel
+to the line *and* to the window edge.
+
+**⛔ BELOW A SHORT BASELINE THE ANSWER IS YOUR OWN AIM, AMPLIFIED.** Out-of-plumb is a wander divided
+by a rise, so two picks 10 cm apart turn 2 cm of pick error into **11° of pure noise, reported to two
+decimal places**. Refused under 0.30 m, with the actual separation named. Same family as the pair
+spread and level spread guards — three tools now, one failure shape.
+
+**⭐ WHAT OTHER VIEWERS DO, since it shaped this:** [openlidarviewer] is the closest match — **Slope**
+reports *rise, run, slope angle and grade* between two points, **Height** the vertical difference,
+plus cross-section profiles and box slicing; [potree] has clipping volumes, elevation profiles and
+annotations; AppsinCadd's 3D viewer has a *Slice Vertical* with an **Auto Snap** that forces a section
+to be exactly vertical or horizontal. Notably **none of them draws a plumb/level reference to eyeball
+against** — they measure, they do not hand you a straight edge. Studio now does both. The thin-slab
+check is already available too: clip to a 5 cm horizontal slab and look from **Top** — a plumb wall
+reads as a sharp line, a leaning one as a band.
+
+The readout is driven straight out of the built page against hand-worked cases (12 assertions, DOM
+stubbed), because that number is what turns "looks about right" into something to act on.
+
 **⛔ STILL OPEN:** **E57 earns its place** once several setups share a file.
 `Kizim-velodyne-to-point-cloud` carries a `TLS_Multi_Scan_Register.m` worth reading.
 
 [CloudCompare's Level tool]: https://www.cloudcompare.org/doc/wiki/index.php?title=Level
+[potree]: https://github.com/potree/potree
 [three-orientation-gizmo]: https://github.com/jrj2211/three-orientation-gizmo
 [three.js `misc_boxselection`]: https://github.com/mrdoob/three.js/blob/dev/examples/misc_boxselection.html
 
