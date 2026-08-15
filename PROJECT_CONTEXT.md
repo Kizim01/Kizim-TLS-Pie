@@ -2038,13 +2038,23 @@ geometry, LAS/LAZ/PLY, a viewer that shows all 59 M points, and colour from a 36
 camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `0ef395c`, `62b5876`,
 `fc32204`.
 
-**✅ REGISTRATION IS BUILT, AND STUDIO IS AN EDITOR TOO — `TLS-Pie-Studio.exe`. 2026-08-15, commits
-`79a4e34` → `4a7b201`, 308 tests.** Double-click, Browse, decode with a live bar, both scans tinted
-by origin, align by drag, by button, or by **picking matched point pairs** when the solver will not
-converge, then **edit**: a turnable clip box with drag grips, lasso and rectangle deletes,
-orthographic Top/Front/Side, a clickable world-axes widget, a camera-only mode, separate preview and
-export detail, and **Save project (`.tlspie`)** to carry on tomorrow. Its own section is below; the
-four things the solver cost are worth reading before touching it.
+**✅ REGISTRATION IS BUILT, AND STUDIO IS A FULL WORKBENCH NOW — `TLS-Pie-Studio.exe`. 2026-08-15,
+commits `79a4e34` → `4a7b201`, 308 tests, exe rebuilt 11:30.** Double-click, Browse, decode with a
+live bar, both scans tinted by origin, then:
+
+1. **Align** — by drag, by **Auto-align** (GICP), or by **picking matched point pairs** (`P`) when
+   the solver will not converge.
+2. **Level** (`G`) — name a surface you know is horizontal and the whole merged frame is straightened
+   against gravity. **Do this before cutting.**
+3. **Check** (`T`) — a plumb line, level cross and metre grid to hold up against the room; two clicks
+   give *"out of plumb 8 mm over 2.40 m"*.
+4. **Edit** — turnable clip box with drag grips, lasso and rectangle deletes, orthographic
+   Top/Front/Side, clickable world-axes widget, camera-only mode, separate preview/export detail.
+5. **Save merged** for SketchUp, or **Save project** (`.tlspie`) to carry on tomorrow.
+
+Its own sections are below. The four things the solver cost are worth reading before touching it, and
+the three degeneracy guards (pair spread, level spread, plumb baseline) are all the same lesson:
+**when a tool divides by a span, guard the span.**
 
 **⭐ THE SOLVER IS `small_gicp`, NOT MINE.** My grid search took ~100 s and reached 0.0401 m;
 [GICP](https://github.com/koide3/small_gicp) takes **0.24 s** and reaches **0.0345 m** — faster and
