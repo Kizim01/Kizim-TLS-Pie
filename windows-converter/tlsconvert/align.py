@@ -960,7 +960,8 @@ PAGE = r"""<!doctype html>
 </div>
 <canvas id="ov"></canvas>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
-  shift-drag pan &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
+  shift-drag pan &middot; wheel button pans, shift-wheel-button orbits
+  &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
   &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
   &middot; M rectangle &middot; L lasso &middot; P pick pairs
   &middot; G level points &middot; T reference lines
@@ -1977,7 +1978,8 @@ function setNav(on){
   cv.style.cursor='';
   invalidate();
   say(V.nav ? 'Camera only — drag to orbit, shift-drag to pan, wheel to zoom. '+
-              'Nothing else will catch the pointer.'
+              'Nothing else will catch the pointer. The wheel button drives '+
+              'the camera here too: drag to pan, shift-drag to orbit.'
             : 'Tools are live again.');
 }
 function setTool(t){
@@ -1992,6 +1994,10 @@ function setTool(t){
       b.textContent = t===id ? label+' on' : label;
     });
   cv.style.cursor = t ? 'crosshair' : '';
+  /* Said at the moment the left button is taken away, which is the moment the
+     operator needs to know something else still moves the view. */
+  if(t) say('Tool on — the left button belongs to it now. The wheel button '+
+            'still drives the camera: drag to pan, hold shift to orbit.');
 }
 function askLasso(on){
   $('lassoask').style.display = on ? 'block' : 'none';
@@ -2780,6 +2786,13 @@ async function saveMerged(clipOnly){
 addEventListener('resize', invalidate);
 addEventListener('load', boot);
 document.addEventListener('contextmenu', e=>e.preventDefault());
+/* ⛔ CHROMIUM ANSWERS A MIDDLE PRESS WITH ITS AUTOSCROLL WIDGET -- the little
+   four-way anchor -- and it takes the pointer for the rest of the drag, so the
+   camera would get one frame and then nothing. It is the COMPATIBILITY mousedown
+   that starts it, not pointerdown, so that is the one to cancel; cancelling
+   pointerdown is documented to suppress the compatibility events but is not
+   dependable across WebView2 versions, and this costs one line. */
+document.addEventListener('mousedown', e=>{ if(e.button===1) e.preventDefault(); });
 /* ⛔ A FACE MOVES ALONG ITS OWN AXIS, MEASURED ON SCREEN. Dragging a grip is a
    2D gesture and the face is a 1D constraint, so the honest mapping is: project
    the axis, take how far the mouse went ALONG that projection, and convert back
@@ -2834,6 +2847,16 @@ function syncClipSliders(){
     $(b).value=toSlider(ax, V.box.hi[ax]);
   });
 }
+/* ⛔ ROUTED BY NAME, IN BOTH DIRECTIONS, BECAUSE THE CATCH-ALL WAS WRONG. This
+   read `V.tool==='pair'` to pick a point and "any other tool at all" to drag an
+   outline -- so the levelling and plumb tools, which pick points, quietly
+   started a LASSO instead and answered every single click with "that outline
+   was too small to enclose anything". Both were unusable by mouse from the hour
+   they were built, and nothing failed loudly enough to say so: the fallback was
+   a working feature, just the wrong one. A tool in neither table now leaves the
+   drag to the camera, which is inert rather than misleading. */
+const PICK_TOOLS = {pair:1, level:1, plumb:1};
+const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0;
@@ -2843,19 +2866,29 @@ function syncClipSliders(){
     if(gizmoClick(e.clientX,e.clientY)) return;
     lx=e.clientX; ly=e.clientY;
     down=true; grip=null; lassoing=false; spin=null; picking=null; drift=0;
-    panning=(e.button===2||e.shiftKey);
+    /* ⭐ THE WHEEL BUTTON IS THE CAMERA, WHATEVER ELSE IS SWITCHED ON. Every
+       tool in this program takes the left button, so with a lasso or a pair
+       pick live the view was pinned -- and getting round to the other side of
+       the feature is most of the work. The middle button is never a tool: bare
+       it pans, with shift it orbits, the way round Revit and Fusion have
+       already put in the operator's hands. It is also why every tool test below
+       is gated on `left`: the middle button must not pick, lasso, catch a grip
+       or drag a scan, or the camera would be a tool by another name. */
+    const left = (e.button===0), mid = (e.button===1);
+    panning = mid ? !e.shiftKey : (e.button===2 || e.shiftKey);
+    const tool = (left && !panning) ? V.tool : '';
     if(V.nav){
       /* one branch, deliberately: in camera mode nothing else is consulted */
-    } else if(!panning && V.tool==='pair'){
+    } else if(PICK_TOOLS[tool]){
       /* ⛔ TAKEN ON RELEASE, NOT ON PRESS. Picking pairs means orbiting between
          nearly every click -- you have to get round to the other side of the
          feature -- so a tool that consumed the button down would cost the
          camera. A press that ends where it began is a pick; anything that
          travelled is a drag, and falls through to the orbit below. */
       picking=[e.clientX,e.clientY];
-    } else if(!panning && V.tool){
+    } else if(DRAW_TOOLS[tool]){
       lassoing=true; startDraft(e.clientX,e.clientY);
-    } else if(!panning){
+    } else if(left && !panning && !V.tool){
       /* grips win over everything: they sit on top and are small targets */
       const i=pickHandle(e.clientX,e.clientY);
       if(i>=0){
@@ -2863,7 +2896,7 @@ function syncClipSliders(){
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
       }
     }
-    moving = !V.nav && V.grab && !panning && !grip && !lassoing;
+    moving = !V.nav && V.grab && left && !panning && !grip && !lassoing;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{

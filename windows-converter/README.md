@@ -165,6 +165,12 @@ through walls rather than stopping at them** — shift-drag or right-drag to pan
 `R` for free roam, `F` to recentre. Colour by photo/intensity or by height, with
 an adjustable range.
 
+**The wheel button drives the camera in both windows**: press it and drag to
+pan, hold shift to orbit, the way round Revit and Fusion already put it in your
+hands. It matters most in Studio, where every tool takes the left button — with
+a lasso or a pick switched on, the wheel button is how you get round to the far
+side of what you are working on without switching the tool off.
+
 It rotates about **the sensor at the origin**, not the bounding-box centre: on
 the Pi, one stray return 72 m away put the pivot 24.8 m out in open air, which
 is why rotating felt like dragging the cloud around.

@@ -221,7 +221,8 @@ PAGE = r"""<!doctype html>
   <input type="range" id="zhi" min="0" max="1" step="0.002" value="1">
 </div>
 <div id="keys">drag orbit · wheel zoom (flies through) · shift-drag or
-  right-drag pan · R free roam · F recentre</div>
+  right-drag pan · wheel button pans, shift-wheel-button orbits
+  · R free roam · F recentre</div>
 <div id="err"></div>
 <script>
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
@@ -460,12 +461,22 @@ async function boot(){
 addEventListener('resize', invalidate);
 window.addEventListener('load', boot);
 document.addEventListener('contextmenu', e=>e.preventDefault());
+/* Chromium answers a middle press with its autoscroll widget, which then takes
+   the pointer for the rest of the drag. It is the compatibility mousedown that
+   starts it, so that is the one to cancel. */
+document.addEventListener('mousedown', e=>{ if(e.button===1) e.preventDefault(); });
 {
   let down=false, panning=false, lx=0, ly=0;
   const c=()=>document.getElementById('cv');
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
-    down=true; panning=(e.button===2||e.shiftKey); lx=e.clientX; ly=e.clientY;
+    /* The wheel button drives the camera, the same way round as in Studio:
+       bare it pans, with shift it orbits. Nothing here competes for the left
+       button, but the two windows look identical and are used in one sitting,
+       so they must answer to the same hands. */
+    const mid = (e.button===1);
+    down=true; lx=e.clientX; ly=e.clientY;
+    panning = mid ? !e.shiftKey : (e.button===2 || e.shiftKey);
     c().classList.add('drag'); c().setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{

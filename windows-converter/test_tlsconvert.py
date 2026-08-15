@@ -13,6 +13,7 @@ including the calibrated pitch and a deliberately awkward mount.
 import json
 import math
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -1464,6 +1465,46 @@ try:
     # down would cost the camera, so the pick is taken on release.
     check("a pick is taken on release, so a drag still orbits",
           "picking && drift<5" in _page)
+    # ⭐ THE WHEEL BUTTON IS THE CAMERA, WHATEVER TOOL IS ON. Every tool takes
+    # the left button, so with a lasso or a pick live the view was pinned --
+    # and getting round to the far side of the feature is most of the job.
+    check("the wheel button pans, and with shift it orbits",
+          "const left = (e.button===0), mid = (e.button===1);" in _page and
+          "panning = mid ? !e.shiftKey : (e.button===2 || e.shiftKey);"
+          in _page)
+    # ⛔ A middle CLICK travels no distance, so the drift guard cannot stop it
+    # from being taken as a pick -- only refusing the button can.
+    check("and it is refused by the tools rather than filtered afterwards",
+          "const tool = (left && !panning) ? V.tool : '';" in _page and
+          "V.grab && left && !panning" in _page)
+    # ⛔ Chromium's autoscroll widget takes the pointer for the whole drag.
+    check("the browser's own middle-click is cancelled, or it eats the drag",
+          "e.button===1) e.preventDefault()" in _page)
+    check("the operator is told, in the hint line and when a tool goes on",
+          "wheel button pans" in _page and
+          "the left button belongs to it now" in _page)
+
+    # ⛔⛔ THE TEST THAT WOULD HAVE CAUGHT IT. Routing read `V.tool==='pair'` to
+    # pick and "any other tool at all" to drag an outline, so the levelling and
+    # plumb tools -- which pick points -- silently started a LASSO and answered
+    # every click with "that outline was too small". They were unusable by mouse
+    # from the hour they were built. Nothing failed loudly: the fallback was a
+    # working feature, just the wrong one. So the tables are checked against the
+    # tools the panel can actually turn on, and a new tool that is in neither
+    # fails here instead of quietly becoming a lasso.
+    _offered = set(re.findall(r"setTool\(V\.tool==='(\w+)'", _page))
+    _picks = set(re.findall(r"[\w']+(?=:)",
+                            re.search(r"PICK_TOOLS = \{([^}]*)\}",
+                                      _page).group(1)))
+    _draws = set(re.findall(r"[\w']+(?=:)",
+                            re.search(r"DRAW_TOOLS = \{([^}]*)\}",
+                                      _page).group(1)))
+    check("every tool the panel offers is routed by name, to a pick or a draw",
+          _offered and _offered == (_picks | _draws) and not (_picks & _draws),
+          "offered=%s picks=%s draws=%s" % (sorted(_offered), sorted(_picks),
+                                            sorted(_draws)))
+    check("and the point-picking tools are the ones that pick",
+          _picks == {"pair", "level", "plumb"} and _draws == {"lasso", "rect"})
     # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
     # distance alone picks the wall THROUGH the chair in front of it.
     check("and the front-most point under the crosshair wins, not the nearest",

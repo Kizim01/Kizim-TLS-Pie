@@ -2039,7 +2039,7 @@ camera's heading solved from the data. 99 tests. Commits `9d2e211`, `0740cf0`, `
 `fc32204`.
 
 **✅ REGISTRATION IS BUILT, AND STUDIO IS A FULL WORKBENCH NOW — `TLS-Pie-Studio.exe`. 2026-08-15,
-commits `79a4e34` → `4a7b201`, 308 tests, exe rebuilt 11:30.** Double-click, Browse, decode with a
+commits `79a4e34` → `4a7b201`, 314 tests, exe rebuilt 12:18.** Double-click, Browse, decode with a
 live bar, both scans tinted by origin, then:
 
 1. **Align** — by drag, by **Auto-align** (GICP), or by **picking matched point pairs** (`P`) when
@@ -2051,6 +2051,11 @@ live bar, both scans tinted by origin, then:
 4. **Edit** — turnable clip box with drag grips, lasso and rectangle deletes, orthographic
    Top/Front/Side, clickable world-axes widget, camera-only mode, separate preview/export detail.
 5. **Save merged** for SketchUp, or **Save project** (`.tlspie`) to carry on tomorrow.
+
+**The wheel button drives the camera throughout: drag to pan, shift-drag to orbit.** Every tool takes
+the left button, so that is what keeps the view free while one is switched on — and adding it is what
+uncovered that **the levelling and plumb tools could not be used with a mouse at all**. See the
+navigation section below.
 
 Its own sections are below. The four things the solver cost are worth reading before touching it, and
 the three degeneracy guards (pair spread, level spread, plumb baseline) are all the same lesson:
@@ -2274,6 +2279,46 @@ reads as a sharp line, a leaning one as a band.
 
 The readout is driven straight out of the built page against hand-worked cases (12 assertions, DOM
 stubbed), because that number is what turns "looks about right" into something to act on.
+
+**✅ THE WHEEL BUTTON IS THE CAMERA, WHATEVER TOOL IS SWITCHED ON — asked for by the operator,
+2026-08-15.** Press it and drag to **pan**; hold **shift** and drag to **orbit**. That is the way
+round Revit, Navisworks and Fusion already put it in the operator's hands, and it now works
+identically in Studio and in the single-scan viewer, which look alike and get used in one sitting.
+
+**⭐ IT IS NOT A CONVENIENCE — IT UNPINS THE VIEW.** Every tool in Studio takes the left button, so
+with a lasso, a rectangle, a pair pick or a level pick switched on there was **no way to orbit at
+all** short of turning the tool off (`C` for camera-only, then back). Getting round to the far side
+of the feature is most of the work of picking pairs. One button that no tool may ever claim fixes
+that permanently — which is why the tool tests are gated on `left` rather than the middle button
+being filtered out afterwards: **a middle *click* travels no distance, so the `drift<5` guard that
+separates a pick from a drag cannot save it.** Refuse the button, don't filter its consequences.
+
+**⛔ AND THE BROWSER WANTS THAT BUTTON.** Chromium answers a middle press with its autoscroll anchor
+and then holds the pointer for the rest of the drag, so the camera would get one frame and nothing
+more. It is the *compatibility* `mousedown` that starts it, not `pointerdown`, so that is the one
+cancelled — cancelling `pointerdown` is documented to suppress the compatibility events but is not
+dependable across WebView2 versions, and the explicit line costs nothing.
+
+**⛔⛔ AND IT UNCOVERED A DEAD TOOL: LEVELLING AND PLUMB COULD NOT BE USED WITH A MOUSE AT ALL.** The
+press router read `V.tool==='pair'` to pick a point and **"any other tool at all"** to drag an
+outline. So `level` and `plumb` — both of which pick points — fell into the *lasso* branch, and every
+single click answered *"that outline was too small to enclose anything."* They were unusable from the
+hour they were built, hours after being cross-checked to 1e-6 m. **The maths was proven and the
+button was dead.**
+
+**⭐ WHY NOTHING CAUGHT IT: THE FALLBACK WAS A WORKING FEATURE, JUST THE WRONG ONE.** Nothing threw,
+nothing logged, the page stayed responsive and even printed a sensible-sounding sentence. The
+cross-checks that session drove `level_from_points` and `showPlumb` directly — the *maths* — and
+never the route from a press to them. The lesson is the same shape as the save-project hyphen
+directly below: **a failure that lands on a legitimate code path is invisible.** Routing is now by
+explicit name in both directions (`PICK_TOOLS`, `DRAW_TOOLS`), a tool in neither table leaves the
+drag to the camera, and the test compares both tables against the tools the panel can actually turn
+on — so a *new* tool fails the suite instead of quietly becoming a lasso.
+
+Proven by driving the **real** `pointerdown`/`move`/`up` handlers out of the built page against a
+stubbed DOM: **44 routes** — every tool × every button × shift — then broken on purpose four ways
+(old shift binding, old catch-all routing, ungated middle button) to prove the check has teeth. The
+old-routing break reproduces the bug exactly: *"level: left click picks — FAIL"*.
 
 **⛔⛔ SAVE PROJECT DID NOTHING AT ALL, AND THE CAUSE WAS A HYPHEN — reported by the operator and fixed
 2026-08-15.** pywebview validates every file-filter string *before* it opens anything, against
