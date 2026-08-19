@@ -539,6 +539,32 @@ and it **breaks the pitch-check guard on purpose in both directions**, since a g
 refuse anything has not been tested. Six deliberate mutations of the profile were each confirmed to
 fail the suite.
 
+**✅ DEPLOYED AND RUNNING ON THE RIG, 2026-08-19 21:52.** `scp` of `tls_scan.py`, `tls_pitchcheck.py`,
+`tls_web.py` and the new test to `~/TLS-Pie/`, then `systemctl restart tls-scan`. The Pi's copies were
+diffed against git before being overwritten (identical — no drift) and checksummed after; the
+originals are in `~/TLS-Pie/.deploy-backup/`. Pi suite **479 checks, 0 failed** on the Pi itself
+(`test_splash.py` cannot run there at all — no PIL — which is pre-existing and unrelated).
+
+### ⛔⛔ THE DEPLOY SHIPPED A BUTTON NOBODY COULD PRESS, AND ONLY THE SCREENSHOT SAID SO
+
+`/api/status` served all three profiles on every poll. **The panel went on showing two.** The page
+read `if(!built) buildScans(s)` — buttons built **once per page load and never again** — and the
+kiosk's page predated the restart, so the flag was already true. Nothing threw. The API was right,
+the screen was wrong, and **the API is what I would have checked if the standing rule here were not
+“look at the screen”**. That rule has now caught this class of fault five times.
+
+It would have been worse in the field than on the bench: **`tls-kiosk` gets a fresh page when it
+restarts, but a phone left open on the panel does not** — the operator's own screen could have stayed
+stale for days while every poll carried the new button, and the natural reading of that is *the
+deploy failed*. Fixed by keying the rebuild on the **served set** (`id|label|detail`) rather than a
+once-only flag, so an edited label or detail rebuilds too — which no count of buttons would notice.
+
+**⭐ And it was proved in the failure mode it was built for, not just in the fixed state.** With the
+kiosk page left open and **only `tls-scan`** restarted (kiosk up 21:52:14, server 21:52:56), the label
+was changed server-side to `180° PROOF / rebuilt live` — the open page picked it up — then changed
+back, and the page followed again. The Pi's `tls_scan.py` was restored and **verified by sha256**
+against the committed file. Both directions, on the real screen.
+
 **⚠ If 2 min still feels slow, the lever is the return leg, not the sweep.** At 7 °/s the walk back
 is 27 s — **22% of this profile's wall clock**, against 1.4% on the 360s — and it runs with capture
 already stopped, so `TLSPIE_RETURN_DEG_PER_S` buys time at no cost in data. Going *forward* to a full

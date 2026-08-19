@@ -1029,7 +1029,29 @@ const mmss = s => s == null ? '--:--'
 const mb = b => b == null ? '—'
   : b < 1048576 ? (b/1024).toFixed(0)+' kB' : (b/1048576).toFixed(1)+' MB';
 
-let built = false;
+/* The scan buttons come from the server, so they must be rebuilt when the
+   SERVER's answer changes -- not once and never again.
+
+   ⛔ This read `if(!built)`, and on 2026-08-19 that shipped a profile nobody
+   could press. A third profile was added and deployed, /api/status served all
+   three on every poll, and the panel went on showing two: the page had been
+   loaded before the restart, `built` was already true, and buildScans never ran
+   again. Caught only by taking a screenshot -- the API and the screen disagreed
+   and only the screen was right, which is this project's oldest lesson.
+
+   It would have been worse in the field than on the bench. The kiosk gets a
+   fresh page whenever tls-kiosk restarts; a phone left open on the panel does
+   not, so the operator's own screen could stay stale for days while every poll
+   carried the new button. A deploy that needs every viewer to know to reload is
+   not a deploy.
+
+   Keying on the offered set rather than a flag also covers a label or detail
+   that was merely edited, which no count of buttons would catch. Rebuilding
+   only on a genuine change is what keeps the poll cheap -- and the disabled
+   pass below re-runs every poll anyway, so a rebuilt button is never left
+   enabled during a scan. */
+let builtKey = null;
+const scansKey = s => s.scans.map(x => [x.id, x.label, x.detail].join('\u0001')).join('\u0002');
 function buildScans(s){
   const wrap = document.getElementById('scans');
   wrap.innerHTML = '';
@@ -1041,7 +1063,7 @@ function buildScans(s){
                   '<span class="det">' + sc.detail + '</span>';
     wrap.appendChild(b);
   });
-  built = true;
+  builtKey = scansKey(s);
 }
 
 // Power readout and warning.
@@ -1148,7 +1170,7 @@ async function poll(){
     // A server too old to report the field sends undefined, which drops the
     // curtain. That is the right way round to fail.
     if(!s.introPlaying) dropCurtain();
-    if(!built) buildScans(s);
+    if(scansKey(s) !== builtKey) buildScans(s);
     const c = COLOR[s.phase] || '#8E8E93';
 
     document.getElementById('phase').textContent = s.phase;

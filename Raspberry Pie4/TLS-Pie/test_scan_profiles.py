@@ -126,6 +126,29 @@ check("each carries a label and a detail",
 check("orders are unique",
       len({p["order"] for p in PROFILES.values()}) == len(PROFILES))
 
+# --- 5b. and it notices when that set CHANGES --------------------------------
+# ⛔ THE ONE THAT ACTUALLY SHIPPED BROKEN. This read `if(!built) buildScans(s)`,
+# so the buttons were built once per page load and never again. The 180 profile
+# was deployed, /api/status served all three on every poll, and the panel went
+# on showing two -- the page predated the restart, the flag was already true.
+# The API and the screen disagreed, and only the screen was right.
+#
+# Worse in the field than on the bench: the kiosk gets a fresh page when
+# tls-kiosk restarts, but a phone left open on the panel does not, so the
+# operator's own screen could stay stale for days. Keyed on the served set now,
+# which also catches a label or detail that was merely edited -- something no
+# count of buttons would ever notice.
+print("\nthe panel notices when the set of profiles changes")
+page = tls_web.PAGE
+check("the once-only `built` flag is gone", "let built = false" not in page)
+check("buildScans is called on a change of key, not on a flag",
+      "if(scansKey(s) !== builtKey) buildScans(s);" in page)
+check("and buildScans records the key it just built", "builtKey = scansKey(s)" in page)
+key_line = [l for l in page.splitlines() if "const scansKey" in l]
+check("the key exists", len(key_line) == 1, key_line)
+check("and it folds id, label AND detail, so an edited label rebuilds too",
+      all(f in key_line[0] for f in ("x.id", "x.label", "x.detail")), key_line)
+
 print("\nevery profile can actually be started")
 for key, _ in BY_ORDER:
     state.request_start(key)
