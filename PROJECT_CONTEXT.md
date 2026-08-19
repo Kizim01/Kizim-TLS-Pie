@@ -30,6 +30,12 @@ The Pi was built and proven on 2026-08-09 — see "Restart pointer" for exactly 
 verified. **The motor first turned on 2026-08-09**, and the session that followed overturned four
 things this file used to assert; the restart pointer opens with them.
 
+**⭐ TWO COMPONENTS ARE BEING ADDED, SPECIFIED 2026-08-17 AND NOT YET BOUGHT: a gravity
+sensor for levelling (with a bubble display on the panel) and an integrated camera for
+colourisation.** Both sections are under "Two components being added" — read them before
+ordering, because each turns on a constraint peculiar to this rig, and one of them reverses a
+recommendation I made earlier the same day.
+
 The wider concept has evolved into a fully autonomous decentralized lidar mapping swarm platform
 (see "Funding / company direction").
 
@@ -320,6 +326,155 @@ and its bulk capacitance. Removing it gives the motor the full pack voltage, whi
 buys torque, and removes a component from the path that is currently losing steps.
 
 ---
+
+## Two components being added — a gravity sensor and an integrated camera (2026-08-17)
+
+Specified with the operator, **not yet bought**. Both decisions below turn on constraints particular
+to this rig, so read the reasoning before substituting a part that looks equivalent.
+
+### 1. Gravity sensor — buy an INCLINOMETER, not an IMU
+
+The instrument is stationary and we are measuring a **static vector**, so gyros and sensor fusion buy
+nothing at all; the entire error budget is **bias and temperature drift**, which is exactly where
+cheap IMUs are worst. A BNO055's absolute orientation is about a degree — *worse than the operator
+picking a floor by hand in Studio*, which is the thing it would be replacing.
+
+- **First choice: Murata SCL3300** — purpose-built 3-axis inclinometer, SPI, 3.3 V, internal
+  temperature compensation, reports its own status/self-test flags.
+- **Second: ADXL355** (low-noise, low-drift, 20-bit).
+- Target **≤0.05° repeatable**, because the plumb readout already resolves *"8 mm over 2.40 m"* =
+  0.19°. ⚠ The accuracy figures above are from memory — **confirm against the datasheet before
+  ordering.**
+
+**⛔ THE MPU6050's DEFAULT I2C ADDRESS IS `0x68` — THE DS3231's ADDRESS**, already on this bus.
+Strappable to `0x69` via AD0, but it is a good reason to prefer an SPI part: **SPI0 (GPIO 7–11) is
+completely free**, while I2C carries the RTC at `0x68` and the INA226 at `0x40` once fitted. ⛔ Do
+not use **GPIO27** for an interrupt line — it is the damaged, output-only pin.
+
+**⭐ MOUNT IT ON THE PAN AXIS *AND* MAKE IT TURN WITH THE HEAD.** On-axis (the operator's own choice)
+means r = 0, so rotation contributes no centripetal term. Turning *with* the head is what makes the
+reading trustworthy:
+
+> **Turn 180° and the true tilt reverses sign. The sensor's own mounting error does not.** Half the
+> difference is the real tilt, half the sum is the mounting error. Over a full turn, tilt is a
+> **sinusoid in pan angle** — amplitude is how much, phase is which way downhill — and bias is the
+> constant offset. One sweep gives both.
+
+That is the reversal method a total station uses for index error, and **it is the same shape as the
+fix that solved `MOUNT_PITCH_DEG`**: the error entered the two passes with *opposite sign*, and that
+is what made it measurable. The rig calibrates its own bubble with hardware it already has.
+
+**⛔ THE TRAP THIS PROJECT HAS ALREADY PAID FOR ONCE: the sensor measures ITS OWN tilt, not the
+LIDAR's.** The rotation between them is a constant that must be **measured, not assumed** —
+`MOUNT_PITCH_DEG = 0.0` was a placeholder carried as though it were a measurement and cost a 28 cm
+wedge. An un-measured transfer is **unknown, not zero**.
+
+**⭐ AND THE CALIBRATION ALREADY EXISTS.** Studio's **Level to a surface** recovers true gravity in
+the lidar's frame from picked floor points. Compare it against what the sensor said at that moment
+and that *is* the sensor-to-lidar rotation, solved once, from any room with a floor. **The feature
+built on 08-15 is the calibrator for the part being bought** — and afterwards the roles invert: the
+sensor levels every scan automatically, and the picked floor plus the X4's own IMU become the
+independent checks.
+
+Two more, both cheap. **⛔ Read gravity before the pan and again after** — a leg sinking into soft
+ground is otherwise completely invisible, and the disagreement is the only evidence there would ever
+be. And read with the motor **stopped and settled**; log the sensor's temperature into the sidecar.
+
+### 2. A levelling display on the panel
+
+Lives on the existing panel, so the phone and the 5.5" screen get it from one page. Three things
+decide whether it is any good:
+
+- **A bubble gives a direction; the operator has three legs.** Mark one leg physically and have the
+  display say *"raise leg B by 4 mm"*, from tilt, heading and the leg-circle radius. That turns a
+  reading into an action.
+- **⭐ THE TOLERANCE CAN BE GENEROUS WHILE THE MEASUREMENT IS PRECISE — measure to 0.02°, go green at
+  ~0.5°.** A tilt that is *measured* is corrected **exactly** in software. Levelling matters for
+  coverage, correction range and operator confidence, **not for accuracy**. A demanding bubble would
+  burn field time on something the maths already handles.
+- **⛔ THE DANGEROUS FAILURE IS A BUBBLE THAT READS ZERO WHEN THE RIG IS NOT LEVEL.** So the display
+  shows its own calibration state and **refuses to go green if it has never been zeroed**, and offers
+  a **"check by reversal"** button — turn 180°, re-read, report the residual. Ten seconds in the
+  field, and it is the only check that does not depend on the sensor's own honesty.
+- Keep the live view **lightly** averaged (lag makes levelling feel awful); average hard only for the
+  recorded value.
+
+### 3. Integrated camera — the operator's call, and the FOV constraint that decides the part
+
+Every commercial TLS has one and it makes capture materially faster; **that is the decision, and it
+is right.** The camera sits **at the same height, immediately beside the puck, on the head.**
+
+**⭐ `colour.py`'s OCCLUSION OBJECTION DISSOLVES ON A ROTATING HEAD.** Its argument for putting the
+360 camera where the lidar stood was that colour bleeding *does not arise* if the camera occupies the
+lidar's point. But an off-axis camera on a panning head has occlusions that **move with pan and are
+filled by the other shots** — the same argument this document already makes for the rig's own
+enclosures: *"a direction blocked by hardware at one pan angle is clear half a turn later."* Parallax
+was never the problem (the ray is cast from the camera's centre to the known 3D point, exact at any
+distance). This is how Faro and Leica do it: rotate, shoot a series, composite.
+
+**⭐ AND "SAME HEIGHT, BESIDE IT" IS THE *GOOD* OFFSET.** A horizontal offset rotates with the head,
+so its shadow sweeps and self-heals. A **vertical** offset would be identical at every pan angle and
+its shadow would **never** fill. The operator picked the one rotation cures.
+
+**⛔⛔ THE DECIDING CONSTRAINT IS VERTICAL FIELD OF VIEW, BECAUSE THIS RIG HAS ONE AXIS.** It pans; it
+cannot tilt. The side-mounted puck sweeps a full vertical circle, so the cloud is a near-complete
+sphere — but a rigidly-mounted camera sees only the elevation band its lens covers, and **no number
+of pan positions ever adds one degree of elevation.**
+
+| lens | vertical coverage | result |
+|---|---|---|
+| Camera Module 3 Wide, landscape | 67° | ±33° band — floor and ceiling stay grey |
+| Module 3 Wide, portrait | 102° | ±51° — better, still a band |
+| **~180° fisheye** | **full vertical circle** | complete dome from pan alone |
+
+**So a ~180° fisheye is the right architecture for this rig, and the operator's original instinct was
+correct.** ⚠ **My first recommendation — "buy the Module 3 Wide instead" — was optimising image
+quality against the wrong constraint, and is withdrawn.** Leica's RTC360 gets away with 120°-class
+lenses only by stacking **three** cameras in a vertical fan; a **Pi 4B has one CSI port** and this
+head has no tilt axis, so the lens has to do it.
+
+**What to buy** — right architecture, wrong sensor is what the OV5647 offer was: it is the 2013
+Camera v1 part, 1/4", poor dynamic range, and indoors against windows that hurts more than resolution
+does.
+
+1. **Best image quality: Raspberry Pi HQ Camera (IMX477) + M12/CS fisheye.** 12.3 MP on 1/2.3", much
+   better dynamic range, and **manual focus that stays put**. Mass is irrelevant beside an 830 g puck.
+2. **Best practical: a 12 MP IMX708 module with a *fixed-focus* ultra-wide/fisheye lens.**
+3. **Not the Module 3 Wide** (FOV). **Not the OV5647 fisheye** (sensor).
+
+**⛔ A LENS'S QUOTED FOV IS ONLY TRUE FOR THE SENSOR FORMAT IT WAS DESIGNED FOR.** "175°" on a 1/4"
+OV5647 is a different lens from "175°" on a 1/2.3" IMX477 — mismatch it and you either vignette into
+a black doughnut or crop to far less than the number on the box. Check FOV **and image circle** for
+the exact sensor.
+
+**⛔ AVOID AUTOFOCUS, OR LOCK IT.** Focus breathing changes focal length and principal point, so a
+module that refocuses between shots is silently using a **different camera model for each image** —
+and the colouring is only as good as that model. Fixed focus at hyperfocal, or set the lens position
+explicitly in libcamera and never touch it.
+
+**⛔ THE FISHEYE NEEDS A REAL LENS MODEL.** `colour.py` consumes an **equirectangular** panorama and a
+fisheye is not one. Either add an equidistant/equisolid projection plus per-lens distortion, or shoot
+N stills and **stitch to equirect on the Pi**, leaving `colour.py` untouched — compute instead of new
+maths.
+
+**⭐ AND HEADING STOPS BEING UNKNOWN.** It is currently solved from image edges at 1.6°, against a
+`MIN_CONFIDENCE` that has never met a real photograph. On the head, heading is the stepper's —
+160,000 steps/rev. **The least-proven part of colourisation becomes mechanical**, and the edge solve
+demotes to a *check* on it. ⛔ But the **lever arm** (camera offset, a 3-vector in the head frame)
+must be **measured into the sidecar** — `tls_geometry` already carries the concept, and this is the
+same shape as `MOUNT_PITCH_DEG = 0.0`.
+
+**Capture details that decide whether it looks good:** stop the head for each frame (rolling
+shutter); **lock exposure and white balance across the whole set** — auto per-shot is what produces
+visibly seamed composites, and commercial units lock them for exactly this reason; **bracket 3
+exposures** per position, since interiors with windows are the case that breaks single-exposure
+colouring; one CSI port on a Pi 4B unless a multiplexer is added. Budget 30–60 s of extra capture,
+against dismounting and swapping the X4 onto the tripod.
+
+**⛔ STILL OPEN AND UPSTREAM OF THE PURCHASE:** shoot one **real X4 HDR panorama** and check whether
+`MIN_CONFIDENCE` survives a real photograph — it was calibrated on a panorama derived from the scan's
+own depth, whose edges *are* the geometry. That says whether the colour pipeline works on photographs
+at all, which is prior to choosing what feeds it.
 
 ## Scan geometry
 
