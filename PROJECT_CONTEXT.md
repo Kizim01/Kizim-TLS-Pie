@@ -385,9 +385,21 @@ be. And read with the motor **stopped and settled**; log the sensor's temperatur
 Lives on the existing panel, so the phone and the 5.5" screen get it from one page. Three things
 decide whether it is any good:
 
-- **A bubble gives a direction; the operator has three legs.** Mark one leg physically and have the
-  display say *"raise leg B by 4 mm"*, from tilt, heading and the leg-circle radius. That turns a
-  reading into an action.
+- **No leg guide — the tripod's mount head is fully adjustable** (operator, 2026-08-17), so the
+  adjustment is continuous and direct and a plain bubble is the right tool. That also drops the
+  one-time setup a leg guide needed (marking a leg, telling the panel where it sits at pan zero).
+- **⛔ BUT THE BUBBLE MUST BE DRAWN IN THE TRIPOD'S FRAME, NOT THE HEAD'S.** The sensor turns with
+  the head — that is what buys the free reversal calibration — while the adjustment knobs sit below
+  the pan axis and do **not** rotate. Drawn in raw sensor axes the bubble would **spin as the head
+  pans**, so the direction to push would depend on where the head was parked. Free to fix: the
+  stepper knows the pan angle, so **de-rotate by −θ**. This is the cost of mounting on the head, and
+  it is only worth paying if it is actually paid.
+- **⛔ VERIFY THE SIGN PHYSICALLY, ONCE.** Whether the bubble runs toward the high side or the low
+  side is a convention, and getting it backwards does not give a broken tool — it gives **a tool
+  that issues confident wrong instructions** while looking like it works. Tilt the rig a known way
+  and watch; pin it down by observation, not by reasoning.
+- **⭐ AND RE-READ AFTER CLAMPING.** An adjustable head can creep as it is locked, so the reading
+  that counts is taken after the clamp with your hand off it.
 - **⭐ THE TOLERANCE CAN BE GENEROUS WHILE THE MEASUREMENT IS PRECISE — measure to 0.02°, go green at
   ~0.5°.** A tilt that is *measured* is corrected **exactly** in software. Levelling matters for
   coverage, correction range and operator confidence, **not for accuracy**. A demanding bubble would
