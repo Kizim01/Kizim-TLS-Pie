@@ -36,6 +36,12 @@ colourisation.** Both sections are under "Two components being added" — read t
 ordering, because each turns on a constraint peculiar to this rig, and one of them reverses a
 recommendation I made earlier the same day.
 
+**⭐ A THIRD SCAN PROFILE, `180° Rapid`, ADDED 2026-08-19** — about 2 min against the quick
+profile's 3¼. **It is a complete dome, not half a scan**: a sideways puck's fan is a full vertical
+circle, so 180° of pan already reaches every direction. What it drops is the *second* look that
+fills the rig's own shadows — and the pitch check, which needs both halves of a turn and now
+refuses a short sweep rather than answering from a sliver. See "Scan geometry".
+
 The wider concept has evolved into a fully autonomous decentralized lidar mapping swarm platform
 (see "Funding / company direction").
 
@@ -490,16 +496,53 @@ at all, which is prior to choosing what feeds it.
 
 ## Scan geometry
 
-**Two profiles, both full 360°.** The firmware's 180° scan was dropped on 2026-08-09 — it was never
-wanted in practice. Verified by `tls_stepper.py --plan` against **320,000 steps/rev**, on the Pi.
+**Three profiles.** The 180° was dropped on 2026-08-09 as unwanted and **restored on 2026-08-19**,
+asked for by name: the quick profile's rate over half the turn. Verified by `tls_stepper.py --plan`
+against **320,000 steps/rev**, on the Pi.
 
-| Profile | Sweep | Return | Rate | Duration |
-|---|---|---|---|---|
-| `slow` — 360° Slow | 378° | 18° | 1 °/s | 378.0 s |
-| `fast` — 360° Quick | 378° | 18° | 2 °/s | 189.0 s |
+| Profile | Sweep | Return | Rate | Sweep leg | Whole scan |
+|---|---|---|---|---|---|
+| `slow` — 360° Slow | 378° | 18° | 1 °/s | 378.0 s | 6.36 min |
+| `fast` — 360° Quick | 378° | 18° | 2 °/s | 189.0 s | 3.21 min |
+| `rapid` — 180° Rapid | 190.8° | 190.8° | 2 °/s | 95.4 s | 2.07 min |
 
-Both overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
-back off 18° to finish square with the start.
+The 360s overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
+back off 18° to finish square with the start. The 180 sweeps 10.8° past the half turn and returns
+the whole way, so it nets zero instead of a revolution.
+
+**⭐ THE 180 IS NOT HALF A SCAN, AND THE BUTTON MUST NOT LET ANYONE THINK IT IS.** The puck is on its
+side, so its fan is a full vertical circle covering world azimuths `pan+90` and `pan−90` at once —
+**180° of pan already reaches every direction**, which is the same fact recorded under *Mount
+orientation*. So `rapid` is a **complete dome at single coverage**, and what it gives up is the
+*second* look: the redundancy that fills the shadows cast by the rig's own enclosures, because a
+direction blocked by hardware at one pan angle is clear half a turn later. Single coverage means
+those shadows stay. Hence **`one pass`** in the detail line — “180°” alone reads as *half a room* to
+the operator standing in front of it, and that is the wrong worry to give them.
+
+**⛔ AND IT COSTS THE PITCH CHECK, WHICH WOULD OTHERWISE HAVE ANSWERED ANYWAY.** `tls_pitchcheck`
+splits a sweep on `pan % 360 < 180` and regresses the difference between the two halves; a 190.8°
+sweep hands it 180° and a **10.8° sliver**, from which it would still fill cells, still fit a slope
+and still print a confident pitch — out of a wedge of one side of the room. That is exactly the
+*confident-but-meaningless answer* the method was invented to end, so `collect()` now **refuses a
+sweep under 270°** (`TLSPIE_PITCHCHECK_MIN_SWEEP_DEG`). It reads the **pan track**, not the profile's
+nominal `sweep_deg`, so a 360° scan that was *stopped early* is refused on the same grounds — a case
+that existed before this profile did and was never guarded. Check the pitch on a completed 360.
+
+**Every angle is a whole number of steps at 160,000 steps/rev** — which is where the firmware's
+odd-looking numbers come from: 378° = 168,000 steps, 190.8° = 84,800, 18° = 8,000, 10.8° = 4,800.
+`degrees_to_steps` **rounds**, so an angle that is not exact does not raise; the head just stops a
+sliver short on every scan. `test_scan_profiles.py` (**42 checks, new**) enforces that, plus the
+invariant that ties the two angles together: **sweep − return must be a whole number of turns**, or
+the head ends off its mark and the *next* scan starts somewhere nobody recorded. It also checks the
+button text against the dict beneath it — the rate, and the promised minutes against the planner —
+and it **breaks the pitch-check guard on purpose in both directions**, since a guard never seen to
+refuse anything has not been tested. Six deliberate mutations of the profile were each confirmed to
+fail the suite.
+
+**⚠ If 2 min still feels slow, the lever is the return leg, not the sweep.** At 7 °/s the walk back
+is 27 s — **22% of this profile's wall clock**, against 1.4% on the 360s — and it runs with capture
+already stopped, so `TLSPIE_RETURN_DEG_PER_S` buys time at no cost in data. Going *forward* to a full
+turn instead would save only 3 s and wind the head another revolution.
 
 ### ✅ SETTLED ON THIS RIG, 2026-08-09: `STEPS_PER_REV` = 160,000
 

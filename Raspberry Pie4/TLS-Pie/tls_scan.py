@@ -126,14 +126,38 @@ TCPDUMP_SETTLE_S = float(os.environ.get("TLSPIE_TCPDUMP_SETTLE_S", "0.3"))
 # Angles carried over from the MicroView firmware. The 360 scans overshoot to
 # 378 deg so a full revolution is captured after tcpdump is confirmed live,
 # then back off 18 deg to finish square with the start. The 180 scan sweeps
-# 190.8 deg (10.8 deg of overlap) and returns fully.
+# 190.8 deg (10.8 deg of overlap past the half turn) and returns fully.
 #
 # The return leg runs after capture has stopped, so its speed only affects how
 # long the operator waits.
 RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 
-# Two scans, both full 360. The 180 profile the firmware had is gone -- it was
-# never wanted in practice.
+# Three scans. The 180 came back on 2026-08-19, asked for by name: the quick
+# profile's rate over half the turn.
+#
+# ⭐ IT IS NOT HALF A SCAN, AND THE LABEL MUST NOT LET ANYONE THINK IT IS.
+# The puck is on its side, so its fan is a full vertical circle and covers world
+# azimuths pan+90 and pan-90 AT ONCE. 180 degrees of pan therefore reaches every
+# direction, and the 360 profiles cover everything TWICE, from opposite sides of
+# the fan. So this is a COMPLETE dome at single coverage.
+#
+# What it gives up is that second look -- the redundancy that fills the shadows
+# cast by the rig's own enclosures, because a direction blocked by hardware at
+# one pan angle is clear half a turn later. Single coverage means those shadows
+# stay. Hence "one pass" in the detail line: "180" on its own reads as half a
+# room to the operator standing in front of it, and that is the wrong worry.
+#
+# ⛔ IT ALSO COSTS THE PITCH CHECK. tls_pitchcheck splits the sweep on
+# `pan % 360 < 180` and needs both halves; this sweep hands it 180 degrees and a
+# 10.8 degree sliver, from which it would still fit a slope and still print a
+# confident pitch. That tool now refuses a short sweep outright -- see the guard
+# in its collect(). Check the pitch on a 360 scan.
+#
+# Every angle here is step-exact at 160,000 steps/rev, which is where the
+# firmware's odd-looking numbers come from: 378 = 168,000 steps, 190.8 = 84,800,
+# 18 = 8,000, 10.8 = 4,800. The 180 returns the whole 190.8 rather than carrying
+# on to a full turn, so it nets zero and ends square where it started; going
+# forward instead would save 3 seconds and wind the head another revolution.
 SCAN_PROFILES = {
     "slow": {"label": "360° Slow", "detail": "1°/s · about 6½ min",
              "order": 1, "sweep_deg": 378.0, "deg_per_s": 1.0,
@@ -141,6 +165,9 @@ SCAN_PROFILES = {
     "fast": {"label": "360° Quick", "detail": "2°/s · about 3¼ min",
              "order": 2, "sweep_deg": 378.0, "deg_per_s": 2.0,
              "return_deg": 18.0},
+    "rapid": {"label": "180° Rapid", "detail": "2°/s · about 2 min · one pass",
+              "order": 3, "sweep_deg": 190.8, "deg_per_s": 2.0,
+              "return_deg": 190.8},
 }
 
 STATUSFILE = os.path.join(TMPDIR, "VLPrecord.status")

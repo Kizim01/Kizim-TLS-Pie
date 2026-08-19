@@ -21,7 +21,10 @@ Comparing different parts of the room instead is what produced three separate
 confident-but-meaningless answers before this method was found.
 
 It needs no tape, no known distances and no special capture: any scan of
-anywhere with a surface overhead will do.
+anywhere with a surface overhead will do -- but it must be a scan that went
+most of the way round. The 180 Rapid profile covers the whole dome in one pass
+and so never gives the second view this compares against; it is refused, along
+with any 360 scan that was stopped early.
 
     ./tls_pitchcheck.py /media/tlsusb/SCAN.pcap            # current setting
     ./tls_pitchcheck.py /media/tlsusb/SCAN.pcap 0 4 8.4    # compare candidates
@@ -41,6 +44,9 @@ Z_LO, Z_HI = 0.6, 2.4          # the band a surface overhead lands in
 H_MAX = 4.0
 MIN_PER_SIDE = 6
 
+# Both halves of the turn, or nothing. See the guard in collect().
+MIN_SWEEP_DEG = float(os.environ.get("TLSPIE_PITCHCHECK_MIN_SWEEP_DEG", "270"))
+
 
 def collect(pcap_path, meta, pitch):
     """{cell: [sumA, nA, sumB, nB]} over the overhead band, at this pitch."""
@@ -52,6 +58,26 @@ def collect(pcap_path, meta, pitch):
     start = (meta.get("sweep") or {}).get("started_epoch")
     if track is None or start is None:
         raise SystemExit("scan has no pan track; nothing to split")
+
+    # ⛔ BOTH HALVES OR NOTHING -- GUARD THE SPAN THE METHOD DIVIDES BY.
+    # The whole measurement is the difference between the two views a sideways
+    # puck gets of each direction, and those views are `pan < 180` and
+    # `pan >= 180`. A sweep that barely crosses 180 still fills cells, still
+    # fits a slope and still prints a confident pitch -- computed against a
+    # sliver of one side of the room. That is precisely the confident-but-
+    # meaningless answer this method was invented to replace, so refuse it here
+    # rather than let it print.
+    #
+    # It rejects the 180 Rapid profile (190.8 deg sweep, 10.8 deg on the far
+    # side) by design, and equally rejects a 360 scan that was stopped early --
+    # which is why it reads the TRACK the packets are indexed against, not the
+    # profile's nominal sweep_deg. Check the pitch on a completed 360 scan.
+    span = abs(track.total_deg)
+    if span < MIN_SWEEP_DEG:
+        raise SystemExit(
+            "sweep covers only %.1f deg; this check compares the two halves of "
+            "a turn and needs at least %.0f. Use a completed 360 scan."
+            % (span, MIN_SWEEP_DEG))
 
     cells = {}
     for _, epoch, payload in tls_pcap.udp_packets(pcap_path, port=2368,
