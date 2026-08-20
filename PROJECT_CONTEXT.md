@@ -2268,6 +2268,8 @@ still absent after a scan, the position is not being remembered and the carried-
 worthless across a reboot — check the service is running as a user that can write `~/TLS-Pie` (it runs
 as **root**, and the directory is `lipi:lipi` 755, which was tested writable).
 
+**⭐ Studio gained three things on 2026-08-20 (`main`)** — a cloud can be **removed** from the session (nothing is deleted on disk), a cut can be **aimed at one cloud** instead of going through the job as one solid, and **loading a cloud no longer re-fits the clip box**. Under the third was a dead `Cut the box`: the edit list read a box shape that stopped existing when the box learnt to turn, and threw before the cut could be previewed. Converter suite **398**. See "a cloud can be taken out".
+
 **⭐ The colour thread closed the same day** — the stairs scan's refusal was the CONFIDENCE failing, not
 the solve; a heading can now be typed into Studio and carried on to the next scan. See "A heading can be
 given by hand" and the CLOSED stairs section.
@@ -2880,6 +2882,82 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 **⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅ Studio: a cloud can be taken out, and a cut can name one cloud — 2026-08-20
+
+Three things the operator asked for in one pass, plus a bug that was sitting under the third.
+
+**1. Remove a cloud that was loaded by mistake.** A `Remove` button on each row in the legend, and
+`POST /remove` behind it. ⭐ **NOTHING IS DELETED, and the button says Remove for that reason** — the
+capture, its sidecar and its photo stay where they are and the same path can be added straight back.
+What goes is the copy held open in this window. A room-scanning session is the last place an
+unrecoverable delete should sit one click away.
+
+⛔ **TWO PRESSES, AND DELIBERATELY NOT A DIALOG.** A cloud carries an alignment that may have taken a
+careful quarter of an hour, so a stray click must not take it. `confirm()` would do the job where it
+is available — but this page also runs inside an embedded WebView, where a **suppressed dialog
+returns false and the button quietly does nothing at all**, which is the worse failure of the two.
+The second press is on the same button, so it cannot go missing.
+
+⛔ **THE PLACEMENTS OF THE OTHERS ARE LEFT EXACTLY AS THEY WERE, INCLUDING WHEN THE FIRST CLOUD GOES.**
+Every setup is expressed in the first scan's frame, and so are the clip box, the level and every cut.
+Re-basing them onto the new first cloud so that it reads as identity is the tidy-looking move and it
+would **slide the whole job sideways underneath a box and a set of cuts that would not move with it**.
+The frame stays put; what changes is only that the cloud which defined it is no longer in the
+picture, and the message says so.
+
+**2. Aim a cut at one cloud.** A selector above **Delete points** — *every cloud*, or *only this
+one*. `pipeline.Box` and `pipeline.Lasso` carry a `scan` index, `Edit.for_scan(i)` narrows the list,
+and `merge` hands each capture only the cuts that name it plus the ones that name nobody.
+
+⛔ **A KEEP SCOPED TO ONE CLOUD MUST NOT EMPTY THE OTHERS.** "Keep only the box" means *of that
+cloud*. Narrowing inside `mask()` instead would leave the keep in the list while another capture was
+tested, it would survive nothing, and **a scan the operator never touched would come back empty** —
+silently, because the preview and the export would agree with each other. Dropping the operation
+entirely is what makes its absence mean "this cloud is not being kept-only", which is the truth.
+
+⛔ **AND A SCOPE NAMING NO OPEN CLOUD IS REFUSED AT SAVE, LOUDLY.** `for_scan` gives it nothing to
+match, so on its own it would write the file and leave the tripod standing in it — **a cut that
+silently does nothing is the failure that looks like success.** Every index held elsewhere (a pair,
+the isolate, the scope itself) is remapped when a cloud is removed: anything naming it is dropped,
+anything after it moves down one, and what was dropped is said out loud rather than discovered later.
+
+⛔ **The same capture can no longer be added twice.** Two identical rows are two clouds a person
+cannot tell apart, which was harmless while a cut went through all of them and is not any more.
+
+**3. Loading a cloud no longer throws away the clip box.** `measure()` re-fitted the box wide open on
+every change to the set of scans, which **destroyed a box that had been dragged onto one doorway at
+the exact moment it was wanted** — the second scan arriving. It now re-fits only a box the operator
+has never placed; **Fit to view** puts it back deliberately. The slider scale had to widen with it:
+it read across the scene alone, which was safe only while the box was refitted to the scene every
+time, and a box now outliving a removal can end up outside those bounds, where its slider pins to the
+end and the next touch would snap a placed face back to the edge of the room.
+
+**⛔⛔ AND THE BUG UNDERNEATH ALL OF IT: `Cut the box` HAS BEEN DEAD SINCE THE BOX LEARNT TO TURN.**
+The edit list read `e.box[1][0]` — the plain `[lo, hi]` pair a cut used to be — while `boxSpec` had
+long since started producing `{lo, hi, yaw_deg, ...}`. `undefined[0]` is a TypeError, and `pushEdit`
+calls `showEdits()` **before** `recomputeLive()`, so pressing Cut the box **threw, and the cut was
+never previewed, never listed and never marked unsaved**. The edit was already on the list by then
+and did reach the export — so the cut appeared in the saved file and nowhere on screen, which is the
+worst arrangement of the two. Fixed, and it still reads the older form, because a project saved
+before the turn existed holds it and `Box.parse` still accepts it.
+
+**Verified. Converter suite 354 → 398.** ⛔ **Seven guarantees were each broken on purpose and the
+suite watched**: `for_scan` not narrowing (6 failures), `merge` handing every capture the whole edit
+(2), `save` not checking a stale scope (2), `measure` re-fitting the box again (1), the index remap
+not closing the gap (2), the edit list reading the old box shape (1), and the preview not narrowing
+per cloud (1). ⛔ **TWO OF THOSE WENT UNNOTICED THE FIRST TIME AND THE TESTS WERE CHANGED, NOT THE
+TALLY.** The preview test called `planFor` directly and compared it against Python — which passes
+perfectly while `recomputeLive` ignores `planFor` and cuts every cloud; it now runs the shipped
+`recomputeLive` over real point buffers. And the stale-scope test only ever "passed" because the
+export died on a fixture that is not a real capture — *"it crashed" is not "it refused"*, and it
+would have read as a pass the day that fixture became real.
+
+⚠ **A patch matched the wrong occurrence and the assertion did not catch it**: `assert old in s`
+is true when a string appears twice, and `.replace(..., 1)` then edits the first one — which was an
+existing `node --check` block, dedenting it into a SyntaxError. The full suite caught it; the fast
+partial run could not, because it only compiles the new block. **An exact-match patch needs
+`count == 1`, not `in`.**
 
 #### ✅ The head's position now survives a restart, without the head moving — 2026-08-20
 

@@ -171,7 +171,8 @@ class Box(object):
     axis-aligned form was and reads back the same.
     """
 
-    def __init__(self, lo, hi, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    def __init__(self, lo, hi, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
+                 scan=None):
         lo = np.asarray(lo, dtype=float)
         hi = np.asarray(hi, dtype=float)
         self.lo = np.minimum(lo, hi)          # any two opposite corners
@@ -179,6 +180,9 @@ class Box(object):
         self.yaw_deg = float(yaw_deg)
         self.pitch_deg = float(pitch_deg)
         self.roll_deg = float(roll_deg)
+        # Which cloud this cut belongs to, or None for every cloud.
+        # See `Edit.for_scan`.
+        self.scan = None if scan is None else int(scan)
 
     @property
     def centre(self):
@@ -207,9 +211,17 @@ class Box(object):
         return np.all((rel >= -h) & (rel <= h), axis=1)
 
     def as_dict(self):
-        return {"lo": list(map(float, self.lo)), "hi": list(map(float, self.hi)),
-                "yaw_deg": self.yaw_deg, "pitch_deg": self.pitch_deg,
-                "roll_deg": self.roll_deg}
+        out = {"lo": list(map(float, self.lo)),
+               "hi": list(map(float, self.hi)),
+               "yaw_deg": self.yaw_deg, "pitch_deg": self.pitch_deg,
+               "roll_deg": self.roll_deg}
+        # ⛔ WRITTEN ONLY WHEN IT IS SET, so a box that applies to every
+        # cloud is byte-for-byte what it was before scoping existed -- the same
+        # reason the turn is stored beside the corners rather than replacing
+        # them. An older project reads back unchanged.
+        if self.scan is not None:
+            out["scan"] = self.scan
+        return out
 
     @classmethod
     def parse(cls, data):
@@ -218,7 +230,8 @@ class Box(object):
             return data
         if isinstance(data, dict):
             return cls(data["lo"], data["hi"], data.get("yaw_deg", 0.0),
-                       data.get("pitch_deg", 0.0), data.get("roll_deg", 0.0))
+                       data.get("pitch_deg", 0.0), data.get("roll_deg", 0.0),
+                       data.get("scan"))
         return cls(data[0], data[1])
 
     def describe(self):
@@ -246,10 +259,11 @@ class Lasso(object):
     behind you. `w > 0` is the test, and it is not optional.
     """
 
-    def __init__(self, matrix, polygon, keep=False):
+    def __init__(self, matrix, polygon, keep=False, scan=None):
         self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
         self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
         self.keep = bool(keep)
+        self.scan = None if scan is None else int(scan)
 
     def inside(self, xyz):
         """True where a point falls within the drawn outline."""
@@ -269,13 +283,17 @@ class Lasso(object):
         return live & _inside_polygon(sx, sy, self.polygon)
 
     def as_dict(self):
-        return {"matrix": [float(v) for v in self.matrix],
-                "polygon": [[float(a), float(b)] for a, b in self.polygon],
-                "keep": self.keep}
+        out = {"matrix": [float(v) for v in self.matrix],
+               "polygon": [[float(a), float(b)] for a, b in self.polygon],
+               "keep": self.keep}
+        if self.scan is not None:
+            out["scan"] = self.scan
+        return out
 
     @classmethod
     def from_dict(cls, data):
-        return cls(data["matrix"], data["polygon"], data.get("keep", False))
+        return cls(data["matrix"], data["polygon"], data.get("keep", False),
+                   data.get("scan"))
 
 
 def _inside_polygon(x, y, poly):
@@ -319,6 +337,14 @@ class Edit(object):
     goes first, so "keep this room, minus the ceiling" is two boxes and not a
     puzzle. Lassos join the same two piles: a keep lasso widens what survives,
     a cut lasso takes from it, and both are applied at full density.
+
+    ⭐ AN OPERATION CAN BELONG TO ONE CLOUD. `scan` on a box or a lasso is the
+    index of the capture it applies to, or None for all of them. This is what
+    makes it possible to cut the tripod out of scan 2 without taking a bite out
+    of scan 1, which stands somewhere else and has its own furniture in the
+    same piece of world. `mask` is deliberately NOT scope-aware -- it does not
+    know which cloud it is being handed -- so the narrowing is done by
+    `for_scan` before the mask is ever built. See `merge`.
     """
 
     def __init__(self, keep=None, drop=None, lassos=None):
@@ -337,6 +363,38 @@ class Edit(object):
 
     def is_empty(self):
         return not self.keep and not self.drop and not self.lassos
+
+    @property
+    def scoped(self):
+        """Every cloud index this edit singles out, in order."""
+        seen = set()
+        for op in list(self.keep) + list(self.drop) + list(self.lassos):
+            if op.scan is not None:
+                seen.add(op.scan)
+        return sorted(seen)
+
+    def for_scan(self, index):
+        """
+        The part of this edit that applies to one cloud.
+
+        ⛔ A KEEP SCOPED TO ANOTHER CLOUD MUST NOT DELETE THIS ONE. "Keep only
+        this box" means "of that cloud", and if the narrowing were done inside
+        `mask` the keep would still be in the list when this capture was
+        tested, survive nothing, and wipe a scan the operator never touched.
+        Dropping the operation entirely is what makes the omission mean "this
+        cloud is not being kept-only", which is the truth.
+
+        ⛔ AND AN INDEX THAT NAMES NO CLOUD MATCHES NOTHING, NEVER EVERYTHING.
+        A stale scope is a bookkeeping fault; applying it to every cloud would
+        turn one into a cut across the whole job. `AlignServer.save` refuses
+        such an edit out loud rather than relying on this quiet floor.
+        """
+        if index is None:
+            return self
+        mine = (lambda op: op.scan is None or op.scan == index)
+        return Edit(keep=[b for b in self.keep if mine(b)],
+                    drop=[b for b in self.drop if mine(b)],
+                    lassos=[l for l in self.lassos if mine(l)])
 
     @staticmethod
     def _inside(xyz, box):
@@ -385,6 +443,12 @@ class Edit(object):
             parts.append("%d keep lasso(s)" % len(self.keep_lassos))
         if self.cut_lassos:
             parts.append("%d cut lasso(s)" % len(self.cut_lassos))
+        # Named, not counted: "3 cut boxes" reads as three cuts across the job,
+        # and the whole point of a scope is that it is not.
+        one = self.scoped
+        if one:
+            parts.append("some on cloud %s only"
+                         % ", ".join(str(i + 1) for i in one))
         return ", ".join(parts)
 
 
@@ -690,11 +754,17 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
     writer = export.writer_for(out_path, comment=comment)
     parts = []
     try:
-        for path, setup in zip(captures, setups):
+        for i, (path, setup) in enumerate(zip(captures, setups)):
             if progress:
                 progress("converting %s" % os.path.basename(path))
+            # ⭐ EACH CAPTURE GETS ONLY THE CUTS THAT NAME IT, plus the ones
+            # that name nobody. Handing the whole edit to every capture is
+            # what made a cut a cut across the job; see `Edit.for_scan`.
+            mine = None if edit is None else edit.for_scan(i)
             parts.append(convert(path, out_path, setup=setup, writer=writer,
-                                 progress=None, edit=edit, level=level,
+                                 progress=None, level=level,
+                                 edit=None if (mine is None or mine.is_empty())
+                                 else mine,
                                  **kwargs))
     finally:
         writer.close()

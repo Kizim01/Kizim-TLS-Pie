@@ -1966,5 +1966,385 @@ check("the real settings path is restored afterwards",
       library.SETTINGS_FILE == _real_file)
 
 
+# --- a cut can belong to ONE cloud ----------------------------------------
+#
+# ⭐ WHY THIS EXISTS. Two scans of one room stand in different places, and the
+# thing you want gone from scan 2 -- the tripod, the operator, a doorway that
+# only that scan saw through -- is somewhere scan 1 has real furniture. Before
+# this, every cut went through the job as one solid, so cutting the tripod out
+# of the second scan took a bite out of the first.
+print("\na cut can belong to one cloud")
+
+_BOX = {"lo": [-1.0, -1.0, -1.0], "hi": [1.0, 1.0, 1.0]}
+# one point inside that box, one well outside it
+_PTS = np.array([[0.0, 0.0, 0.0], [9.0, 9.0, 9.0]])
+
+_all = pipeline.Edit(drop=[dict(_BOX)])
+check("an unscoped cut still takes from every cloud",
+      list(_all.for_scan(0).mask(_PTS)) == [False, True] and
+      list(_all.for_scan(1).mask(_PTS)) == [False, True])
+
+_one = pipeline.Edit(drop=[dict(_BOX, scan=1)])
+check("a cut aimed at cloud 2 leaves cloud 1 whole",
+      list(_one.for_scan(0).mask(_PTS)) == [True, True],
+      list(_one.for_scan(0).mask(_PTS)))
+check("and still cuts the cloud it names",
+      list(_one.for_scan(1).mask(_PTS)) == [False, True])
+
+# ⛔ THE ONE THAT MATTERS. "Keep only this box" scoped to cloud 1 must not mean
+# "of cloud 2, keep nothing". Narrowing inside mask() would leave the keep in
+# the list while cloud 2 was tested, it would survive nothing, and a scan the
+# operator never touched would come back empty -- silently, since the preview
+# and the export would agree with each other.
+_keep = pipeline.Edit(keep=[dict(_BOX, scan=0)])
+check("a KEEP aimed at one cloud does not empty the others",
+      list(_keep.for_scan(1).mask(_PTS)) == [True, True],
+      list(_keep.for_scan(1).mask(_PTS)))
+check("while the cloud it names is kept to the box",
+      list(_keep.for_scan(0).mask(_PTS)) == [True, False])
+
+# ⛔ A SCOPE NAMING NO CLOUD MATCHES NOTHING, NEVER EVERYTHING. A stale index is
+# a bookkeeping fault; reading it as "all of them" would turn one cloud's cut
+# into a cut across the whole job.
+check("a scope that names no open cloud cuts nothing",
+      list(pipeline.Edit(drop=[dict(_BOX, scan=7)]).for_scan(0).mask(_PTS))
+      == [True, True])
+check("for_scan(None) is the whole edit, unchanged",
+      _one.for_scan(None) is _one)
+check("and the edit can say which clouds it singles out",
+      pipeline.Edit(drop=[dict(_BOX, scan=2), dict(_BOX)],
+                    keep=[dict(_BOX, scan=0)]).scoped == [0, 2])
+
+# ⭐ AN OLDER PROJECT MUST READ BACK BYTE-FOR-BYTE. A box that applies to every
+# cloud does not write the field at all, so a project saved before scoping
+# existed and one saved after it are the same file.
+check("an unscoped box writes no scan field at all",
+      "scan" not in pipeline.Edit(drop=[dict(_BOX)]).as_dict()["drop"][0])
+check("a scoped one does, and it survives the round trip",
+      pipeline.Edit.from_dict(
+          pipeline.Edit(drop=[dict(_BOX, scan=3)]).as_dict()
+      ).drop[0].scan == 3)
+_lass = {"matrix": [1.0] * 16, "polygon": [[0, 0], [1, 0], [1, 1]], "keep": True,
+         "scan": 2}
+check("a lasso carries a scope too",
+      pipeline.Edit.from_dict({"lassos": [_lass]}).lassos[0].scan == 2)
+check("an edit with no scopes reads back with none",
+      pipeline.Edit.from_dict({"lassos": [{"matrix": [1.0] * 16,
+                                           "polygon": [[0, 0]]}]}
+                              ).lassos[0].scan is None)
+check("and describe() names the cloud rather than counting cuts",
+      "cloud 2 only" in pipeline.Edit(drop=[dict(_BOX, scan=1)]).describe(),
+      pipeline.Edit(drop=[dict(_BOX, scan=1)]).describe())
+
+
+# --- and the exporter hands each capture only its own share -----------------
+#
+# ⛔ TESTED THROUGH merge ITSELF, not by reading it. The narrowing is useless if
+# merge goes on passing the whole edit to every capture, and that is exactly
+# the kind of wiring that a source-level check would call correct while it was
+# broken. convert and the writer are stubbed; what is under test is which edit
+# each capture is handed.
+print("\nthe exporter hands each capture only its own cuts")
+
+_saw = []
+_real_convert, _real_writer = pipeline.convert, export.writer_for
+
+
+class _NullWriter(object):
+    count = 0
+
+    def close(self):
+        pass
+
+
+def _spy_convert(path, out_path, **kw):
+    _saw.append(kw.get("edit"))
+    return {"points": 0}
+
+
+try:
+    pipeline.convert = _spy_convert
+    export.writer_for = lambda *a, **k: _NullWriter()
+    _plan = pipeline.Edit(drop=[dict(_BOX, scan=1), dict(_BOX)])
+    pipeline.merge(["a.pcap", "b.pcap"], "out.laz",
+                   setups=[{}, {}], edit=_plan)
+    check("every capture is converted", len(_saw) == 2, len(_saw))
+    check("the first gets only the cut that names nobody",
+          _saw[0] is not None and len(_saw[0].drop) == 1 and
+          _saw[0].drop[0].scan is None)
+    check("the second gets that one AND the one that names it",
+          _saw[1] is not None and len(_saw[1].drop) == 2)
+
+    # ⛔ A CAPTURE WITH NOTHING LEFT GETS None, NOT AN EMPTY EDIT. convert tests
+    # `edit is not None and not edit.is_empty()`, so an empty one is harmless
+    # today -- but "no edit" said as None is the answer that cannot be misread
+    # by whatever tests it next.
+    _saw[:] = []
+    pipeline.merge(["a.pcap", "b.pcap"], "out.laz", setups=[{}, {}],
+                   edit=pipeline.Edit(drop=[dict(_BOX, scan=1)]))
+    check("a capture with no cuts of its own is handed no edit at all",
+          _saw[0] is None, _saw[0])
+    check("and the one that is named still gets its cut",
+          _saw[1] is not None and len(_saw[1].drop) == 1)
+finally:
+    pipeline.convert, export.writer_for = _real_convert, _real_writer
+check("the real convert is restored afterwards",
+      pipeline.convert is _real_convert)
+
+
+# --- taking a cloud out of the session -------------------------------------
+#
+# ⭐ NOTHING IS DELETED. The operator's word is "delete the wrong cloud", but
+# the capture on disk is not this program's to remove -- and a room-scanning
+# session is exactly where an unrecoverable delete must not sit one click away.
+print("\ntaking a cloud out of the session")
+
+_rdir = tempfile.mkdtemp(prefix="tlsrm")
+
+
+def _fake_scan(stem):
+    """A Scan the server can re-encode, standing on a real file."""
+    path = os.path.join(_rdir, stem + ".pcap")
+    with open(path, "wb") as fh:
+        fh.write(b"not a real capture, but a real file")
+    pts = np.random.RandomState(3).normal(size=(400, 3)) * 2.0
+    rgb = np.full((len(pts), 3), 128, dtype=np.uint8)
+    return align.Scan(path, pts, rgb, pts)
+
+
+_rsrv = align.AlignServer([], out_path=None)
+_rsrv.scans = [_fake_scan("one"), _fake_scan("two"), _fake_scan("three")]
+_gone_path = _rsrv.scans[1].path
+_out = _rsrv.remove(1)
+check("removing a cloud reports what went", _out["ok"] and
+      _out["name"] == "two.pcap", _out.get("error"))
+check("two are left", _out["left"] == 2 and len(_rsrv.scans) == 2)
+check("the ones left are the ones not named",
+      [sc.name for sc in _rsrv.scans] == ["one.pcap", "three.pcap"],
+      [sc.name for sc in _rsrv.scans])
+# ⛔ THE INDICES CLOSE UP, which is the whole reason the page has to remap
+# everything holding one. Caught here so the page's side of it is not the only
+# place that says so.
+check("and the indices close up behind it",
+      [m["index"] for m in _out["scans"]] == [0, 1],
+      [m["index"] for m in _out["scans"]])
+check("THE CAPTURE ON DISK IS STILL THERE", os.path.exists(_gone_path))
+check("removing the first says it was the reference",
+      _rsrv.remove(0)["first_gone"] is True)
+check("removing the last one standing is not a reference change",
+      _rsrv.remove(0)["first_gone"] is False and not _rsrv.scans)
+check("a cloud that is not open is refused",
+      _rsrv.remove(0)["ok"] is False)
+check("and so is nothing at all",
+      align.AlignServer([], out_path=None).remove(None)["ok"] is False)
+
+# ⛔ THE SAME CAPTURE TWICE IS A DOUBLE EXPOSURE. It also makes two rows in the
+# list that a person cannot tell apart, which matters now that a cut names one.
+_dsrv = align.AlignServer([], out_path=None)
+_dsrv.scans = [_fake_scan("dup")]
+_dup = _dsrv.add([os.path.join(_rdir, "dup.pcap")])
+check("adding a capture that is already open is refused",
+      _dup["ok"] is False and "already open" in _dup["error"], _dup)
+
+
+# --- an edit aimed at a cloud that is not open is refused, loudly ----------
+#
+# ⛔ THIS IS THE CHECK THAT CATCHES A SCOPE LEFT BEHIND. `Edit.for_scan` would
+# apply it to nothing, the export would succeed, the file would be written --
+# and the tripod the operator cut out would still be standing in it. A cut that
+# silently does nothing is the failure that looks like success.
+print("\nan edit aimed at a cloud that is not open")
+
+_ssrv = align.AlignServer([], out_path=os.path.join(_rdir, "merged.laz"))
+_ssrv.scans = [_fake_scan("only")]
+# ⛔ CAUGHT, BECAUSE "IT CRASHED" IS NOT "IT REFUSED". Without the guard this
+# call runs on into the exporter and dies on the fake capture -- which reads as
+# a failure here only by accident, and would read as a PASS the day the fixture
+# became a real .pcap. The refusal has to be a returned message.
+try:
+    _stale = _ssrv.save([], edit={"drop": [dict(_BOX, scan=3)]})
+except Exception as _exc:                                        # noqa: BLE001
+    _stale = {"ok": None, "error": "raised %s instead of refusing: %s"
+                                   % (type(_exc).__name__, _exc)}
+check("a cut naming cloud 4 with one open is refused, not attempted",
+      _stale["ok"] is False and "cloud 4" in str(_stale.get("error")), _stale)
+check("and nothing was written",
+      not os.path.exists(os.path.join(_rdir, "merged.laz")))
+check("the refusal says how many are actually open",
+      "only 1 is open" in str(_stale.get("error")), _stale.get("error"))
+check("saving with nothing open is refused too",
+      align.AlignServer([], out_path="x.laz").save([])["ok"] is False)
+
+
+# --- the page's own copy of the rules --------------------------------------
+#
+# ⛔ RUN, NOT READ. The preview narrows the edit list in JavaScript and the
+# exporter narrows it again in Python, and the two agreeing is the whole
+# promise -- "what you see is what is written". A source-level check that the
+# words `planFor` appear somewhere would pass while the two disagreed. So the
+# functions are lifted out of the shipped page and executed, and the JS answer
+# is compared against `Edit.for_scan` on the same data.
+print("\nthe page's own copy of the rules, executed")
+
+_PAGE = align.PAGE
+
+
+def _js_func(name):
+    """One function's source, lifted out of the page by matching its braces."""
+    at = _PAGE.index("function " + name + "(")
+    i = _PAGE.index("{", at)
+    depth, j = 0, i
+    while j < len(_PAGE):
+        if _PAGE[j] == "{":
+            depth += 1
+        elif _PAGE[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return _PAGE[at:j + 1]
+        j += 1
+    raise AssertionError("unbalanced braces in " + name)
+
+
+# ⛔ AND THE PREVIEW IS RUN, NOT REBUILT ALONGSIDE. The first version of this
+# test called `planFor` directly and compared what it returned against Python,
+# which passes perfectly while `recomputeLive` ignores `planFor` altogether and
+# goes on cutting every cloud. That break was tried on purpose and caught by
+# nothing. So the SHIPPED `recomputeLive` is what runs here, over real point
+# buffers, and what survives it is compared against the exporter's own mask.
+_node = shutil.which("node")
+if not _node:
+    print("  ---- node is not installed; the page's own rules were NOT run")
+else:
+    # Each case is the page's own edit list: (mode, which cloud or None).
+    _cases = [
+        [("drop", 1)],
+        [("keep", 0), ("drop", None)],
+        [("drop", 1), ("drop", 0)],
+        [("keep", 1)],
+    ]
+
+    def _as_edit(case):
+        """The same case as the exporter's Edit."""
+        got = {"keep": [], "drop": [], "lassos": []}
+        for mode, who in case:
+            got["keep" if mode == "keep" else "drop"].append(
+                dict(_BOX) if who is None else dict(_BOX, scan=who))
+        return pipeline.Edit.from_dict(got)
+
+    def _as_page(case):
+        """The same case as the page holds it in V.edits."""
+        return [{"kind": "box", "mode": mode, "box": dict(_BOX),
+                 "scan": who} for mode, who in case]
+
+    # What the EXPORTER says survives, for every case and both clouds.
+    _want = [[list(map(bool, _as_edit(c).for_scan(i).mask(_PTS)))
+              for i in (0, 1)] for c in _cases]
+
+    _harness = """
+%s
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
+         boxSet:false,box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
+         ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:0,alive:0,total:0};
+const $=()=>({textContent:'',innerHTML:'',value:0});
+const say=()=>{}, showDensity=()=>{}, invalidate=()=>{}, upload=()=>{};
+/* Placed nowhere and unlevelled: the narrowing is what is under test here,
+   not the transform, and the exporter's mask is fed the same coordinates. */
+function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
+function rotOf(){ return [[1,0,0],[0,1,0],[0,0,1]]; }
+const CASES=%s, PTS=%s;
+function cloud(index){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], live:new Uint8Array(PTS.length)};
+}
+/* \u26d4 THROUGH THE SHIPPED recomputeLive, not beside it. */
+const got=CASES.map(c=>{
+  V.edits=c; V.scans=[cloud(0), cloud(1)];
+  recomputeLive();
+  return V.scans.map(s=>Array.from(s.live).map(v=>v===1));
+});
+console.log(JSON.stringify(got));
+
+/* And the index remap, on the state a removal actually leaves behind. */
+V.edits=[{scan:null},{scan:0},{scan:1},{scan:2}];
+V.pairs=[{ri:0,si:1},{ri:0,si:2},{ri:1,si:2}];
+V.only=2; V.editWho=2;
+const lost=forgetScan(1);
+console.log(JSON.stringify({edits:V.edits.map(e=>e.scan),
+  pairs:V.pairs.map(p=>[p.ri,p.si]), only:V.only, who:V.editWho,
+  lost:lost}));
+
+/* And the clip box surviving a change to the set of clouds. */
+V.scans=[{lo:[0,0,0],hi:[4,4,4],points:10,reach:4,index:0}];
+V.boxSet=false; measure();
+const fitted=JSON.stringify(V.box.hi);
+V.box.hi=[0.5,0.5,0.5]; V.box.lo=[-0.5,-0.5,-0.5]; V.boxSet=true;
+V.scans.push({lo:[-20,-20,-20],hi:[20,20,20],points:10,reach:20,index:1});
+measure();
+console.log(JSON.stringify({fitted:fitted, kept:V.box.hi,
+                            spanCovers:span(0)>=40}));
+V.boxSet=false; measure();
+console.log(JSON.stringify({refitted:V.box.hi}));
+console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
+                            old:boxSize([[-1,-1,-1],[1,2,3]])}));
+""" % ("\n".join(_js_func(f) for f in
+                 ("recomputeLive", "editPlan", "planFor", "markBox",
+                  "forgetScan", "measure", "resetBox", "span", "boxSize")),
+       "", json.dumps([_as_page(c) for c in _cases]),
+       json.dumps(_PTS.tolist()))
+
+    _jsp = os.path.join(_rdir, "rules.js")
+    with io.open(_jsp, "w", encoding="utf-8") as _fh:
+        _fh.write(_harness)
+    _run = subprocess.run([_node, _jsp], capture_output=True, text=True)
+    check("the page's rules run at all", _run.returncode == 0,
+          _run.stderr[-400:])
+    if _run.returncode == 0:
+        _lines = [l for l in _run.stdout.strip().splitlines() if l.strip()]
+        _got = json.loads(_lines[0])
+        check("WHAT THE PREVIEW KEEPS IS WHAT THE EXPORTER WRITES",
+              _got == _want, "page %s want %s" % (_got, _want))
+
+        _rm = json.loads(_lines[1])
+        # ⛔ Anything naming the cloud that went is dropped; anything after it
+        # moves down one. A scope left pointing at the old number would come
+        # back aimed at a different cloud and look entirely deliberate.
+        check("a cut aimed at the removed cloud goes with it",
+              _rm["edits"] == [None, 0, 1], _rm["edits"])
+        check("cuts aimed past it move down one", _rm["lost"]["edits"] == 1)
+        check("pairs naming it are dropped and the rest renumber",
+              _rm["pairs"] == [[0, 1]] and _rm["lost"]["pairs"] == 2,
+              _rm["pairs"])
+        check("the isolate and the cut scope renumber too",
+              _rm["only"] == 1 and _rm["who"] == 1, _rm)
+
+        _bx = json.loads(_lines[2])
+        # ⛔ THE FIX THE OPERATOR ASKED FOR: adding a cloud must not re-fit a
+        # box they have placed. It used to be refitted on every change to the
+        # set, which threw the box away at the one moment it was wanted.
+        check("A PLACED CLIP BOX SURVIVES ANOTHER CLOUD BEING LOADED",
+              _bx["kept"] == [0.5, 0.5, 0.5], _bx)
+        check("and the slider scale widens to cover a box outside the scene",
+              _bx["spanCovers"] is True, _bx)
+        _bx2 = json.loads(_lines[3])
+        check("a box never placed is still fitted to the scene",
+              _bx2["refitted"] != [0.5, 0.5, 0.5] and
+              _bx2["refitted"][0] == 20.0, _bx2)
+
+        # ⛔ AND THE EDIT LIST READS THE SHAPE A CUT IS ACTUALLY STORED IN.
+        # It indexed `[lo, hi]`, which stopped existing when the box learnt to
+        # turn -- so showEdits threw a TypeError on every box cut, and since
+        # pushEdit calls it BEFORE recomputeLive the cut never previewed.
+        _sz = json.loads(_lines[4])
+        check("the edit list can size a turned box", "2.0 x 3.0 x 4.0" in
+              _sz["sized"], _sz)
+        check("and still reads a box saved in the older form",
+              "2.0 x 3.0 x 4.0" in _sz["old"], _sz)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

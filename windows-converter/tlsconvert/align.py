@@ -405,6 +405,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     body.get("remember", True)))
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or []))
+            if path == "/remove":
+                return self._json(srv.remove(body.get("index")))
             if path == "/density":
                 return self._json(srv.density(body.get("voxel")))
             if path == "/project/save":
@@ -660,6 +662,25 @@ class AlignServer(object):
                              "(.pcap, .las, .laz, .ply)"
                              % os.path.basename(wrong[0])}
 
+        # ⛔ THE SAME CAPTURE TWICE IS A DOUBLE EXPOSURE, NOT MORE DATA. Both
+        # copies land on the same tripod with the same setup, so every surface
+        # is written twice and the merge is heavier and no better. It also puts
+        # two clouds in the list that nothing can tell apart -- and a cut that
+        # names one cloud has to be readable by a person, which two identical
+        # rows are not. Refused where it is asked for rather than deduplicated
+        # silently, so a double-click that added nothing says why.
+        here = set(os.path.normcase(os.path.abspath(sc.path))
+                   for sc in self.scans)
+        again = [q for q in paths
+                 if os.path.normcase(os.path.abspath(q)) in here]
+        if again:
+            return {"ok": False,
+                    "error": "%s is already open. Adding it twice would put "
+                             "the same cloud on top of itself, which looks "
+                             "like a ruined scan rather than like the "
+                             "bookkeeping it is."
+                             % os.path.basename(again[0])}
+
         self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
         try:
             fresh = load(paths, voxel_m=self.align_voxel,
@@ -678,6 +699,44 @@ class AlignServer(object):
         # case where a card refuses the upload.
         meta = self._rebuild()
         return {"ok": True, "added": meta[first:], "scans": meta}
+
+    def remove(self, index):
+        """
+        Take one cloud out of the open session. The file on disk is untouched.
+
+        ⭐ WHY IT IS NOT A DELETE. The word the operator uses is "delete the
+        wrong cloud", but nothing is deleted: the capture, its sidecar and its
+        photo stay exactly where they are, and the same path can be added
+        again. Removing the FILE from a room-scanning session would be the one
+        mistake that cannot be undone by pressing something.
+
+        ⛔ EVERY REMAINING SCAN IS RE-ENCODED, not just shuffled up. The
+        per-scan share of the point budget is divided by how many are open, so
+        after a removal the others are each entitled to MORE points than the
+        buffers the page is holding -- and the page reloads them all for the
+        same reason `add` does.
+        """
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "no cloud was named to remove"}
+        if not 0 <= i < len(self.scans):
+            return {"ok": False,
+                    "error": "there is no cloud %d open" % (i + 1)}
+        gone = self.scans.pop(i)
+        # ⛔ THE PLACEMENTS OF THE OTHERS ARE LEFT ALONE, ON PURPOSE. Each one
+        # is expressed in the FIRST scan's frame, and so are the clip box, the
+        # level and every edit. Re-basing them onto the new first cloud so that
+        # it reads as identity would slide the whole job sideways underneath a
+        # box and a set of cuts that would not move with it. The frame stays
+        # where it was; what changes is only that the cloud which defined it is
+        # no longer in the picture.
+        first_gone = (i == 0 and bool(self.scans))
+        return {"ok": True, "removed": i, "name": gone.name,
+                "path": os.path.abspath(gone.path),
+                "first_gone": first_gone,
+                "left": len(self.scans),
+                "scans": self._rebuild()}
 
     def browse_image(self):
         """A native picker for one panorama, from the window that owns it."""
@@ -974,17 +1033,56 @@ class AlignServer(object):
     def save(self, setups, voxel=None, edit=None, level=None):
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
+        if not self.scans:
+            return {"ok": False, "error": "there is nothing open to save"}
         for i, data in enumerate(setups):
             if i < len(self.scans):
                 self.scans[i].setup = registration.Setup.from_dict(data)
         lvl = registration.Level.from_dict(level)
         plan = pipeline.Edit.from_dict(edit)
+        # ⛔ A CUT THAT NAMES A CLOUD WHICH IS NOT OPEN IS REFUSED, LOUDLY.
+        # `Edit.for_scan` would quietly apply it to nothing, and a cut that
+        # silently does nothing is the failure that looks like success: the
+        # export completes, the file is written, and the tripod the operator
+        # cut out is still standing in it. This is the check that has to catch
+        # a scope left behind by a removal, so it names the number it saw.
+        stale = [i for i in plan.scoped if i >= len(self.scans)]
+        if stale:
+            return {"ok": False,
+                    "error": "an edit is aimed at cloud %d, and only %d %s "
+                             "open. Nothing was written. Clear that edit, or "
+                             "re-open the project."
+                             % (stale[0] + 1, len(self.scans),
+                                "is" if len(self.scans) == 1 else "are")}
+        keep = None if plan.is_empty() else plan
         self._progress = {"stage": "writing the merged cloud", "n": 0,
                           "total": 1, "busy": True}
         try:
+            if len(self.scans) == 1:
+                # ⛔ ONE CLOUD IS NOT A MERGE, and `pipeline.merge` refuses it
+                # outright -- rightly, because merging one capture into another
+                # scan's frame is a contradiction. Before a cloud could be
+                # removed this was barely reachable; now it is one press away,
+                # and "merge needs at least two captures" is a sentence about
+                # this program's internals rather than about anything the
+                # operator did. The single-capture path already exists.
+                only = self.scans[0]
+                mine = None if keep is None else keep.for_scan(0)
+                info = pipeline.convert(
+                    only.path, self.out_path,
+                    setup=(None if only.setup.is_identity() else only.setup),
+                    edit=None if (mine is None or mine.is_empty()) else mine,
+                    level=None if lvl.is_identity() else lvl,
+                    voxel_m=(self.merge_voxel if voxel is None
+                             else float(voxel)))
+                written = info.get("points", info.get("written", 0))
+                return {"ok": True, "out": self.out_path, "points": written,
+                        "edit": None if keep is None else keep.describe(),
+                        "level": None if lvl.is_identity()
+                        else lvl.describe(), "single": True}
             info = pipeline.merge([s.path for s in self.scans], self.out_path,
                                   setups=[s.setup for s in self.scans],
-                                  edit=None if plan.is_empty() else plan,
+                                  edit=keep,
                                   level=None if lvl.is_identity() else lvl,
                                   voxel_m=(self.merge_voxel if voxel is None
                                            else float(voxel)))
@@ -1083,6 +1181,14 @@ PAGE = r"""<!doctype html>
      status most of the time and a control only when you want it. */
   .scanrow{padding:5px 0 6px;border-bottom:.5px solid rgba(255,255,255,.07)}
   .scanrow:last-child{border-bottom:0}
+  .head{display:flex;align-items:center;gap:6px}
+  .head .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .head button{padding:2px 7px;font-size:10.5px;border-radius:8px;
+    width:auto;flex:none}
+  /* Asking, not done: the second press is the one that removes. */
+  .head button.ask{background:linear-gradient(180deg,rgba(255,69,58,.34),
+    rgba(255,69,58,.20));border-color:rgba(255,69,58,.55)}
   .photo{display:flex;align-items:center;gap:6px;margin:3px 0 0 15px;
     font-size:10.5px;color:var(--dim);line-height:1.35}
   .photo .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
@@ -1245,6 +1351,12 @@ PAGE = r"""<!doctype html>
     <button id="bzero">Square to world</button></div>
   <hr>
   <label>Delete points</label>
+  <select id="editwho"></select>
+  <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
+    Which cloud the next cut belongs to. <b>Every cloud</b> cuts through the
+    job as one solid; naming one cloud takes the tripod, or the operator, out
+    of that scan and leaves the others whole — they were standing somewhere
+    else and have their own furniture in the same piece of world.</div>
   <div class="row"><button id="cutbox">Cut the box</button>
     <button id="keepbox">Keep only the box</button></div>
   <div class="row"><button id="rect">Rectangle</button>
@@ -1291,6 +1403,14 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null},
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
+           /* Which cloud the next cut belongs to: -1 for all of them. */
+           editWho:-1,
+           /* ⛔ SET ONCE THE OPERATOR HAS POSITIONED THE CLIP BOX, and from
+              then on adding or removing a cloud leaves it alone. It used to be
+              re-fitted to the new extents on every change to the set, which
+              threw away a box that had been dragged onto one room the moment a
+              second scan of it was loaded -- exactly when it was wanted. */
+           boxSet:false,
            ext:{lo:[0,0,0],hi:[1,1,1]}};
 let gl, prog, loc, cv, ov, oc, need = true;
 let lprog, lloc, lbuf;
@@ -1562,6 +1682,7 @@ function boxAxis(a){ const R=boxRot(); return [R[0][a],R[1][a],R[2][a]]; }
    that centre still. Turning about the pivot would swing a corner box across
    the room and leave the operator chasing it. */
 function setTurn(yaw,pitch,roll){
+  V.boxSet=true;
   const c=boxCentre();
   V.box.yaw=yaw; V.box.pitch=pitch; V.box.roll=roll;
   const m=rmul(boxRot(), boxMid());
@@ -1975,7 +2096,7 @@ async function boot(){
    reframes the camera and the clip box instead of sitting outside both. */
 function measure(){
   if(!V.scans.length){
-    V.ext={lo:[-5,-5,-2],hi:[5,5,3]}; resetBox();
+    V.ext={lo:[-5,-5,-2],hi:[5,5,3]}; if(!V.boxSet) resetBox();
     V.reach=12;
     $('stat').textContent='No scans open yet — press Browse to add one.';
     say('This is TLS-Pie Studio. Add a capture to begin: Browse, or paste a '+
@@ -1990,7 +2111,12 @@ function measure(){
                           hi[a]=Math.max(hi[a],s.hi[a]); }
     total+=s.points; reach=Math.max(reach,s.reach);
   }
-  V.ext={lo,hi}; resetBox();
+  /* ⛔ THE BOX IS NOT RE-FITTED ONCE IT HAS BEEN PLACED. The extents still
+     move with the set -- the camera and the slider scale need them -- but a box
+     the operator dragged onto a doorway is a decision, and re-fitting it wide
+     open on the next Add silently undid that decision at the one moment it
+     mattered. Fit to view puts it back deliberately. */
+  V.ext={lo,hi}; if(!V.boxSet) resetBox();
   V.reach=Math.max(3,reach*1.6);
   V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
   $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
@@ -2121,28 +2247,79 @@ async function autoAlign(){
    return rather than from the thinned copy that was on screen. They live in ONE
    ordered list so that Undo means "the last thing I did" rather than "the last
    box, unless the last thing was a lasso". */
+/* ⭐ AND AN OPERATION CAN NAME ONE CLOUD. `scan` is the index it belongs to,
+   or null for all of them, and it travels with the box or the lasso all the way
+   into `pipeline.Edit` -- the preview below and the exporter narrow the list by
+   the same rule, so what is seen is what is written. */
 function editPlan(){
   const plan={keep:[], drop:[], lassos:[]};
   for(const e of V.edits){
-    if(e.kind==='box') (e.mode==='keep'?plan.keep:plan.drop).push(e.box);
+    const who = (e.scan==null) ? null : e.scan;
+    if(e.kind==='box')
+      (e.mode==='keep'?plan.keep:plan.drop).push(
+        Object.assign({}, e.box, {scan:who}));
     else plan.lassos.push({matrix:e.matrix, polygon:e.poly,
-                           keep:e.mode==='keep'});
+                           keep:e.mode==='keep', scan:who});
   }
   return plan;
+}
+/* The part of the plan that applies to one cloud -- the page's copy of
+   pipeline.Edit.for_scan, and it has to stay its copy. */
+function planFor(plan, index){
+  const mine = o => (o.scan==null || o.scan===index);
+  return {keep:plan.keep.filter(mine), drop:plan.drop.filter(mine),
+          lassos:plan.lassos.filter(mine)};
+}
+function whoName(scan){
+  if(scan==null) return '';
+  const s=V.scans.find(x=>x.index===scan);
+  return s ? s.name : ('cloud '+(scan+1));
+}
+/* ⛔ THIS READ A SHAPE THAT STOPPED EXISTING WHEN THE BOX LEARNT TO TURN.
+   A cut used to be stored as the plain pair of corners `[lo, hi]`, and this
+   line still indexed it as one -- `e.box[1][0]` -- while `boxSpec` had long
+   since started producing `{lo, hi, yaw_deg, ...}`. `undefined[0]` is a
+   TypeError, and `pushEdit` calls this BEFORE `recomputeLive`, so pressing
+   Cut the box threw here and the cut was never previewed, never listed and
+   never marked unsaved. The edit itself was already on the list and did reach
+   the export, which is why the cut appeared in the saved file and nowhere on
+   screen -- the worst arrangement of the two.
+
+   ⭐ IT STILL READS THE OLD FORM, because a project saved before the turn
+   existed holds it, and `pipeline.Box.parse` still accepts it. */
+function boxSize(b){
+  const lo = b && b.lo ? b.lo : (b ? b[0] : null);
+  const hi = b && b.hi ? b.hi : (b ? b[1] : null);
+  if(!lo || !hi) return 'of an unreadable size';
+  return (hi[0]-lo[0]).toFixed(1)+' x '+(hi[1]-lo[1]).toFixed(1)+' x '+
+         (hi[2]-lo[2]).toFixed(1)+' m'+
+         (b.yaw_deg||b.pitch_deg||b.roll_deg
+          ? ', turned '+(+(b.yaw_deg||0)).toFixed(1)+'°' : '');
 }
 function showEdits(){
   if(!V.edits.length){ $('editlist').innerHTML=''; return; }
   const rows=V.edits.map((e,i)=>
     '<div>'+(i+1)+'. '+(e.mode==='keep'?'keep only ':'delete ')+
-    (e.kind==='box'
-      ? ('the box '+(e.box[1][0]-e.box[0][0]).toFixed(1)+' x '+
-         (e.box[1][1]-e.box[0][1]).toFixed(1)+' x '+
-         (e.box[1][2]-e.box[0][2]).toFixed(1)+' m')
-      : ('a lasso of '+e.poly.length+' points'))+'</div>').join('');
+    (e.kind==='box' ? ('the box '+boxSize(e.box))
+                    : ('a lasso of '+e.poly.length+' points'))+
+    /* Named, never counted. "3 cuts" reads as three cuts through the job, and
+       the whole point of a scope is that it is not. */
+    (e.scan==null ? '' : ' — <b>'+whoName(e.scan)+'</b> only')+
+    '</div>').join('');
   $('editlist').innerHTML = rows +
     '<div style="margin-top:4px">applied at full density on save</div>';
 }
-function pushEdit(e){ V.edits.push(e); showEdits(); recomputeLive(); dirty(); }
+/* ⛔ THE SCOPE IS STAMPED HERE, not by the callers. Two of them exist today
+   (a box and a lasso) and a third is the obvious next one; a caller that forgot
+   would produce a cut that reads as belonging to one cloud in the list and cuts
+   through all of them on export, which nothing on screen would show. */
+function pushEdit(e){
+  e.scan = (V.editWho==null || V.editWho<0) ? null : V.editWho;
+  V.edits.push(e); showEdits(); recomputeLive(); dirty();
+}
+function whoSuffix(){
+  return (V.editWho<0) ? '' : ' from '+whoName(V.editWho)+' only';
+}
 function undoEdit(){
   if(V.pending){ V.pending=null; V.tool=''; setTool(''); invalidate(); return; }
   if(!V.edits.length) return say('Nothing to undo.', 'warn');
@@ -2167,7 +2344,7 @@ function addBox(which){
       (2*h[0]).toFixed(1)+' x '+(2*h[1]).toFixed(1)+' x '+
       (2*h[2]).toFixed(1)+' m'+(boxTurned()
         ? ', turned '+(+V.box.yaw).toFixed(1)+'°' : '')+
-      '. Undo puts it back.');
+      whoSuffix()+'. Undo puts it back.');
 }
 
 /* ⛔ RECOMPUTED FROM SCRATCH, NEVER APPLIED INCREMENTALLY. A delete that only
@@ -2184,13 +2361,19 @@ const BLOCK = 1 << 19;
 const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
       _wz=new Float64Array(BLOCK);
 function recomputeLive(){
-  const plan=editPlan();
-  const keepers = plan.keep.length || plan.lassos.some(l=>l.keep);
+  const whole=editPlan();
   let total=0, alive=0;
   for(const s of V.scans){
     const n=s.points, live=s.live;
     total+=n;
-    if(!V.edits.length){ live.fill(1); alive+=n; upload(s); continue; }
+    /* ⛔ NARROWED PER CLOUD, AND THE KEEP TEST WITH IT. "Keep only this box"
+       means "of that cloud": if the keep stayed in the list while another
+       cloud was tested it would survive nothing and wipe a scan the operator
+       never touched. An empty share is not a keep-nothing, it is no edit. */
+    const plan=planFor(whole, s.index);
+    const keepers = plan.keep.length || plan.lassos.some(l=>l.keep);
+    const any = plan.keep.length || plan.drop.length || plan.lassos.length;
+    if(!any){ live.fill(1); alive+=n; upload(s); continue; }
     const A=affine(s);          /* placement AND level, exactly as the GPU has it */
     for(let base=0;base<n;base+=BLOCK){
       const k=Math.min(BLOCK,n-base);
@@ -2360,8 +2543,9 @@ function commitLasso(mode){
   pushEdit({kind:'lasso', mode:mode, matrix:V.pending.matrix,
             poly:V.pending.ndc});
   V.pending=null; askLasso(false); setTool(''); invalidate();
-  say(mode==='keep' ? 'Deleted everything outside the outline.'
-                    : 'Deleted the points inside the outline.');
+  say((mode==='keep' ? 'Deleted everything outside the outline'
+                    : 'Deleted the points inside the outline')+
+      whoSuffix()+'.');
 }
 
 /* ---- point-pair picking ----
@@ -2926,6 +3110,7 @@ async function openProject(path){
     V.level=j.level||null; V.lvl=j.level_points||[];
     measure();                          /* extents first: the box needs them */
     if(j.box){
+      V.boxSet=true;      /* a saved box is a decision, not a default */
       V.box.o=j.box.o; V.box.lo=j.box.lo; V.box.hi=j.box.hi;
       V.box.yaw=j.box.yaw||0; V.box.pitch=j.box.pitch||0;
       V.box.roll=j.box.roll||0;
@@ -3058,17 +3243,127 @@ function photoRow(s){
 
 function refreshLists(){
   $('legend').innerHTML = V.scans.map(s=>
-    '<div class="scanrow"><div><span class="sw" style="background:rgb('+
+    '<div class="scanrow"><div class="head">'+
+    '<span class="grow"><span class="sw" style="background:rgb('+
     s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
     ' &middot; <span class="num">'+s.points.toLocaleString()+'</span>'+
     (s.source==='cloud' ? ' <span class="num" title="An exported cloud: no '+
       'pan track, so the detail slider and the pitch check cannot apply to '+
       'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
-      : '')+'</div>'+photoRow(s)+'</div>')
+      : '')+'</span>'+
+    '<button class="mini'+(KILL[0]===s.index?' ask':'')+
+    '" title="Take this cloud out of the session. The capture on disk is not '+
+    'touched." onclick="askRemove('+s.index+')">'+
+    (KILL[0]===s.index?'Remove?':'Remove')+'</button>'+
+    '</div>'+photoRow(s)+'</div>')
     .join('');
   $('which').innerHTML = V.scans.slice(1).map(s=>
     '<option value="'+s.index+'"'+(s.index===V.active?' selected':'')+'>'+
     s.name+'</option>').join('');
+  $('editwho').innerHTML =
+    '<option value="-1"'+(V.editWho<0?' selected':'')+'>every cloud</option>'+
+    V.scans.map(s=>'<option value="'+s.index+'"'+
+      (s.index===V.editWho?' selected':'')+'>only '+s.name+'</option>').join('');
+}
+
+/* Taking a cloud out of the session.
+
+   ⭐ NOTHING IS DELETED, and the button says Remove for that reason. The
+   capture, its sidecar and its photo stay where they are and the same path can
+   be added straight back; what goes is the copy held open in this window.
+
+   ⛔ TWO PRESSES, AND NOT A DIALOG. A cloud carries an alignment that may
+   have taken a careful quarter of an hour, so a single stray click must not
+   take it. `confirm()` would do the job where it is available -- but this page
+   also runs inside an embedded WebView, where a suppressed dialog returns
+   false and the button would quietly do nothing at all, which is the worse
+   failure of the two. The second press is on the same button, so it cannot go
+   missing. */
+const KILL=[-1]; let killTimer=null;
+function askRemove(index){
+  if(KILL[0]!==index){
+    KILL[0]=index;
+    if(killTimer) clearTimeout(killTimer);
+    killTimer=setTimeout(()=>{ KILL[0]=-1; killTimer=null; refreshLists(); },
+                         6000);
+    refreshLists();
+    const s=V.scans.find(x=>x.index===index);
+    say('Press Remove again to take '+(s?s.name:'that cloud')+' out of this '+
+        'session. The capture on disk is not touched and it can be added '+
+        'back — but its placement, and any cut aimed at it, go with it.',
+        'warn');
+    return;
+  }
+  KILL[0]=-1;
+  if(killTimer){ clearTimeout(killTimer); killTimer=null; }
+  removeScan(index);
+}
+
+/* ⛔ EVERY INDEX HELD ANYWHERE ELSE SHIFTS WHEN A CLOUD GOES, AND A SHIFTED
+   INDEX IS SILENT. A pair, an isolate, a scoped cut and the cut scope itself
+   all name a scan by its position, and after a removal position 3 is a
+   different cloud -- so a cut aimed at the tripod in scan 3 would come back
+   aimed at scan 4's sofa, look exactly as deliberate, and only show up in the
+   exported file. Anything that named the cloud that went is dropped; anything
+   after it moves down one. Returns what was dropped, so it can be said out
+   loud rather than discovered later. */
+function forgetScan(gone){
+  const shift = i => (i>gone ? i-1 : i);
+  const hadEdits=V.edits.length, hadPairs=V.pairs.length;
+  V.edits = V.edits.filter(e => e.scan!==gone)
+                   .map(e => (e.scan==null ? e
+                              : Object.assign({}, e, {scan:shift(e.scan)})));
+  V.pairs = V.pairs.filter(p => p.ri!==gone && p.si!==gone)
+                   .map(p => Object.assign({}, p,
+                                           {ri:shift(p.ri), si:shift(p.si)}));
+  V.half=null; V.perr=null;
+  if(V.only===gone){ V.only=-1; $('showb').textContent='Both'; }
+  else if(V.only>gone) V.only--;
+  if(V.editWho===gone) V.editWho=-1; else if(V.editWho>gone) V.editWho--;
+  return {edits:hadEdits-V.edits.length, pairs:hadPairs-V.pairs.length};
+}
+
+async function removeScan(index){
+  const going=V.scans.find(s=>s.index===index);
+  const name=going?going.name:('cloud '+(index+1));
+  watch(true);
+  try{
+    const r=await fetch('remove',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'could not remove it');
+    /* ⛔ THE PLACEMENTS ARE CARRIED ACROSS BY THE OLD ORDER MINUS THE GAP,
+       not by position. `rebuildFrom` maps them positionally, which is right
+       while the set only ever grew -- after a removal position i is a
+       different scan, and every cloud past the gap would inherit its
+       neighbour's placement: a room shifted by a metre or two, which reads as
+       a bad alignment rather than as the bookkeeping it is. */
+    const kept=V.scans.filter(s=>s.index!==index).map(s=>s.setup);
+    for(const s of V.scans) for(const c of s.chunks){
+      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
+    }
+    V.scans=[];
+    for(const m of j.scans) V.scans.push(await loadScan(m));
+    V.scans.forEach((s,i)=>{ if(kept[i]) s.setup=kept[i]; });
+    const lost=forgetScan(index);
+    measure(); refreshLists(); syncSliders(); syncClipSliders();
+    showTurn(); clipLabels(); showEdits(); showPairs();
+    recomputeLive(); invalidate(); watch(false); dirty();
+    let note='Removed '+name+' from the session — the capture on disk is '+
+             'untouched.';
+    if(lost.edits) note+=' '+lost.edits+' cut'+(lost.edits===1?'':'s')+
+                         ' aimed only at it went with it.';
+    if(lost.pairs) note+=' '+lost.pairs+' pair'+(lost.pairs===1?'':'s')+
+                         ' naming it were dropped.';
+    if(j.first_gone) note+=' It was the reference every other cloud was '+
+      'aligned TO. The others keep exactly the placement they had — the frame '+
+      'has not moved — but the cloud that defines it is now '+
+      V.scans[0].name+', which cannot itself be moved.';
+    if(!V.scans.length) note+=' Nothing is open now.';
+    say(note, lost.edits||lost.pairs||j.first_gone ? 'warn' : null);
+  }catch(e){ watch(false); say('Could not remove that cloud: '+e.message,
+                               'bad'); }
 }
 
 /* Re-upload every scan from fresh server metadata, keeping placements.
@@ -3220,7 +3515,14 @@ async function ingest(paths){
         (V.scans.length>1
           ? '. Every scan is solved against the FIRST one, never against the '+
             'previous, so errors do not accumulate down the chain.'
-          : '. Add a second scan from elsewhere in the room to align to it.'));
+          : '. Add a second scan from elsewhere in the room to align to it.')+
+        /* The box staying put is the point -- but a box that now hides half of
+           what was just loaded has to say so, or the new cloud looks as though
+           it failed to arrive. */
+        (V.boxSet ? (V.clip
+          ? ' Your clip box was left where you put it and clipping is ON, so '+
+            'part of the new cloud may be hidden — Fit to view re-fits it.'
+          : ' Your clip box was left where you put it.') : ''));
   }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
   $('add').disabled=false; $('browse').disabled=false;
 }
@@ -3301,6 +3603,7 @@ function slideFace(axis,side,dx,dy){
   if(len<0.5) return;      /* edge-on: no honest pixels-to-metres to be had */
   const move=((dx*ax + dy*ay)/len) * (step/len);
   const lim=span(axis)*1.5;    /* room to overshoot the scene, not to lose it */
+  V.boxSet=true;
   if(side) V.box.hi[axis]=Math.min(lim,
       Math.max(V.box.lo[axis]+MIN_BOX, V.box.hi[axis]+move));
   else     V.box.lo[axis]=Math.max(-lim,
@@ -3328,7 +3631,18 @@ function turnBox(mx,my,fromAngle){
 }
 /* Slider 0..1 maps to the box's OWN axis, measured across the scene's size and
    centred on the pivot -- so at zero turn it reads exactly as it always did. */
-function span(a){ return Math.max(V.ext.hi[a]-V.ext.lo[a], 1e-6); }
+/* ⛔ THE SLIDER SCALE COVERS THE BOX AS WELL AS THE SCENE. It used to be the
+   scene alone, which was safe only while the box was re-fitted to the scene on
+   every change. Now that a placed box survives a cloud being removed, the
+   extents can SHRINK below it -- and a box beyond 0..1 pins its slider to the
+   end, so the next touch of that slider would snap a carefully placed face
+   back to the edge of the room. Widening the scale keeps the mapping
+   invertible, and at every other moment it is the scene span exactly. */
+function span(a){
+  const room=V.ext.hi[a]-V.ext.lo[a];
+  const box=2*Math.max(Math.abs(V.box.lo[a]), Math.abs(V.box.hi[a]));
+  return Math.max(room, box, 1e-6);
+}
 function fromSlider(a,u){ return (u-0.5)*span(a); }
 function toSlider(a,v){ return v/span(a) + 0.5; }
 function syncClipSliders(){
@@ -3520,6 +3834,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
     V.mode=(V.mode+1)%3;
     e.target.textContent=['By scan','Height','Photo / intensity'][V.mode];
     e.target.classList.toggle('on',V.mode===0); invalidate(); };
+  $('editwho').onchange=e=>{
+    V.editWho=parseInt(e.target.value,10);
+    say(V.editWho<0
+      ? 'Cuts now go through every cloud at once.'
+      : 'Cuts now take from '+whoName(V.editWho)+' only — the others are left '+
+        'whole. Cuts already made keep whatever they were aimed at; the list '+
+        'below says which.'); };
   $('showb').onclick=e=>{
     const order=[-1].concat(V.scans.map(s=>s.index));
     V.only=order[(order.indexOf(V.only)+1)%order.length];
@@ -3560,7 +3881,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     /* Snap the box to the room and switch on, so one press does something
        visible -- a clip box that starts wide open looks broken otherwise. */
     const turn=[V.box.yaw,V.box.pitch,V.box.roll];
-    resetBox();
+    V.boxSet=false; resetBox(); V.boxSet=true;
     for(let a=0;a<3;a++){ V.box.lo[a]*=0.6; V.box.hi[a]*=0.6; }
     V.box.hi[2]=V.box.lo[2]/0.6 + span(2)*0.55;   /* lid just above head height */
     setTurn(turn[0],turn[1],turn[2]);
@@ -3571,6 +3892,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   [['cx0','cx1',0],['cy0','cy1',1],['cz0','cz1',2]].forEach(([a,b,ax])=>{
     const f=()=>{
       const u=parseFloat($(a).value), v=parseFloat($(b).value);
+      V.boxSet=true;
       V.box.lo[ax]=fromSlider(ax, Math.min(u,v));
       V.box.hi[ax]=fromSlider(ax, Math.max(u,v));
       clipLabels(); invalidate(); };
