@@ -73,16 +73,66 @@ MIN_FILLED_FRACTION = 0.55
 #
 # 6.0 sits clearly between the true match and every wrong one.
 #
-# ⚠ STILL PROVISIONAL IN ONE RESPECT: that panorama was derived from the
-# scan's own depth, so its edges ARE the geometry. A real photograph's edges
-# also come from texture, paint and lighting, and will score somewhat lower.
-# Check the first real one and move this if it rejects a good photo.
+# ✅ THE FIRST REAL PHOTOGRAPH ARRIVED ON 2026-08-20 AND THE WARNING BELOW WAS
+# RIGHT: it scored 5.5-5.9 and this gate REJECTED IT. That panorama above was
+# derived from the scan's own depth, so its edges WERE the geometry; a
+# photograph's edges also come from texture, paint and lighting, and score
+# lower. The instruction left here was to check the first real one and move
+# this if it rejected a good photo, so here is the evidence that it did.
 #
-# ⚠ AND IT CANNOT SEPARATE SIMILAR ROOMS. A different room of much the same
-# shape scores about 4.8 against a true match's 8. The guard catches an
-# unrelated image, not a plausible one, which is why the confidence is printed
-# every time rather than merely tested.
-MIN_CONFIDENCE = 6.0
+# Insta360 X4 equirectangular, 5888x2944, of a restaurant, beside a 360 Quick
+# capture (TLS_26_08_20_10_15_22). Same scan, every score measured on it:
+#
+#     the photograph as shot       5.94      <- the true match
+#     blurred beyond recognition   4.59      <- a 64x downsample of ITSELF
+#     pure noise                   3.8-4.2   (varies with the draw)
+#     mirrored left-right          3.66
+#     turned upside down           2.96
+#     shifted 45 deg in latitude   2.51
+#     uniform grey                 0.00
+#
+# ⭐ AND THE HEADING WAS CONFIRMED BY A SECOND METHOD SHARING NO ARITHMETIC.
+# solve_yaw's FFT correlation gave -79.79. A brute-force sweep of a directly
+# computed edge-map agreement, on a finer 720x180 grid, peaks at -80. Two
+# routes, one answer, 0.21 deg apart -- the same shape as the two independent
+# scores that fixed MOUNT_PITCH_DEG. The photo is good and the gate was wrong.
+#
+# ⛔ BUT THE MARGIN HAS SHRUNK AND THIS NUMBER IS NOW WEAKER THAN IT LOOKS.
+# On the depth panorama it was 8.18 against a best-wrong of 4.8. On a real
+# photograph it is 5.9 against 4.6 -- and that 4.6 is the SAME PHOTO destroyed
+# by a 64x downsample, which still recovered the heading to 1.1 deg because the
+# correlation lives on coarse structure. 5.0 sits between them and that is
+# where the measurements put it, but it is a fence, not a wall.
+#
+# ⚠ TWO THINGS THAT WOULD BE WRONG TO CONCLUDE FROM THIS. It is ONE pair --
+# one room, one camera, one lighting -- so treat 5.0 as provisional until a
+# second real photograph is scored, and expect a dim or a very plain room to
+# land lower again. And two candidate second opinions were tried and BOTH
+# FAILED, so do not reach for them: the recovered yaw reproduces to 0.03 deg
+# across independent halves of the cloud FOR EVERY IMAGE INCLUDING NOISE (the
+# peak is pinned by the cloud, not by the match), and trimming distant returns
+# to leave only the room COLLAPSES the solve (5.94 -> 2.02 at 5 m), because the
+# far silhouettes through glass and doorways are much of what it locks onto.
+#
+# ⛔⛔ AND IT DOES NOT SEPARATE SIMILAR ROOMS AT ALL -- NOT AT 5.0, AND NOT AT
+# 6.0 EITHER. This said "about 4.8 against a true match's 8", which reads like a
+# near miss. It was not one measurement: the 4.8 came from a SYNTHETIC wrong
+# room and the 8 from a REAL capture's true match, two different experiments
+# compared as though they were one. Measured on the same synthetic data on
+# 2026-08-20: true match 14.30, a room of much the same shape squashed along y
+# 6.29, noise 2.51. **The wrong room clears both thresholds outright.**
+#
+# So the prose was right and the number hid it: the guard catches an UNRELATED
+# image, and nothing here catches a PLAUSIBLE one. Lowering the gate did not
+# create that hole -- it was always open. What the gate is actually for is
+# noise, a mirrored panorama, a lens-cap-grade mismatch; it is why the
+# confidence is printed every run rather than merely tested, and it is why a
+# photograph of the wrong setup of the right building will colour a cloud
+# confidently and wrongly. `test_tlsconvert.py` pins this the way it behaves. ⛔ The confidence also depends on the
+# SAMPLE: the same photo scored 5.5 through the pipeline's own sample_for_solve
+# and 5.94 on the exported cloud. That 0.44 is a third of the whole margin, so
+# do not read the second decimal as if it meant anything.
+MIN_CONFIDENCE = 5.0
 
 # Half-width of the window around the peak that is excluded when judging how
 # far it stands out. The peak is genuinely this broad, so anything inside the

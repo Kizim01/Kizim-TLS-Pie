@@ -571,6 +571,36 @@ check("noise scores far below both, so the floor still catches nonsense",
       conf_noise < conf_other * 0.7,
       "noise %.1f vs wrong-room %.1f" % (conf_noise, conf_other))
 
+# ⛔⛔ KNOWN LIMIT, PINNED ON PURPOSE: THE GATE DOES NOT CATCH THIS CASE, AND
+# NEVER DID. Written expecting the opposite and immediately falsified -- the
+# similar-but-wrong room scores 6.29, which passed the OLD 6.0 gate as well as
+# the new 5.0 one. The prose here always said the guard was for an unrelated
+# image rather than a plausible one; what hid how completely true that was is
+# that colour.py quoted "about 4.8 against a true match's 8", comparing a
+# SYNTHETIC wrong room against a REAL capture's true match. On one dataset the
+# pair is 14.30 against 6.29 -- a wide separation and a wrong room still well
+# over any workable gate.
+#
+# Asserted the way round it actually behaves, so nobody can come to believe
+# otherwise. If a future discriminator does start refusing this, THIS CHECK
+# FAILS -- which is the intent: it forces the claim to be re-documented rather
+# than letting an improvement pass unnoticed.
+check("KNOWN LIMIT: a similar wrong room passes the gate, so the confidence "
+      "is not protection against a plausible photo",
+      conf_other >= colour.MIN_CONFIDENCE,
+      "similar-but-wrong %.2f against a gate of %.1f -- if this now REFUSES, "
+      "the guard improved and the docs must be updated"
+      % (conf_other, colour.MIN_CONFIDENCE))
+
+# The window the restaurant pair actually measured (TLS_26_08_20_10_15_22 with
+# an Insta360 X4 equirectangular): the true photograph scored 5.5 through
+# pipeline.sample_for_solve and 5.94 on the exported cloud, and the best wrong
+# answer -- that same photo downsampled 64x until unrecognisable -- scored 4.59.
+# A gate outside that window is either rejecting real photographs again or
+# waving through rubble, so it is the window that is asserted, not the number.
+check("the gate sits between a real photograph and the best wrong answer",
+      4.59 < colour.MIN_CONFIDENCE < 5.5, colour.MIN_CONFIDENCE)
+
 print("\ncolour: sampling and refusal")
 grad = np.zeros((180, 360, 3), np.uint8)
 grad[:, :, 0] = np.linspace(0, 255, 360).astype(np.uint8)[None, :]

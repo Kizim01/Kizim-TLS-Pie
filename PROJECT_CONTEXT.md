@@ -489,10 +489,11 @@ exposures** per position, since interiors with windows are the case that breaks 
 colouring; one CSI port on a Pi 4B unless a multiplexer is added. Budget 30–60 s of extra capture,
 against dismounting and swapping the X4 onto the tripod.
 
-**⛔ STILL OPEN AND UPSTREAM OF THE PURCHASE:** shoot one **real X4 HDR panorama** and check whether
-`MIN_CONFIDENCE` survives a real photograph — it was calibrated on a panorama derived from the scan's
-own depth, whose edges *are* the geometry. That says whether the colour pipeline works on photographs
-at all, which is prior to choosing what feeds it.
+**✅ ANSWERED 2026-08-20 — AND THE ANSWER WAS “IT WORKS, BUT THE GATE WAS WRONG.”** An Insta360 X4
+equirectangular (5888×2944) shot beside a `360° Quick` capture of a restaurant. **The colour pipeline
+works on a real photograph.** But `MIN_CONFIDENCE = 6.0` **rejected it** at 5.5, exactly as the
+warning in `colour.py` predicted, so the gate is now **5.0**. Full evidence in "Colour meets its first
+real photograph" below — read it before trusting the number, because the margin has shrunk.
 
 ## Scan geometry
 
@@ -2596,10 +2597,9 @@ on yesterday's build.** Check the build's own exit code and the file's mtime, ne
 
 1. **Does the viewer's 415 MB survive a real GPU?** Everything up to the browser is proven; the
    upload itself is not, and a refusal is caught and explained rather than left blank.
-2. **Does a REAL photograph align as well as a depth-derived one?** The 8.18 confidence came from a
-   panorama built out of the scan's own depth, so its edges *are* the geometry. A real photo's edges
-   also come from texture, paint and lighting and will score lower — **check the first real one and
-   move `MIN_CONFIDENCE` if it rejects a good photo.**
+2. ~~**Does a REAL photograph align as well as a depth-derived one?**~~ **✅ ANSWERED 2026-08-20.**
+   It aligns, but scores **5.5–5.9 where the depth panorama scored 8.18**, so the 6.0 gate rejected a
+   good photograph and is now **5.0**. See "Colour meets its first real photograph".
 
 **⭐ AND A FREE BONUS STILL UNCLAIMED:** the X4's stitched output is gravity-levelled by its own IMU,
 so it is an independent **vertical reference** — which matters because our clouds are in the RIG's
@@ -2832,6 +2832,84 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 **⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅✅ Colour meets its first real photograph — 2026-08-20, and the gate moves 6.0 → 5.0
+
+An **Insta360 X4** equirectangular, 5888×2944, shot 11 minutes after a `360° Quick` capture of a
+restaurant (`TLS_26_08_20_10_15_22`). The workflow `colour.py` was written for — scan, swap the camera
+onto the tripod, shoot — done for real for the first time.
+
+**The pipeline works. The gate did not.** The photograph scored **5.5** and was refused at 6.0, which
+is precisely what the comment in `colour.py` had warned would happen: that threshold was calibrated
+against a panorama **derived from the scan's own depth**, so its edges *were* the geometry, while a
+photograph's edges also come from texture, paint and lighting.
+
+**⛔ The rule was to move it only if it rejected a GOOD photo, so that had to be established first.**
+Every score below is measured on **this** pair, not carried over from the 08-13 capture:
+
+| image | confidence |
+|---|---|
+| **the photograph as shot** | **5.94** (5.5 through the pipeline's own sample) |
+| the same photo blurred 64×, unrecognisable | 4.59 |
+| pure noise | 3.8–4.2 |
+| mirrored left-right | 3.66 |
+| turned upside down | 2.96 |
+| shifted 45° in latitude | 2.51 |
+| uniform grey | 0.00 |
+
+**⭐ AND THE HEADING WAS CONFIRMED BY A SECOND METHOD THAT SHARES NO ARITHMETIC WITH THE FIRST.**
+`solve_yaw`'s FFT cross-correlation returned **−79.79°**. A brute-force sweep of a *directly computed*
+edge-map agreement, on a finer 720×180 grid, peaks at **−80°**. Two routes, one answer, **0.21°
+apart** — the same shape as the two independent scores that fixed `MOUNT_PITCH_DEG`. Re-run unaided
+after the change, the pipeline solves **−79.93°** by itself. The cloud is coloured: 0.2% of points
+neutral grey, median RGB warm (28270 / 24929 / 20817) as a wood-floored room should be.
+
+**⛔ BUT THE MARGIN HAS SHRUNK AND THE NUMBER IS WEAKER THAN IT LOOKS.** On the depth panorama it was
+8.18 against a best-wrong of 4.8. On a photograph it is 5.9 against **4.59 — and that 4.59 is the
+same photo destroyed by a 64× downsample**, which still recovered the heading to 1.1° because the
+correlation lives on coarse structure. 5.0 is where the measurements put it, but it is a fence, not a
+wall, and it is **n = 1**: one room, one camera, one lighting. Expect a dim or a very plain room to
+land lower.
+
+**⛔⛔ AND TESTING THE NEW GATE TURNED UP SOMETHING WORSE THAN THE GATE.** A check was written
+asserting that a similar-but-wrong room must still be refused at 5.0. **It failed immediately: that
+case scores 6.29, so it passed the OLD 6.0 gate too.** What hid this is that `colour.py` quoted
+*"about 4.8 against a true match's 8"* — which was never one measurement. The 4.8 came from a
+**synthetic** wrong room and the 8 from a **real** capture's true match, two experiments quoted as
+one, and the pairing made a clean pass look like a near miss. Measured on the same synthetic data:
+true match **14.30**, wrong room **6.29**, noise **2.51**.
+
+So **the confidence has never protected against a plausible wrong photo, at either threshold**, and
+lowering the gate did not open that hole. The prose in `colour.py` always said the guard was for an
+unrelated image rather than a plausible one; only the number suggested otherwise. It is now pinned
+**the way it behaves** — the test asserts the wrong room *passes*, so that a future discriminator
+which starts refusing it **fails the test** and forces the claim to be re-documented, rather than
+improving silently. What the gate actually catches is noise, a mirrored panorama, a lens-cap-grade
+mismatch. A photograph of the wrong setup of the right building will still colour a cloud
+confidently and wrongly, and only the printed confidence and your own eyes will say so.
+
+**⛔ TWO CANDIDATE SECOND OPINIONS WERE TRIED AND BOTH FAILED. Do not reach for them again.**
+
+- **Split-half stability of the recovered yaw.** The heading reproduces to **0.01°** across
+  independent halves of the cloud — which looked like a decisive second test until it was run on the
+  controls, where **pure noise also reproduced, to 0.03°**. The peak is pinned by the *cloud's* own
+  edges, not by the match, so it measures nothing. *A test is only a test once it has been seen to
+  fail.*
+- **Trimming distant returns to leave just the room.** The extent is 74.7 × 81.0 m, so the guess was
+  that outdoor returns through glass were blurring the solve. The opposite: **5.94 → 2.02 at a 5 m
+  limit**, and the recovered heading jumps 80°. Those far silhouettes through windows and doorways
+  are much of what the correlation locks onto.
+
+**⚠ And the confidence depends on the SAMPLE.** The same photo scored **5.5** through
+`pipeline.sample_for_solve` and **5.94** on the exported cloud, because the solve draws its own sample
+independently of `--voxel`. That 0.44 is a third of the whole margin — do not read the second decimal
+as if it meant anything.
+
+**Operational note:** the photo must be a **sibling of the pcap with the same stem** (`find_photo`),
+so `IMG_20260820_102917_00_011.jpg` had to be copied to `TLS_26_08_20_10_15_22.jpg`. And
+**`--camera-z` is still 0** — the X4's optical centre almost certainly did not sit at exactly the
+lidar's height on the tripod, and that offset matters most for the nearest surfaces, the floor above
+all. Measuring it once would be worth more than any further tuning of the gate.
 
 #### ✅ Colour from a 360 photo, with the camera's heading SOLVED — 2026-08-13
 
