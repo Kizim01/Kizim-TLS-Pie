@@ -96,9 +96,62 @@ check("a sidecar's pan track starts at zero, wherever the head was standing",
       abs(_track.angle_at(0.0)) < 1e-9, _track.angle_at(0.0))
 check("and runs from there to the end of the sweep",
       abs(_track.total_deg - 190.8) < 1e-6, _track.total_deg)
-check("so nothing in the sidecar records an absolute head angle",
-      "position_steps" not in _SCAN_SRC.split("def write_scan_meta")[1]
-      .split("def ")[0])
+# ⛔ AND THIS THIRD CHECK USED TO SAY "so nothing in the sidecar records an
+# absolute head angle", by looking for the string "position_steps" inside
+# write_scan_meta. On 2026-08-20 an absolute head angle WAS added, deliberately,
+# and that check went on passing -- because the value arrives as a parameter
+# named `start_steps`. It was watching for a spelling, not for the property, and
+# a test that passes for the wrong reason is worse than one that fails.
+#
+# ⭐ WHY THE ANGLE IS NOW RECORDED. The return leg went the same day, so a
+# Rapid leaves the head 190.8 degrees round and each cloud's zero sits somewhere
+# new. A camera remounted the same way each time has a FIXED heading in the
+# RIG's frame, and this is the one number that converts between the two -- which
+# matters because a correct photo scored 2.01 against a gate of 5.0 that day and
+# no threshold could have saved it. The heading is carried over instead.
+_META_SRC = _SCAN_SRC.split("def write_scan_meta")[1].split("def ")[0]
+check("the sidecar records the head's own angle at the start of the sweep",
+      '"head_deg"' in _META_SRC)
+check("it is read BEFORE the sweep, not reconstructed after it",
+      "start_steps = (stepper.position_steps" in _SCAN_SRC)
+check("and it is null, not zero, when the head's position is not known",
+      "None if start_steps is None" in _META_SRC)
+
+
+# ⛔ THE SIGN IS THE WHOLE VALUE OF THAT NUMBER, AND IT IS SHARED, NOT COPIED.
+# `move_steps` counts position_steps up when forward and down when not;
+# `PanTrack.from_segments` takes its sign from the same `forward` flag. So rig
+# angle = head_deg + track angle, in both directions. Get that backwards and a
+# carried-over heading colours the cloud with the scene mirrored about the
+# camera -- wrong everywhere, obviously wrong nowhere. Driven here rather than
+# asserted, in both directions, because one direction cannot tell a sign error
+# from a correct one.
+class _FakeStepper(object):
+    """Just the position bookkeeping out of tls_stepper.move_steps."""
+
+    def __init__(self):
+        self.position_steps = 0
+        self.position_known = True
+
+    def move(self, steps, forward):
+        self.position_steps += steps if forward else -steps
+
+
+for _fwd in (True, False):
+    _st = _FakeStepper()
+    _st.position_steps = 12345          # the head is not at its mark
+    _before = _st.position_steps
+    _segs2, _ = tls_stepper.plan_move(
+        tls_stepper.degrees_to_steps(190.8),
+        tls_stepper.deg_per_s_to_step_rate(2.0))
+    _st.move(sum(n for n, _r in _segs2), _fwd)
+    _moved = ((_st.position_steps - _before) * 360.0
+              / tls_stepper.STEPS_PER_REV)
+    _tr = tls_geometry.PanTrack.from_segments(
+        _segs2, tls_stepper.STEPS_PER_REV, forward=_fwd)
+    check("sweeping %s, the head's own angle moves the same way the track does"
+          % ("forward" if _fwd else "backward"),
+          abs(_moved - _tr.total_deg) < 1e-6, "%g vs %g" % (_moved, _tr.total_deg))
 
 for key, p in BY_ORDER:
     check("%s never walks back further than it swept" % key,

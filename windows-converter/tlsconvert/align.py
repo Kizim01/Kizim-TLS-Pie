@@ -119,6 +119,12 @@ class Scan(object):
         self.source = source
         self.photo = None              # the image colouring it, if any
         self.colour_info = None        # {yaw, confidence, reason} from the solve
+        # Where the HEAD was standing when this sweep began, from the
+        # sidecar. ⭐ It is the only thing that ties two clouds' azimuth
+        # zeros together, and so the only thing that lets one solved
+        # camera heading be carried on to the next scan. None for an
+        # exported cloud and for any sidecar written before 2026-08-20.
+        self.anchor_deg = None
         self.rung = None               # how far down the GICP ladder it has got
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
@@ -130,7 +136,7 @@ class Scan(object):
         return buf
 
 
-def colour_scan(scan, photo, camera_z=0.0):
+def colour_scan(scan, photo, camera_z=0.0, yaw=None):
     """
     Solve the camera's heading against `scan` and repaint it. Never raises.
 
@@ -146,7 +152,8 @@ def colour_scan(scan, photo, camera_z=0.0):
     every ray leaves the wrong point and the result looks entirely fine.
     """
     info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
-            "yaw_deg": None, "confidence": None, "reason": None, "ok": False}
+            "yaw_deg": None, "confidence": None, "reason": None,
+            "given": False, "ok": False}
     if not photo:
         info["reason"] = "no photo"
         return info
@@ -165,15 +172,35 @@ def colour_scan(scan, photo, camera_z=0.0):
     info["warning"] = colour_mod.aspect_warning(rgb_img)
 
     camera = (0.0, 0.0, float(camera_z or 0.0))
-    sample = scan.sample if scan.sample is not None and len(scan.sample) else scan.xyz
-    yaw, confidence, _ = colour_mod.solve_yaw(sample, lum, camera=camera)
-    info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
-    if confidence < colour_mod.MIN_CONFIDENCE:
-        info["reason"] = ("the photo does not line up with this scan "
-                          "(confidence %.1f, need %.1f) -- wrong image, or the "
-                          "camera moved between the scan and the shot"
-                          % (confidence, colour_mod.MIN_CONFIDENCE))
-        return info
+    # ⭐ A HEADING THE OPERATOR SUPPLIES IS NOT SOLVED, AND NOT JUDGED.
+    # The confidence exists to answer "did the solve find anything"; there is
+    # no solve here, so reporting a number would invite it to be read as a
+    # verdict on a heading it never assessed. It says `given` instead.
+    #
+    # ⛔ THIS IS NOT A BACK DOOR ROUND THE GUARD, IT IS THE REASON THE GUARD
+    # CAN STAY STRICT. On 2026-08-20 a correct pair scored 2.01 against a gate
+    # of 5.0 -- below what pure noise scored elsewhere -- because the scanner
+    # stood against a wall, which puts a once-round-the-sphere term in both
+    # panoramas and spreads the correlation peak across 180 degrees instead of
+    # two. No threshold could have taken that pair without taking noise with
+    # it. Without a way to say "I have checked this myself", the only remaining
+    # move would have been to weaken the gate for every scan.
+    if yaw is not None:
+        info["yaw_deg"], info["given"] = float(yaw), True
+    else:
+        sample = (scan.sample if scan.sample is not None and len(scan.sample)
+                  else scan.xyz)
+        yaw, confidence, _ = colour_mod.solve_yaw(sample, lum, camera=camera)
+        info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
+        if confidence < colour_mod.MIN_CONFIDENCE:
+            info["reason"] = (
+                "the photo does not line up with this scan (confidence %.1f, "
+                "need %.1f) -- a wrong image, or the camera moved between the "
+                "scan and the shot, or the peak is too broad to score: that "
+                "happens when the rig stands against a wall. Look at the "
+                "heading offered beside it before deciding."
+                % (confidence, colour_mod.MIN_CONFIDENCE))
+            return info
 
     scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw, camera=camera)
     scan.photo = photo
@@ -284,6 +311,7 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
         sample = pipeline.sample_for_solve(path, meta, frame,
                                            per_laser_azimuth=per_laser_azimuth)
         scan = Scan(path, xyz, rgb, sample, total=done)
+        scan.anchor_deg = (meta.get("zero") or {}).get("head_deg")
         # The photo was applied while streaming, above; record WHICH one, so the
         # panel can say so and offer to replace it.
         found = pipeline.find_photo(path) if colour else None
@@ -367,6 +395,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.add_photo(body.get("index"),
                                                 body.get("path"),
                                                 body.get("organise", True)))
+            if path == "/photo/heading":
+                return self._json(srv.set_heading(
+                    body.get("index"), body.get("yaw"),
+                    body.get("remember", True)))
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or []))
             if path == "/density":
@@ -455,7 +487,15 @@ class AlignServer(object):
                          "photoOk": bool(info.get("ok")),
                          "confidence": info.get("confidence"),
                          "yaw": info.get("yaw_deg"),
-                         "photoWhy": info.get("reason")})
+                         "photoWhy": info.get("reason"),
+                         # ⭐ THE SOLVED HEADING GOES OUT EVEN WHEN IT WAS
+                         # REFUSED. It is the operator's starting point for
+                         # checking the refusal by eye, and withholding it
+                         # makes a refusal a dead end instead of a question.
+                         "photoGiven": bool(info.get("given")),
+                         "anchor": scan.anchor_deg,
+                         "baseline": library.recall_heading(
+                             scan.anchor_deg)})
         return meta
 
     # --- endpoints --------------------------------------------------------
@@ -691,6 +731,73 @@ class AlignServer(object):
         # needs a truthful buffer plus the new path and folder in the metadata.
         return {"ok": True, "coloured": bool(info.get("ok")),
                 "info": info, "organised": filed.get("organised"),
+                "scans": self._rebuild()}
+
+    def set_heading(self, index, yaw, remember=True):
+        """
+        Colour a scan from a heading the operator supplies, skipping the solve.
+
+        ⭐ WHY THIS EXISTS. The solve is not the weak part -- on 2026-08-20 it
+        recovered a heading of +82.6 degrees that was afterwards confirmed by
+        eye, the mural in the photograph landing back on the flat wall as a
+        readable picture while a deliberate half-turn put the bar there
+        instead. What failed was the CONFIDENCE: that scan stood hard against a
+        panelled wall, so one side of the sphere was near and the other open,
+        and both panoramas carried the same once-round-the-sphere term. It
+        correlates across a huge span of lags, so the peak came out 180 degrees
+        wide instead of two and scored 2.01 against a gate of 5.0.
+
+        ⛔ AND THE GATE COULD NOT SIMPLY BE LOWERED TO TAKE IT. 2.01 is below
+        what pure NOISE scored on the scan that worked (3.8-4.2). Removing the
+        low longitude harmonics was tried and refuted: it lifts the correct
+        pair to about 5, and lifts the wrong pairs just as far -- a mismatched
+        photo reached 6.59 where the correct one reached 6.61. So the answer is
+        not a cleverer threshold, it is a way for a person who has checked the
+        result to say so.
+
+        ⛔ A MOVED CLOUD IS STILL REFUSED. Colour is cast from the origin, and
+        a supplied heading does nothing about a cloud that is no longer sitting
+        where it was recorded -- that check belongs to `colour_scan` and runs
+        whichever path is taken.
+        """
+        try:
+            index = int(index)
+            scan = self.scans[index]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan"}
+        try:
+            yaw = float(yaw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "a heading in degrees is needed"}
+        if not (yaw == yaw and abs(yaw) != float("inf")):
+            return {"ok": False, "error": "a heading in degrees is needed"}
+        photo = scan.photo or (scan.colour_info or {}).get("photo")
+        if not photo:
+            return {"ok": False,
+                    "error": "add a photo to this scan before setting a heading"}
+
+        yaw = (yaw + 180.0) % 360.0 - 180.0
+        self._progress = {"stage": "colouring %s" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            info = colour_scan(scan, photo, yaw=yaw)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
+        if not info.get("ok"):
+            return {"ok": False, "error": info.get("reason") or "could not colour",
+                    "scans": self._rebuild()}
+
+        # ⭐ SAVED ONLY WHEN A PERSON TYPES ONE, NEVER FROM A SOLVE. The
+        # baseline is a claim about how the camera is seated on the tripod, and
+        # only a deliberate act carries that claim; harvesting it from every
+        # accepted solve would let one scan taken with the camera turned round
+        # quietly become the default for all the rest.
+        saved = False
+        if remember:
+            saved = library.remember_heading(
+                yaw, scan.anchor_deg,
+                note="set by hand on %s" % scan.name)
+        return {"ok": True, "info": info, "remembered": saved,
                 "scans": self._rebuild()}
 
     def density(self, voxel):
@@ -977,6 +1084,8 @@ PAGE = r"""<!doctype html>
     white-space:nowrap}
   .photo button{padding:2px 7px;font-size:10.5px;border-radius:8px;
     width:auto;flex:none}
+  .photo .deg{width:62px;flex:none;padding:1px 4px;font-size:10.5px;
+    text-align:right}
   .photo .warn{color:#FFD60A}
   .photo .bad{color:#FF6B60}
   .photo .good{color:#30D158}
@@ -1801,6 +1910,7 @@ async function loadScan(m){
           source:m.source, folder:m.folder, organised:!!m.organised,
           photo:m.photo, photoOk:!!m.photoOk, photoWhy:m.photoWhy,
           confidence:m.confidence, yaw:m.yaw,
+          photoGiven:!!m.photoGiven, anchor:m.anchor, baseline:m.baseline,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
 
@@ -2910,13 +3020,35 @@ function photoRow(s){
     return '<div class="photo"><span class="grow">no photo</span>'+btn+'</div>';
   const conf = (s.confidence==null) ? '' :
                ' · confidence '+(+s.confidence).toFixed(1);
-  if(s.photoOk)
-    return '<div class="photo"><span class="grow good" title="heading '+
-           (s.yaw==null?'?':(+s.yaw).toFixed(2))+'°">'+s.photo+conf+
-           '</span>'+btn+'</div>';
-  return '<div class="photo"><span class="grow bad" title="'+
-         (s.photoWhy||'').replace(/"/g,'&quot;')+'">'+s.photo+conf+
-         ' · not applied</span>'+btn+'</div>';
+  let head;
+  if(s.photoGiven)
+    head = '<span class="grow good" title="You set this heading; the solve was '+
+           'not consulted.">'+s.photo+' · heading '+
+           (+s.yaw).toFixed(2)+'° · set by you</span>';
+  else if(s.photoOk)
+    head = '<span class="grow good" title="heading '+
+           (s.yaw==null?'?':(+s.yaw).toFixed(2))+'°">'+s.photo+conf+'</span>';
+  else
+    head = '<span class="grow bad" title="'+
+           (s.photoWhy||'').replace(/"/g,'&quot;')+'">'+s.photo+conf+
+           ' · not applied</span>';
+  /* ⭐ THE HEADING ROW IS SHOWN WHETHER OR NOT THE SOLVE WAS ACCEPTED, AND
+     PRE-FILLED WITH WHAT THE SOLVE FOUND. A refusal is a question, not a dead
+     end: on 2026-08-20 the refused heading was the CORRECT one, thrown out by
+     a confidence that the scanner's position had flattened. Hiding the number
+     behind the refusal would have hidden the answer along with it. */
+  const start = (s.yaw==null) ? '' : (+s.yaw).toFixed(2);
+  const b = s.baseline;
+  const bbtn = !b ? '' :
+    '<button class="mini" title="'+(b.why||'').replace(/"/g,'&quot;')+
+    '" onclick="useBaseline('+s.index+')">baseline '+
+    (+b.yaw_deg).toFixed(1)+'°'+(b.exact?'':' ?')+'</button>';
+  return '<div class="photo">'+head+btn+'</div>'+
+         '<div class="photo"><span class="grow">heading</span>'+
+         '<input class="deg" id="hd'+s.index+'" type="number" step="0.1" '+
+         'min="-180" max="180" value="'+start+'">'+
+         '<button class="mini" onclick="setHeading('+s.index+')">Use</button>'+
+         bbtn+'</div>';
 }
 
 function refreshLists(){
@@ -3001,6 +3133,65 @@ async function addPhoto(index){
           ' — the points keep the colour they had.', 'warn');
     }
   }catch(e){ watch(false); say('Could not add the photo: '+e.message, 'bad'); }
+}
+
+/* Colour from a heading the operator gives, with no solve and no gate.
+
+   ⭐ WHY THE PROGRAM NEEDS THIS AT ALL. On 2026-08-20 a photograph that
+   matched its scan perfectly was refused at confidence 2.01 against a gate of
+   5.0. The solve had found the right answer -- +82.6 degrees, confirmed
+   afterwards by the mural landing back on the flat wall as a readable picture
+   -- and the confidence threw it away, because the rig stood against a wall
+   and that spreads the correlation peak across 180 degrees instead of two. The
+   gate could not be lowered to accept it: 2.01 is below what pure noise scores.
+   So the operator gets the last word, and the guard stays strict for everyone
+   who has not looked.
+
+   ⛔ AND IT IS DELIBERATELY NOT ONE CLICK FROM A REFUSAL. The number has to
+   be read, or accepted, before it is sent -- because the same refusal that was
+   wrong here is right when someone has dropped the wrong image beside a scan. */
+async function setHeading(index, deg){
+  const box=$('hd'+index);
+  const yaw = (deg==null) ? (box ? parseFloat(box.value) : NaN) : deg;
+  if(!isFinite(yaw)){ say('Type a heading in degrees first.', 'warn'); return; }
+  say('colouring…'); watch(true);
+  try{
+    const r=await fetch('photo/heading',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index, yaw})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'could not use that heading');
+    await rebuildFrom(j.scans);
+    measure(); refreshLists(); invalidate(); watch(false); dirty();
+    /* Switch to photo colour, or the work reads as having done nothing. */
+    V.mode=2; $('mode').textContent='Photo / intensity';
+    $('mode').classList.remove('on');
+    say('Coloured at '+(+yaw).toFixed(2)+'°, your heading — the solve was '+
+        'not consulted.'+(j.remembered ? ' Saved as the baseline for the next '+
+        'scan.' : ' The baseline could not be saved.'));
+  }catch(e){ watch(false); say('Could not use that heading: '+e.message, 'bad'); }
+}
+
+/* The heading saved last time, carried onto this scan.
+
+   ⛔ A BASELINE IS A CLAIM ABOUT THE TRIPOD, NOT ABOUT THE ROOM. It holds
+   only while the camera is seated on the mount the same way every time. What
+   it does NOT have to hold through is the head moving: a cloud's azimuth zero
+   is wherever the head was standing when its sweep began, and since the return
+   leg was removed on 2026-08-20 that is somewhere new every scan. The sidecar
+   now records the head's own angle, and the server turns the baseline by the
+   difference. Where that angle is missing -- an exported cloud, or any sidecar
+   written before that day -- the button says so with a question mark and the
+   heading is offered unturned, which is right only if the head has not moved. */
+function useBaseline(index){
+  const s=V.scans.find(x=>x.index===index);
+  if(!s||!s.baseline){ say('No baseline saved yet.', 'warn'); return; }
+  const box=$('hd'+index);
+  if(box) box.value=(+s.baseline.yaw_deg).toFixed(2);
+  if(!s.baseline.exact)
+    say('Using the baseline unturned: '+s.baseline.why+'. Check the result.',
+        'warn');
+  setHeading(index, +s.baseline.yaw_deg);
 }
 
 async function ingest(paths){

@@ -37,6 +37,8 @@ stays where the camera put it) into the scan's own folder under the scan's
 stem, which is precisely what the rest of the program already looks for.
 """
 
+import io
+import json
 import os
 import shutil
 
@@ -325,3 +327,92 @@ def attach_photo(scan_path, image_path, organise_first=True):
     result.update({"ok": True, "photo": dest, "scan": scan_path,
                    "replaced": None})
     return result
+
+
+# --- the remembered camera heading ----------------------------------------
+#
+# ⭐ WHY A BASELINE EXISTS AT ALL. The heading is unknown only because the
+# camera is remounted by hand. An operator who seats it on the tripod the same
+# way every time is not producing an unknown at all -- they are producing a
+# CONSTANT, and it only has to be established once. That is worth having
+# independently of the solve, because on 2026-08-20 a correct pair scored 2.01
+# against a gate of 5.0 and no threshold could have rescued it.
+#
+# ⛔ AND IT IS ONLY A CONSTANT IN THE RIG'S OWN FRAME, NOT IN THE CLOUD'S. A
+# cloud's azimuth zero is wherever the head was standing when its sweep began.
+# Until 2026-08-20 every profile ended a whole number of turns from where it
+# started, so that was the same direction every time and a heading carried over
+# unchanged. The return leg was removed that day, so a Rapid now leaves the head
+# 190.8 degrees round and the next cloud's zero is 190.8 degrees away. `anchor`
+# is what makes the two comparable: the head's own angle at the start of the
+# sweep, from the sidecar. Saved with the heading, subtracted on recall.
+#
+# Kept beside the user's other settings rather than in the repo, because it
+# describes THIS rig and THIS operator's habit, not the program.
+SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".tlspie")
+SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+
+
+def _settings():
+    try:
+        with io.open(SETTINGS_FILE, encoding="utf-8") as fh:
+            got = json.load(fh)
+        return got if isinstance(got, dict) else {}
+    except Exception:                                     # noqa: BLE001
+        return {}
+
+
+def remember_heading(yaw_deg, anchor_deg=None, note=None):
+    """
+    Store a camera heading as the baseline for future scans. Never raises.
+
+    `anchor_deg` is the head's own angle when the scan's sweep began, if the
+    sidecar recorded it. With it the baseline survives the head not returning
+    to its start; without it the baseline is only good while the head has not
+    moved between scans, and `recall_heading` says so rather than pretending.
+    """
+    data = _settings()
+    data["camera_heading"] = {
+        "yaw_deg": float(yaw_deg),
+        "anchor_deg": None if anchor_deg is None else float(anchor_deg),
+        "note": note,
+    }
+    try:
+        if not os.path.isdir(SETTINGS_DIR):
+            os.makedirs(SETTINGS_DIR)
+        tmp = SETTINGS_FILE + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2))
+        os.replace(tmp, SETTINGS_FILE)
+        return True
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+def recall_heading(anchor_deg=None):
+    """
+    The baseline heading for a scan whose sweep began at `anchor_deg`.
+
+    Returns None when nothing is stored, else {yaw_deg, exact, why}. `exact` is
+    False when the two ends cannot be tied together -- an old sidecar, an
+    exported cloud, or a baseline saved before anchors were recorded -- and the
+    heading is handed back unshifted with the caveat attached, because an
+    unshifted heading is still right whenever the head has not been moved and
+    is the operator's own best starting guess when it has.
+    """
+    got = _settings().get("camera_heading")
+    if not isinstance(got, dict) or got.get("yaw_deg") is None:
+        return None
+    base, saved = float(got["yaw_deg"]), got.get("anchor_deg")
+    if saved is None or anchor_deg is None:
+        return {"yaw_deg": base, "exact": False, "note": got.get("note"),
+                "why": ("the head's own angle was not recorded for %s, so this "
+                        "is the heading exactly as saved -- right if the head "
+                        "has not been moved since, a starting guess if it has"
+                        % ("this scan" if saved is not None else "the baseline"))}
+    # The camera's heading is fixed in the RIG's frame; a cloud's zero is not.
+    shifted = (base + float(saved) - float(anchor_deg) + 180.0) % 360.0 - 180.0
+    return {"yaw_deg": shifted, "exact": True, "note": got.get("note"),
+            "why": ("carried over from the baseline, turned %.2f degrees for "
+                    "where the head was standing when this sweep began"
+                    % (float(saved) - float(anchor_deg)))}

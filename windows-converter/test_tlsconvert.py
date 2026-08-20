@@ -10,6 +10,7 @@ the copy is checked against the original over the full range of the geometry,
 including the calibrated pitch and a deliberately awkward mount.
 """
 
+import io
 import json
 import math
 import os
@@ -1469,6 +1470,24 @@ try:
     check("including the two the photo button needs",
           {"photo/browse", "photo/add"} <= (_called & _served),
           sorted(_called & _served))
+    check("and the one that colours from a heading given by hand",
+          "photo/heading" in (_called & _served), sorted(_called & _served))
+
+    # ⭐ A REFUSAL HAS TO BE RECOVERABLE FROM THE PANEL. On 2026-08-20 the
+    # solve found the right heading and the confidence threw it away, and there
+    # was no way to say so from inside the program -- the only route to a
+    # coloured cloud was the command line. So the heading box carries what the
+    # solve found, accepted or not, and the baseline button offers what was
+    # saved last time.
+    check("the legend offers a heading box and a Use button per scan",
+          all(t in _page for t in ("setHeading", "id=\"hd'+s.index",
+                                   "class=\"deg\"", ">Use</button>")))
+    check("and a baseline button, carried over from the last scan",
+          "useBaseline" in _page and "baseline " in _page)
+    check("the refused heading is still shown, not hidden with the refusal",
+          "const start = (s.yaw==null)" in _page)
+    check("a heading set by hand is labelled as the operator's, not as solved",
+          "set by you" in _page and "photoGiven" in _page)
 
     # A photo can be attached from inside the program, per scan.
     check("the legend offers a photo control per scan",
@@ -1795,6 +1814,140 @@ try:
           "#0A84FF" in _page and "#F5F5F7" in _page)
 finally:
     _srv.stop()
+
+# --- a heading the operator supplies --------------------------------------
+#
+# ⛔ WHY THIS PATH HAD TO EXIST. On 2026-08-20 a photograph that matched its
+# scan was refused at confidence 2.01 against a gate of 5.0, and the solve had
+# found the RIGHT heading -- +82.6 degrees, confirmed afterwards by the mural in
+# the photograph landing back on the flat wall as a readable picture while a
+# deliberate half-turn put the bar there instead. The rig was standing against a
+# wall, which puts a once-round-the-sphere term in both panoramas and spreads
+# the correlation peak across 180 degrees instead of two, so the peak could not
+# stand above its own shoulders. The gate could not be lowered to take it: 2.01
+# is below what pure noise scored on the scan that worked.
+print("\ncolour from a heading given by hand")
+from tlsconvert import library                              # noqa: E402
+from PIL import Image as _Image                             # noqa: E402
+
+_hw, _hh = 64, 32
+_himg = np.zeros((_hh, _hw, 3), np.uint8)
+_himg[:, : _hw // 2] = (200, 40, 40)
+_himg[:, _hw // 2:] = (40, 40, 200)
+_hdir = tempfile.mkdtemp(prefix="tlshead")
+_hphoto = os.path.join(_hdir, "pano.jpg")
+_Image.fromarray(_himg).save(_hphoto)
+
+# A shell of returns all round the sensor, because `sensor_centred` refuses
+# anything that does not surround its origin -- and rightly: that check is what
+# stops a merged or dragged cloud being coloured from the wrong point.
+_rs = np.random.RandomState(7)
+_v = _rs.normal(size=(30000, 3))
+_sphere = _v / np.linalg.norm(_v, axis=1)[:, None] * 5.0
+_hscan = align.Scan(os.path.join(_hdir, "s.pcap"), _sphere, None, _sphere)
+_hinfo = align.colour_scan(_hscan, _hphoto, yaw=12.5)
+check("a heading given by hand colours the cloud", _hinfo["ok"] is True,
+      _hinfo.get("reason"))
+check("and is recorded as given, not solved", _hinfo["given"] is True)
+check("with no confidence attached, because nothing was solved",
+      _hinfo["confidence"] is None, _hinfo["confidence"])
+check("the heading used is the one asked for",
+      abs(_hinfo["yaw_deg"] - 12.5) < 1e-9)
+check("and the points really did take colour from the photo",
+      _hscan.rgb is not None and len(set(map(tuple, _hscan.rgb[::97]))) > 1)
+
+# ⛔ AND IT IS NOT A WAY ROUND THE CHECK THAT MATTERS. A cloud that has been
+# moved is refused whichever path is taken: colour is cast from the origin, so
+# every ray would leave the wrong point and the result would look entirely fine.
+_moved = align.Scan(os.path.join(_hdir, "m.pcap"), _sphere + 40.0, None,
+                    _sphere + 40.0)
+_minfo = align.colour_scan(_moved, _hphoto, yaw=12.5)
+check("a cloud that is no longer sensor-centred is refused even with a heading",
+      _minfo["ok"] is False and _moved.rgb is None, _minfo.get("reason"))
+
+# ⛔ AND THE SOLVE IS GENUINELY SKIPPED, NOT RUN AND IGNORED. If it still ran,
+# a refusal inside it could still veto a heading the operator had checked.
+_calls = []
+_real_solve = colour.solve_yaw
+colour.solve_yaw = lambda *a, **k: (_calls.append(1), (0.0, 0.0, None))[1]
+try:
+    _s2 = align.Scan(os.path.join(_hdir, "s2.pcap"), _sphere, None, _sphere)
+    align.colour_scan(_s2, _hphoto, yaw=30.0)
+    check("giving a heading does not consult the solve at all", not _calls, _calls)
+    align.colour_scan(_s2, _hphoto)
+    check("and leaving it out does", len(_calls) == 1, _calls)
+finally:
+    colour.solve_yaw = _real_solve
+
+
+# --- the remembered baseline ----------------------------------------------
+#
+# ⭐ THE OPERATOR KEEPS ONE CAPTURE PATTERN, SO THE HEADING IS A CONSTANT.
+# The camera is seated on the tripod the same way every time, which fixes its
+# heading in the RIG's frame. What is NOT fixed is the cloud's frame: a cloud's
+# azimuth zero is wherever the head was standing when its sweep began, and the
+# return leg was removed on 2026-08-20, so a Rapid now leaves the head 190.8
+# degrees round and the next cloud's zero is 190.8 degrees away from this one's.
+#
+# ⛔ THESE TESTS MUST NOT WRITE TO THE REAL SETTINGS FILE. It holds the
+# operator's own baseline; a suite that clobbered it would destroy the very
+# thing it is testing, on every run, silently.
+print("\nthe remembered camera heading")
+_sdir = tempfile.mkdtemp(prefix="tlsset")
+_real_dir, _real_file = library.SETTINGS_DIR, library.SETTINGS_FILE
+library.SETTINGS_DIR = _sdir
+library.SETTINGS_FILE = os.path.join(_sdir, "settings.json")
+try:
+    check("with nothing saved there is no baseline to offer",
+          library.recall_heading(10.0) is None)
+    check("saving one succeeds", library.remember_heading(82.6, 190.8) is True)
+    check("and it does not touch the real settings file",
+          library.SETTINGS_FILE != _real_file
+          and os.path.isfile(library.SETTINGS_FILE))
+
+    _b = library.recall_heading(190.8)
+    check("recalled at the same head angle it is unchanged",
+          abs(_b["yaw_deg"] - 82.6) < 1e-9 and _b["exact"] is True, _b)
+
+    # ⛔ THE SIGN IS THE WHOLE POINT. Rig angle = head angle + cloud angle, so
+    # a heading fixed in the rig turns by the head's own movement, the other
+    # way. Getting it backwards colours a cloud with the scene mirrored about
+    # the camera: wrong everywhere, obviously wrong nowhere. Checked in both
+    # directions, because one direction cannot tell a sign error from a right
+    # one.
+    _fwd = library.recall_heading(190.8 + 30.0)
+    check("a head 30 deg further round turns the baseline 30 deg back",
+          abs(_fwd["yaw_deg"] - (82.6 - 30.0)) < 1e-9, _fwd["yaw_deg"])
+    _back = library.recall_heading(190.8 - 30.0)
+    check("and 30 deg the other way turns it 30 deg forward",
+          abs(_back["yaw_deg"] - (82.6 + 30.0)) < 1e-9, _back["yaw_deg"])
+    check("the answer is wrapped into -180..180, not left to run away",
+          -180.0 < library.recall_heading(190.8 - 200.0)["yaw_deg"] <= 180.0,
+          library.recall_heading(190.8 - 200.0)["yaw_deg"])
+
+    # ⚠ AND WHERE THE TWO ENDS CANNOT BE TIED TOGETHER IT SAYS SO. An
+    # exported cloud has no sidecar, and any sidecar written before 2026-08-20
+    # has no head angle. The heading is still offered -- unturned, which is
+    # right whenever the head has not moved -- but never dressed up as exact.
+    _none = library.recall_heading(None)
+    check("with no head angle for this scan the baseline is offered unturned",
+          abs(_none["yaw_deg"] - 82.6) < 1e-9 and _none["exact"] is False, _none)
+    check("and says why, rather than looking like an exact answer",
+          "not recorded" in (_none["why"] or ""), _none["why"])
+    library.remember_heading(45.0, None)
+    _old = library.recall_heading(190.8)
+    check("a baseline saved without a head angle is inexact too",
+          _old["exact"] is False and abs(_old["yaw_deg"] - 45.0) < 1e-9, _old)
+
+    with io.open(library.SETTINGS_FILE, "w", encoding="utf-8") as _fh:
+        _fh.write("{ not json")
+    check("a corrupt settings file reads as no baseline, not as a crash",
+          library.recall_heading(0.0) is None)
+finally:
+    library.SETTINGS_DIR, library.SETTINGS_FILE = _real_dir, _real_file
+check("the real settings path is restored afterwards",
+      library.SETTINGS_FILE == _real_file)
+
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

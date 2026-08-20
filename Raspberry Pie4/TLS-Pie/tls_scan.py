@@ -342,7 +342,7 @@ def meta_path_for(capture_file):
 
 
 def write_scan_meta(capture_file, profile_name, profile, stepper,
-                    capture_started):
+                    capture_started, start_steps=None):
     """
     Write the sidecar that turns a recording into a scan.
 
@@ -397,6 +397,33 @@ def write_scan_meta(capture_file, profile_name, profile, stepper,
             "zero": {
                 "provenance": stepper.zero_provenance,
                 "position_known": stepper.position_known,
+                # ⭐ WHERE THE HEAD ITSELF WAS STANDING WHEN THE SWEEP
+                # BEGAN. The track above starts at zero, so a cloud's
+                # azimuth is measured from wherever that happened to be;
+                # this is the one number that ties two clouds' zeros
+                # together. Until 2026-08-20 it was not needed, because
+                # every profile ended a whole number of turns from where
+                # it started and that direction never moved. The return
+                # leg was removed that day, so a Rapid now leaves the
+                # head 190.8 degrees round and the next scan's zero is
+                # 190.8 degrees away from this one's.
+                #
+                # ⭐ WHAT IT BUYS: a camera remounted the same way each
+                # time has a FIXED heading in the rig's frame, so the
+                # converter can carry one solved heading forward instead
+                # of re-solving -- which matters because on 2026-08-20 a
+                # correct pair scored 2.01 against a gate of 5.0. Rig
+                # angle = this + the track angle: the same sign both
+                # sides, because PanTrack.from_segments and
+                # move_steps() take their sign from the same `forward`.
+                #
+                # null when the head's position is not known, rather
+                # than a plausible zero -- an unknown anchor makes a
+                # carried-over heading wrong, and silently.
+                "head_deg": (
+                    None if start_steps is None else
+                    round(start_steps * 360.0
+                          / tls_stepper.STEPS_PER_REV, 6)),
             },
             # Filled in by the phone panel once scans are aligned to each
             # other, so the workstation inherits that alignment for free.
@@ -548,6 +575,11 @@ def run_scan(pi, stepper, profile_name, record=True):
 
         stepper.enable()
         _state.set(phase="SCANNING")
+        # Read BEFORE the sweep: afterwards the head has moved and the
+        # start can only be reconstructed, which is a subtraction that
+        # would have to guess the sign the move was made in.
+        start_steps = (stepper.position_steps
+                       if stepper.position_known else None)
         completed = stepper.move_degrees(
             profile["sweep_deg"], profile["deg_per_s"], should_abort=should_abort
         )
@@ -563,7 +595,7 @@ def run_scan(pi, stepper, profile_name, record=True):
             # Before the return leg: that move overwrites the stepper's record
             # of the sweep, which is what the pan track is built from.
             write_scan_meta(capture_file, profile_name, profile, stepper,
-                            capture_started)
+                            capture_started, start_steps=start_steps)
             _state.set(last_capture=capture_file)
             status_update("RETURNING",
                           ("Captured %s — returning to start"

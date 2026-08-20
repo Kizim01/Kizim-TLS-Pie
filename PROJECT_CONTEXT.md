@@ -2258,6 +2258,23 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
+**⛔⛔ FIRST, AND IT IS A ONE-LINER: THE PI IS A COMMIT BEHIND. `tls_scan.py` was changed on
+2026-08-20 to record `zero.head_deg` in every sidecar, and the Pi was off the network when it was
+finished** — 10.89.212.165 timed out, `tlspie.local` did not resolve. It is written, tested (Pi suite
+541) and committed, and **not copied over**. Deploy is `scp` to `~/TLS-Pie`, not `git pull`; `~/TLS-Pie`
+is not a git repo.
+
+**Why it matters rather than being tidy-up:** until it lands, every new sidecar lacks the head's own
+angle, so Studio's remembered camera heading can only be offered *unturned* — correct while the head
+has not moved, a guess once it has. And it moves every scan now, because the return leg was removed the
+same day: a Rapid leaves the head 190.8° round. **Check it by running one scan and grepping the sidecar
+for `head_deg`.**
+
+**⭐ The colour thread closed the same day** — the stairs scan's refusal was the CONFIDENCE failing, not
+the solve; a heading can now be typed into Studio and carried on to the next scan. See "A heading can be
+given by hand" and the CLOSED stairs section.
+
+
 **⭐ THE POWER THREAD IS FULLY CLOSED AS OF 2026-08-13 — measurement AND symptom.** The pack is
 charged and balanced (40 mV spread), and the assembled rig then drove **72 s of continuous motion
 on it with `throttled=0x0` throughout, not even latched.** The brownouts do not recur. The **return
@@ -2866,57 +2883,138 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
 
-#### ⚠ OPEN — the stairs scan will not colour, and it is NOT camera tilt — 2026-08-20, parked
+#### ✅ A heading can be given by hand, and carried on to the next scan — 2026-08-20
 
-**Parked at the operator's instruction, mid-diagnosis.** Recorded because the ruled-out branches are
-worth more than the unfinished one, and re-walking them would cost an hour.
+Built straight after the section below, because that diagnosis left the program with **no way to act on
+its own finding**: the solve had the right answer, the confidence refused it, and the only route to a
+coloured cloud was the command line's `--yaw`.
 
-**The pair.** `TLS_26_08_20_15_01_37` (180° Rapid, 98.7 MB, extent 33.2 × 53.6 × 7.3 m) with
-`IMG_20260820_150439_00_017.jpg` — Insta360 X4, **11904 × 5952**, exactly 2:1, shot **15:04:51**,
-about three minutes after the scan. The workflow looks right. **It scores 2.35 against a gate of
-5.0** — below even the 3.8–4.2 that pure noise scored on the morning's pair.
+**What Studio does now.** Every scan's photo row carries a heading box, **pre-filled with what the solve
+found whether or not it was accepted**, a `Use` button, and a `baseline` button when one has been saved.
+`colour_scan(scan, photo, yaw=...)` skips the solve entirely and marks the result `given`, with **no
+confidence attached** — there was no solve, so a number there would be read as a verdict on a heading
+it never assessed. `set_heading` on the server, `/photo/heading` on the wire.
 
-**⛔ CAMERA TILT IS RULED OUT, WHICH WAS THE OPERATOR'S OWN FIRST GUESS AND MINE.** `solve_yaw`
-correlates over longitude only, so a camera rotated in pitch or roll moves every edge in *latitude*
-and no yaw can line them up — a real possibility worth testing rather than arguing. Tested by
-rotating the **cloud** through ±20° of pitch and roll in 4° steps (121 solves; rotating the world is
-the same as tilting the camera the other way, and needs no new projection maths). **The whole grid is
-flat, 1.5–3.3, with no peak structure**; the best cell, 3.27, sits on the grid edge and is an
-artefact of extreme distortion. A real tilt would show a clean peak.
+**⛔ IT IS NOT A BACK DOOR ROUND THE GUARD, IT IS WHAT LETS THE GUARD STAY STRICT.** The alternative,
+once a correct pair had scored 2.01 against a gate of 5.0, was to weaken the gate for every scan — and
+2.01 is below what pure noise scores, so that would have meant accepting noise everywhere to rescue one
+room. The operator gets the last word; nobody who has not looked gets anything. **A cloud that has been
+moved is still refused on both paths** — `sensor_centred` runs before either branch, because colour is
+cast from the origin and a merged or dragged cloud would sample every ray from the wrong place.
 
-**⭐ AND THE MACHINERY IS FINE — the control was run in the same session.** The morning pair still
-scores **6.05**, and the stairs photo laid on the *restaurant* cloud scores 2.47. So this is about
-this pair, not about the code.
+**⭐⭐ THE BASELINE, AND WHY IT NEEDED A CHANGE ON THE PI TO MEAN ANYTHING.** The operator confirmed
+they will keep one capture pattern from now on — the same place the scanner starts, the same moment the
+photo is taken. **That does not make the heading unknown; it makes it a CONSTANT**, fixed in the rig's
+own frame by how the camera seats on the tripod, and worth establishing once. The tripod's rotation in
+the world cancels, because the lidar and the camera share it.
 
-**⛔⛔ THE POSITION SEARCH CANNOT WORK AS THE SOLVE STANDS, AND THIS IS THE FINDING TO CARRY.**
-Position was the remaining degree of freedom, and `solve_yaw` already accepts a `camera` offset, so
-it was swept over ±4 m in x and y and ±1 m in z. **Most cells came back 0.00** — not "no match", but
-`solve_yaw` **refusing outright**: moving the virtual camera off the sensor makes the cloud's
-panorama fall below `MIN_FILLED_FRACTION` (0.55) and it returns zero before scoring anything. *The
-search is killed by a gate that fires before the measurement.* Any future attempt at solving camera
-POSITION has to deal with that first — a fill test tuned for "is this dense enough to solve against"
-is being asked a question it was never meant to answer.
+**⛔ BUT A CLOUD'S FRAME IS NOT THE RIG'S FRAME, AND THIS MORNING'S OWN CHANGE IS WHAT BROKE THE
+DIFFERENCE OPEN.** A cloud's azimuth zero is wherever the head was standing when its sweep began. Until
+today every profile ended a whole number of turns from where it started, so that direction never moved
+and a heading would have carried over untouched. **The return leg was removed this morning**, so a Rapid
+now leaves the head 190.8° round and the next cloud's zero is 190.8° away. A baseline saved without an
+anchor would have been right on the first scan and quietly wrong on the second — *the removal was still
+correct, but it had a consequence nobody had followed through.*
 
-**⚠ And this cloud is close to that floor anyway: it fills 63%**, against the solve's 55%. (The
-restaurant scan fills 65%, so this is not what separates them — but it means the stairs panorama's
-"edges" are part holes, and holes are what the 2° latitude binning exists to avoid.)
+So the sidecar now records **`zero.head_deg`**, the head's own angle when the sweep began, read *before*
+the sweep rather than reconstructed after it. Rig angle = `head_deg` + track angle; **the sign is
+shared, not copied** — `PanTrack.from_segments` and `move_steps` both take it from the same `forward`
+flag — and the test drives both directions, because one direction cannot tell a sign error from a right
+one. `library.remember_heading` / `recall_heading` store the baseline in `~/.tlspie/settings.json` and
+turn it by the anchor difference.
 
-**Also checked and eliminated:** the other three photos on the Desktop (`102917`, `145503`, `145532`)
-all score **2.0–3.0** against *both* clouds, so none of them is the stairs scan's real partner.
+**⚠ Where the two ends cannot be tied together — an exported cloud, or any sidecar written before
+today — the heading is offered UNTURNED with a question mark and a plain reason**, because unturned is
+right whenever the head has not moved and is the operator's best starting guess when it has. It is never
+dressed up as exact.
 
-**⛔ Independently, `Desktop\restaurant\near the stairs\` cannot work at all: its `.json` sidecar is
-missing** (left behind in the parent folder). It holds the *morning's* 10:15:22 capture plus the
-15:04 photo — a pairing that is wrong twice over, since that capture is from the restaurant floor.
-**Without a sidecar there is no pan track and the capture cannot be decoded at all**, colour or no
-colour.
+**⭐ THE BASELINE IS SAVED ONLY WHEN A PERSON TYPES A HEADING, NEVER FROM AN ACCEPTED SOLVE.** It is a
+claim about how the camera is seated, and only a deliberate act carries that claim; harvesting it from
+every successful solve would let one scan taken with the camera turned round become the default for all
+the rest.
 
-**Where to pick it up.** The untested explanation is the plain one: **the camera was not standing
-where the lidar stood.** By a staircase that matters far more than in an open room — colour SAMPLING
-stays exact at any offset because every point's depth is known, but the edge SOLVE compares
-silhouettes, and silhouettes move with the viewpoint in proportion to how close the geometry is. A
-metre in a 40 m room shifts almost nothing; a metre by a handrail two metres away shifts everything.
-`scratchpad/stairs_compare.png` was written to settle "is this even the same place" by eye and was
-not looked at before the work was parked.
+**⛔ AND THE TESTS MUST NOT WRITE TO THE REAL SETTINGS FILE.** It holds the operator's own baseline; a
+suite that clobbered it would destroy the thing it is testing, on every run, silently. The settings path
+is redirected to a temp dir and restored, and a check asserts the restore.
+
+**Verified.** Converter suite **326 → 351**; Pi suite **537 → 541**. Every new check was **broken on
+purpose and seen to fail**: the sign flipped in `recall_heading` (2 failures, both directions), the
+given-heading branch disabled (7 failures), `head_deg` stripped from the sidecar, the anchor read moved
+after the sweep, and a plausible `0.0` substituted for `None`. End-to-end through the real
+`/photo/heading` route on the real refused capture: coloured at +82.6°, `given` true, baseline saved and
+offered back, and bad input (none, text, NaN, no such scan) refused with a reason. `node --check` parses
+the page. Studio rebuilt: 38,528,124 bytes, selftest 0.
+
+**⚠ THE PI CHANGE IS NOT DEPLOYED.** `tls_scan.py` is edited and tested but the Pi was off the network
+(10.89.212.165 timed out, `tlspie.local` did not resolve). **Until it is copied over, every new sidecar
+still lacks `head_deg` and every baseline recall is the inexact kind.** Deploy is `scp`, not `git pull`.
+
+#### ✅ CLOSED — the stairs scan would not colour because the CONFIDENCE failed, not the solve — 2026-08-20
+
+**This replaces the "parked, it is probably a camera position offset" section that stood here for two
+hours. That guess was wrong.** The camera was where the lidar was, the photograph was good, the cloud
+was good, and `solve_yaw` found the correct heading. The number that judges the solve is what threw it
+out.
+
+**The pair.** `TLS_26_08_20_15_22_25` (180° Rapid, 1.7 M points at 2 cm) with an Insta360 X4
+equirectangular of 11904×5952, shot three minutes later. Confidence **2.01** against a gate of 5.0.
+A second, earlier attempt at the same spot (`TLS_26_08_20_15_01_37`) failed identically at 2.35, which
+was the clue: **two different scans and two different photographs failing the same way is a property of
+the PLACE, not a mistake in either capture.**
+
+**⭐⭐ THE MECHANISM: THE RIG WAS STANDING AGAINST A WALL.** One side of the sphere is close and the
+other is open, so both the cloud's depth panorama and the photograph carry a large
+once-round-the-sphere term — dark here, bright there. That term correlates across a huge span of lags.
+The correlation profile comes out as **one smooth hump about 180° wide** instead of a spike, and
+`PEAK_EXCLUDE_DEG` removes only 20° of shoulder, so the confidence divides the peak by its own
+shoulders:
+
+| | restaurant, worked | stairs, refused |
+|---|---|---|
+| confidence | 6.05 | 2.01 |
+| peak width | 2 lags | ~180° |
+| peak height | 4.06 sd | 1.73 sd |
+
+The restaurant position is open in every direction and has no such term, which is why it worked. **A
+diagnostic that only works in open rooms is not a diagnostic, it is a coincidence** — and the reason
+this took two sessions is that the coincidence held for the first pair tested.
+
+**⭐ HOW THE HEADING WAS CONFIRMED, WITHOUT THE ARITHMETIC THAT WAS UNDER SUSPICION.** The solve said
++82.6°. Coloured at that heading and viewed in elevation, **the mural comes back as a readable framed
+picture on the flat wall**, pink banquette beneath it, exactly as photographed; a deliberate half-turn
+puts the bar on that wall instead. The solve only ever looks at gradients, so the COLOURS landing on
+the right geometry is evidence it never touched.
+
+**⛔ WHAT WAS TRIED AND REFUTED, so nobody spends the hour again:**
+
+- **Lowering the gate cannot work.** 2.01 is *below the noise floor*: pure noise scored 3.8–4.2 on the
+  scan that worked. A correct pair here scores worse than a random image does there.
+- **Removing the low longitude harmonics does not work.** It lifts the correct pair to about 5 — and
+  lifts the wrong pairs just as far. At five harmonics removed a **mismatched** photo scored 6.59
+  against stairs-1 while the correct one scored 6.61. It raises everything together and buys no
+  separation.
+- **The cloud is not the problem.** Handed a synthetic panorama built from its own depth it solves at
+  **10.11** (stairs-1 10.30, restaurant 15.55). 82% of the alignment grid filled — better than the
+  restaurant's 65%.
+- **The photo is not the problem.** A genuine equirectangular of the same room; the dual-fisheye
+  hypothesis was checked by looking at it and is dead.
+- **Camera tilt was ruled out the previous pass** by a 121-cell pitch/roll sweep: flat 1.5–3.3, no peak.
+- **A camera-POSITION search still cannot run**, for the reason recorded before: most cells return 0.00
+  because `solve_yaw` refuses below `MIN_FILLED_FRACTION` before scoring anything. It no longer
+  matters, but the gate-before-measurement trap is worth keeping.
+
+**⭐ THE DISCRIMINATING TEST, which should be the FIRST move next time.** Score the cloud against a
+synthetic panorama built from its own depth. That separates "the cloud cannot be solved by anything"
+from "this photograph does not match", which is the actual fork — and no amount of tilt or position
+sweeping can distinguish them, because a flat correlation looks identical either way. Both earlier
+passes swept poses on the unexamined assumption that the cloud was fine; it was, and one cheap test
+would have said so in a minute.
+
+**⛔ AND ONE READING THAT LOOKED LIKE EVIDENCE AND IS NOT.** The recovered yaw is stable across every
+variant tried — filtering, harmonic removal, independent halves. That is not confirmation: the peak is
+pinned by the CLOUD, and a wrong photo's yaw is just as stable (150439 gives +34.9 on stairs-2 at every
+setting). This was already recorded once as a failed second opinion; it presented itself again as a
+fresh one.
 
 #### ✅ Studio opens exported clouds, and photos are added inside the program — 2026-08-20
 
