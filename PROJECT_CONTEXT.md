@@ -2866,6 +2866,58 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
 
+#### ⚠ OPEN — the stairs scan will not colour, and it is NOT camera tilt — 2026-08-20, parked
+
+**Parked at the operator's instruction, mid-diagnosis.** Recorded because the ruled-out branches are
+worth more than the unfinished one, and re-walking them would cost an hour.
+
+**The pair.** `TLS_26_08_20_15_01_37` (180° Rapid, 98.7 MB, extent 33.2 × 53.6 × 7.3 m) with
+`IMG_20260820_150439_00_017.jpg` — Insta360 X4, **11904 × 5952**, exactly 2:1, shot **15:04:51**,
+about three minutes after the scan. The workflow looks right. **It scores 2.35 against a gate of
+5.0** — below even the 3.8–4.2 that pure noise scored on the morning's pair.
+
+**⛔ CAMERA TILT IS RULED OUT, WHICH WAS THE OPERATOR'S OWN FIRST GUESS AND MINE.** `solve_yaw`
+correlates over longitude only, so a camera rotated in pitch or roll moves every edge in *latitude*
+and no yaw can line them up — a real possibility worth testing rather than arguing. Tested by
+rotating the **cloud** through ±20° of pitch and roll in 4° steps (121 solves; rotating the world is
+the same as tilting the camera the other way, and needs no new projection maths). **The whole grid is
+flat, 1.5–3.3, with no peak structure**; the best cell, 3.27, sits on the grid edge and is an
+artefact of extreme distortion. A real tilt would show a clean peak.
+
+**⭐ AND THE MACHINERY IS FINE — the control was run in the same session.** The morning pair still
+scores **6.05**, and the stairs photo laid on the *restaurant* cloud scores 2.47. So this is about
+this pair, not about the code.
+
+**⛔⛔ THE POSITION SEARCH CANNOT WORK AS THE SOLVE STANDS, AND THIS IS THE FINDING TO CARRY.**
+Position was the remaining degree of freedom, and `solve_yaw` already accepts a `camera` offset, so
+it was swept over ±4 m in x and y and ±1 m in z. **Most cells came back 0.00** — not "no match", but
+`solve_yaw` **refusing outright**: moving the virtual camera off the sensor makes the cloud's
+panorama fall below `MIN_FILLED_FRACTION` (0.55) and it returns zero before scoring anything. *The
+search is killed by a gate that fires before the measurement.* Any future attempt at solving camera
+POSITION has to deal with that first — a fill test tuned for "is this dense enough to solve against"
+is being asked a question it was never meant to answer.
+
+**⚠ And this cloud is close to that floor anyway: it fills 63%**, against the solve's 55%. (The
+restaurant scan fills 65%, so this is not what separates them — but it means the stairs panorama's
+"edges" are part holes, and holes are what the 2° latitude binning exists to avoid.)
+
+**Also checked and eliminated:** the other three photos on the Desktop (`102917`, `145503`, `145532`)
+all score **2.0–3.0** against *both* clouds, so none of them is the stairs scan's real partner.
+
+**⛔ Independently, `Desktop\restaurant\near the stairs\` cannot work at all: its `.json` sidecar is
+missing** (left behind in the parent folder). It holds the *morning's* 10:15:22 capture plus the
+15:04 photo — a pairing that is wrong twice over, since that capture is from the restaurant floor.
+**Without a sidecar there is no pan track and the capture cannot be decoded at all**, colour or no
+colour.
+
+**Where to pick it up.** The untested explanation is the plain one: **the camera was not standing
+where the lidar stood.** By a staircase that matters far more than in an open room — colour SAMPLING
+stays exact at any offset because every point's depth is known, but the edge SOLVE compares
+silhouettes, and silhouettes move with the viewpoint in proportion to how close the geometry is. A
+metre in a 40 m room shifts almost nothing; a metre by a handrail two metres away shifts everything.
+`scratchpad/stairs_compare.png` was written to settle "is this even the same place" by eye and was
+not looked at before the work was parked.
+
 #### ✅ Studio opens exported clouds, and photos are added inside the program — 2026-08-20
 
 Asked for by the operator the same day: open a coloured cloud, add an image to a scan **from within
