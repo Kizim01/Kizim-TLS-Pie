@@ -3040,6 +3040,11 @@ picture on the flat wall**, pink banquette beneath it, exactly as photographed; 
 puts the bar on that wall instead. The solve only ever looks at gradients, so the COLOURS landing on
 the right geometry is evidence it never touched.
 
+**Delivered.** `TLS_26_08_20_15_22_25_coloured.las` — 5,402,689 points at 1 cm, beside the capture on
+the Desktop. Reproduce with `tlsconvert_cli.py <capture>.pcap --voxel 0.01 --yaw 82.6`, or in Studio by
+typing the heading into the photo row. **That heading is specific to this scan's pan zero**, not a
+property of the rig — see the baseline section for what carries it to the next scan and what does not.
+
 **⛔ WHAT WAS TRIED AND REFUTED, so nobody spends the hour again:**
 
 - **Lowering the gate cannot work.** 2.01 is *below the noise floor*: pure noise scored 3.8–4.2 on the
