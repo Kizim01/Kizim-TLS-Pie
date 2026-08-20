@@ -2258,17 +2258,15 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⛔⛔ FIRST, AND IT IS A ONE-LINER: THE PI IS A COMMIT BEHIND. `tls_scan.py` was changed on
-2026-08-20 to record `zero.head_deg` in every sidecar, and the Pi was off the network when it was
-finished** — 10.89.212.165 timed out, `tlspie.local` did not resolve. It is written, tested (Pi suite
-541) and committed, and **not copied over**. Deploy is `scp` to `~/TLS-Pie`, not `git pull`; `~/TLS-Pie`
-is not a git repo.
+**✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi
+itself on 2026-08-20: hashes match, `py_compile` clean, its own suites run there (38 + 54), service
+restarted and came up `active` with the panel ready. Deploy is `scp` to `~/TLS-Pie`, not `git pull`.
 
-**Why it matters rather than being tidy-up:** until it lands, every new sidecar lacks the head's own
-angle, so Studio's remembered camera heading can only be offered *unturned* — correct while the head
-has not moved, a guess once it has. And it moves every scan now, because the return leg was removed the
-same day: a Rapid leaves the head 190.8° round. **Check it by running one scan and grepping the sidecar
-for `head_deg`.**
+**⚠ The one thing to watch on the next scan:** `~/TLS-Pie/head_position.json` did not exist yet when
+this was written, because nothing had moved since the restart. **The first scan creates it.** If it is
+still absent after a scan, the position is not being remembered and the carried-over camera heading is
+worthless across a reboot — check the service is running as a user that can write `~/TLS-Pie` (it runs
+as **root**, and the directory is `lipi:lipi` 755, which was tested writable).
 
 **⭐ The colour thread closed the same day** — the stairs scan's refusal was the CONFIDENCE failing, not
 the solve; a heading can now be typed into Studio and carried on to the next scan. See "A heading can be
@@ -2882,6 +2880,63 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 **⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅ The head's position now survives a restart, without the head moving — 2026-08-20
+
+**Found hours after the baseline above was built, and before it had been relied on.** The operator asked
+whether the Pi could be shut off; checking what a power cycle would do to the new carried-over heading
+turned up a hole in it.
+
+**⛔⛔ EVERY RESTART SILENTLY REDEFINED ZERO TO WHEREVER THE HEAD WAS STANDING.** `position_steps` was
+set to 0 in `Stepper.__init__` and **persisted nowhere** — grep confirmed it: the only writes were the
+constructor, `move_steps` and `set_home`. So a baseline saved in one session and used in the next was
+wrong by **the whole of the previous session's travel**, mod 360. With the return leg gone that is 190.8
+degrees per Rapid: **a plausible-looking half-turn**, which is the worst kind of wrong because it colours
+a cloud confidently.
+
+**The obvious fix was the wrong one.** Pressing the panel's **Restart** before shutdown would put the
+head back on its mark and make the origins agree — zero code. The operator rejected it outright: *"i
+dont want the head to move after a scan."* That is the same instruction that removed the return leg, and
+it rules out re-establishing the origin by driving to it. **So the origin has to be REMEMBERED instead.**
+
+**What was built.** `tls_stepper` now writes `{steps, known, provenance}` to
+`~/TLS-Pie/head_position.json` (overridable by `TLSPIE_POSITION_FILE`) at **every point the position
+changes** — a completed move, both abort paths, and `set_home` — and loads it in the constructor.
+Atomic write via tmp + `os.replace`; **never raises**, because a scan must outlive its own bookkeeping,
+and an unwritable location is a quiet `False`.
+
+**⛔ THREE THINGS IT DELIBERATELY REFUSES TO DO:**
+
+- **A missing or damaged file is not a zero position, it is no information.** It falls back to exactly
+  what the program did before any of this existed: zero, provenance `commanded`. Reading a corrupt file
+  as zero would put the origin somewhere arbitrary and label it authoritative.
+- **An unknown position does not come back known.** An abort leaves the emitted steps unrecoverable from
+  pigpio, and a reboot does not recover them either. `known: false` is persisted and restored.
+- **A restored origin is never `commanded`.** It comes back under its own provenance, `restored`,
+  because it rests on an assumption — that nobody turned the head by hand with the power off. The
+  sidecar already carried `zero.provenance`, and `zero_provenance` was already documented as how scans
+  say they do not share an origin; the field existed for exactly this and had not been connected.
+
+Studio carries it through: `Scan.zero_origin`, and `recall_heading(anchor, origin)` appends the
+assumption to the reason it shows when the origin was restored. **The heading is unchanged and still
+exact** — marking it inexact after every reboot would mean always, which trains an operator to ignore
+the flag.
+
+**⛔⛔ AND THE TEST HELPER WAS NOT TESTING THE CONSTRUCTOR.** `make_stepper` in
+`test_stepper_watchdog.py` did `Stepper.__new__(Stepper)` and hand-set the attributes — harmless while
+the constructor only touched GPIO, and **useless the moment it started restoring state**. Every new check
+would have been describing an object the program never builds. It now drives the real constructor against
+the fake pi, with a `fresh` flag for the watchdog tests that only care about a single move. *A helper that
+skips the constructor cannot test what the constructor does.*
+
+**⚠ And the suite is pointed at a throwaway position file.** One that wrote to the real one would move
+the rig's origin on every run — silently, showing up days later as a wrongly coloured cloud.
+
+**Verified.** Pi suite **541 → 556**, converter **351 → 354**. Broken on purpose and seen to fail:
+restoring an unknown position as known (2 failures), and dropping the write after a completed move.
+Deployed and confirmed on the Pi — hashes match, compiles, 38 + 54 there, service restarted `active`,
+panel ready, directory writable by the service's user (root). Studio rebuilt: 38,527,616 bytes,
+selftest 0.
 
 #### ✅ A heading can be given by hand, and carried on to the next scan — 2026-08-20
 

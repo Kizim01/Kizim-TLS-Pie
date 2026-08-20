@@ -1939,6 +1939,23 @@ try:
     check("a baseline saved without a head angle is inexact too",
           _old["exact"] is False and abs(_old["yaw_deg"] - 45.0) < 1e-9, _old)
 
+    # ⛔ AND A BASELINE THAT CROSSES A RESTART SAYS SO. After a reboot the
+    # head's zero is read back from a file rather than commanded -- exact only
+    # while nobody turned the head by hand with the power off. That is a fair
+    # assumption on a harmonic drive and a bad one to leave unstated, because
+    # the failure it produces is a plausible-looking half-turn rather than an
+    # obviously broken cloud.
+    library.remember_heading(82.6, 190.8)
+    _cmd = library.recall_heading(190.8, "commanded")
+    _res = library.recall_heading(190.8, "restored")
+    check("a commanded origin carries the baseline with no caveat",
+          _cmd["restored"] is False and "turned by hand" not in _cmd["why"])
+    check("a restored one gives the same heading",
+          abs(_res["yaw_deg"] - _cmd["yaw_deg"]) < 1e-9)
+    check("but names the assumption it now rests on",
+          _res["restored"] is True and "turned by hand" in _res["why"],
+          _res["why"])
+
     with io.open(library.SETTINGS_FILE, "w", encoding="utf-8") as _fh:
         _fh.write("{ not json")
     check("a corrupt settings file reads as no baseline, not as a crash",

@@ -107,15 +107,35 @@ class FakePi:
         pass
 
 
-def make_stepper(pi):
-    s = Stepper.__new__(Stepper)          # bypass __init__'s hardware setup
-    s.pi = pi
-    s.step_pin = tls_stepper.PIN_STEP
-    s.dir_pin = tls_stepper.PIN_DIR
-    s.enable_pin = tls_stepper.PIN_ENABLE
-    s.position_steps = 0
-    s.position_known = True
-    return s
+# ⛔ EVERY TEST HERE IS POINTED AT A THROWAWAY POSITION FILE. The stepper
+# remembers where the head is standing across restarts, and a suite that wrote
+# to the real one would move the rig's origin every time it ran -- silently,
+# and in a way that only shows up as a wrongly coloured cloud days later.
+import tempfile                                              # noqa: E402
+
+tls_stepper.POSITION_FILE = os.path.join(
+    tempfile.mkdtemp(prefix="tlspos"), "head_position.json")
+
+
+def make_stepper(pi, fresh=True):
+    """
+    A Stepper on the fake pi, through the REAL constructor.
+
+    ⛔ THIS USED TO BYPASS `__init__` AND HAND-SET THE ATTRIBUTES, which was
+    fine while the constructor only touched GPIO -- and stopped being fine the
+    moment it started RESTORING THE HEAD'S POSITION. A helper that skips the
+    constructor cannot test what the constructor does, and every check written
+    against it would have been describing an object the program never builds.
+
+    `fresh` clears the remembered position first, which is what the watchdog
+    tests want: they are about a single move, not about what came before it.
+    """
+    if fresh:
+        try:
+            os.remove(tls_stepper.POSITION_FILE)
+        except OSError:
+            pass
+    return Stepper(pi)
 
 
 # A move small enough that the test finishes quickly. plan_move decides the
@@ -241,6 +261,102 @@ many, _ = tls_stepper.plan_move(
 check("a 31-segment ramp does not cost 31 counters",
       len(many) > 20 and count_counters(chain_st._build_chain(many)) <= BUDGET,
       "%d segments" % len(many))
+
+# --- the head's position survives a restart -------------------------------
+#
+# ⭐⭐ THE HEAD MUST NOT MOVE AFTER A SCAN. That is the operator's
+# instruction and the reason the return leg went on 2026-08-20, so the origin
+# cannot be re-established by driving to a mark -- it has to be remembered.
+#
+# ⛔ WHAT THIS FIXES. `position_steps` lived only in the Stepper object, so
+# every restart silently redefined zero to wherever the head was standing. With
+# the return leg gone that is 190.8 degrees per Rapid, and a camera heading
+# carried across a reboot would have been out by exactly the previous session's
+# travel -- a plausible-looking half-turn, which is the worst kind of wrong.
+print("\nthe head's position survives a restart")
+import io                                                     # noqa: E402
+import json as _json                                          # noqa: E402
+import tempfile                                               # noqa: E402
+
+_pdir = tempfile.mkdtemp(prefix="tlspos")
+_real_posfile = tls_stepper.POSITION_FILE
+tls_stepper.POSITION_FILE = os.path.join(_pdir, "head_position.json")
+try:
+    os.remove(tls_stepper.POSITION_FILE)
+except OSError:
+    pass
+try:
+    check("with no file yet the head is at zero and the origin is commanded",
+          tls_stepper.load_position() == (0, True, "commanded"),
+          tls_stepper.load_position())
+
+    _st = make_stepper(FakePi(0.0))
+    _st.move_steps(4000, tls_stepper.deg_per_s_to_step_rate(2.0), forward=True)
+    check("a completed move is written down",
+          os.path.isfile(tls_stepper.POSITION_FILE))
+    check("and the position it wrote is the one the stepper holds",
+          _json.load(io.open(tls_stepper.POSITION_FILE,
+                             encoding="utf-8"))["steps"] == _st.position_steps
+          == 4000, _st.position_steps)
+
+    # A brand new Stepper is what a restart produces.
+    _st2 = make_stepper(FakePi(0.0), fresh=False)
+    check("a stepper built afresh comes back to the same place",
+          _st2.position_steps == 4000 and _st2.position_known is True,
+          _st2.position_steps)
+    # ⛔ AND UNDER ITS OWN PROVENANCE. A restored origin is an ASSUMPTION --
+    # that nobody turned the head by hand while the power was off -- and the
+    # sidecar carries this field precisely so nothing downstream has to guess.
+    check("but says the origin was restored, not commanded",
+          _st2.zero_provenance == "restored", _st2.zero_provenance)
+
+    _st2.move_steps(1000, tls_stepper.deg_per_s_to_step_rate(2.0), forward=False)
+    check("moves accumulate across the restart rather than starting over",
+          _st2.position_steps == 3000, _st2.position_steps)
+
+    # ⛔ AN UNKNOWN POSITION MUST NOT COME BACK KNOWN. An abort leaves the
+    # steps actually emitted unrecoverable from pigpio; a reboot does not
+    # recover them either. Restoring the stale figure as trustworthy is exactly
+    # the failure this file exists to prevent, so it is driven, not asserted.
+    _ab = make_stepper(FakePi(5.0))
+    _ab.move_steps(160000, tls_stepper.deg_per_s_to_step_rate(2.0),
+                   forward=True, should_abort=lambda: True)
+    check("an aborted move leaves the position unknown", _ab.position_known is False)
+    _ab2 = make_stepper(FakePi(0.0), fresh=False)
+    check("and it is STILL unknown after a restart, not quietly trusted",
+          _ab2.position_known is False, _ab2.position_known)
+
+    # Restart / set_home is the way back, and it writes too.
+    _ab2.set_home()
+    check("hand-aligning clears it and is written down",
+          _ab2.position_steps == 0 and _ab2.position_known is True
+          and _ab2.zero_provenance == "hand-aligned")
+    check("so the next restart starts from a known place again",
+          make_stepper(FakePi(0.0), fresh=False).position_known is True)
+
+    # ⛔ A DAMAGED FILE IS NOT A ZERO POSITION, IT IS NO INFORMATION. Reading
+    # it as zero would put the head's origin somewhere arbitrary and call it
+    # commanded, which reads as authoritative.
+    io.open(tls_stepper.POSITION_FILE, "w", encoding="utf-8").write("{ not json")
+    check("a corrupt file falls back to commanded zero rather than crashing",
+          tls_stepper.load_position() == (0, True, "commanded"))
+    io.open(tls_stepper.POSITION_FILE, "w", encoding="utf-8").write('{"steps": 7}')
+    check("and so does one missing a field",
+          tls_stepper.load_position() == (0, True, "commanded"))
+
+    # ⛔ BOOKKEEPING MUST NEVER TAKE A SCAN DOWN WITH IT.
+    tls_stepper.POSITION_FILE = os.path.join(_pdir, "no", "such", "dir", "p.json")
+    check("an unwritable location is a quiet false, not an exception",
+          tls_stepper.save_position(1, True, "commanded") is False)
+    _nw = make_stepper(FakePi(0.0), fresh=False)
+    check("and a move still completes with nowhere to write",
+          _nw.move_steps(400, tls_stepper.deg_per_s_to_step_rate(2.0),
+                         forward=True) is True)
+finally:
+    tls_stepper.POSITION_FILE = _real_posfile
+check("the real position file path is restored afterwards",
+      tls_stepper.POSITION_FILE == _real_posfile)
+
 
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

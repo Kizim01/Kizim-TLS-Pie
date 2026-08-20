@@ -125,6 +125,9 @@ class Scan(object):
         # camera heading be carried on to the next scan. None for an
         # exported cloud and for any sidecar written before 2026-08-20.
         self.anchor_deg = None
+        # "commanded", "hand-aligned" or "restored" -- how the head's
+        # own zero was established for this scan.
+        self.zero_origin = None
         self.rung = None               # how far down the GICP ladder it has got
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
@@ -312,6 +315,7 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
                                            per_laser_azimuth=per_laser_azimuth)
         scan = Scan(path, xyz, rgb, sample, total=done)
         scan.anchor_deg = (meta.get("zero") or {}).get("head_deg")
+        scan.zero_origin = (meta.get("zero") or {}).get("provenance")
         # The photo was applied while streaming, above; record WHICH one, so the
         # panel can say so and offer to replace it.
         found = pipeline.find_photo(path) if colour else None
@@ -495,7 +499,8 @@ class AlignServer(object):
                          "photoGiven": bool(info.get("given")),
                          "anchor": scan.anchor_deg,
                          "baseline": library.recall_heading(
-                             scan.anchor_deg)})
+                             scan.anchor_deg,
+                             getattr(scan, "zero_origin", None))})
         return meta
 
     # --- endpoints --------------------------------------------------------

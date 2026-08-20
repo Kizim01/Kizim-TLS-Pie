@@ -46,6 +46,8 @@ caller must re-home manually. This matches the old firmware's behaviour, which
 showed "STOPPED / PRESS RESET" and required operator intervention.
 """
 
+import io
+import json
 import math
 import os
 import time
@@ -171,6 +173,67 @@ WATCHDOG_FACTOR = float(os.environ.get("TLSPIE_WATCHDOG_FACTOR", "1.25"))
 WATCHDOG_SLACK_S = float(os.environ.get("TLSPIE_WATCHDOG_SLACK_S", "3.0"))
 
 
+# --- where the head is standing, across restarts ---------------------------
+#
+# ⭐⭐ THE HEAD MUST NOT MOVE AFTER A SCAN -- the operator's instruction, and
+# the reason the return leg went on 2026-08-20. So the origin cannot be
+# re-established by driving to a mark; it has to be REMEMBERED.
+#
+# ⛔ WITHOUT THIS, EVERY RESTART REDEFINES ZERO TO WHEREVER THE HEAD HAPPENS TO
+# BE. `position_steps` lived only in this object, so a power cycle silently
+# moved the origin by however far the previous session had swept -- and with the
+# return leg gone that is 190.8 degrees per Rapid. A camera heading carried over
+# from before the reboot would have been out by exactly that, and a half-turn
+# error looks entirely plausible on screen. Found on 2026-08-20, the same day
+# the carried-over heading was built, and before it had been relied on.
+#
+# ⛔ AND WHAT IS REMEMBERED IS AN ASSUMPTION, NOT A MEASUREMENT: that nobody
+# turned the head by hand while the power was off. It is restored under its own
+# provenance, `restored`, never as `commanded` -- the sidecar already carries
+# that field, and `zero_provenance` was already documented as the way scans say
+# they do not share an origin. Nothing downstream has to guess.
+POSITION_FILE = os.environ.get(
+    "TLSPIE_POSITION_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "head_position.json"))
+
+
+def load_position():
+    """
+    (steps, known, provenance) for a fresh Stepper. Never raises.
+
+    ⛔ A MISSING OR DAMAGED FILE IS NOT A ZERO. It means this program has
+    never recorded where the head is, so the honest answer is the same one the
+    program gave before any of this existed: call here zero, and say the origin
+    was commanded rather than restored.
+    """
+    try:
+        with io.open(POSITION_FILE, encoding="utf-8") as fh:
+            got = json.load(fh)
+        steps = int(got["steps"])
+        # ⛔ AN UNKNOWN POSITION MUST NOT COME BACK KNOWN. An abort leaves the
+        # emitted steps unrecoverable from pigpio; a reboot does not recover
+        # them either, and restoring the stale figure as trustworthy would be
+        # the exact failure this file exists to prevent.
+        known = bool(got["known"])
+        return steps, known, "restored"
+    except Exception:                                     # noqa: BLE001
+        return 0, True, "commanded"
+
+
+def save_position(steps, known, provenance):
+    """Record where the head is. Never raises: a scan outlives its bookkeeping."""
+    try:
+        tmp = POSITION_FILE + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"steps": int(steps), "known": bool(known),
+                                 "provenance": provenance}))
+        os.replace(tmp, POSITION_FILE)
+        return True
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
 class StepperError(RuntimeError):
     pass
 
@@ -254,8 +317,8 @@ class Stepper:
         self.step_pin = step_pin
         self.dir_pin = dir_pin
         self.enable_pin = enable_pin
-        self.position_steps = 0
-        self.position_known = True
+        (self.position_steps, self.position_known,
+         _restored_provenance) = load_position()
 
         # Last move's motion record, for the pan track that registers a scan.
         # `last_move_started_at` is taken the instant the DMA engine is handed
@@ -270,7 +333,7 @@ class Stepper:
         # share an origin -- after one, zero is wherever the operator aligned
         # the head by hand -- so any tool that overlays two scans has to be
         # able to see that rather than assume a common frame.
-        self.zero_provenance = "commanded"
+        self.zero_provenance = _restored_provenance
 
         for pin in (self.step_pin, self.dir_pin, self.enable_pin):
             self.pi.set_mode(pin, pigpio.OUTPUT)
@@ -420,11 +483,13 @@ class Stepper:
                     self.pi.wave_tx_stop()
                     # Steps actually emitted are unrecoverable from pigpio.
                     self.position_known = False
+                    self._remember()
                     return False
                 elapsed = time.time() - started
                 if elapsed > limit_s:
                     self.pi.wave_tx_stop()
                     self.position_known = False
+                    self._remember()
                     raise MoveOverran(
                         "Move overran: %.1fs elapsed, expected %.1fs for "
                         "%d steps at %.1f Hz (limit %.1fs). Stopped by the "
@@ -438,6 +503,7 @@ class Stepper:
 
         if self.position_known:
             self.position_steps += steps if forward else -steps
+        self._remember()
         return True
 
     def move_degrees(self, degrees, deg_per_s, should_abort=None):
@@ -459,6 +525,12 @@ class Stepper:
         self.position_steps = 0
         self.position_known = True
         self.zero_provenance = "hand-aligned"
+        self._remember()
+
+    def _remember(self):
+        """Write the head's position down, so a restart does not lose the origin."""
+        return save_position(self.position_steps, self.position_known,
+                             self.zero_provenance)
 
     def stop_and_release(self):
         try:

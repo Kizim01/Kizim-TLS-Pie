@@ -389,7 +389,7 @@ def remember_heading(yaw_deg, anchor_deg=None, note=None):
         return False
 
 
-def recall_heading(anchor_deg=None):
+def recall_heading(anchor_deg=None, origin=None):
     """
     The baseline heading for a scan whose sweep began at `anchor_deg`.
 
@@ -406,13 +406,24 @@ def recall_heading(anchor_deg=None):
     base, saved = float(got["yaw_deg"]), got.get("anchor_deg")
     if saved is None or anchor_deg is None:
         return {"yaw_deg": base, "exact": False, "note": got.get("note"),
+                "restored": origin == "restored",
                 "why": ("the head's own angle was not recorded for %s, so this "
                         "is the heading exactly as saved -- right if the head "
                         "has not been moved since, a starting guess if it has"
                         % ("this scan" if saved is not None else "the baseline"))}
     # The camera's heading is fixed in the RIG's frame; a cloud's zero is not.
     shifted = (base + float(saved) - float(anchor_deg) + 180.0) % 360.0 - 180.0
+    why = ("carried over from the baseline, turned %.2f degrees for where the "
+           "head was standing when this sweep began"
+           % (float(saved) - float(anchor_deg)))
+    # ⛔ SAY WHEN THE ORIGIN ITSELF IS A REMEMBERED ONE. After a restart the
+    # head's zero is read back from a file rather than commanded, which is
+    # exact only while nobody turned the head by hand with the power off. That
+    # is a fair assumption on a harmonic drive and a bad one to leave unstated,
+    # because the failure it produces is a plausible-looking half-turn.
+    if origin == "restored":
+        why += (" -- and this scan's zero was restored from the last session "
+                "rather than commanded, so it holds only if the head was not "
+                "turned by hand while the power was off")
     return {"yaw_deg": shifted, "exact": True, "note": got.get("note"),
-            "why": ("carried over from the baseline, turned %.2f degrees for "
-                    "where the head was standing when this sweep began"
-                    % (float(saved) - float(anchor_deg)))}
+            "restored": origin == "restored", "why": why}
