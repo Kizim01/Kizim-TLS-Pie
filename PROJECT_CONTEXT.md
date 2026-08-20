@@ -2268,6 +2268,8 @@ still absent after a scan, the position is not being remembered and the carried-
 worthless across a reboot — check the service is running as a user that can write `~/TLS-Pie` (it runs
 as **root**, and the directory is `lipi:lipi` 755, which was tested writable).
 
+**⭐ The photograph is no longer refused for scoring low (2026-08-20).** The confidence **grades** instead of vetoing — the measurements never supported a verdict, since a real photograph scored 5.5 and an unrecognisable one 4.59 — and the legend gained real controls: **nudge ±1°/±10°, a ½ turn, the correlation's other fits as buttons, a camera height in cm, and Re-solve**. Only a flat correlation is still refused, which is structural. The apps also have an icon now (`make_icon.py`). Converter suite **437**.
+
 **⭐ Studio gained three things on 2026-08-20 (`main`)** — a cloud can be **removed** from the session (nothing is deleted on disk), a cut can be **aimed at one cloud** instead of going through the job as one solid, and **loading a cloud no longer re-fits the clip box**. Under the third was a dead `Cut the box`: the edit list read a box shape that stopped existing when the box learnt to turn, and threw before the cut could be previewed. Converter suite **398**. See "a cloud can be taken out".
 
 **⭐ The colour thread closed the same day** — the stairs scan's refusal was the CONFIDENCE failing, not
@@ -2882,6 +2884,91 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 **⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅ The photograph is no longer thrown away for scoring low — 2026-08-20
+
+**The operator's own words, and they settle the design:** *"lower the bar and give me controls for the
+image alignment, my image has a confidence of 4.6"*, then *"dont throw away images find the solve cos i
+know the imge is right as i am double checking."*
+
+**⛔⛔ THE SINGLE GATE WAS DOING TWO JOBS THAT PULL APART, AND THE NUMBERS SAY SO.** Keeping out an
+image that has nothing to do with this scan, and telling the operator how far to trust one that might.
+The measurements already in `colour.py` make the second impossible: a real photograph scored **5.5**
+and the best WRONG answer — *that same photograph downsampled 64x until unrecognisable* — scored
+**4.59**. A gate at 5.0 sat in a 0.9-wide gap, on a number that moves by **0.44 with the SAMPLE
+alone**. And it never separated a plausible wrong photo at any threshold: a similar room scores 6.29.
+
+So the refusal is gone and the score **grades** instead:
+
+| | |
+|---|---|
+| `≥ 5.0` (`SURE_CONFIDENCE`) | applied, quiet |
+| `≥ 4.0` (`MIN_CONFIDENCE`) | applied, **amber, "unsure"** — this band is exactly what the old gate refused |
+| below | applied, **amber, "weak fit"** |
+| flat correlation | **still refused** — structural |
+
+**⛔ THE ONE REFUSAL LEFT IS STRUCTURAL, AND THAT DISTINCTION IS THE WHOLE POINT.** An empty
+shortlist means the correlation had no spread at all — the panorama was too sparse for its gradients
+to mean anything. That is *"this cannot be aligned by anything"*, which is a different statement from
+*"this scored low"*, and it is the one case where colouring would be inventing an answer.
+
+**⚠ AND BE HONEST ABOUT THE TRADE.** At a floor of 4.0 an unrecognisable image now colours rather
+than being refused. That is deliberate, and the test pins it that way round: *"the flagged band SPANS
+the real photograph and the best wrong answer."* What was given up was never protection — it was a
+number that looked like protection. What replaces it is a person looking at the picture, with the
+controls to move it.
+
+**The controls, per scan, in the legend.**
+
+- **Nudge** ‹‹ ‹ › ›› (±1°, ±10°) and a **½ turn** button. ⭐ *The eye does the last few degrees, and
+  it needs to MOVE the picture to do that, not be told a number.* A half turn has its own button
+  because a half-turn error is the classic one here: the rig against a wall puts a once-round-the-
+  sphere term in both panoramas, and the correlation grows a rival bump half a turn away.
+- **Other fits** — the correlation's runners-up, as buttons with their scores. ⭐⭐ **A LOW
+  CONFIDENCE IS A STATEMENT THAT THE PEAK DID NOT STAND OUT, SO THE USEFUL REPLY TO IT IS THE
+  SHORTLIST, NOT A BETTER VERDICT.** `solve_yaw` computed the whole profile and returned one number,
+  throwing the rest away; `colour.peaks` now keeps the best few DISTINCT lags — at least a peak-width
+  apart, because one bump offered four times reads as four options and is one. ⛔ Trying one
+  deliberately does **not** save the baseline: a candidate is a question, not a claim.
+- **Camera height**, in centimetres. ⭐ `--camera-z` has existed on the CLI since the beginning and
+  **Studio always passed zero**. Every ray is taken from the camera's optical centre, so a centre that
+  really sat a few centimetres above the lidar's smears colour across near edges in a way no heading
+  can fix — and it changes the depth panorama the solve itself runs on. ⛔ A change of height
+  **keeps whichever path the scan is on**: a heading set by eye is not quietly re-solved away, and a
+  solved scan is solved again. ⛔ Refused past 0.5 m, naming the units: cm on screen, m on the wire,
+  so the slip to expect is a factor of a hundred.
+- **Re-solve** — the way back from a heading set by hand, which was a one-way door before.
+
+**Verified. Converter suite 398 → 437.** `solve_yaw` is unchanged to the last decimal by the refactor
+(the same 14.0 confidence and identical headings on all three fixtures), and `peaks`' first entry is
+asserted to BE the solved answer — the two share `_yaw_from_bin`, and a second copy of that arithmetic
+negating the other way would colour the cloud **mirrored about the camera, which looks wrong
+everywhere and obviously wrong nowhere**.
+
+**⚠ Three of the new checks failed first and were RIGHT to.** (1) The structural-refusal test assumed
+a shell of returns would produce a flat correlation; it came back graded `unsure` — the *opposite*
+branch. **Drive a branch, do not hope a fixture reaches it.** (2) The route check reported three live
+routes as uncalled the moment they moved behind a one-line `post()` helper — *a route test has to
+follow the call, not the spelling of the call.* (3) The metre-scale height guard was set at 2 m, which
+is a person's height; 0.5 m is the real bound.
+
+#### ✅ The apps have an icon — 2026-08-20
+
+`make_icon.py` draws it and writes `tlspie.ico` (256…16), a preview PNG, and
+`tlsconvert/icon_data.py` — a base64 PNG the page links as its favicon, **as a module rather than a
+data file, so it survives `--onefile` with no path to get wrong at run time**. `build_exe.py` passes
+`--icon` to all three builds; a missing .ico prints a note and builds with the default rather than
+failing.
+
+**⛔ AN ICON IS READ AT 16 PIXELS AND ALMOST NOTHING IN A LIGHT BURST SURVIVES THAT.** The small
+sizes are not the big one shrunk: below 32 px the glow is turned down to a fifth and the wireframe up,
+because at 16 px the same glow is most of the tile and swallows the shape whole — the first attempt's
+16 px was a bright blob. What carries the identity is the **silhouette**: a hexagon with three spokes,
+which is a corner-on cube and nothing else. Every size is rendered at 4x and downsampled, so a
+hairline lands as a soft grey that is always there instead of falling on or off a pixel.
+
+**⚠ Windows caches icons hard.** A rebuilt exe at the same path can go on showing the old icon in an
+Explorer window that was already open. Check a fresh window, or the taskbar.
 
 #### ✅ Studio: a cloud can be taken out, and a cut can name one cloud — 2026-08-20
 

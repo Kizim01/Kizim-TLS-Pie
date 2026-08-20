@@ -599,10 +599,64 @@ check("KNOWN LIMIT: a similar wrong room passes the gate, so the confidence "
 # an Insta360 X4 equirectangular): the true photograph scored 5.5 through
 # pipeline.sample_for_solve and 5.94 on the exported cloud, and the best wrong
 # answer -- that same photo downsampled 64x until unrecognisable -- scored 4.59.
-# A gate outside that window is either rejecting real photographs again or
-# waving through rubble, so it is the window that is asserted, not the number.
-check("the gate sits between a real photograph and the best wrong answer",
-      4.59 < colour.MIN_CONFIDENCE < 5.5, colour.MIN_CONFIDENCE)
+#
+# ⛔⛔ THERE IS NO LINE INSIDE THAT WINDOW, AND PRETENDING OTHERWISE IS WHAT
+# THIS USED TO DO. A single gate at 5.0 sat between 4.59 and 5.5 -- 0.4 of
+# margin on a number whose value moves by 0.44 with the SAMPLE alone. On
+# 2026-08-20 a real photograph of the operator's came in at 4.6 and was
+# refused, and the refusal left them with nothing on screen to judge.
+#
+# So the window is now spanned rather than split: the best wrong answer falls
+# INSIDE the flagged band instead of outside a gate. That is a deliberate
+# weakening of the automatic guard, bought with the controls that replaced it
+# -- nudges, the runners-up, and a person looking at the result. Asserted the
+# way it behaves, so nobody comes to believe the number decides anything.
+check("the flagged band SPANS the real photograph and the best wrong answer",
+      colour.MIN_CONFIDENCE < 4.59 and 5.5 >= colour.SURE_CONFIDENCE,
+      "floor %.1f, sure %.1f" % (colour.MIN_CONFIDENCE,
+                                 colour.SURE_CONFIDENCE))
+check("and the floor still sits above what pure noise scores",
+      conf_noise < colour.MIN_CONFIDENCE,
+      "noise %.2f against a floor of %.1f" % (conf_noise,
+                                              colour.MIN_CONFIDENCE))
+
+
+# --- the runners-up the solve used to throw away --------------------------
+print("\ncolour: the other fits")
+
+_flat = np.zeros(colour.SOLVE_LON_BINS)
+check("a correlation with no spread at all offers nothing",
+      colour.peaks(_flat) == [])
+
+# Two bumps, a quarter turn apart, one clearly better than the other.
+_two = np.random.RandomState(4).normal(0, 1.0, colour.SOLVE_LON_BINS)
+_two[40] += 30.0
+_two[130] += 18.0
+_got = colour.peaks(_two)
+check("two distinct bumps are both offered", len(_got) >= 2, len(_got))
+check("best first", _got[0]["confidence"] > _got[1]["confidence"])
+# ⛔ ONE BUMP OFFERED TWICE IS NOT A CHOICE. The lags either side of a peak
+# score almost as well as the peak, so an unfiltered top-4 would be the same
+# answer four times over -- which reads as four options and is one.
+_apart = colour.PEAK_EXCLUDE_DEG
+check("the offers are at least a peak-width apart, so none is a repeat",
+      all(abs(((a["yaw_deg"] - b["yaw_deg"]) + 540) % 360 - 180) >= _apart
+          for i, a in enumerate(_got) for b in _got[i + 1:]),
+      [round(g["yaw_deg"], 1) for g in _got])
+
+# ⛔⛔ AND THE FIRST OFFER MUST BE THE SOLVE'S OWN ANSWER. `peaks` and
+# `solve_yaw` each turn a correlation bin into a heading, and a second copy of
+# that arithmetic which negated the other way would colour the cloud MIRRORED
+# about the camera -- wrong everywhere and obviously wrong nowhere. They share
+# `_yaw_from_bin`, and this is what says so.
+_ry, _rc, _rp = colour.solve_yaw(room, render_lum(room, 37.0))
+_rfits = colour.peaks(_rp)
+check("the shortlist's first entry IS the solved heading",
+      abs(_rfits[0]["yaw_deg"] - _ry) < 1e-9,
+      "%.6f vs %.6f" % (_rfits[0]["yaw_deg"], _ry))
+check("and carries the solve's own confidence",
+      abs(_rfits[0]["confidence"] - _rc) < 1e-9,
+      "%.6f vs %.6f" % (_rfits[0]["confidence"], _rc))
 
 print("\ncolour: sampling and refusal")
 grad = np.zeros((180, 360, 3), np.uint8)
@@ -1460,7 +1514,13 @@ try:
     # served by do_GET with startswith rather than by do_POST with ==, so a
     # check that read only the POST table called a live route missing. A route
     # test that cannot see half the routes is worse than none.
-    _called = set(re.findall(r"fetch\('([a-z/]+)'", _page))
+    # ⛔ BOTH THE BARE fetch AND THE HELPER. This read only `fetch('...')`,
+    # and the moment three routes moved behind a one-line `post()` wrapper it
+    # reported them as uncalled -- a route check that stops seeing calls is the
+    # same class of failure as one that cannot see half the routes, which is
+    # what the note above is already about. It has to follow the call, not the
+    # spelling of the call.
+    _called = set(re.findall(r"(?:fetch|post)\('([a-z/]+)'", _page))
     _served = set(re.findall(r'path == "/([a-z/]+)"', _ALIGN_SRC))
     _served |= set(re.findall(r'path.startswith\("/([a-z/]+)"\)', _ALIGN_SRC))
     check("every route the page fetches is one the server answers",
@@ -2344,6 +2404,174 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
               _sz["sized"], _sz)
         check("and still reads a box saved in the older form",
               "2.0 x 3.0 x 4.0" in _sz["old"], _sz)
+
+
+# --- a low score no longer throws the photograph away ---------------------
+#
+# ⭐⭐ THE OPERATOR'S OWN WORDS, 2026-08-20: "dont throw away images find the
+# solve cos i know the imge is right as i am double checking". Their photograph
+# scored 4.6 and was refused, which left them with no picture to check against.
+# The confidence was never able to earn that authority -- a real photograph
+# measured 5.5 and an unrecognisable one 4.59 -- so it now GRADES rather than
+# vetoes, and the only refusal left is structural.
+print("\na low score no longer throws the photograph away")
+
+_gdir = tempfile.mkdtemp(prefix="tlsgrade")
+_gphoto = os.path.join(_gdir, "pano.jpg")
+_Image.fromarray(_himg).save(_gphoto)
+
+# A correlation with a real bump in it, so the shortlist is not empty; the
+# confidence colour_scan grades on is whatever solve_yaw reports.
+_gprof = np.random.RandomState(11).normal(0, 1.0, colour.SOLVE_LON_BINS)
+_gprof[40] += 25.0
+_gprof[200] += 12.0
+
+
+def _graded(conf):
+    """colour_scan's verdict when the solve reports `conf`."""
+    real = colour.solve_yaw
+    colour.solve_yaw = lambda *a, **k: (37.0, conf, _gprof)
+    try:
+        sc = align.Scan(os.path.join(_gdir, "g.pcap"), _sphere, None, _sphere)
+        return sc, align.colour_scan(sc, _gphoto)
+    finally:
+        colour.solve_yaw = real
+
+
+_sc, _hi = _graded(colour.SURE_CONFIDENCE + 1.0)
+check("a strong solve is applied and called sure",
+      _hi["ok"] is True and _hi["grade"] == "sure", _hi.get("grade"))
+check("and says nothing cautionary", _hi["caution"] is None, _hi["caution"])
+
+# The operator's own number.
+_sc, _mid = _graded(4.6)
+check("4.6 IS APPLIED -- the score the operator was refused on",
+      _mid["ok"] is True and _sc.rgb is not None, _mid.get("reason"))
+check("and is marked unsure rather than passed off as good",
+      _mid["grade"] == "unsure", _mid["grade"])
+check("with a caution that says what the number is worth",
+      "not evidence either way" in (_mid["caution"] or ""), _mid["caution"])
+
+# ⛔ AND BELOW THE FLOOR TOO. "Doubtful" is still a coloured cloud: the operator
+# asked for the picture, and a refusal at this end was what left them stuck.
+_sc, _low = _graded(2.0)
+check("even a score below the floor is applied, not withheld",
+      _low["ok"] is True and _sc.rgb is not None, _low.get("reason"))
+check("but it is called a weak fit", _low["grade"] == "doubtful", _low["grade"])
+
+# ⛔ THE ONE REFUSAL LEFT IS STRUCTURAL, and this is what tells it apart from
+# a low score: a flat correlation means the panorama had no edges to align at
+# all, so colouring would be inventing an answer rather than offering a poor
+# one. `solve_yaw` reports that case as an all-zero profile, which is what is
+# driven here -- the first attempt used a shell of returns on the assumption
+# its depth was constant enough to produce one, and it was not: it came back
+# graded `unsure`, which is the OPPOSITE branch. Assume nothing about which
+# fixture triggers a branch; drive the branch.
+_ssc = align.Scan(os.path.join(_gdir, "s.pcap"), _sphere, None, _sphere)
+_real_solve3 = colour.solve_yaw
+colour.solve_yaw = lambda *a, **k: (0.0, 0.0, np.zeros(colour.SOLVE_LON_BINS))
+try:
+    _sinfo = align.colour_scan(_ssc, _gphoto)
+finally:
+    colour.solve_yaw = _real_solve3
+check("a cloud that cannot be aligned by anything is still refused",
+      _sinfo["ok"] is False and _ssc.rgb is None, _sinfo.get("grade"))
+check("and says so structurally, not as a low score",
+      "too sparse" in (_sinfo["reason"] or ""), _sinfo.get("reason"))
+
+check("the runners-up travel with the answer",
+      len(_mid["candidates"]) >= 2, _mid["candidates"])
+check("and a heading given by hand is graded as given, with no shortlist",
+      align.colour_scan(
+          align.Scan(os.path.join(_gdir, "h.pcap"), _sphere, None, _sphere),
+          _gphoto, yaw=5.0)["grade"] == "given")
+
+
+# --- the camera height, which nothing in Studio could set -----------------
+#
+# ⭐ Every ray is taken from the camera's optical centre, so a centre that
+# really sat a few centimetres above the lidar's smears colour across near
+# edges in a way no heading can fix. `--camera-z` has existed on the CLI since
+# the beginning and Studio always passed zero.
+print("\nthe camera height")
+
+_cdir = tempfile.mkdtemp(prefix="tlscam")
+_cphoto = os.path.join(_cdir, "pano.jpg")
+_Image.fromarray(_himg).save(_cphoto)
+_csrv = align.AlignServer([], out_path=None)
+_cscan = align.Scan(os.path.join(_cdir, "c.pcap"), _sphere, None, _sphere)
+_csrv.scans = [_cscan]
+check("a scan starts with its camera on the lidar's own centre",
+      _cscan.camera_z == 0.0)
+check("setting a height before a photo is refused with a reason",
+      _csrv.set_camera(0, 0.05)["ok"] is False)
+
+align.colour_scan(_cscan, _cphoto, yaw=12.5)
+_cout = _csrv.set_camera(0, 0.08)
+check("with a photo it takes the height", _cout["ok"] is True,
+      _cout.get("error"))
+check("and remembers it on the scan", abs(_cscan.camera_z - 0.08) < 1e-9)
+check("the info reports the height it coloured from",
+      abs(_cout["info"]["camera_z"] - 0.08) < 1e-9)
+# ⛔ A HEADING ESTABLISHED BY EYE MUST NOT BE THROWN AWAY BY A CHANGE OF HEIGHT.
+check("a heading set by hand survives the height change",
+      _cout["resolved"] is False and
+      abs(_cout["info"]["yaw_deg"] - 12.5) < 1e-9, _cout["info"]["yaw_deg"])
+
+# ⛔ CENTIMETRES ON SCREEN, METRES ON THE WIRE: the slip to expect is a factor
+# of a hundred, and 1.7 m is a person's height rather than an offset between
+# two things bolted to one tripod.
+_bad = _csrv.set_camera(0, 1.7)
+check("a metre-scale height is refused as the units mistake it is",
+      _bad["ok"] is False and "one tripod" in _bad["error"], _bad)
+check("and the scan keeps the height it had",
+      abs(_cscan.camera_z - 0.08) < 1e-9, _cscan.camera_z)
+for _junk in (None, "high", float("nan")):
+    check("a height of %r is refused" % (_junk,),
+          _csrv.set_camera(0, _junk)["ok"] is False)
+
+# ⛔ AND A SOLVED SCAN IS SOLVED AGAIN, because for that one the height is an
+# input to the answer and not merely to where the colour lands.
+_real_solve2 = colour.solve_yaw
+colour.solve_yaw = lambda *a, **k: (37.0, 6.0, _gprof)
+try:
+    align.colour_scan(_cscan, _cphoto)          # back onto the solved path
+    _re = _csrv.set_camera(0, 0.03)
+    check("a solved scan is solved again at the new height",
+          _re["ok"] is True and _re["resolved"] is True, _re.get("error"))
+
+    # ⭐ AND THERE IS A WAY BACK FROM A HEADING SET BY HAND. Without it, giving
+    # one was a one-way door: the scan stopped being solved and the only way to
+    # ask the program again was to remove the photo and add it back.
+    align.colour_scan(_cscan, _cphoto, yaw=99.0)
+    check("a given heading is what the scan is on",
+          (_cscan.colour_info or {}).get("given") is True)
+    _rs2 = _csrv.resolve(0)
+    check("Re-solve puts it back on the solve", _rs2["ok"] is True and
+          _rs2["info"]["given"] is False, _rs2.get("error"))
+    check("and the heading is the solver's, not the one given",
+          abs(_rs2["info"]["yaw_deg"] - 99.0) > 1.0,
+          _rs2["info"]["yaw_deg"])
+    check("Re-solve on a scan with no photo is refused",
+          align.AlignServer([], out_path=None).resolve(0)["ok"] is False)
+    _cz = _csrv.resolve(0, 0.11)
+    check("Re-solve can carry a new height in with it",
+          _cz["ok"] is True and abs(_cscan.camera_z - 0.11) < 1e-9)
+finally:
+    colour.solve_yaw = _real_solve2
+
+# The page has to be able to reach all of it.
+check("the page can ask for a camera height", "'photo/camera'" in _ALIGN_SRC
+      or '"/photo/camera"' in _ALIGN_SRC)
+check("and for a fresh solve", '"/photo/resolve"' in _ALIGN_SRC)
+check("the nudge buttons turn the photograph by a degree and by ten",
+      "nudgeHeading(" in _ALIGN_SRC and "step(-10," in _ALIGN_SRC and
+      "step(1,'" in _ALIGN_SRC)
+# ⛔ TRYING A CANDIDATE IS A QUESTION, NOT A CLAIM. The baseline is a statement
+# about how the camera sits on the tripod; harvesting it from an exploratory
+# click would let one try become the default for every later scan.
+check("trying one of the other fits does not save a baseline",
+      "setHeading(index, yaw, false)" in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

@@ -39,6 +39,12 @@ STUDIO_NAME = "TLS-Pie-Studio"
 SCANNER_MODULES = ("tls_geometry.py", "tls_pcap.py", "tls_cloud.py",
                    "tls_cloudbuild.py")
 
+# The application mark, drawn by make_icon.py. Windows caches icons hard: a
+# rebuilt exe at the SAME path can go on showing the old one in an Explorer
+# window that was already open, which looks like a build that did not take.
+# Check a fresh Explorer window, or the taskbar, before believing that.
+ICON = os.path.join(HERE, "tlspie.ico")
+
 
 def scanner_dir():
     from tlsconvert import rig
@@ -99,6 +105,11 @@ def main(argv=None):
                "--exclude-module", "pandas",
                "--exclude-module", "scipy",
                "--exclude-module", "pytest"]
+        if os.path.exists(ICON):
+            cmd += ["--icon", ICON]
+        else:
+            print("  no %s -- run make_icon.py; building with the default icon"
+                  % os.path.basename(ICON))
         if windowed:
             cmd += ["--collect-all", "tkinterdnd2"]   # ships a Tcl extension
         if name == STUDIO_NAME:

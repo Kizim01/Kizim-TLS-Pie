@@ -118,6 +118,15 @@ class Scan(object):
         # pitch check do not apply to it. Everything else does.
         self.source = source
         self.photo = None              # the image colouring it, if any
+        # ⭐ HOW FAR THE CAMERA'S OPTICAL CENTRE SAT ABOVE THE LIDAR'S, in
+        # metres. The workflow puts the camera on the same tripod at the same
+        # height, so zero is the intended value and was the only value this
+        # program could produce -- `--camera-z` existed on the CLI and nothing
+        # in Studio ever set it. It is not cosmetic: every ray is taken from
+        # this point, so a centre that really sat 8 cm high smears colour
+        # across near edges in a way no heading can fix, and it changes the
+        # depth panorama the solve itself runs on.
+        self.camera_z = 0.0
         self.colour_info = None        # {yaw, confidence, reason} from the solve
         # Where the HEAD was standing when this sweep began, from the
         # sidecar. ⭐ It is the only thing that ties two clouds' azimuth
@@ -156,7 +165,11 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
     """
     info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
             "yaw_deg": None, "confidence": None, "reason": None,
-            "given": False, "ok": False}
+            "given": False, "ok": False, "camera_z": float(camera_z or 0.0),
+            # "given" | "sure" | "unsure" | "doubtful" -- how much the number
+            # is worth, said in words rather than decided by a threshold the
+            # operator cannot see. See colour.MIN_CONFIDENCE.
+            "grade": None, "caution": None, "candidates": []}
     if not photo:
         info["reason"] = "no photo"
         return info
@@ -190,20 +203,60 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
     # move would have been to weaken the gate for every scan.
     if yaw is not None:
         info["yaw_deg"], info["given"] = float(yaw), True
+        info["grade"] = "given"
     else:
         sample = (scan.sample if scan.sample is not None and len(scan.sample)
                   else scan.xyz)
-        yaw, confidence, _ = colour_mod.solve_yaw(sample, lum, camera=camera)
+        yaw, confidence, profile = colour_mod.solve_yaw(sample, lum,
+                                                        camera=camera)
         info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
-        if confidence < colour_mod.MIN_CONFIDENCE:
+        # ⭐ THE RUNNERS-UP GO OUT WITH THE ANSWER. A low confidence is a
+        # statement that the peak did not stand out -- which means there were
+        # others, and when the operator already knows the photograph is right,
+        # the correct heading is usually among them. Returning one number and
+        # dropping the profile made a weak solve a dead end; the shortlist
+        # makes it a choice. Filtered to the ones worth a click: a flat lag
+        # scores near zero and offering it would be offering noise as an option.
+        fits = colour_mod.peaks(profile)
+        info["candidates"] = [c for c in fits if c["confidence"] >= 2.0]
+
+        # ⛔ THE ONLY REMAINING REFUSAL IS A STRUCTURAL ONE. An empty
+        # shortlist means the correlation had no spread at all -- the panorama
+        # was too sparse for its gradients to mean anything, which `solve_yaw`
+        # reports as a flat profile. That is "this cannot be aligned by
+        # anything", a different statement from "this scored low", and it is
+        # the one case where colouring would be inventing an answer.
+        if not fits:
             info["reason"] = (
-                "the photo does not line up with this scan (confidence %.1f, "
-                "need %.1f) -- a wrong image, or the camera moved between the "
-                "scan and the shot, or the peak is too broad to score: that "
-                "happens when the rig stands against a wall. Look at the "
-                "heading offered beside it before deciding."
-                % (confidence, colour_mod.MIN_CONFIDENCE))
+                "this cloud cannot be aligned against any photograph: its "
+                "depth panorama is too sparse for the edges to mean anything. "
+                "Re-read at a finer preview detail, or set the heading by hand."
+            )
             return info
+
+        # ⛔⛔ AND A LOW SCORE NO LONGER THROWS THE PHOTOGRAPH AWAY. The old
+        # gate refused below 5.0 and left the points their previous colour,
+        # which hands the operator nothing to look at -- and the confidence was
+        # never able to earn that authority: a real photograph measured 5.5 and
+        # the best WRONG answer, that same photograph downsampled 64x until
+        # unrecognisable, measured 4.59. There is no line between those that is
+        # not arbitrary. So it is applied and GRADED, and the thing that
+        # actually judges it is the picture on screen with the heading controls
+        # beside it.
+        if confidence >= colour_mod.SURE_CONFIDENCE:
+            info["grade"] = "sure"
+        else:
+            info["grade"] = ("unsure" if confidence >= colour_mod.MIN_CONFIDENCE
+                             else "doubtful")
+            info["caution"] = (
+                "confidence %.1f, %s %.1f -- around what an unrecognisable "
+                "image has scored, so the number is not evidence either way. "
+                "Judge it by looking: nudge the heading, or try one of the "
+                "other fits."
+                % (confidence,
+                   "under" if confidence >= colour_mod.MIN_CONFIDENCE
+                   else "well under",
+                   colour_mod.SURE_CONFIDENCE))
 
     scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw, camera=camera)
     scan.photo = photo
@@ -402,7 +455,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/photo/heading":
                 return self._json(srv.set_heading(
                     body.get("index"), body.get("yaw"),
-                    body.get("remember", True)))
+                    body.get("remember", True), body.get("camera_z")))
+            if path == "/photo/resolve":
+                return self._json(srv.resolve(body.get("index"),
+                                              body.get("camera_z")))
+            if path == "/photo/camera":
+                return self._json(srv.set_camera(body.get("index"),
+                                                 body.get("z")))
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or []))
             if path == "/remove":
@@ -462,6 +521,7 @@ class AlignServer(object):
                      .replace("__META__", json.dumps(meta))
                      .replace("__CHUNK__", str(viewer.CHUNK_POINTS))
                      .replace("__OUT__", json.dumps(out_path or ""))
+                     .replace("__ICON__", _favicon())
                      .encode("utf-8"))
         handler = type("_H", (_Handler,), {"server_ref": self})
         self.httpd = _TCP(("127.0.0.1", port), handler)
@@ -499,6 +559,12 @@ class AlignServer(object):
                          # checking the refusal by eye, and withholding it
                          # makes a refusal a dead end instead of a question.
                          "photoGiven": bool(info.get("given")),
+                         "grade": info.get("grade"),
+                         "caution": info.get("caution"),
+                         # The runners-up, so a weak solve is a choice rather
+                         # than a dead end.
+                         "fits": info.get("candidates") or [],
+                         "cameraZ": getattr(scan, "camera_z", 0.0),
                          "anchor": scan.anchor_deg,
                          "baseline": library.recall_heading(
                              scan.anchor_deg,
@@ -785,7 +851,8 @@ class AlignServer(object):
         self._progress = {"stage": "aligning the photo to %s" % scan.name,
                           "n": 0, "total": 1, "busy": True}
         try:
-            info = colour_scan(scan, filed["photo"])
+            info = colour_scan(scan, filed["photo"],
+                               camera_z=getattr(scan, "camera_z", 0.0))
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -797,7 +864,100 @@ class AlignServer(object):
                 "info": info, "organised": filed.get("organised"),
                 "scans": self._rebuild()}
 
-    def set_heading(self, index, yaw, remember=True):
+    def _photo_of(self, index):
+        """(scan, photo) for an index, or (None, error) -- the shared check."""
+        try:
+            index = int(index)
+            if index < 0:
+                raise IndexError(index)
+            scan = self.scans[index]
+        except (TypeError, ValueError, IndexError):
+            return None, "no such scan"
+        photo = scan.photo or (scan.colour_info or {}).get("photo")
+        if not photo:
+            return None, "add a photo to this scan before aligning it"
+        return scan, photo
+
+    def resolve(self, index, camera_z=None):
+        """
+        Solve this scan's photo again, from scratch.
+
+        ⭐ THE WAY BACK FROM A HEADING SET BY HAND. Once a heading is given the
+        scan stops being solved, and without this there is no way to ask the
+        program what it thinks any more -- the operator would have to remove
+        the photo and add it again. It is also how a changed camera height gets
+        a fresh answer, since the height changes the depth panorama the solve
+        runs on and not merely where the colour lands.
+        """
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        if camera_z is not None:
+            try:
+                scan.camera_z = float(camera_z)
+            except (TypeError, ValueError):
+                return {"ok": False,
+                        "error": "a camera height in metres is needed"}
+        self._progress = {"stage": "solving %s" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            info = colour_scan(scan, photo, camera_z=scan.camera_z)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        return {"ok": bool(info.get("ok")), "info": info,
+                "error": None if info.get("ok") else info.get("reason"),
+                "scans": self._rebuild()}
+
+    def set_camera(self, index, z):
+        """
+        Move the camera's optical centre up or down and repaint.
+
+        ⛔ IT KEEPS WHICHEVER PATH THE SCAN IS ALREADY ON. A scan coloured
+        from a heading the operator gave must not be quietly re-solved by a
+        change of height -- that would throw away the one thing they had
+        established by looking. A scan that was solved is solved again, because
+        for that one the height is an input to the answer rather than only to
+        where the colour lands.
+        """
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        try:
+            z = float(z)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "a camera height in metres is needed"}
+        if not (z == z and abs(z) != float("inf")):
+            return {"ok": False, "error": "a camera height in metres is needed"}
+        # ⛔ A METRE IS NOT A PLAUSIBLE ANSWER, and the units are the reason to
+        # say so: this box is in centimetres on screen and metres on the wire,
+        # so a slip of a hundred is the mistake to expect. It is the difference
+        # between two optical centres on ONE tripod.
+        if abs(z) > 0.5:
+            return {"ok": False,
+                    "error": "%.2f m is not a height difference between two "
+                             "things on one tripod -- this is how far the "
+                             "camera's centre sat ABOVE the lidar's, normally "
+                             "a few centimetres. Check the units: this box is "
+                             "in CENTIMETRES." % z}
+        scan.camera_z = z
+        was = scan.colour_info or {}
+        keep = (float(was["yaw_deg"])
+                if (was.get("given") and was.get("yaw_deg") is not None)
+                else None)
+        self._progress = {"stage": "colouring %s" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            info = colour_scan(scan, photo, camera_z=z, yaw=keep)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        return {"ok": bool(info.get("ok")), "info": info,
+                "resolved": keep is None,
+                "error": None if info.get("ok") else info.get("reason"),
+                "scans": self._rebuild()}
+
+    def set_heading(self, index, yaw, remember=True, camera_z=None):
         """
         Colour a scan from a heading the operator supplies, skipping the solve.
 
@@ -840,11 +1000,18 @@ class AlignServer(object):
             return {"ok": False,
                     "error": "add a photo to this scan before setting a heading"}
 
+        if camera_z is not None:
+            try:
+                scan.camera_z = float(camera_z)
+            except (TypeError, ValueError):
+                return {"ok": False,
+                        "error": "a camera height in metres is needed"}
         yaw = (yaw + 180.0) % 360.0 - 180.0
         self._progress = {"stage": "colouring %s" % scan.name,
                           "n": 0, "total": 1, "busy": True}
         try:
-            info = colour_scan(scan, photo, yaw=yaw)
+            info = colour_scan(scan, photo, yaw=yaw,
+                               camera_z=getattr(scan, "camera_z", 0.0))
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
         if not info.get("ok"):
@@ -1108,9 +1275,25 @@ class AlignServer(object):
             pass
 
 
+def _favicon():
+    """
+    The app mark as base64 PNG, or nothing at all.
+
+    ⛔ A MISSING MARK IS A PLAIN PAGE, NEVER A CRASH. `icon_data` is
+    generated by make_icon.py and is not required for anything to work; a
+    checkout without it must still open the workbench.
+    """
+    try:
+        from . import icon_data
+        return icon_data.FAVICON_PNG_B64
+    except Exception:                                     # noqa: BLE001
+        return ""
+
+
 PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <title>Align scans</title>
+<link rel="icon" href="data:image/png;base64,__ICON__">
 <style>
   /* Same tokens as the scanner's control panel in tls_web.py, so the two
      programs of one instrument look like one instrument. Copied deliberately
@@ -1198,6 +1381,11 @@ PAGE = r"""<!doctype html>
   .photo .deg{width:62px;flex:none;padding:1px 4px;font-size:10.5px;
     text-align:right}
   .photo .warn{color:#FFD60A}
+  .photo .step{padding:2px 5px;font-size:10.5px;min-width:0}
+  /* The runners-up. Quiet, because most of the time the first one is right. */
+  .fits{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 0 15px}
+  .fits button{padding:2px 6px;font-size:10px;border-radius:8px;width:auto;
+    flex:none}
   .photo .bad{color:#FF6B60}
   .photo .good{color:#30D158}
   .sw{display:inline-block;width:9px;height:9px;border-radius:50%;
@@ -2037,6 +2225,11 @@ async function loadScan(m){
           photo:m.photo, photoOk:!!m.photoOk, photoWhy:m.photoWhy,
           confidence:m.confidence, yaw:m.yaw,
           photoGiven:!!m.photoGiven, anchor:m.anchor, baseline:m.baseline,
+    /* ⛔ EVERY FIELD THE LEGEND READS HAS TO BE COPIED HERE. This object is
+       built field by field, so one the server sends and this drops is a
+       control that renders blank with nothing thrown -- which is exactly how
+       the photo row was born broken once already. */
+    grade:m.grade, caution:m.caution, fits:m.fits||[], cameraZ:m.cameraZ||0,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
 
@@ -3210,11 +3403,21 @@ function photoRow(s){
     return '<div class="photo"><span class="grow">no photo</span>'+btn+'</div>';
   const conf = (s.confidence==null) ? '' :
                ' · confidence '+(+s.confidence).toFixed(1);
+  /* ⛔ THREE STATES, NOT TWO, BECAUSE THE PHOTOGRAPH IS NO LONGER THROWN
+     AWAY FOR SCORING LOW. Applied-and-sure, applied-and-doubtful, and the one
+     remaining refusal, which is structural: an unreadable image, a cloud that
+     has been moved, or a panorama too sparse to align anything against. Green
+     for a low score would be a lie and red would be one too -- it is amber,
+     and the reason is in the tooltip. */
   let head;
   if(s.photoGiven)
     head = '<span class="grow good" title="You set this heading; the solve was '+
            'not consulted.">'+s.photo+' · heading '+
            (+s.yaw).toFixed(2)+'° · set by you</span>';
+  else if(s.photoOk && s.grade!=='sure')
+    head = '<span class="grow warn" title="'+
+           (s.caution||'').replace(/"/g,'&quot;')+'">'+s.photo+conf+
+           ' · '+(s.grade==='doubtful'?'weak fit':'unsure')+'</span>';
   else if(s.photoOk)
     head = '<span class="grow good" title="heading '+
            (s.yaw==null?'?':(+s.yaw).toFixed(2))+'°">'+s.photo+conf+'</span>';
@@ -3233,12 +3436,57 @@ function photoRow(s){
     '<button class="mini" title="'+(b.why||'').replace(/"/g,'&quot;')+
     '" onclick="useBaseline('+s.index+')">baseline '+
     (+b.yaw_deg).toFixed(1)+'°'+(b.exact?'':' ?')+'</button>';
+  /* ⭐ THE NUDGES ARE THE CONTROL THAT MATTERS. The solve puts the picture
+     somewhere close and the eye does the last few degrees -- and the eye needs
+     to MOVE it to do that, not to be told a number. Each press re-colours and
+     redraws, so the wall either walks onto the wall or it does not. Coarse and
+     fine on the same row because the two mistakes are different sizes: a
+     quarter-turn wrong is the peak landing on the wrong bump, a degree or two
+     wrong is the tripod having been nudged between the scan and the shot. */
+  const step = (d, label) =>
+    '<button class="mini step" title="turn the photograph '+
+    (d>0?'+':'')+d+' degrees" onclick="nudgeHeading('+s.index+','+d+
+    ')">'+label+'</button>';
+  /* ⛔ THE RUNNERS-UP EXIST BECAUSE A LOW CONFIDENCE MEANS THE PEAK DID NOT
+     STAND OUT -- so there were others, and when the photograph is known to be
+     right the answer is usually one of them. They are TRIES, not decisions:
+     they do not save the baseline. */
+  const fits = (s.fits||[]).filter(f =>
+    s.yaw==null || Math.abs(((f.yaw_deg-s.yaw)+540)%360-180) > 1.0);
+  const fitrow = !fits.length ? '' :
+    '<div class="fits"><span style="color:var(--faint);font-size:10px;'+
+    'align-self:center">other fits</span>'+
+    fits.map(f => '<button title="the correlation\'s next best answer, '+
+      'scoring '+(+f.confidence).toFixed(1)+' -- trying it does not save a '+
+      'baseline" onclick="tryFit('+s.index+','+(+f.yaw_deg).toFixed(2)+
+      ')">'+(f.yaw_deg>0?'+':'')+(+f.yaw_deg).toFixed(1)+'° ('+
+      (+f.confidence).toFixed(1)+')</button>').join('')+'</div>';
+  /* ⭐ AND THE CAMERA HEIGHT, WHICH NOTHING IN STUDIO COULD SET UNTIL NOW.
+     Every ray is taken from this point, so a centre that really sat a few
+     centimetres above the lidar's smears colour across near edges in a way no
+     heading can fix. In centimetres here and metres on the wire. */
+  const cz = ((+s.cameraZ||0)*100).toFixed(1);
   return '<div class="photo">'+head+btn+'</div>'+
          '<div class="photo"><span class="grow">heading</span>'+
+         step(-10,'‹‹')+step(-1,'‹')+
          '<input class="deg" id="hd'+s.index+'" type="number" step="0.1" '+
          'min="-180" max="180" value="'+start+'">'+
+         step(1,'›')+step(10,'››')+
          '<button class="mini" onclick="setHeading('+s.index+')">Use</button>'+
-         bbtn+'</div>';
+         '</div>'+ fitrow +
+         '<div class="photo"><span class="grow">camera height</span>'+
+         '<input class="deg" id="cz'+s.index+'" type="number" step="0.5" '+
+         'min="-200" max="200" value="'+cz+'">'+
+         '<span style="color:var(--faint)">cm</span>'+
+         '<button class="mini" onclick="setCamera('+s.index+')">Set</button>'+
+         '<button class="mini step" title="Turn the photograph half a turn. '+
+         'A half-turn error is the classic one here: the rig against a wall '+
+         'puts a once-round-the-sphere term in both panoramas, and the '+
+         'correlation has a rival bump half a turn away." onclick='+
+         '"nudgeHeading('+s.index+',180)">\u00bd turn</button>'+
+         '<button class="mini" title="Solve this photograph again from '+
+         'scratch, forgetting any heading set by hand." onclick="resolve('+
+         s.index+')">Re-solve</button>'+bbtn+'</div>';
 }
 
 function refreshLists(){
@@ -3450,25 +3698,98 @@ async function addPhoto(index){
    ⛔ AND IT IS DELIBERATELY NOT ONE CLICK FROM A REFUSAL. The number has to
    be read, or accepted, before it is sent -- because the same refusal that was
    wrong here is right when someone has dropped the wrong image beside a scan. */
-async function setHeading(index, deg){
+/* Turn the photograph by hand and look.
+
+   ⭐ WHY A NUDGE AND NOT A SLIDER. Each step is a round trip that re-samples
+   the panorama and re-uploads the cloud, so a slider dragged across 360
+   degrees would queue a hundred of them. A press is one answer, and the eye
+   only ever needs a handful. */
+function nudgeHeading(index, by){
+  const box=$('hd'+index);
+  const now = box && isFinite(parseFloat(box.value)) ? parseFloat(box.value) : 0;
+  const to = ((now + by + 180) % 360 + 360) % 360 - 180;
+  if(box) box.value = to.toFixed(2);
+  setHeading(index, to);
+}
+
+/* One of the correlation's other answers.
+
+   ⛔ DELIBERATELY DOES NOT SAVE THE BASELINE. The baseline is a claim about
+   how the camera sits on the tripod, and trying a candidate is a question, not
+   a claim. Pressing Use once it looks right is what makes it one. */
+function tryFit(index, yaw){
+  const box=$('hd'+index); if(box) box.value=(+yaw).toFixed(2);
+  setHeading(index, yaw, false);
+}
+
+/* How far the camera's optical centre sat above the lidar's.
+
+   ⛔ CENTIMETRES ON SCREEN, METRES ON THE WIRE. The rest of this program is
+   in metres and a box labelled cm that sends metres would be out by a hundred
+   -- which is why the server refuses anything past 2 m outright rather than
+   quietly colouring from a point above the ceiling. */
+async function setCamera(index){
+  const box=$('cz'+index);
+  const cm = box ? parseFloat(box.value) : NaN;
+  if(!isFinite(cm)) return say('Type a camera height in centimetres.', 'warn');
+  say('re-colouring…'); watch(true);
+  try{
+    const j=await post('photo/camera', {index, z:cm/100.0});
+    if(!j.ok) throw new Error(j.error||'could not set the camera height');
+    await afterColour(j);
+    say('Camera centre set '+cm.toFixed(1)+' cm '+(cm<0?'below':'above')+
+        ' the lidar’s'+(j.resolved ? ' and the heading solved again from '+
+        'the new panorama.' : ' — your heading was kept.'));
+  }catch(e){ watch(false);
+             say('Could not set the camera height: '+e.message, 'bad'); }
+}
+
+/* Ask the program what it thinks, again. */
+async function resolve(index){
+  say('solving…'); watch(true);
+  try{
+    const j=await post('photo/resolve', {index});
+    if(!j.ok) throw new Error(j.error||'could not solve it');
+    await afterColour(j);
+    const i=j.info||{};
+    say('Solved again: heading '+(i.yaw_deg==null?'?':(+i.yaw_deg).toFixed(2))+
+        '°, confidence '+(i.confidence==null?'?':(+i.confidence).toFixed(1))+
+        '. '+(i.caution || 'The other fits, if any, are listed beside it.'),
+        i.grade==='sure' ? null : 'warn');
+  }catch(e){ watch(false); say('Could not solve it: '+e.message, 'bad'); }
+}
+
+/* Everything the page must redo after a scan has been re-coloured. */
+async function afterColour(j){
+  await rebuildFrom(j.scans);
+  measure(); refreshLists(); invalidate(); watch(false); dirty();
+  /* Switch to photo colour, or the work reads as having done nothing -- the
+     cloud is still tinted by origin until somebody asks. */
+  V.mode=2; $('mode').textContent='Photo / intensity';
+  $('mode').classList.remove('on');
+}
+
+function post(where, body){
+  return fetch(where, {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(r=>r.json());
+}
+
+async function setHeading(index, deg, remember){
   const box=$('hd'+index);
   const yaw = (deg==null) ? (box ? parseFloat(box.value) : NaN) : deg;
   if(!isFinite(yaw)){ say('Type a heading in degrees first.', 'warn'); return; }
+  const keep = (remember===undefined) ? true : !!remember;
   say('colouring…'); watch(true);
   try{
-    const r=await fetch('photo/heading',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index, yaw})});
-    const j=await r.json();
+    const j=await post('photo/heading', {index, yaw, remember:keep});
     if(!j.ok) throw new Error(j.error||'could not use that heading');
-    await rebuildFrom(j.scans);
-    measure(); refreshLists(); invalidate(); watch(false); dirty();
-    /* Switch to photo colour, or the work reads as having done nothing. */
-    V.mode=2; $('mode').textContent='Photo / intensity';
-    $('mode').classList.remove('on');
+    await afterColour(j);
     say('Coloured at '+(+yaw).toFixed(2)+'°, your heading — the solve was '+
-        'not consulted.'+(j.remembered ? ' Saved as the baseline for the next '+
-        'scan.' : ' The baseline could not be saved.'));
+        'not consulted.'+(!keep ? ' Trying a fit, so the baseline was left '+
+        'alone — press Use when it looks right.'
+        : (j.remembered ? ' Saved as the baseline for the next scan.'
+                        : ' The baseline could not be saved.')));
   }catch(e){ watch(false); say('Could not use that heading: '+e.message, 'bad'); }
 }
 

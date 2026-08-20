@@ -132,7 +132,31 @@ MIN_FILLED_FRACTION = 0.55
 # SAMPLE: the same photo scored 5.5 through the pipeline's own sample_for_solve
 # and 5.94 on the exported cloud. That 0.44 is a third of the whole margin, so
 # do not read the second decimal as if it meant anything.
-MIN_CONFIDENCE = 5.0
+# ⭐ TWO NUMBERS NOW, NOT ONE, AND THE REASON IS THE MEASUREMENTS ABOVE.
+# The old single gate of 5.0 was doing two jobs that pull in opposite
+# directions: keeping out an image that has nothing to do with this scan, and
+# telling the operator how much to trust one that might. It could not do both,
+# because the numbers overlap -- a real photograph measured 5.5 and the best
+# WRONG answer, that same photograph downsampled 64x until unrecognisable,
+# measured 4.59. There is no line between those two that is not arbitrary.
+#
+# So the refusal drops to the floor where the answer is genuinely worthless,
+# and the band above it is COLOURED AND FLAGGED rather than withheld. A refusal
+# hands the operator nothing to look at; a flagged result hands them the thing
+# the confidence cannot judge -- the picture itself, with controls to move it.
+#
+# ⛔ AND BE CLEAR WHAT THIS BUYS AND WHAT IT COSTS. At 4.0 the floor sits
+# below that 4.59, so an unrecognisable image now COLOURS rather than being
+# refused. That is a deliberate trade: it was already true that a plausible
+# wrong photo passed at any workable threshold (a similar room scores 6.29),
+# so the gate was never the protection it looked like. What replaces it is the
+# grade on screen, the runners-up beside it, and a person looking at the
+# result -- see `peaks`.
+MIN_CONFIDENCE = 4.0
+
+# At or above this, the alignment is quiet. Between the two, it is applied and
+# marked unsure -- this is exactly the band the old gate refused.
+SURE_CONFIDENCE = 5.0
 
 # Half-width of the window around the peak that is excluded when judging how
 # far it stands out. The peak is genuinely this broad, so anything inside the
@@ -287,6 +311,77 @@ def image_panorama(lum, lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
     return out / np.maximum(counts, 1)
 
 
+def _yaw_from_bin(profile, best):
+    """
+    A correlation bin turned into a heading, refined between its neighbours.
+
+    ⛔ ONE HOME, BECAUSE THE SIGN IS THE EASIEST THING HERE TO GET WRONG.
+    `solve_yaw` and `peaks` both need this, and a second copy that negated the
+    other way would colour a cloud with the scene MIRRORED about the camera --
+    which looks wrong everywhere and obviously wrong nowhere.
+    """
+    y0 = profile[(best - 1) % SOLVE_LON_BINS]
+    y1 = profile[best]
+    y2 = profile[(best + 1) % SOLVE_LON_BINS]
+    denom = y0 - 2 * y1 + y2
+    shift = best + (0.5 * (y0 - y2) / denom if denom else 0.0)
+    # ⚠ THE SIGN. irfft(fa * conj(fb)) is corr(b, a), whose peak sits at the
+    # lag that carries the CLOUD onto the IMAGE. Sampling needs the opposite --
+    # the angle that carries a world bearing into the photograph -- so the peak
+    # is negated.
+    step = 360.0 / SOLVE_LON_BINS
+    return float((-shift * step + 180.0) % 360.0 - 180.0)
+
+
+def _shoulder(profile, best):
+    """(mean, sd) of the correlation away from one peak's own shoulders."""
+    idx = np.arange(profile.size)
+    gap = np.minimum(np.abs(idx - best), profile.size - np.abs(idx - best))
+    outside = profile[gap > int(PEAK_EXCLUDE_DEG * SOLVE_LON_BINS / 360.0)]
+    if not outside.size:
+        return 0.0, 0.0
+    return float(outside.mean()), float(outside.std())
+
+
+def peaks(profile, count=4):
+    """
+    The best few DISTINCT headings the correlation offers, best first.
+
+    ⭐ WHY THE RUNNERS-UP ARE WORTH SHOWING. When the peak is sharp the
+    second-best is noise and nobody needs it. When it is not -- which is
+    precisely when the operator is stuck -- the correct answer is often the
+    second or third bump, and until now there was no way to know they existed:
+    `solve_yaw` returned one number and the whole profile was thrown away. A
+    low confidence is a statement that the peak did not stand out, so the useful
+    reply to it is the SHORTLIST, not a better verdict.
+
+    Scored against the same shoulder-excluded baseline `solve_yaw` uses, so the
+    first entry's confidence is that function's confidence exactly.
+
+    Candidates must sit at least a peak-width apart: two lags either side of one
+    bump are one answer offered twice, which reads as a choice and is not.
+    """
+    profile = np.asarray(profile, dtype=np.float64)
+    if profile.size < 3:
+        return []
+    best = int(np.argmax(profile))
+    mean, sd = _shoulder(profile, best)
+    if not sd:
+        return []
+    apart = max(1, int(PEAK_EXCLUDE_DEG * SOLVE_LON_BINS / 360.0))
+    got = []
+    for b in np.argsort(profile)[::-1]:
+        b = int(b)
+        if any(min(abs(b - o), profile.size - abs(b - o)) < apart
+               for o in got):
+            continue
+        got.append(b)
+        if len(got) >= count:
+            break
+    return [{"yaw_deg": _yaw_from_bin(profile, b),
+             "confidence": float((profile[b] - mean) / sd)} for b in got]
+
+
 def solve_yaw(xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
     """
     Recover the camera's heading. Returns (yaw_deg, confidence, profile).
@@ -322,28 +417,9 @@ def solve_yaw(xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
     # 3.67 and pure noise scored 2.73, which is no discrimination at all.
     # Excluding a window either side turns the same data into 8.18 against 3.23.
     best = int(np.argmax(profile))
-    idx = np.arange(profile.size)
-    gap = np.minimum(np.abs(idx - best), profile.size - np.abs(idx - best))
-    outside = profile[gap > int(PEAK_EXCLUDE_DEG * SOLVE_LON_BINS / 360.0)]
-    spread = outside.std() if outside.size else 0.0
-    confidence = (float((profile[best] - outside.mean()) / spread)
-                  if spread else 0.0)
-
-    # Parabolic refinement between the winning bin and its neighbours.
-    y0 = profile[(best - 1) % SOLVE_LON_BINS]
-    y1 = profile[best]
-    y2 = profile[(best + 1) % SOLVE_LON_BINS]
-    denom = y0 - 2 * y1 + y2
-    shift = best + (0.5 * (y0 - y2) / denom if denom else 0.0)
-
-    # ⚠ THE SIGN. irfft(fa * conj(fb)) is corr(b, a), whose peak sits at the lag
-    # that carries the CLOUD onto the IMAGE. Sampling needs the opposite -- the
-    # angle that carries a world bearing into the photograph -- so the peak is
-    # negated. Getting this backwards colours a cloud with the scene mirrored
-    # about the camera, which looks wrong everywhere and obviously wrong nowhere.
-    step = 360.0 / SOLVE_LON_BINS
-    yaw = (-shift * step + 180.0) % 360.0 - 180.0
-    return float(yaw), confidence, profile
+    mean, spread = _shoulder(profile, best)
+    confidence = float((profile[best] - mean) / spread) if spread else 0.0
+    return _yaw_from_bin(profile, best), confidence, profile
 
 
 class Colouriser:
