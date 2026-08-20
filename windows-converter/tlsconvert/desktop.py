@@ -96,7 +96,16 @@ WINDOW = [None]
 # Browse went on working and made the fault look like it belonged to projects.
 # These are checked against pywebview's own parser by the test suite, because a
 # rule this arbitrary will not be remembered.
-CAPTURE_FILTERS = ("Scanner captures (*.pcap)", "All files (*.*)")
+CAPTURE_FILTERS = ("Scans and clouds (*.pcap;*.las;*.laz;*.ply)",
+                   "Scanner captures (*.pcap)",
+                   "Point clouds (*.las;*.laz;*.ply)",
+                   "All files (*.*)")
+# ⛔ PLAIN WORDS AND SPACES IN EVERY LABEL. pywebview validates each
+# filter against ^([\\w ]+)\\(...\\)$ before it opens anything, so a
+# hyphen or a comma here raises instead of showing a dialog -- which is
+# exactly how "TLS-Pie project (*.tlspie)" once made Save do nothing.
+IMAGE_FILTERS = ("Panorama images (*.jpg;*.jpeg;*.png;*.tif;*.tiff)",
+                 "All files (*.*)")
 PROJECT_FILTERS = ("TLS Pie project (*.tlspie)", "All files (*.*)")
 
 
@@ -115,6 +124,17 @@ def pick_files(title="Add a scan"):
     import webview
     chosen = win.create_file_dialog(
         webview.OPEN_DIALOG, allow_multiple=True, file_types=CAPTURE_FILTERS)
+    return list(chosen or [])
+
+
+def pick_image(title="Add a 360 photo"):
+    """One equirectangular image from the running window. [] if cancelled."""
+    win = WINDOW[0]
+    if win is None:
+        return []
+    import webview
+    chosen = win.create_file_dialog(
+        webview.OPEN_DIALOG, allow_multiple=False, file_types=IMAGE_FILTERS)
     return list(chosen or [])
 
 

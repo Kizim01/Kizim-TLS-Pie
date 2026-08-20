@@ -15,6 +15,8 @@ import math
 import os
 import re
 import struct
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -1425,6 +1427,7 @@ try:
 except ValueError as exc:
     check("merge refuses a single capture", "at least two" in str(exc))
 
+_ALIGN_SRC = open(align.__file__, encoding="utf-8").read()
 _srv = align.AlignServer([], out_path=None)
 try:
     _page = _srv.page.decode("utf-8")
@@ -1445,6 +1448,84 @@ try:
           registration.estimate_work(6.0))
     check("a wider search is more work, so the bar scales with the job",
           registration.estimate_work(9.0) >= registration.estimate_work(6.0))
+    # ⛔⛔ EVERY ROUTE THE PAGE CALLS MUST EXIST ON THE SERVER, AND THIS IS THE
+    # SHAPE OF BUG THAT ONCE KILLED TWO WHOLE TOOLS. The levelling and plumb
+    # tools were dead for hours because a press was routed to a branch that
+    # existed and was wrong; a fetch to a route that does NOT exist is the same
+    # failure one layer out, and it presents as a button that does nothing.
+    # Neither side is read by a human here: the routes are pulled out of the
+    # page's own fetch() calls and out of do_POST's own comparisons.
+    # ⛔ BOTH VERBS. The first run of this check failed on `points/`, which is
+    # served by do_GET with startswith rather than by do_POST with ==, so a
+    # check that read only the POST table called a live route missing. A route
+    # test that cannot see half the routes is worse than none.
+    _called = set(re.findall(r"fetch\('([a-z/]+)'", _page))
+    _served = set(re.findall(r'path == "/([a-z/]+)"', _ALIGN_SRC))
+    _served |= set(re.findall(r'path.startswith\("/([a-z/]+)"\)', _ALIGN_SRC))
+    check("every route the page fetches is one the server answers",
+          _called and _called <= _served,
+          "page calls %s, server has %s" % (sorted(_called - _served),
+                                            sorted(_served)))
+    check("including the two the photo button needs",
+          {"photo/browse", "photo/add"} <= (_called & _served),
+          sorted(_called & _served))
+
+    # A photo can be attached from inside the program, per scan.
+    check("the legend offers a photo control per scan",
+          all(t in _page for t in ("photoRow", "addPhoto", "Add photo",
+                                   "Replace")))
+    # ⭐ AND THE CONFIDENCE IS ON SCREEN WHETHER OR NOT IT PASSED. The gate is a
+    # weak discriminator -- a photo of a similar room scores above it -- so the
+    # number is a hint for a person and hiding it on success would hide the one
+    # thing that separates a good match from a plausible one.
+    check("and shows the confidence, not just success or failure",
+          "confidence " in _page and "photoOk" in _page)
+    check("a scan that came from an exported cloud is labelled as one",
+          "'cloud'" in _page and "source" in _page)
+
+    # ⛔⛔ AND EVERY FIELD THE LEGEND READS MUST SURVIVE loadScan, WHICH BUILDS
+    # ITS OWN OBJECT FIELD BY FIELD. Caught during this very change: the server
+    # sent photo/photoOk/confidence and loadScan dropped all of them, so the
+    # photo would have been filed, solved and applied while the panel went on
+    # saying "no photo" -- nothing thrown, nothing logged, a working mechanism
+    # behind a display that could not see it. The structural checks above did
+    # NOT catch that: they prove the code is present, not that the data reaches
+    # it. This compares the two lists directly.
+    _ret = re.search(r"return \{index:m\.index.*?\};", _page, re.S).group(0)
+    _reads = set(re.findall(r"\bs\.(\w+)",
+                            re.search(r"function photoRow\(s\)\{.*?\n\}",
+                                      _page, re.S).group(0)))
+    # ⛔⛔ AND DOES THE JAVASCRIPT EVEN PARSE? Every other check in this file
+    # reads the page as TEXT, so a stray bracket anywhere in 100 kB of script
+    # passes all of them and kills the entire program at load: a blank window,
+    # nothing thrown on the Python side, every test green. `node --check` is a
+    # syntax check only -- it runs nothing -- and it takes a moment.
+    #
+    # ⚠ SKIPPED, LOUDLY, WITHOUT node. A check that quietly passes when it did
+    # not run is the thing this project keeps being bitten by, so the absence
+    # is printed rather than swallowed.
+    _node = shutil.which("node")
+    if not _node:
+        print("  skip node is not installed, so the page's JavaScript was "
+              "NOT parsed")
+    else:
+        _js = os.path.join(tmp, "page.js")
+        _blocks = re.findall(r"<script[^>]*>(.*?)</script>", _page, re.S)
+        with open(_js, "w", encoding="utf-8") as _h:
+            _h.write("\n".join(_blocks))
+        _r = subprocess.run([_node, "--check", _js],
+                            capture_output=True, text=True)
+        check("the workbench's JavaScript parses",
+              _r.returncode == 0, (_r.stderr or "")[:400])
+
+    check("every field the photo row reads is one loadScan carries",
+          _reads and all(f in _ret for f in _reads),
+          "dropped: %s" % sorted(f for f in _reads if f not in _ret))
+    # ⛔ Colouring is invisible in the by-scan tint, so a successful colour
+    # that leaves the view alone reads as a failure.
+    check("a successful colour switches the view to show it",
+          "V.mode=2" in _page.replace(" ", ""))
+
     check("the crop controls are on the page",
           all(t in _page for t in ("keepbox", "cutbox", "clearedit")))
     check("so are the delete tools and undo",

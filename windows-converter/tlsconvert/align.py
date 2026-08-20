@@ -48,7 +48,8 @@ import webbrowser
 
 import numpy as np
 
-from . import export, pipeline, registration, viewer
+from . import export
+from . import library, pipeline, registration, viewer
 
 # A clip box is for seeing INTO a room, so it starts wide open. Anything else
 # and the operator's first impression is a cloud with pieces missing.
@@ -103,13 +104,21 @@ def _tint(n):
 class Scan(object):
     """One capture, decoded once, ready to draw and to solve against."""
 
-    def __init__(self, path, xyz, rgb, sample, setup=None, total=0):
+    def __init__(self, path, xyz, rgb, sample, setup=None, total=0,
+                 source="capture"):
         self.path = path
         self.name = os.path.basename(path)
         self.xyz = xyz
         self.rgb = rgb
         self.sample = sample           # decimated, for the solver
         self.setup = setup or registration.Setup()
+        # "capture" (a .pcap, re-decodable) or "cloud" (already exported).
+        # \u26d4 The difference is not cosmetic: a cloud cannot be re-read at
+        # another density and has no pan track, so the detail slider and the
+        # pitch check do not apply to it. Everything else does.
+        self.source = source
+        self.photo = None              # the image colouring it, if any
+        self.colour_info = None        # {yaw, confidence, reason} from the solve
         self.rung = None               # how far down the GICP ladder it has got
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
@@ -119,6 +128,58 @@ class Scan(object):
         buf = viewer.ViewerBuffer(max_points=max_points)
         buf.add(self.xyz, self.rgb)
         return buf
+
+
+def colour_scan(scan, photo, camera_z=0.0):
+    """
+    Solve the camera's heading against `scan` and repaint it. Never raises.
+
+    Returns the info dict the panel shows. \u2b50 THE CONFIDENCE IS ALWAYS
+    REPORTED, ACCEPTED OR NOT, because on 2026-08-20 the gate turned out to be
+    a far weaker discriminator than it looked: a real photograph scores 5.5-5.9
+    where a depth-derived one scored 8.18, and a photo of a DIFFERENT ROOM of
+    much the same shape scores 6.29 -- which clears every workable threshold.
+    The number is a hint for a person, not a verdict, so it goes on screen.
+
+    \u26d4 AND A CLOUD THAT HAS BEEN MOVED IS REFUSED BEFORE ANY OF THAT. Colour
+    is cast from the origin; if the scan is not sitting where it was recorded,
+    every ray leaves the wrong point and the result looks entirely fine.
+    """
+    info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
+            "yaw_deg": None, "confidence": None, "reason": None, "ok": False}
+    if not photo:
+        info["reason"] = "no photo"
+        return info
+
+    ok, frac, why = library.sensor_centred(scan.xyz)
+    if not ok:
+        info["reason"] = why
+        return info
+
+    from . import colour as colour_mod
+    try:
+        rgb_img, lum = colour_mod.load_panorama(photo)
+    except Exception as exc:                              # noqa: BLE001
+        info["reason"] = "could not read %s (%s)" % (info["name"], exc)
+        return info
+    info["warning"] = colour_mod.aspect_warning(rgb_img)
+
+    camera = (0.0, 0.0, float(camera_z or 0.0))
+    sample = scan.sample if scan.sample is not None and len(scan.sample) else scan.xyz
+    yaw, confidence, _ = colour_mod.solve_yaw(sample, lum, camera=camera)
+    info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
+    if confidence < colour_mod.MIN_CONFIDENCE:
+        info["reason"] = ("the photo does not line up with this scan "
+                          "(confidence %.1f, need %.1f) -- wrong image, or the "
+                          "camera moved between the scan and the shot"
+                          % (confidence, colour_mod.MIN_CONFIDENCE))
+        return info
+
+    scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw, camera=camera)
+    scan.photo = photo
+    info["ok"] = True
+    scan.colour_info = info
+    return info
 
 
 def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
@@ -163,6 +224,27 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
     for path, budget in zip(paths, expect):
         name = os.path.basename(path)
         report("reading %s" % name)
+
+        # \u2b50 AN ALREADY-EXPORTED CLOUD OPENS TOO, and skips every step below
+        # that needs packets. What it loses is real -- no pan track, so no
+        # re-reading at another density and no pitch check -- but the geometry
+        # is intact and sensor-centred, which is all that aligning, levelling,
+        # clipping and colouring ever needed.
+        if library.is_cloud(path):
+            xyz, rgb, total = library.read_cloud(
+                path, max_points=cap,
+                progress=lambda n, _t, _n=name: report("reading %s" % _n, n))
+            stride = max(1, len(xyz) // 1_500_000)
+            scan = Scan(path, xyz, rgb, xyz[::stride], total=total,
+                        source="cloud")
+            if colour:
+                found = pipeline.find_photo(path)
+                if found:
+                    colour_scan(scan, found)
+            scans.append(scan)
+            seen[0] += budget or total
+            continue
+
         meta, meta_path = pipeline.load_meta(path)
         if meta is None:
             raise ValueError(
@@ -201,7 +283,24 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
         report("preparing %s for alignment" % name)
         sample = pipeline.sample_for_solve(path, meta, frame,
                                            per_laser_azimuth=per_laser_azimuth)
-        scans.append(Scan(path, xyz, rgb, sample, total=done))
+        scan = Scan(path, xyz, rgb, sample, total=done)
+        # The photo was applied while streaming, above; record WHICH one, so the
+        # panel can say so and offer to replace it.
+        found = pipeline.find_photo(path) if colour else None
+        if found and colouriser is not None:
+            scan.photo = found
+            scan.colour_info = {"photo": found, "ok": True,
+                                "name": os.path.basename(found),
+                                "yaw_deg": _info.get("yaw_deg"),
+                                "confidence": _info.get("confidence"),
+                                "reason": None}
+        elif found:
+            scan.colour_info = {"photo": found, "ok": False,
+                                "name": os.path.basename(found),
+                                "yaw_deg": _info.get("yaw_deg"),
+                                "confidence": _info.get("confidence"),
+                                "reason": _info.get("reason")}
+        scans.append(scan)
     report("ready")
     return scans
 
@@ -262,6 +361,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.level(body.get("points") or []))
             if path == "/browse":
                 return self._json(srv.browse())
+            if path == "/photo/browse":
+                return self._json(srv.browse_image())
+            if path == "/photo/add":
+                return self._json(srv.add_photo(body.get("index"),
+                                                body.get("path"),
+                                                body.get("organise", True)))
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or []))
             if path == "/density":
@@ -335,10 +440,22 @@ class AlignServer(object):
         for i, scan in enumerate(self.scans):
             buf = scan.buffer(max_points=per)
             self.blobs.append(buf.encode())
+            info = scan.colour_info or {}
             meta.append({"name": scan.name, "index": i, "points": buf.count,
                          "total": scan.total, "tint": _tint(i),
                          "subsampled": buf.subsampled,
-                         "setup": scan.setup.as_dict()})
+                         "setup": scan.setup.as_dict(),
+                         # Where it came from, so the panel can grey out the
+                         # detail slider for a cloud rather than offering a
+                         # control that cannot do anything for it.
+                         "source": getattr(scan, "source", "capture"),
+                         "folder": os.path.dirname(os.path.abspath(scan.path)),
+                         "organised": library.in_own_folder(scan.path),
+                         "photo": info.get("name"),
+                         "photoOk": bool(info.get("ok")),
+                         "confidence": info.get("confidence"),
+                         "yaw": info.get("yaw_deg"),
+                         "photoWhy": info.get("reason")})
         return meta
 
     # --- endpoints --------------------------------------------------------
@@ -482,12 +599,20 @@ class AlignServer(object):
         if missing:
             return {"ok": False, "error": "no such file: %s"
                                           % ", ".join(missing)}
-        wrong = [p for p in paths if not p.lower().endswith(".pcap")]
+        # ⭐ CLOUDS ARE ACCEPTED NOW, AND THE OLD REFUSAL WAS HALF WRONG.
+        # It said an exported cloud "has already lost the pan track and its own
+        # origin". The pan track, yes -- so no re-reading at another density and
+        # no pitch check. But this program exports SENSOR-CENTRED, so the origin
+        # is (0, 0, 0) and intact, which is all that aligning, levelling,
+        # clipping and colouring ever needed. What must still be refused is a
+        # cloud that has been MOVED since export, and that is caught where it
+        # matters, at the moment a photo is applied -- see library.sensor_centred.
+        wrong = [p for p in paths
+                 if not (library.is_capture(p) or library.is_cloud(p))]
         if wrong:
             return {"ok": False,
-                    "error": "%s is not a capture. An exported cloud has "
-                             "already lost the pan track and its own origin, "
-                             "so it cannot be aligned."
+                    "error": "%s is neither a capture nor a point cloud "
+                             "(.pcap, .las, .laz, .ply)"
                              % os.path.basename(wrong[0])}
 
         self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
@@ -508,6 +633,65 @@ class AlignServer(object):
         # case where a card refuses the upload.
         meta = self._rebuild()
         return {"ok": True, "added": meta[first:], "scans": meta}
+
+    def browse_image(self):
+        """A native picker for one panorama, from the window that owns it."""
+        from . import desktop
+        if desktop.WINDOW[0] is None:
+            return {"ok": False,
+                    "error": "no native window, so no system file dialog"}
+        return {"ok": True, "paths": desktop.pick_image()}
+
+    def add_photo(self, index, image_path, organise=True):
+        """
+        Attach a 360 photo to one open scan: file it, solve it, repaint it.
+
+        Three things happen, in this order, because each depends on the last.
+        The scan's files are gathered into a folder of their own; the image is
+        COPIED in under the scan's stem, which is the convention
+        `pipeline.find_photo` already looks for, so the CLI and every later
+        session find it with no memory of this program; and only then is the
+        heading solved and the colour applied.
+
+        ⭐ FILING IT IS THE POINT, NOT A TIDINESS FEATURE. The photo comes off
+        the camera as IMG_20260820_102917_00_011.jpg and the pipeline looks for
+        <capture stem>.jpg. That rename is a manual step that gets forgotten,
+        and a forgotten rename presents as "colour does not work".
+
+        ⛔ AND THE ORIGINAL IS NEVER MOVED, only copied, so getting the wrong
+        file costs nothing but a second attempt.
+        """
+        try:
+            index = int(index)
+            scan = self.scans[index]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan"}
+        if not image_path:
+            return {"ok": False, "error": "no image given"}
+
+        filed = library.attach_photo(scan.path, image_path,
+                                     organise_first=bool(organise))
+        if not filed.get("ok"):
+            return filed
+        # The scan may have moved on disk; follow it, or the next save and the
+        # next find_photo look in a folder that no longer holds anything.
+        scan.path = filed["scan"]
+        scan.name = os.path.basename(scan.path)
+
+        self._progress = {"stage": "aligning the photo to %s" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            info = colour_scan(scan, filed["photo"])
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+
+        # ⛔ THE SCAN IS RE-ENCODED WHETHER OR NOT THE COLOUR WAS ACCEPTED.
+        # On refusal the points keep the colour they had, and the page still
+        # needs a truthful buffer plus the new path and folder in the metadata.
+        return {"ok": True, "coloured": bool(info.get("ok")),
+                "info": info, "organised": filed.get("organised"),
+                "scans": self._rebuild()}
 
     def density(self, voxel):
         """
@@ -783,6 +967,19 @@ PAGE = r"""<!doctype html>
     rgba(48,209,88,.18));border-color:rgba(48,209,88,.50)}
   .row{display:flex;gap:7px;margin-top:7px}
   .row button{flex:1}
+  /* The photo row under each scan in the legend. Deliberately quiet: it is
+     status most of the time and a control only when you want it. */
+  .scanrow{padding:5px 0 6px;border-bottom:.5px solid rgba(255,255,255,.07)}
+  .scanrow:last-child{border-bottom:0}
+  .photo{display:flex;align-items:center;gap:6px;margin:3px 0 0 15px;
+    font-size:10.5px;color:var(--dim);line-height:1.35}
+  .photo .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .photo button{padding:2px 7px;font-size:10.5px;border-radius:8px;
+    width:auto;flex:none}
+  .photo .warn{color:#FFD60A}
+  .photo .bad{color:#FF6B60}
+  .photo .good{color:#30D158}
   .sw{display:inline-block;width:9px;height:9px;border-radius:50%;
     margin-right:7px;vertical-align:middle;box-shadow:0 0 12px currentColor}
   #legend div{padding:5px 0;color:var(--dim);font-size:11.5px}
@@ -1590,11 +1787,20 @@ async function loadScan(m){
                           pos[i*3+1]*scale[1]+offset[1]));
   }
   reach.sort((a,b)=>a-b);
+  /* ⛔ NAMED, NOT SPREAD -- SO ANYTHING ADDED SERVER-SIDE MUST BE ADDED HERE.
+     This builds its own object rather than copying the server's metadata, so a
+     new field is dropped in silence: the photo would be filed, solved and
+     applied while the legend went on saying "no photo", with nothing thrown
+     and nothing logged. `points/` is fetched here too, which is why the route
+     cross-check has to look at do_GET as well as do_POST. */
   return {index:m.index, name:m.name, points:n, total:(m.total||n),
           rgb, scale, offset, chunks, raw:pos, live,
           subsampled:!!m.subsampled,
           setup:m.setup, tint:m.tint, lo, hi,
           tintf:m.tint.map(v=>v/255),
+          source:m.source, folder:m.folder, organised:!!m.organised,
+          photo:m.photo, photoOk:!!m.photoOk, photoWhy:m.photoWhy,
+          confidence:m.confidence, yaw:m.yaw,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
 
@@ -2689,15 +2895,112 @@ async function applyDetail(){
   $('applydet').disabled=false;
 }
 
+/* What the legend says about a scan's photo.
+
+   ⭐ THE CONFIDENCE IS ALWAYS SHOWN, ACCEPTED OR NOT. On 2026-08-20 the
+   first real photograph scored 5.5 and was refused by a gate of 6.0, and a
+   photo of a DIFFERENT room of much the same shape scored 6.29 -- above every
+   workable threshold. So the number is a hint for a person, never a verdict,
+   and hiding it once it passes would be hiding the only thing that
+   distinguishes a good match from a plausible one. */
+function photoRow(s){
+  const btn = '<button class="mini" onclick="addPhoto('+s.index+')">'+
+              (s.photo ? 'Replace' : 'Add photo')+'</button>';
+  if(!s.photo)
+    return '<div class="photo"><span class="grow">no photo</span>'+btn+'</div>';
+  const conf = (s.confidence==null) ? '' :
+               ' · confidence '+(+s.confidence).toFixed(1);
+  if(s.photoOk)
+    return '<div class="photo"><span class="grow good" title="heading '+
+           (s.yaw==null?'?':(+s.yaw).toFixed(2))+'°">'+s.photo+conf+
+           '</span>'+btn+'</div>';
+  return '<div class="photo"><span class="grow bad" title="'+
+         (s.photoWhy||'').replace(/"/g,'&quot;')+'">'+s.photo+conf+
+         ' · not applied</span>'+btn+'</div>';
+}
+
 function refreshLists(){
   $('legend').innerHTML = V.scans.map(s=>
-    '<div><span class="sw" style="background:rgb('+s.tint.join(',')+
-    ');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
-    ' &middot; <span class="num">'+s.points.toLocaleString()+'</span></div>')
+    '<div class="scanrow"><div><span class="sw" style="background:rgb('+
+    s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
+    ' &middot; <span class="num">'+s.points.toLocaleString()+'</span>'+
+    (s.source==='cloud' ? ' <span class="num" title="An exported cloud: no '+
+      'pan track, so the detail slider and the pitch check cannot apply to '+
+      'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
+      : '')+'</div>'+photoRow(s)+'</div>')
     .join('');
   $('which').innerHTML = V.scans.slice(1).map(s=>
     '<option value="'+s.index+'"'+(s.index===V.active?' selected':'')+'>'+
     s.name+'</option>').join('');
+}
+
+/* Re-upload every scan from fresh server metadata, keeping placements.
+
+   ⛔ EVERY scan is re-uploaded, not just the one that changed. The per-scan
+   share of the point budget moves whenever the set does, so the server
+   re-encodes them all and the buffers already on the card no longer match what
+   it will send. Recolouring one scan re-encodes it for the same reason: its
+   colour bytes changed, and only the server knows the new ones. */
+async function rebuildFrom(meta){
+  const setups=V.scans.map(s=>s.setup);
+  for(const s of V.scans) for(const c of s.chunks){
+    gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
+  }
+  V.scans=[];
+  for(const m of meta) V.scans.push(await loadScan(m));
+  V.scans.forEach((s,i)=>{ if(setups[i]) s.setup=setups[i]; });
+}
+
+/* Attach a 360 photo to one scan: pick it, file it, solve it, repaint.
+
+   The server copies the image into the scan's own folder under the scan's
+   stem, which is the convention the rest of the program already looks for --
+   so the colour survives into the CLI and into every later session with no
+   memory of this window. The original stays where the camera put it. */
+async function addPhoto(index){
+  let path='';
+  try{
+    const r=await fetch('photo/browse',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'no picker available');
+    if(!j.paths.length) return;            /* cancelled is not a failure */
+    path=j.paths[0];
+  }catch(e){
+    say('The picker is unavailable ('+e.message+'). Put the photo beside the '+
+        'capture, named exactly like it, and reopen the scan.', 'warn');
+    return;
+  }
+
+  say('aligning the photo…'); watch(true);
+  try{
+    const r=await fetch('photo/add',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index, path})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'could not add the photo');
+    await rebuildFrom(j.scans);
+    measure(); refreshLists(); invalidate(); watch(false); dirty();
+    const info=j.info||{};
+    const conf=(info.confidence==null)?'':
+               ' at confidence '+(+info.confidence).toFixed(1);
+    if(j.coloured){
+      /* Switch to it, or the work just done is invisible and reads as a
+         failure -- the scan is still tinted by origin until you ask. */
+      V.mode=2; $('mode').textContent='Photo / intensity';
+      $('mode').classList.remove('on');
+      say('Coloured from '+(info.name||'the photo')+', camera heading '+
+          (info.yaw_deg==null?'?':(+info.yaw_deg).toFixed(2))+'°'+conf+
+          '. ⚠ The confidence catches an unrelated image, not a photo of a '+
+          'similar room — look at the result before trusting it.'+
+          (j.organised ? ' The scan’s files were gathered into a folder of '+
+            'their own and the image copied in beside them.' : ''));
+    }else{
+      say('Filed the photo but did not colour with it'+conf+': '+
+          (info.reason||'no reason given')+
+          ' — the points keep the colour they had.', 'warn');
+    }
+  }catch(e){ watch(false); say('Could not add the photo: '+e.message, 'bad'); }
 }
 
 async function ingest(paths){
@@ -2710,16 +3013,7 @@ async function ingest(paths){
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not add it');
     const first = V.scans.length===0;
-    /* ⛔ EVERY scan is re-uploaded, not just the newcomer. The per-scan share
-       of the point budget just shrank, so the server re-encoded them all and
-       the buffers already on the card no longer match what it will send. */
-    const setups=V.scans.map(s=>s.setup);
-    for(const s of V.scans) for(const c of s.chunks){
-      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
-    }
-    V.scans=[];
-    for(const m of (j.scans||j.added)) V.scans.push(await loadScan(m));
-    V.scans.forEach((s,i)=>{ if(setups[i]) s.setup=setups[i]; });
+    await rebuildFrom(j.scans||j.added);
     measure(); refreshLists(); syncSliders();
     syncClipSliders(); showTurn(); clipLabels();
     if(V.edits.length) recomputeLive();

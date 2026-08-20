@@ -84,6 +84,44 @@ SCAN.pcap   SCAN.json   SCAN.jpg
 
 The converter finds it by name. Nothing is uploaded or moved.
 
+### Or add it in Studio, and let it do the filing
+
+The rename above is the step that gets forgotten, because a camera writes
+`IMG_20260820_102917_00_011.jpg` and the converter looks for `SCAN.jpg`. So
+Studio does it for you. Each scan in the legend has an **Add photo** button:
+pick the panorama, and Studio
+
+1. gathers that scan's files into a folder of their own, named after the scan,
+2. **copies** your image in beside them under the scan's stem — the original
+   stays exactly where the camera put it,
+3. solves the camera's heading, repaints the cloud, and switches the view to
+   show it.
+
+```
+restaurant/
+   TLS_26_08_20_10_15_22/
+      TLS_26_08_20_10_15_22.pcap
+      TLS_26_08_20_10_15_22.json
+      TLS_26_08_20_10_15_22.jpg     <- copied in by Studio
+```
+
+Because the result follows the same naming convention, the CLI and every later
+session find the photo on their own, with no memory of Studio having been run.
+
+**The confidence is shown whether or not it passed**, next to the scan. That is
+deliberate: the gate catches an unrelated image, but a photo of a *different
+room of much the same shape* scores above every workable threshold. Treat the
+number as a hint and look at the result.
+
+**Studio opens exported clouds too** — `.las`, `.laz` and `.ply`, alongside
+`.pcap`. A cloud carries no pan track, so the detail slider and the pitch check
+do not apply to it, and the legend marks it `cloud` for that reason. Aligning,
+levelling, clipping and colouring all work, because this program exports
+sensor-centred: the lidar's optical centre is the origin, which is exactly what
+colour needs. ⛔ A cloud that has been **merged or moved** since export is
+refused for colour — every ray would be cast from the wrong point, and the
+result would look completely fine and be completely wrong.
+
 Export the **equirectangular** image from Insta360 Studio — the 2:1 stitched
 panorama, not a flat photo. A wrong aspect is called out rather than silently
 sampled.

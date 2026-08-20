@@ -2833,6 +2833,54 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
 
+#### ✅ Studio opens exported clouds, and photos are added inside the program — 2026-08-20
+
+Asked for by the operator the same day: open a coloured cloud, add an image to a scan **from within
+Studio**, and keep each scan in its own folder. All three are one feature, because what actually
+blocked colour was **filing**: a camera writes `IMG_20260820_102917_00_011.jpg`, the pipeline looks
+for `<capture stem>.jpg`, and that rename is a manual step that gets forgotten — a forgotten rename
+presents as *"colour does not work"*. New `tlsconvert/library.py`.
+
+**Each scan in the legend now has an Add photo button.** It gathers that scan's files into a folder
+named after the scan, **copies** the chosen image in beside them under the scan's stem (the original
+stays where the camera put it), solves the heading, repaints, and **switches the view to the photo
+colours** — otherwise the work is invisible under the by-scan tint and reads as a failure. Because
+the result follows the existing convention, the CLI and every later session find the photo with no
+memory of Studio having been run.
+
+**⛔ THE OLD REFUSAL WAS HALF WRONG, AND THE WRONG HALF WAS LOAD-BEARING.** Studio rejected any
+non-`.pcap` with *"an exported cloud has already lost the pan track and its own origin, so it cannot
+be aligned."* The pan track, yes — so no detail slider and no pitch check, and the legend now marks
+such a scan `cloud` for exactly that reason. **But the origin is not lost**: this program exports
+**sensor-centred**, so the lidar's optical centre *is* (0,0,0), which is precisely what colour needs.
+`.las`, `.laz` and `.ply` now open, align, level, clip and colour.
+
+**⛔ WHAT MUST STILL BE REFUSED IS A CLOUD THAT HAS BEEN MOVED.** A merged file, or one already
+dragged into place, is no longer centred on the sensor that recorded it, and colour is cast from the
+origin — so every ray would leave the wrong point and produce a fully coloured cloud that looks
+entirely fine and is wrong. `library.sensor_centred()` measures whether points still surround the
+origin: **87% of directions filled as exported, 0% after a 56 m translation.** Verified in both
+directions before the guard was believed.
+
+**⛔⛔ AND A BUG WAS CAUGHT MID-BUILD THAT WOULD HAVE SHIPPED AS A DEAD PANEL.** `loadScan` builds its
+scan object **field by field** rather than spreading the server's metadata, so every field added on
+the Python side is dropped in silence. The photo would have been filed, solved, applied and drawn —
+and the legend would have gone on saying **"no photo"**, with nothing thrown and nothing logged.
+Same shape as the dead level and plumb tools: a working mechanism behind a route that quietly loses
+what it carries.
+
+**⭐ AND THE STRUCTURAL CHECKS DID NOT CATCH IT — THEY PROVE THE CODE IS PRESENT, NOT THAT THE DATA
+REACHES IT.** Two tests were added that do: every field `photoRow` reads off a scan must appear in
+`loadScan`'s return, and **every route the page fetches must exist on the server**. That second one
+failed on its first run — on `points/`, which `do_GET` serves with `startswith` while the check read
+only `do_POST`'s table. *A route test that cannot see half the routes is worse than none.*
+
+Proven over real HTTP against the restaurant capture rather than by calling the method: cloud opened
+from `.las`, `POST /photo/add` filed it, solved **−79.76°** at confidence **6.05**, coloured; a moved
+cloud refused; a bad index and a missing file refused cleanly rather than raising. ⚠ That 6.05
+against the 5.5 and 5.94 measured earlier the same day is the **sample dependence** again — three
+numbers for one photograph, which is why the confidence is shown but never trusted alone.
+
 #### ✅✅ Colour meets its first real photograph — 2026-08-20, and the gate moves 6.0 → 5.0
 
 An **Insta360 X4** equirectangular, 5888×2944, shot 11 minutes after a `360° Quick` capture of a
