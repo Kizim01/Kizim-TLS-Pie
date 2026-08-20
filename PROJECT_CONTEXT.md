@@ -2268,6 +2268,8 @@ still absent after a scan, the position is not being remembered and the carried-
 worthless across a reboot — check the service is running as a user that can write `~/TLS-Pie` (it runs
 as **root**, and the directory is `lipi:lipi` 755, which was tested writable).
 
+**⭐⭐ A SECOND, INDEPENDENT METHOD NOW CORROBORATES A PHOTOGRAPH (2026-08-20).** Reflectivity against brightness through mutual information, which shares nothing with the edge solve but the cloud — because on 57 photographs the edge confidence ranked the KNOWN correct one **second**. Also: a **rotation ring** per scan, **double-click a scan name** to point every control at it, **which way is north**, and **Find…** to score a whole folder of photographs against a scan. ⛔ The operator's actual problem turned out to be a **photograph attached to the wrong scan**, not a threshold. Converter suite **515**.
+
 **⭐ The photograph is no longer refused for scoring low (2026-08-20).** The confidence **grades** instead of vetoing — the measurements never supported a verdict, since a real photograph scored 5.5 and an unrecognisable one 4.59 — and the legend gained real controls: **nudge ±1°/±10°, a ½ turn, the correlation's other fits as buttons, a camera height in cm, and Re-solve**. Only a flat correlation is still refused, which is structural. The apps also have an icon now (`make_icon.py`). Converter suite **437**.
 
 **⭐ Studio gained three things on 2026-08-20 (`main`)** — a cloud can be **removed** from the session (nothing is deleted on disk), a cut can be **aimed at one cloud** instead of going through the job as one solid, and **loading a cloud no longer re-fits the clip box**. Under the third was a dead `Cut the box`: the edit list read a box shape that stopped existing when the box learnt to turn, and threw before the cut could be previewed. Converter suite **398**. See "a cloud can be taken out".
@@ -2884,6 +2886,95 @@ free roam holds the eye and moves the target, pivot on the **sensor at the origi
 **⚠ 415 MB of vertex data is a real ask of a graphics card** and a weak one may refuse; that path is
 caught and explained rather than left blank. `TLSCONVERT_VIEW_MAX` lowers it without touching the
 file. **Untested on real hardware — it needs a browser on a real GPU.**
+
+#### ✅ A SECOND, INDEPENDENT METHOD — and what it can and cannot do — 2026-08-20
+
+The operator asked to look at what other projects do about colouring a cloud from a 360 photograph.
+The useful lead was not a colouriser at all: **Pandey et al.'s targetless calibration by maximising
+MUTUAL INFORMATION between lidar reflectivity and image intensity**
+([xmba15/automatic_lidar_camera_calibration](https://github.com/xmba15/automatic_lidar_camera_calibration)).
+[OmniColor](https://arxiv.org/abs/2404.04693) (ICRA 2024) optimises photometric consistency but needs
+MANY frames, so it does not transfer; [points2pano](https://github.com/inealey/points2pano) only
+projects a cloud to an equirect, which this program already does better.
+
+**⛔⛔ THE MEASUREMENT THAT DECIDED THE DESIGN.** 57 photographs from one shoot, scored against the
+scan whose photograph was known (`TLS_26_08_20_16_03_15`, D:\RESTAURANT SCAN):
+
+| photograph | edge conf | MI conf | apart |
+|---|---|---|---|
+| an impostor shot 2.5 hours later | **7.46** | 3.86 | 29.2° |
+| **the correct one** | 7.02 | **6.57** | **0.1°** |
+| next four | 5.36 .. 3.60 | 4.11 .. 2.73 | 4.2 .. 121.8° |
+
+**The edge confidence ranked the correct photograph SECOND OF 57.** No absolute threshold and no
+ranking picks the right one out of that. But the correct photograph is **the only row where both
+methods are confident AND land on the same angle**, and that selects exactly one. Hence
+`colour.corroborates`, a `confirmed` grade, and `Find…` ranking on **the weaker of the two opinions**
+so a photograph has to convince both.
+
+**⛔ IT IS NOT A CURE, AND THE COUNTER-EXAMPLE IS IN THE SOURCE.** On the stairs scan — rig hard
+against a wall, peak 190° wide — the true photograph scores 2.13/3.45 and a photograph of **another
+table** scores 2.39/3.25, **and both agree with themselves to under a degree**. On that cloud nothing
+discriminates. That is why corroboration requires both methods to be **confident**, not merely to
+coincide, and why a heading set by hand still exists.
+
+**⚠ THE FALSE TRAILS, SO NOBODY REPEATS THEM.** Normalised MI is **identical to plain MI** here to
+two decimals — the "H(B) changes as the photo rolls under a partial mask" bias I predicted is not
+real. **MI on DEPTH is wrong at every setting** (−147°); only reflectivity works. And **the bin count
+is not a free parameter**: at 8 and 16 bins the MI solve lands 130–140° out on a pair whose answer is
+confirmed, at 32 and 64 it lands within 0.2°. 64, found empirically, and a change to it must be
+re-measured against a known pair rather than reasoned about.
+
+**⭐ The reflectivity was already being decoded and thrown away** — `stream_world_points` yields it
+beside every point, `sample_for_solve` dropped it with `_`, and `cloud_panorama` even took a `refl`
+argument it never used.
+
+#### ⛔⛔ AND THE OPERATOR'S ACTUAL PROBLEM WAS NOT THE SOLVER — 2026-08-20
+
+They pointed at `D:\RESTAURANT SCAN\test file that wasnt working`. Three findings, none of them about
+confidence:
+
+1. **The photograph is attached to the wrong scan.** `IMG_..._160520_014` and `IMG_..._160543_015` were
+   shot **23 seconds apart** — one tripod position — yet they are attached one each to scans four
+   minutes apart. Scored: 014 belongs to `16_03_15` (**confirmed**, 7.02/6.57, 0.1° apart), and
+   `16_07_12` has **no photograph in the entire 57-image shoot** that either method believes — its
+   attached 015 ranks fifth with the two methods **134° apart**. The 4.6 was the confidence being
+   unable to tell, exactly as documented.
+2. **`TLS_26_08_20_16_09_23.pcap` has no `.json` sidecar** — like `16_06_13` and `16_06_40`, and unlike
+   every 98 MB neighbour. Those are aborted sweeps: the sidecar is written at the end. **Without it
+   there is no pan track and nothing can open the capture at all.**
+3. `near the stairs\IMG_20260820_150439_00_017.jpg` and `TLS_26_08_20_15_01_37.jpg` are **the same
+   file** (md5 `c2ee78a5`), which is why two "different" controls scored identically.
+
+#### ✅ The controls that came with it — 2026-08-20
+
+- **A rotation ring** round each scan's own origin, dragged to turn it, shift snaps to 5°.
+  ⛔ **ONE ring, not three, and that is not a simplification**: a `Setup` is a yaw and a translation,
+  so pitch and roll rings would offer rotations the exporter cannot store — a control that appears to
+  work and silently does nothing. It is centred on the **tripod**, because turning about the middle of
+  the merged scene swings the cloud across the room.
+- **Double-click a scan's name to work on it.** ⛔ There were **two** selections set in two places —
+  the "Moving scan" dropdown and the cut scope — so nudging one cloud while cutting another was a
+  normal accident.
+- **Which way is north.** Sight two points along something whose bearing you know, then press N/E/S/W.
+  `Level` already said in its own docstring that it deliberately does **not** reassign X, so nothing
+  had ever answered "where is north". ⛔ **The tilt is applied first and the compass second**: a turn
+  about +Z only spins the room once +Z is up; on a leaning frame the same turn tips it as well.
+  ⛔ **And the world-axes widget has been calling +Y "North" since the day it was written**, when
+  nothing had measured it — right only by luck. It now says "no compass set" until north is given.
+- **`Find…`** — score every photograph in a folder against this scan and rank them.
+
+**Verified. Converter suite 437 → 515.** ⚠ Four checks failed first and were right to: a fixture was
+**hoped** to reach the flat-correlation branch and hit the opposite one; the route check went blind
+when three routes moved behind a `post()` helper (**a route test must follow the CALL, not its
+spelling**); the metre-scale camera-height guard was set at 2 m, which is a person's height; and a
+binning test asserted that equal-frequency bins spread a field that is 90% **identical values** — they
+cannot, ranking cannot separate equals, and the limit is now pinned the way it behaves.
+
+⚠ **A silent `except` hid a real bug for one run**: the load path called `colour.load_panorama` where
+`colour` is a **bool parameter** of `load()`, and the blanket `except` turned an AttributeError into a
+missing grade. Caught only by running the real loader over real scans and reading `grade None`. The
+except is now narrowed to the panorama read and says so on the scan.
 
 #### ✅ The photograph is no longer thrown away for scoring low — 2026-08-20
 

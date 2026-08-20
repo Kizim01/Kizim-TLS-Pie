@@ -32,6 +32,8 @@ back as a measurement. A tripod can be set down facing any direction at all.
 import itertools
 import os
 
+import math
+
 import numpy as np
 
 LON_BINS = 360
@@ -833,7 +835,8 @@ class Level(object):
     nor is disturbed by it.
     """
 
-    def __init__(self, normal=(0.0, 0.0, 1.0), pivot=(0.0, 0.0, 0.0)):
+    def __init__(self, normal=(0.0, 0.0, 1.0), pivot=(0.0, 0.0, 0.0),
+                 heading_deg=0.0):
         n = np.asarray(normal, dtype=np.float64).reshape(3)
         length = float(np.linalg.norm(n))
         if length < 1e-12:
@@ -846,6 +849,15 @@ class Level(object):
         # and flipping it is exactly right.
         self.normal = n / length * (-1.0 if n[2] < 0 else 1.0)
         self.pivot = np.asarray(pivot, dtype=np.float64).reshape(3).copy()
+        # ⭐ AND WHICH WAY IS NORTH. The tilt above answers "where is down";
+        # this answers "where is north", and the two together are the whole
+        # relationship between the merged frame and the world. It lives here
+        # rather than in a class of its own because it is applied in the same
+        # place, in the same breath, to the same frame -- `convert` already
+        # takes a level and one more object would be one more thing to forget
+        # to pass. See `matrix`, which composes them in the only order that
+        # works.
+        self.heading_deg = float(heading_deg or 0.0)
 
     @property
     def tilt_deg(self):
@@ -854,7 +866,7 @@ class Level(object):
             min(1.0, max(-1.0, float(self.normal[2]))))))
 
     def is_identity(self):
-        return self.tilt_deg < 1e-12
+        return self.tilt_deg < 1e-12 and abs(self.heading_deg) < 1e-12
 
     def matrix(self):
         """
@@ -868,6 +880,23 @@ class Level(object):
         effect of straightening the floor. This one changes the tilt and
         nothing else.
         """
+        # ⛔ THE HEADING IS APPLIED AFTER THE TILT, NEVER BEFORE, AND THE
+        # ORDER IS NOT A PREFERENCE. A turn about +Z only means "swing the room
+        # round the vertical" once the vertical IS +Z; applied to a frame that
+        # still leans, the same turn tips the room as well as spinning it, and
+        # the floor comes out sloping in a direction that depends on how far
+        # round you turned. Levelling first is what makes the heading a pure
+        # compass correction.
+        tilt = self._tilt_matrix()
+        if abs(self.heading_deg) < 1e-12:
+            return tilt
+        a = math.radians(self.heading_deg)
+        ca, sa = math.cos(a), math.sin(a)
+        spin = np.array([[ca, -sa, 0.0], [sa, ca, 0.0], [0.0, 0.0, 1.0]])
+        return spin @ tilt
+
+    def _tilt_matrix(self):
+        """The minimal rotation putting the measured up back onto +Z."""
         n = self.normal
         v = np.array([n[1], -n[0], 0.0])     # n x z
         c = float(n[2])
@@ -882,6 +911,11 @@ class Level(object):
         # the case this is used in nearly every time.
         return np.eye(3) + K + K @ K / (1.0 + c)
 
+    @property
+    def north_deg(self):
+        """Where north sits in the ORIGINAL frame, for reporting."""
+        return float((-self.heading_deg + 180.0) % 360.0 - 180.0)
+
     def apply(self, xyz):
         """Rotate about the pivot, so the surface that was named stays put."""
         xyz = np.asarray(xyz)
@@ -890,22 +924,68 @@ class Level(object):
         return (xyz - self.pivot) @ self.matrix().T + self.pivot
 
     def as_dict(self):
-        return {"normal": [float(v) for v in self.normal],
-                "pivot": [float(v) for v in self.pivot],
-                "tilt_deg": self.tilt_deg}
+        out = {"normal": [float(v) for v in self.normal],
+               "pivot": [float(v) for v in self.pivot],
+               "tilt_deg": self.tilt_deg}
+        # Written only when set, so a project saved before headings existed and
+        # one saved after are the same file.
+        if abs(self.heading_deg) >= 1e-12:
+            out["heading_deg"] = self.heading_deg
+        return out
 
     @classmethod
     def from_dict(cls, data):
         if not data:
             return cls()
         return cls(normal=data.get("normal") or (0.0, 0.0, 1.0),
-                   pivot=data.get("pivot") or (0.0, 0.0, 0.0))
+                   pivot=data.get("pivot") or (0.0, 0.0, 0.0),
+                   heading_deg=data.get("heading_deg") or 0.0)
 
     def describe(self):
         if self.is_identity():
-            return "already level"
-        return ("the frame leans %.2f deg; levelled about (%.2f, %.2f, %.2f)"
-                % (self.tilt_deg, self.pivot[0], self.pivot[1], self.pivot[2]))
+            return "already level, and no compass heading set"
+        parts = []
+        if self.tilt_deg >= 1e-12:
+            parts.append("the frame leans %.2f deg; levelled about "
+                         "(%.2f, %.2f, %.2f)"
+                         % (self.tilt_deg, self.pivot[0], self.pivot[1],
+                            self.pivot[2]))
+        if abs(self.heading_deg) >= 1e-12:
+            parts.append("turned %.2f deg so north runs +Y" % self.heading_deg)
+        return "; ".join(parts)
+
+
+def heading_to_north(a, b, level=None, points_to="north"):
+    """
+    The turn that makes the line a -> b run in a named compass direction.
+
+    ⭐ TWO POINTS, NOT A GUESS. The operator sights along something they know
+    the bearing of -- a wall, a kerb, a corridor -- and says which way it runs.
+    That is a measurement they can actually make on site, unlike "rotate the
+    cloud until it looks right", which is the only alternative this program
+    offered.
+
+    ⛔ MEASURED AFTER LEVELLING, BECAUSE A BEARING IS A HORIZONTAL THING. In a
+    frame that still leans, the horizontal projection of a line is not its
+    bearing -- the error grows with how far the line runs uphill, so a long
+    sighting line, the accurate kind, is the one it would spoil most.
+    """
+    a = np.asarray(a, dtype=np.float64).reshape(3)
+    b = np.asarray(b, dtype=np.float64).reshape(3)
+    if level is not None and level.tilt_deg >= 1e-12:
+        flat = Level(level.normal, level.pivot)      # tilt only, no heading
+        a, b = flat.apply(a[None, :])[0], flat.apply(b[None, :])[0]
+    d = b - a
+    if float(np.hypot(d[0], d[1])) < 1e-9:
+        raise ValueError(
+            "those two points sit one above the other, so the line between "
+            "them has no compass direction at all -- pick two points that are "
+            "apart on the FLOOR")
+    # Where the line points now, and where it should point.
+    now = math.degrees(math.atan2(d[1], d[0]))
+    want = {"north": 90.0, "east": 0.0, "south": -90.0,
+            "west": 180.0}[str(points_to).lower()]
+    return float((want - now + 180.0) % 360.0 - 180.0)
 
 
 class LevelFit(object):

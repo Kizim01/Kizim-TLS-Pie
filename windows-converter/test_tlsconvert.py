@@ -1693,8 +1693,14 @@ try:
           _offered and _offered == (_picks | _draws) and not (_picks & _draws),
           "offered=%s picks=%s draws=%s" % (sorted(_offered), sorted(_picks),
                                             sorted(_draws)))
+    # ⭐ THE LIST IS SPELLED OUT ON PURPOSE, and a new tool failing here is the
+    # feature working, not a nuisance: `north` was added on 2026-08-20 and this
+    # is what noticed. A tool routed into the wrong table is usable-but-wrong,
+    # which is the failure that hid for hours the first time.
     check("and the point-picking tools are the ones that pick",
-          _picks == {"pair", "level", "plumb"} and _draws == {"lasso", "rect"})
+          _picks == {"pair", "level", "plumb", "north"}
+          and _draws == {"lasso", "rect"},
+          "picks=%s draws=%s" % (sorted(_picks), sorted(_draws)))
     # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
     # distance alone picks the wall THROUGH the chair in front of it.
     check("and the front-most point under the crosshair wins, not the nearest",
@@ -2970,6 +2976,115 @@ console.log(JSON.stringify(out));
 check("a scan row can be double-clicked to pick it",
       "ondblclick=\"pickScan(" in _ALIGN_SRC)
 check("and the picked row is marked", "' sel'" in _ALIGN_SRC)
+
+
+# --- which way is north ---------------------------------------------------
+#
+# ⭐ THE MISSING HALF OF THE WORLD. `Level` answers "where is down" and says in
+# its own docstring that it deliberately does NOT reassign X, because yaw
+# already means something here. So nothing answered "where is north", and a
+# cloud came out correctly levelled and pointing an arbitrary way -- fine for
+# measuring a room, useless the moment it has to sit beside a site plan.
+print("\nwhich way is north")
+
+_L0 = registration.Level()
+check("a fresh level has no heading and is identity",
+      _L0.heading_deg == 0.0 and _L0.is_identity())
+# ⛔ A HEADING ALONE IS NOT IDENTITY. Treated as one, the exporter would skip
+# it entirely -- the frame would be written unturned and the compass would be
+# a control that visibly did nothing.
+check("but a heading with no tilt is NOT identity",
+      registration.Level((0, 0, 1), (0, 0, 0), 12.0).is_identity() is False)
+
+# A line running due east, told that it runs north, must come out along +Y.
+_h = registration.heading_to_north([0, 0, 0], [5, 0, 0], _L0, "north")
+_turned = registration.Level((0, 0, 1), (0, 0, 0), _h).apply(
+    np.array([[5.0, 0.0, 0.0]]))[0]
+check("a line sighted east and called north is turned onto +Y",
+      abs(_turned[0]) < 1e-9 and abs(_turned[1] - 5.0) < 1e-9, _turned)
+check("a line already pointing north needs no turn",
+      abs(registration.heading_to_north([0, 0, 0], [0, 7, 0], _L0, "north"))
+      < 1e-9)
+for _dir, _axis in (("east", 0), ("west", 0), ("south", 1)):
+    _hh = registration.heading_to_north([0, 0, 0], [3, 3, 0], _L0, _dir)
+    _pp = registration.Level((0, 0, 1), (0, 0, 0), _hh).apply(
+        np.array([[3.0, 3.0, 0.0]]))[0]
+    _sign = {"east": (0, +1), "west": (0, -1), "south": (1, -1)}[_dir]
+    check("a line called %s lands on the %s axis" % (_dir, "xy"[_sign[0]]),
+          abs(_pp[1 - _sign[0]]) < 1e-9 and _pp[_sign[0]] * _sign[1] > 0, _pp)
+
+# ⛔ TWO POINTS ONE ABOVE THE OTHER HAVE NO BEARING AT ALL, and quietly
+# returning zero would set north to whatever the frame already was while
+# reporting success.
+try:
+    registration.heading_to_north([0, 0, 0], [0, 0, 4], _L0, "north")
+    check("a vertical sighting line is refused", False, "it was accepted")
+except ValueError as _exc:
+    check("a vertical sighting line is refused, saying why",
+          "one above the other" in str(_exc), str(_exc))
+
+# ⛔⛔ THE TILT COMES FIRST AND THE COMPASS SECOND, AND THE ORDER IS NOT A
+# PREFERENCE. A turn about +Z only means "swing the room round the vertical"
+# once the vertical IS +Z; applied to a frame that still leans it tips the room
+# as well, by an amount that depends on how far round the turn went. Driven
+# here on a frame deliberately 20 degrees out.
+_lean = registration.Level((math.sin(math.radians(20.0)), 0.0,
+                            math.cos(math.radians(20.0))))
+_both = registration.Level(_lean.normal, _lean.pivot, 37.0)
+_up = _both.apply(np.array([[_lean.normal[0], _lean.normal[1],
+                             _lean.normal[2]]]))[0]
+check("the measured up still lands exactly on +Z after a heading is applied",
+      abs(_up[0]) < 1e-9 and abs(_up[1]) < 1e-9 and abs(_up[2] - 1.0) < 1e-9,
+      _up)
+check("and the tilt it reports is unchanged by the heading",
+      abs(_both.tilt_deg - _lean.tilt_deg) < 1e-9)
+# The bearing is measured on the LEVELLED frame, so a line lying in the leaning
+# floor still comes out pointing north rather than a few degrees off it.
+_a, _b = [0.0, 0.0, 0.0], [10.0, 0.0, -10.0 * math.tan(math.radians(20.0))]
+_hl = registration.heading_to_north(_a, _b, _lean, "north")
+_pl = registration.Level(_lean.normal, _lean.pivot, _hl).apply(
+    np.array([_b], dtype=float))[0]
+check("a line sighted along a LEANING floor still comes out due north",
+      abs(_pl[0]) < 1e-6 and _pl[1] > 0, _pl)
+
+check("an old project with no heading reads back as no heading",
+      registration.Level.from_dict({"normal": [0, 0, 1],
+                                    "pivot": [0, 0, 0]}).heading_deg == 0.0)
+check("and a heading survives the round trip",
+      abs(registration.Level.from_dict(
+          registration.Level((0, 0, 1), (0, 0, 0), 12.5).as_dict()
+      ).heading_deg - 12.5) < 1e-9)
+check("a level with no heading writes no heading field, as before",
+      "heading_deg" not in registration.Level().as_dict())
+check("and describe says which turn was made",
+      "north runs +Y" in registration.Level((0, 0, 1), (0, 0, 0), 5.0
+                                            ).describe())
+
+# --- through the server ----------------------------------------------------
+_nsrv = align.AlignServer([], out_path=None)
+_nout = _nsrv.set_north([[0, 0, 0], [5, 0, 0]], "north", None)
+check("the server turns a sighted line to north", _nout["ok"] is True and
+      abs(_nout["heading_deg"] - 90.0) < 1e-9, _nout)
+# ⛔ SETTING NORTH MUST NOT UN-LEVEL THE ROOM. The page sends the level it
+# holds, and the tilt is carried into the answer rather than replaced.
+_lvl = _lean.as_dict()
+_nk = _nsrv.set_north([[0, 0, 0], [5, 0, 0]], "north", _lvl)
+check("and carries the existing tilt through untouched",
+      _nk["ok"] and abs(registration.Level.from_dict(_nk["level"]).tilt_deg
+                        - _lean.tilt_deg) < 1e-9, _nk)
+check("one point is not a line", _nsrv.set_north([[0, 0, 0]], "north",
+                                                 None)["ok"] is False)
+check("and a direction that is not a compass point is refused",
+      _nsrv.set_north([[0, 0, 0], [1, 0, 0]], "up", None)["ok"] is False)
+check("a vertical line is refused through the server too, with the reason",
+      _nsrv.set_north([[0, 0, 0], [0, 0, 3]], "north", None)["ok"] is False)
+
+check("the page can ask for it", '"/north"' in _ALIGN_SRC
+      and "applyNorth(" in _ALIGN_SRC)
+# ⛔ AND THE WIDGET NO LONGER CLAIMS A COMPASS IT HAS NOT BEEN GIVEN. It labelled
+# +Y "North" from the day it was written, which was right only by luck.
+check("the world-axes widget only says North once north is set",
+      "no compass set" in _ALIGN_SRC and "function axisWord" in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

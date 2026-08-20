@@ -531,6 +531,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                                   body.get("pairs") or []))
             if path == "/level":
                 return self._json(srv.level(body.get("points") or []))
+            if path == "/north":
+                return self._json(srv.set_north(body.get("points") or [],
+                                                body.get("direction"),
+                                                body.get("level")))
             if path == "/browse":
                 return self._json(srv.browse())
             if path == "/photo/browse":
@@ -770,6 +774,48 @@ class AlignServer(object):
                 "errors": [float(e) for e in fit.errors],
                 "worst": fit.worst[0], "points": fit.count,
                 "trustworthy": fit.ok, "text": fit.describe()}
+
+    def set_north(self, points, direction, level):
+        """
+        Turn the merged frame so a sighted line runs in a named direction.
+
+        ⭐ THE MISSING HALF OF THE WORLD. `Level` answers "where is down" and
+        says in its own docstring that it deliberately does NOT reassign X,
+        because yaw already means something here. So nothing has ever answered
+        "where is north", and a cloud came out of this program correctly
+        levelled and pointing an arbitrary way -- fine for measuring a room,
+        useless the moment it has to sit beside a site plan or anything else
+        surveyed.
+
+        ⛔ THE TILT COMES FIRST AND THE COMPASS SECOND. A bearing is a
+        horizontal thing, so it can only be measured once the vertical is
+        vertical; and a turn about +Z only spins the room once +Z is up. Both
+        halves are handled in `Level.matrix`, which is why this returns a
+        LEVEL rather than an angle of its own -- one object reaches the
+        exporter and there is no second thing to remember to pass.
+        """
+        pts = list(points or [])
+        if len(pts) != 2:
+            return {"ok": False,
+                    "error": "two points are needed: click one, then click "
+                             "something you know lies %s of it"
+                             % (str(direction).lower() or "north")}
+        want = str(direction or "north").lower()
+        if want not in ("north", "east", "south", "west"):
+            return {"ok": False, "error": "a compass direction is needed"}
+        base = registration.Level.from_dict(level)
+        try:
+            heading = registration.heading_to_north(pts[0], pts[1], base, want)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        # ⛔ THE TILT IS CARRIED THROUGH, NOT REPLACED. Setting north on an
+        # already-levelled frame must not un-level it, and the page sends the
+        # level it currently holds for exactly that reason.
+        made = registration.Level(base.normal, base.pivot, heading)
+        return {"ok": True, "level": made.as_dict(),
+                "heading_deg": heading, "direction": want,
+                "text": "turned %.2f° so that line runs %s"
+                        % (heading, want)}
 
     def browse(self):
         """
@@ -1677,6 +1723,21 @@ PAGE = r"""<!doctype html>
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
   <hr>
+  <label>Which way is north</label>
+  <div class="row"><button id="north">Sight a line</button>
+    <button id="northclear">Clear</button></div>
+  <div class="row"><button id="nN" class="go">N</button>
+    <button id="nE" class="go">E</button>
+    <button id="nS" class="go">S</button>
+    <button id="nW" class="go">W</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    Click two points along something whose bearing you know — a wall, a kerb,
+    a corridor — then press the direction that line RUNS. The room turns so
+    that line points that way, and the world-axes widget then reads as a
+    compass. <b>Level the room first:</b> a bearing is a horizontal thing, and
+    in a leaning frame it is not the one you sighted.</div>
+  <div id="nthlist" style="font-size:10.5px;color:var(--faint)"></div>
+  <hr>
   <label>Plumb &amp; level reference</label>
   <div class="row"><button id="ref">Reference lines</button>
     <button id="plumb">Place / measure</button></div>
@@ -1791,7 +1852,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
-           ref:false, plumb:{a:null,b:null},
+           ref:false, plumb:{a:null,b:null}, nth:[],
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            /* Which cloud the next cut belongs to: -1 for all of them. */
            editWho:-1,
@@ -2217,6 +2278,19 @@ function gizmoDir(v){
 const AXES = [{v:[1,0,0], n:'X', t:'East', c:'#ff6b6b'},
               {v:[0,1,0], n:'Y', t:'North', c:'#7ddc7d'},
               {v:[0,0,1], n:'Z', t:'Up',   c:'#6bb6ff'}];
+/* ⛔ THIS WIDGET HAS BEEN CALLING +Y "NORTH" SINCE THE DAY IT WAS WRITTEN, AND
+   NOTHING HAD EVER MEASURED NORTH. The words were an aspiration about what the
+   axes would mean if the tripod happened to be set down facing that way, which
+   it never is -- a label that is right by luck is a label nobody can use. Up is
+   different: Level measures it, so Z has earned its word. The compass words are
+   spoken only once "Which way is north" has established them. */
+function axisWord(a, sign){
+  if(a.n==='Z') return sign>0 ? 'Up' : 'Down';
+  if(!(V.level && V.level.heading_deg))
+    return sign>0 ? a.n+', no compass set' : '-'+a.n+', no compass set';
+  const words = {X:['East','West'], Y:['North','South']}[a.n];
+  return sign>0 ? words[0] : words[1];
+}
 function gizmoBalls(){
   const [cx,cy]=gizmoAt(), out=[];
   for(const a of AXES) for(const s of [1,-1]){
@@ -2275,7 +2349,7 @@ function gizmoClick(mx,my){
   if(v[2]) preset(-Math.PI/2, v[2]>0 ? Math.PI/2 : -Math.PI/2);
   else preset(Math.atan2(v[1],v[0]), 0);
   say('looking down world '+(best.sign>0?'+':'-')+best.axis.n+
-      ' ('+best.axis.t+').');
+      ' ('+axisWord(best.axis, best.sign)+').');
   return true;
 }
 
@@ -2321,6 +2395,29 @@ function ringGap(mx,my){
     if(d<best) best=d;
   }
   return best;
+}
+/* The sighted line, while it is being picked. */
+function drawNorth(){
+  if(!V.nth.length) return;
+  const pts=[];
+  for(const q of V.nth){
+    const s=scanAt(q.si); if(!s) return;
+    const w=put(affine(s), q.p[0], q.p[1], q.p[2]);
+    const at=project(w, V.vp); if(!at) return;
+    pts.push(at);
+  }
+  oc.save();
+  for(const a of pts){
+    oc.beginPath(); oc.arc(a[0],a[1],5,0,6.2832);
+    oc.fillStyle='rgba(255,214,10,.95)'; oc.fill();
+  }
+  if(pts.length===2){
+    oc.beginPath(); oc.moveTo(pts[0][0],pts[0][1]);
+    oc.lineTo(pts[1][0],pts[1][1]);
+    oc.lineWidth=2; oc.strokeStyle='rgba(255,214,10,.9)';
+    oc.setLineDash([6,4]); oc.stroke();
+  }
+  oc.restore();
 }
 function drawRing(){
   const r=ringOf(); if(!r) return;
@@ -2393,12 +2490,14 @@ function drawDraft(){
      ov.height!==Math.floor(innerHeight*dpr)){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
-  if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length && !ringOf()){
+  if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length && !V.nth.length
+     && !ringOf()){
     ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
   drawRing();
+  drawNorth();
   drawGizmo();
   labelPairs();
   if(!path || path.length<2) return;
@@ -3192,6 +3291,7 @@ function runPick(mx,my){
      spanning both is what reveals a tilt between the two setups */
   if(V.tool==='level') return levelPick(hit);
   if(V.tool==='plumb') return plumbPick(hit);
+  if(V.tool==='north') return northPick(hit);
   const want=pairWant();
   if(!want) return;
   if(hit.scan!==want) return say(
@@ -3375,6 +3475,59 @@ function levelPick(hit){
                           'with the other three.' : ''));
   showLevel(); invalidate(); dirty();
 }
+/* Two points along something whose bearing the operator knows.
+
+   ⛔ HELD IN THEIR OWN SCAN'S COORDINATES, like every other pick in this
+   program. Stored as world, they would silently start meaning somewhere else
+   the moment their cloud was nudged or the room was levelled -- and the
+   heading would come back plausible for a line that no longer exists. */
+function northPick(hit){
+  if(V.nth.length>=2) V.nth=[];
+  V.nth.push({si:hit.scan.index, p:hit.local.slice()});
+  say(V.nth.length<2
+      ? 'One end. Now click the other end of the line, further along it the '+
+        'better — a short sighting line makes a big angular error.'
+      : 'Both ends. Now press N, E, S or W to say which way that line RUNS.');
+  showNorth(); invalidate(); dirty();
+}
+function showNorth(){
+  const box=$('nthlist'); if(!box) return;
+  const bits=[];
+  if(V.level && V.level.heading_deg)
+    bits.push('<b style="color:#8fd694">north set — frame turned '+
+              (+V.level.heading_deg).toFixed(2)+'°</b>');
+  if(V.nth.length) bits.push(V.nth.length+' of 2 picked');
+  box.innerHTML = bits.join('<br>') || '';
+}
+async function applyNorth(dir){
+  if(V.nth.length<2) return say(
+    'Sight a line first: press Sight a line, then click each end of '+
+    'something whose bearing you know.', 'warn');
+  const pts=[];
+  for(const q of V.nth){
+    const s=scanAt(q.si);
+    if(!s) return say('A sighting pick points at a scan that is no longer '+
+                      'open. Clear it and pick again.', 'warn');
+    pts.push(preLevel(s,q.p));         /* the RAW frame, as levelling uses */
+  }
+  if(!V.level) say('note: the room is not levelled, so this bearing is '+
+                   'measured in the rig\'s own horizontal, not gravity\'s.',
+                   'warn');
+  if(V.edits.length) say('note: the cuts already made stay where they are '+
+                         'while the room turns under them.', 'warn');
+  try{
+    const j=await post('north', {points:pts, direction:dir,
+                                 level:V.level||null});
+    if(!j.ok) throw new Error(j.error||'could not set north');
+    V.level=j.level;
+    setTool(''); V.nth=[];
+    showLevel(); showNorth(); syncSliders(); invalidate();
+    editsFollow(); dirty();
+    say('North set: '+j.text+'. The world-axes widget now reads as a '+
+        'compass, and the merged cloud is written turned this way.');
+  }catch(e){ say('Could not set north: '+e.message, 'bad'); }
+}
+
 function showLevel(){
   const box=$('lvllist'); if(!box) return;
   const bits=[];
@@ -3679,7 +3832,8 @@ async function openProject(path){
     $('wire').textContent=V.wire?'Box shown':'Box hidden';
     $('wire').classList.toggle('on',V.wire);
     refreshLists(); syncSliders(); syncClipSliders(); showTurn();
-    clipLabels(); showEdits(); showPairs(); showLevel(); showPlumb();
+    clipLabels(); showEdits(); showPairs(); showLevel(); showNorth();
+    showPlumb();
     recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
@@ -4428,7 +4582,7 @@ function syncClipSliders(){
    they were built, and nothing failed loudly enough to say so: the fallback was
    a working feature, just the wrong one. A tool in neither table now leaves the
    drag to the camera, which is inert rather than misleading. */
-const PICK_TOOLS = {pair:1, level:1, plumb:1};
+const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1};
 const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
@@ -4590,6 +4744,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
   $('refclear').onclick=clearPlumb;
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
+  $('north').onclick=()=>setTool(V.tool==='north'?'':'north');
+  $('northclear').onclick=()=>{
+    V.nth=[];
+    if(V.level && V.level.heading_deg){
+      /* ⛔ CLEARING THE COMPASS MUST NOT CLEAR THE LEVEL. They are two
+         separate measurements living in one object, and losing the tilt as a
+         side effect of undoing a bearing would leave the room leaning with
+         nothing on screen to say it had changed. */
+      V.level = Object.assign({}, V.level, {heading_deg:0});
+      say('North cleared. The room stays levelled.');
+    } else say('Sighting picks cleared.');
+    showNorth(); showLevel(); invalidate(); dirty(); };
+  [['nN','north'],['nE','east'],['nS','south'],['nW','west']].forEach(
+    ([id,dir])=>{ $(id).onclick=()=>applyNorth(dir); });
   $('lvlgo').onclick=applyLevel;
   $('lvlundo').onclick=undoLevelPick;
   $('lvlclear').onclick=clearLevel;
