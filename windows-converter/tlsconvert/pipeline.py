@@ -490,7 +490,7 @@ def choose_stride(pcap_path, budget):
 
 
 def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
-                     per_laser_azimuth=False):
+                     per_laser_azimuth=False, with_refl=False):
     """
     A cheap decimated pass, purely to work out where the camera was pointing.
 
@@ -501,14 +501,24 @@ def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
     """
     expected = rig.tls_pcap.estimate_packet_count(pcap_path)
     stride = max(1, int(expected * 384 // max(max_points, 1)))
-    chunks = []
-    for xyz, _ in decode.stream_world_points(
+    # ⭐ THE REFLECTIVITY WAS ALWAYS COMING BACK AND ALWAYS BEING DROPPED.
+    # `stream_world_points` yields it beside every point; this function threw
+    # it away on the floor with `_`, and so the second opinion that needs it --
+    # colour.solve_yaw_mi -- had nothing to work with. Kept only when asked
+    # for, so the callers that want positions still get an array back rather
+    # than a tuple they would have to unpack.
+    chunks, refls = [], []
+    for xyz, refl in decode.stream_world_points(
             pcap_path, meta, frame, stride=stride,
             per_laser_azimuth=per_laser_azimuth):
         chunks.append(xyz)
+        if with_refl:
+            refls.append(refl)
     if not chunks:
-        return np.empty((0, 3), dtype=np.float32)
-    return np.concatenate(chunks)
+        empty = np.empty((0, 3), dtype=np.float32)
+        return (empty, np.empty(0, dtype=np.float32)) if with_refl else empty
+    pts = np.concatenate(chunks)
+    return (pts, np.concatenate(refls)) if with_refl else pts
 
 
 def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,

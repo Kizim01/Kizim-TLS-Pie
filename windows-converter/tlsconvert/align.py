@@ -113,7 +113,7 @@ class Scan(object):
         self.sample = sample           # decimated, for the solver
         self.setup = setup or registration.Setup()
         # "capture" (a .pcap, re-decodable) or "cloud" (already exported).
-        # \u26d4 The difference is not cosmetic: a cloud cannot be re-read at
+        # ⛔ The difference is not cosmetic: a cloud cannot be re-read at
         # another density and has no pan track, so the detail slider and the
         # pitch check do not apply to it. Everything else does.
         self.source = source
@@ -137,6 +137,10 @@ class Scan(object):
         # "commanded", "hand-aligned" or "restored" -- how the head's
         # own zero was established for this scan.
         self.zero_origin = None
+        # ⭐ THE SECOND OPINION'S ONLY INPUT. Reflectivity for each point of
+        # `sample`, or None for an exported cloud, which has none. Without it
+        # `colour.solve_yaw_mi` cannot run and the heading rests on one method.
+        self.sample_refl = None
         self.rung = None               # how far down the GICP ladder it has got
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
@@ -148,18 +152,83 @@ class Scan(object):
         return buf
 
 
+def grade_solve(info, sample, refl, lum, camera):
+    """
+    Fill in `grade`, the second opinion and the shortlist on a solved info.
+
+    ⛔ ONE HOME, BECAUSE THERE ARE TWO WAYS INTO IT AND THEY MUST NOT DIVERGE.
+    A photograph attached in Studio goes through `colour_scan`; a photograph
+    already sitting beside a capture is applied by the STREAMING colouriser as
+    the capture is read, and that path built its own info dict by hand -- so it
+    arrived with no grade at all and no second opinion, and the same photograph
+    was described two different ways depending on how it got there. Caught by
+    running the real loader over the operator's own scans and seeing
+    `grade None` on a pair the other path calls confirmed.
+
+    `info` must already carry `yaw_deg` and `confidence`.
+    """
+    from . import colour as colour_mod
+    confidence = float(info.get("confidence") or 0.0)
+    yaw = info.get("yaw_deg")
+    profile = info.pop("_profile", None)
+    if profile is not None:
+        fits = colour_mod.peaks(profile)
+        info["candidates"] = [c for c in fits if c["confidence"] >= 2.0]
+
+    # ⭐⭐ A SECOND, INDEPENDENT OPINION -- AND IT IS NOT A BETTER SOLVER, IT
+    # IS A WITNESS. Measured on 2026-08-20 against 57 photographs from one
+    # shoot: the edge confidence ranked the KNOWN correct photograph SECOND,
+    # behind an image taken two and a half hours later at another table (7.46
+    # against 7.02). No threshold and no ranking picks the right one out of
+    # that. But the correct photograph was the only one where both methods were
+    # confident AND landed on the same angle -- 7.02 and 6.57, agreeing to 0.1
+    # degrees, where the impostor's two answers sat 29 degrees apart.
+    if refl is not None and sample is not None and len(refl) == len(sample):
+        mi_yaw, mi_conf, _p = colour_mod.solve_yaw_mi(sample, refl, lum,
+                                                      camera=camera)
+        agreed, apart = colour_mod.corroborates(yaw, confidence,
+                                                mi_yaw, mi_conf)
+        info["second"] = {"yaw_deg": mi_yaw, "confidence": mi_conf}
+        info["agree_deg"] = apart
+        info["corroborated"] = agreed
+        # ⛔ AND WHEN THEY DISAGREE, THE OTHER ANSWER IS OFFERED RATHER THAN
+        # BURIED. A disagreement is the most useful thing this pair of numbers
+        # ever produces: it says one of two specific angles is right, which is
+        # a far smaller question than the whole circle.
+        if apart is not None and apart > colour_mod.AGREE_DEG:
+            info["candidates"] = ([{"yaw_deg": mi_yaw, "confidence": mi_conf,
+                                    "from": "reflectivity"}]
+                                  + list(info.get("candidates") or []))
+
+    if info.get("corroborated"):
+        info["grade"] = "confirmed"
+    elif confidence >= colour_mod.SURE_CONFIDENCE:
+        info["grade"] = "sure"
+    else:
+        info["grade"] = ("unsure" if confidence >= colour_mod.MIN_CONFIDENCE
+                         else "doubtful")
+        info["caution"] = (
+            "confidence %.1f, %s %.1f -- around what an unrecognisable image "
+            "has scored, so the number is not evidence either way. Judge it by "
+            "looking: nudge the heading, or try one of the other fits."
+            % (confidence,
+               "under" if confidence >= colour_mod.MIN_CONFIDENCE
+               else "well under", colour_mod.SURE_CONFIDENCE))
+    return info
+
+
 def colour_scan(scan, photo, camera_z=0.0, yaw=None):
     """
     Solve the camera's heading against `scan` and repaint it. Never raises.
 
-    Returns the info dict the panel shows. \u2b50 THE CONFIDENCE IS ALWAYS
+    Returns the info dict the panel shows. ⭐ THE CONFIDENCE IS ALWAYS
     REPORTED, ACCEPTED OR NOT, because on 2026-08-20 the gate turned out to be
     a far weaker discriminator than it looked: a real photograph scores 5.5-5.9
     where a depth-derived one scored 8.18, and a photo of a DIFFERENT ROOM of
     much the same shape scores 6.29 -- which clears every workable threshold.
     The number is a hint for a person, not a verdict, so it goes on screen.
 
-    \u26d4 AND A CLOUD THAT HAS BEEN MOVED IS REFUSED BEFORE ANY OF THAT. Colour
+    ⛔ AND A CLOUD THAT HAS BEEN MOVED IS REFUSED BEFORE ANY OF THAT. Colour
     is cast from the origin; if the scan is not sitting where it was recorded,
     every ray leaves the wrong point and the result looks entirely fine.
     """
@@ -169,7 +238,11 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
             # "given" | "sure" | "unsure" | "doubtful" -- how much the number
             # is worth, said in words rather than decided by a threshold the
             # operator cannot see. See colour.MIN_CONFIDENCE.
-            "grade": None, "caution": None, "candidates": []}
+            "grade": None, "caution": None, "candidates": [],
+            # The reflectivity solve, how far it sits from the edge solve, and
+            # whether that counts as corroboration. None when there is no
+            # reflectivity -- an exported cloud carries none.
+            "second": None, "agree_deg": None, "corroborated": False}
     if not photo:
         info["reason"] = "no photo"
         return info
@@ -243,20 +316,8 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
         # not arbitrary. So it is applied and GRADED, and the thing that
         # actually judges it is the picture on screen with the heading controls
         # beside it.
-        if confidence >= colour_mod.SURE_CONFIDENCE:
-            info["grade"] = "sure"
-        else:
-            info["grade"] = ("unsure" if confidence >= colour_mod.MIN_CONFIDENCE
-                             else "doubtful")
-            info["caution"] = (
-                "confidence %.1f, %s %.1f -- around what an unrecognisable "
-                "image has scored, so the number is not evidence either way. "
-                "Judge it by looking: nudge the heading, or try one of the "
-                "other fits."
-                % (confidence,
-                   "under" if confidence >= colour_mod.MIN_CONFIDENCE
-                   else "well under",
-                   colour_mod.SURE_CONFIDENCE))
+        grade_solve(info, sample, getattr(scan, "sample_refl", None), lum,
+                    camera)
 
     scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw, camera=camera)
     scan.photo = photo
@@ -308,7 +369,7 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
         name = os.path.basename(path)
         report("reading %s" % name)
 
-        # \u2b50 AN ALREADY-EXPORTED CLOUD OPENS TOO, and skips every step below
+        # ⭐ AN ALREADY-EXPORTED CLOUD OPENS TOO, and skips every step below
         # that needs packets. What it loses is real -- no pan track, so no
         # re-reading at another density and no pitch check -- but the geometry
         # is intact and sensor-centred, which is all that aligning, levelling,
@@ -364,9 +425,11 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             xyz, rgb = buf.arrays()
 
         report("preparing %s for alignment" % name)
-        sample = pipeline.sample_for_solve(path, meta, frame,
-                                           per_laser_azimuth=per_laser_azimuth)
+        sample, sample_refl = pipeline.sample_for_solve(
+            path, meta, frame, per_laser_azimuth=per_laser_azimuth,
+            with_refl=True)
         scan = Scan(path, xyz, rgb, sample, total=done)
+        scan.sample_refl = sample_refl
         scan.anchor_deg = (meta.get("zero") or {}).get("head_deg")
         scan.zero_origin = (meta.get("zero") or {}).get("provenance")
         # The photo was applied while streaming, above; record WHICH one, so the
@@ -378,13 +441,37 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
                                 "name": os.path.basename(found),
                                 "yaw_deg": _info.get("yaw_deg"),
                                 "confidence": _info.get("confidence"),
-                                "reason": None}
+                                "reason": None, "given": False,
+                                "camera_z": 0.0, "grade": None,
+                                "caution": None, "candidates": [],
+                                "second": None, "agree_deg": None,
+                                "corroborated": False}
+            # ⛔ GRADED HERE TOO, THROUGH THE SAME FUNCTION. This path applies
+            # the colour while STREAMING the capture, so it never went near
+            # colour_scan -- and a scan opened with its photograph already
+            # beside it arrived ungraded, with no second opinion, while the
+            # identical photograph attached by hand came back "confirmed".
+            from . import colour as colour_mod
+            try:
+                _rgb2, _lum2 = colour_mod.load_panorama(found)
+            except Exception as _exc:                     # noqa: BLE001
+                # A grade is a nicety; a decoded capture is not. Never let the
+                # second opinion be the reason a scan fails to open.
+                scan.colour_info["caution"] = (
+                    "could not re-read %s to grade the alignment (%s)"
+                    % (os.path.basename(found), _exc))
+            else:
+                grade_solve(scan.colour_info, sample, sample_refl, _lum2,
+                            (0.0, 0.0, 0.0))
         elif found:
             scan.colour_info = {"photo": found, "ok": False,
                                 "name": os.path.basename(found),
                                 "yaw_deg": _info.get("yaw_deg"),
                                 "confidence": _info.get("confidence"),
-                                "reason": _info.get("reason")}
+                                "reason": _info.get("reason"), "given": False,
+                                "grade": "doubtful", "caution": None,
+                                "candidates": [], "second": None,
+                                "agree_deg": None, "corroborated": False}
         scans.append(scan)
     report("ready")
     return scans
@@ -456,6 +543,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.set_heading(
                     body.get("index"), body.get("yaw"),
                     body.get("remember", True), body.get("camera_z")))
+            if path == "/photo/find":
+                return self._json(srv.find_photo_for(body.get("index"),
+                                                     body.get("folder")))
             if path == "/photo/resolve":
                 return self._json(srv.resolve(body.get("index"),
                                               body.get("camera_z")))
@@ -564,6 +654,9 @@ class AlignServer(object):
                          # The runners-up, so a weak solve is a choice rather
                          # than a dead end.
                          "fits": info.get("candidates") or [],
+                         "second": info.get("second"),
+                         "agree": info.get("agree_deg"),
+                         "corroborated": bool(info.get("corroborated")),
                          "cameraZ": getattr(scan, "camera_z", 0.0),
                          "anchor": scan.anchor_deg,
                          "baseline": library.recall_heading(
@@ -877,6 +970,107 @@ class AlignServer(object):
         if not photo:
             return None, "add a photo to this scan before aligning it"
         return scan, photo
+
+    # How many images one search will look at. ⛔ NOT A SILENT CAP: what was
+    # dropped is counted and said, because a search that quietly stopped at 200
+    # and reported the best of those reads exactly like a search that finished.
+    FIND_LIMIT = 200
+
+    def find_photo_for(self, index, folder=None):
+        """
+        Score every photograph in a folder against this scan, best first.
+
+        ⭐⭐ THIS IS THE QUESTION THAT HAS AN ANSWER. "Is a confidence of 4.6
+        good enough" does not: a real photograph measured 5.5 and an
+        unrecognisable one 4.59. But "which of these 57 belongs to this scan"
+        holds the room, the coverage, the sparsity and the rig's position
+        FIXED and varies only the photograph, which is a far easier comparison
+        -- and it is the one the operator actually has: a folder of shots off
+        the camera and a scan in front of them.
+
+        ⛔ RANKED ON THE WEAKER OF THE TWO OPINIONS, NOT THE STRONGER. Measured
+        on 2026-08-20 over exactly that 57: ranking by the edge confidence puts
+        the KNOWN correct photograph second, behind an image shot two and a half
+        hours later at another table (7.46 against 7.02). Ranking by the weaker
+        of the two -- so that a photograph has to convince BOTH methods -- puts
+        it first by a wide margin, 6.57 against the impostor's 3.86.
+
+        ⚠ AND IT IS A RANKING, NOT A VERDICT. The top row is the best of what
+        was in the folder, which is not the same as right; if the scan's own
+        photograph is not there, something else will still come first. The
+        numbers are printed beside it for exactly that reason.
+        """
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            # A scan with no photograph yet is the main reason to run this, so
+            # not having one is not an error -- only not having a folder is.
+            try:
+                scan = self.scans[int(index)]
+            except (TypeError, ValueError, IndexError):
+                return {"ok": False, "error": "no such scan"}
+            photo = None
+        where = folder or (os.path.dirname(photo) if photo
+                           else os.path.dirname(os.path.abspath(scan.path)))
+        if os.path.isfile(where):
+            where = os.path.dirname(where)
+        if not os.path.isdir(where):
+            return {"ok": False, "error": "no such folder: %s" % where}
+        names = sorted(n for n in os.listdir(where)
+                       if os.path.splitext(n)[1].lower()
+                       in (".jpg", ".jpeg", ".png"))
+        if not names:
+            return {"ok": False,
+                    "error": "no images in %s" % os.path.basename(where)}
+        dropped = max(0, len(names) - self.FIND_LIMIT)
+        names = names[:self.FIND_LIMIT]
+
+        from . import colour as colour_mod
+        sample = (scan.sample if scan.sample is not None and len(scan.sample)
+                  else scan.xyz)
+        refl = getattr(scan, "sample_refl", None)
+        if refl is not None and len(refl) != len(sample):
+            refl = None
+        camera = (0.0, 0.0, float(getattr(scan, "camera_z", 0.0) or 0.0))
+
+        rows = []
+        for at, name in enumerate(names):
+            self._progress = {"stage": "scoring %s" % name, "n": at,
+                              "total": len(names), "busy": True}
+            path = os.path.join(where, name)
+            try:
+                _rgb, lum = colour_mod.load_panorama(path)
+                yaw, conf, _p = colour_mod.solve_yaw(sample, lum,
+                                                     camera=camera)
+                if refl is None:
+                    mi_yaw, mi_conf = None, None
+                    agreed, apart = False, None
+                else:
+                    mi_yaw, mi_conf, _q = colour_mod.solve_yaw_mi(
+                        sample, refl, lum, camera=camera)
+                    agreed, apart = colour_mod.corroborates(yaw, conf,
+                                                            mi_yaw, mi_conf)
+            except Exception as exc:                      # noqa: BLE001
+                # ⛔ ONE UNREADABLE FILE MUST NOT END THE SEARCH. A folder off a
+                # camera holds thumbnails, part-written files and the odd
+                # non-panorama; stopping on the first of those would make the
+                # feature useless exactly where it is most wanted.
+                rows.append({"name": name, "path": path, "error": str(exc)})
+                continue
+            rows.append({"name": name, "path": path,
+                         "yaw_deg": yaw, "confidence": conf,
+                         "mi_yaw_deg": mi_yaw, "mi_confidence": mi_conf,
+                         "agree_deg": apart, "corroborated": agreed,
+                         # The weaker of the two: a photograph has to convince
+                         # both methods, not just the one it happens to suit.
+                         "score": (min(conf, mi_conf) if mi_conf is not None
+                                   else conf)})
+        self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
+        good = [r for r in rows if "error" not in r]
+        good.sort(key=lambda r: (r["corroborated"], r["score"]), reverse=True)
+        return {"ok": True, "folder": where, "scanned": len(names),
+                "dropped": dropped, "unreadable": len(rows) - len(good),
+                "attached": os.path.basename(photo) if photo else None,
+                "results": good[:8], "has_second": refl is not None}
 
     def resolve(self, index, camera_z=None):
         """
@@ -1362,8 +1556,13 @@ PAGE = r"""<!doctype html>
   .row button{flex:1}
   /* The photo row under each scan in the legend. Deliberately quiet: it is
      status most of the time and a control only when you want it. */
-  .scanrow{padding:5px 0 6px;border-bottom:.5px solid rgba(255,255,255,.07)}
+  .scanrow{padding:5px 0 6px;border-bottom:.5px solid rgba(255,255,255,.07);
+    border-left:2px solid transparent;padding-left:5px;cursor:default}
   .scanrow:last-child{border-bottom:0}
+  /* The picked scan. A left rule rather than a background, so it reads at a
+     glance without fighting the tint swatch that identifies the cloud. */
+  .scanrow.sel{border-left-color:var(--blue);background:rgba(10,132,255,.07)}
+  .scanrow .head{cursor:pointer}
   .head{display:flex;align-items:center;gap:6px}
   .head .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap}
@@ -1416,6 +1615,7 @@ PAGE = r"""<!doctype html>
 <div id="hud"><b>Align scans</b><div id="stat">loading…</div></div>
 <div class="pnl" id="panel">
   <div id="legend"></div>
+  <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
   <label>Project</label>
   <div class="row"><button id="psave">Save project</button>
     <button id="psaveas">Save as…</button>
@@ -1577,6 +1777,8 @@ PAGE = r"""<!doctype html>
   &middot; M rectangle &middot; L lasso &middot; P pick pairs
   &middot; G level points &middot; T reference lines
   &middot; B hide box &middot; Ctrl-Z undo
+  &middot; double-click a scan name to work on it
+  &middot; drag its ring to turn it (shift snaps 5&deg;)
   &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
@@ -1593,6 +1795,12 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            /* Which cloud the next cut belongs to: -1 for all of them. */
            editWho:-1,
+           /* ⭐ THE ONE SELECTION, chosen by double-clicking a scan's name.
+              Before this there were TWO -- the scan the movement controls
+              acted on and the scan a cut belonged to -- set in two different
+              places, so it was entirely possible to nudge one cloud while
+              cutting another and nothing on screen said so. */
+           picked:0, ring:false,
            /* ⛔ SET ONCE THE OPERATOR HAS POSITIONED THE CLIP BOX, and from
               then on adding or removing a cloud leaves it alone. It used to be
               re-fitted to the new extents on every change to the set, which
@@ -2071,6 +2279,112 @@ function gizmoClick(mx,my){
   return true;
 }
 
+/* --- the rotation ring ---------------------------------------------------
+
+   ⭐ A RING ROUND THE SCAN'S OWN ORIGIN, dragged to turn it, the way every
+   other package does it. The tripod is where the rotation actually happens, so
+   that is where the handle belongs -- turning about the middle of the merged
+   scene would swing the cloud across the room and leave the operator chasing
+   what they were trying to line up.
+
+   ⛔ ONE RING, NOT THREE, AND THAT IS NOT A SIMPLIFICATION. A
+   `registration.Setup` is a yaw and a translation -- there is no pitch and no
+   roll in it, and the exporter applies exactly those four numbers. Drawing the
+   three coloured rings of a full gizmo would offer two rotations this program
+   cannot store, cannot solve for and cannot write to the merged cloud: a
+   control that appears to work and silently does nothing is worse than one
+   that is not there. A leaning ROOM is a different thing and has its own tool
+   -- Level, which turns the whole merged frame. */
+function ringOf(){
+  const s=active();
+  if(!s || s.index===0 || V.nav) return null;   /* the reference cannot move */
+  const o=put(affine(s), 0, 0, 0);              /* the tripod, placed+levelled */
+  const R=Math.max(1.2, 0.16*Math.max(span(0), span(1)));
+  return {s:s, o:o, R:R};
+}
+function ringPath(r){
+  const pts=[];
+  for(let i=0;i<=96;i++){
+    const a=i/96*Math.PI*2;
+    pts.push(project([r.o[0]+r.R*Math.cos(a),
+                      r.o[1]+r.R*Math.sin(a), r.o[2]], V.vp));
+  }
+  return pts;
+}
+/* How far the pointer is from the ring, in pixels. */
+function ringGap(mx,my){
+  const r=ringOf(); if(!r) return 1e9;
+  let best=1e9;
+  for(const p of ringPath(r)){
+    if(!p) continue;                     /* behind the eye: not on screen */
+    const d=Math.hypot(p[0]-mx, p[1]-my);
+    if(d<best) best=d;
+  }
+  return best;
+}
+function drawRing(){
+  const r=ringOf(); if(!r) return;
+  const pts=ringPath(r);
+  const hot=V.ring;
+  oc.save();
+  oc.globalAlpha=hot?1:0.75;
+  oc.setLineDash([]);
+  /* Drawn twice: a wide dim pass so the ring reads against a bright cloud,
+     and a thin bright one on top so it still reads against a dark one. */
+  for(const [w,c] of [[6,'rgba(10,16,26,.55)'],
+                      [hot?2.6:1.8, hot?'rgba(255,214,10,.98)'
+                                       :'rgba(96,190,255,.92)']]){
+    oc.beginPath();
+    let up=false;
+    for(const p of pts){
+      if(!p){ up=false; continue; }
+      if(up) oc.lineTo(p[0],p[1]); else { oc.moveTo(p[0],p[1]); up=true; }
+    }
+    oc.lineWidth=w; oc.strokeStyle=c; oc.stroke();
+  }
+  /* The handle sits at the scan's CURRENT heading, so the ring reads as an
+     instrument with a needle rather than as a decoration. */
+  const a=(+r.s.setup.yaw_deg)*Math.PI/180;
+  const h=project([r.o[0]+r.R*Math.cos(a), r.o[1]+r.R*Math.sin(a), r.o[2]],
+                  V.vp);
+  const c0=project(r.o, V.vp);
+  if(h && c0){
+    oc.beginPath(); oc.moveTo(c0[0],c0[1]); oc.lineTo(h[0],h[1]);
+    oc.lineWidth=1.4; oc.strokeStyle='rgba(255,214,10,.85)';
+    oc.setLineDash([4,3]); oc.stroke(); oc.setLineDash([]);
+    oc.beginPath(); oc.arc(h[0],h[1], hot?7:5, 0, 6.2832);
+    oc.fillStyle='rgba(255,214,10,.95)'; oc.fill();
+    oc.font='11px ui-sans-serif,system-ui';
+    oc.fillStyle='rgba(255,255,255,.92)';
+    oc.fillText((+r.s.setup.yaw_deg).toFixed(1)+'\u00b0', h[0]+10, h[1]-8);
+  }
+  oc.restore();
+}
+/* ⛔ THE SAME ANGLE-ABOUT-A-POINT MEASUREMENT THE CLIP BOX USES, and the
+   same sign correction: screen y grows downward, and seen from underneath the
+   scene a drag means the opposite turn. Getting that wrong makes the ring feel
+   like it fights the hand, which reads as a broken control rather than as a
+   sign error. */
+function turnScan(mx,my,fromAngle,snap){
+  const r=ringOf(); if(!r) return fromAngle;
+  const c=project(r.o, V.vp); if(!c) return fromAngle;
+  const now=Math.atan2(my-c[1], mx-c[0]);
+  if(fromAngle===null) return now;
+  let d=(now-fromAngle)*180/Math.PI;
+  while(d>180) d-=360;
+  while(d<-180) d+=360;
+  const sign = basis().dir[2] >= 0 ? -1 : 1;
+  let deg=(+r.s.setup.yaw_deg) + sign*d;
+  if(snap) deg=Math.round(deg/5)*5;      /* shift: five degrees at a time */
+  deg=((deg+180)%360+360)%360-180;
+  r.s.setup.yaw_deg=+deg.toFixed(2);
+  syncSliders(); invalidate(); editsFollow(); dirty();
+  say('turning '+r.s.name.slice(0,18)+' \u2014 '+deg.toFixed(1)+
+      '\u00b0'+(snap?' (snapped to 5\u00b0)':'')+
+      '. Hold shift to snap; Auto-align refines from here.');
+  return now;
+}
+
 /* The outline being drawn right now, and the one awaiting a keep-or-cut. */
 function drawDraft(){
   const path = V.draft || (V.pending && V.pending.screen);
@@ -2079,11 +2393,12 @@ function drawDraft(){
      ov.height!==Math.floor(innerHeight*dpr)){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
-  if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length){
+  if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length && !ringOf()){
     ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
+  drawRing();
   drawGizmo();
   labelPairs();
   if(!path || path.length<2) return;
@@ -2230,6 +2545,7 @@ async function loadScan(m){
        control that renders blank with nothing thrown -- which is exactly how
        the photo row was born broken once already. */
     grade:m.grade, caution:m.caution, fits:m.fits||[], cameraZ:m.cameraZ||0,
+    second:m.second, agree:m.agree, corroborated:!!m.corroborated,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
 
@@ -2312,6 +2628,9 @@ function measure(){
   V.ext={lo,hi}; if(!V.boxSet) resetBox();
   V.reach=Math.max(3,reach*1.6);
   V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
+  /* The pick follows only while nobody has made one; once a scan has been
+     picked by hand, adding another must not silently move the target. */
+  if(!V.scans.some(x=>x.index===V.picked)) V.picked=V.active;
   $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
     ' · '+total.toLocaleString()+' points shown';
   showDensity();
@@ -2334,6 +2653,30 @@ function showDensity(){
 }
 
 function active(){ return V.scans.find(s=>s.index===V.active); }
+/* Pick one scan and point every control at it.
+
+   ⭐ THERE USED TO BE TWO SELECTIONS AND NOTHING SAID SO. The movement
+   controls acted on the "Moving scan" dropdown; a new cut belonged to whatever
+   the "Delete points" selector said. They were set in different places and
+   could disagree, so nudging one cloud while cutting another was a normal
+   thing to do by accident. One pick now sets both.
+
+   ⛔ THE FIRST SCAN CAN BE PICKED, AND STILL CANNOT BE MOVED. Everything is
+   aligned TO it, so it has no placement of its own to change -- but cuts and
+   photographs apply to it exactly as they do to any other, and refusing to
+   select it would mean the one cloud you cannot aim a cut at is the one you
+   are aligning everything against. It is said out loud instead. */
+function pickScan(index){
+  const s=V.scans.find(x=>x.index===index); if(!s) return;
+  V.picked=index;
+  V.editWho=index;
+  if(index>0) V.active=index;
+  refreshLists(); syncSliders(); invalidate();
+  say('Working on '+s.name+'. Cuts now take from this scan only'+
+      (index>0 ? ', and the movement controls and the rotation ring turn it.'
+       : ' \u2014 but it is the REFERENCE, so it cannot be moved: everything '+
+         'else is aligned to it. Pick another scan to move that one instead.'));
+}
 function syncSliders(){
   const s=active(); if(!s) return;
   $('tx').value=s.setup.x_m; $('ty').value=s.setup.y_m;
@@ -3399,8 +3742,17 @@ async function applyDetail(){
 function photoRow(s){
   const btn = '<button class="mini" onclick="addPhoto('+s.index+')">'+
               (s.photo ? 'Replace' : 'Add photo')+'</button>';
+  /* ⭐ THE QUESTION THAT HAS AN ANSWER. "Is 4.6 good enough" has none -- a
+     real photograph measured 5.5 and an unrecognisable one 4.59. "Which of
+     these belongs to this scan" holds everything but the photograph fixed,
+     and it is the question an operator with a folder of shots actually has. */
+  const find = '<button class="mini" title="Score every photograph in a '+
+    'folder against this scan and rank them. Both methods have to agree '+
+    'before anything is called confirmed." onclick="findPhoto('+s.index+
+    ')">Find\u2026</button>';
   if(!s.photo)
-    return '<div class="photo"><span class="grow">no photo</span>'+btn+'</div>';
+    return '<div class="photo"><span class="grow">no photo</span>'+find+btn+
+           '</div>';
   const conf = (s.confidence==null) ? '' :
                ' · confidence '+(+s.confidence).toFixed(1);
   /* ⛔ THREE STATES, NOT TWO, BECAUSE THE PHOTOGRAPH IS NO LONGER THROWN
@@ -3410,7 +3762,18 @@ function photoRow(s){
      for a low score would be a lie and red would be one too -- it is amber,
      and the reason is in the tooltip. */
   let head;
-  if(s.photoGiven)
+  /* ⭐ THE STRONGEST THING THE PROGRAM CAN SAY, AND THE ONLY CLAIM THAT
+     SURVIVED A 57-WAY TEST: two methods that share nothing but the cloud both
+     found this angle. Shown as its own state because it is a different KIND of
+     statement from a high score -- a score says "the peak was sharp", this
+     says "an unrelated method agreed". */
+  if(s.corroborated)
+    head = '<span class="grow good" title="Two independent methods agree to '+
+           (s.agree==null?'?':(+s.agree).toFixed(1))+
+           ' degrees: depth silhouettes and lidar reflectivity. That is the '+
+           'strongest evidence this program has.">'+s.photo+conf+
+           ' · confirmed</span>';
+  else if(s.photoGiven)
     head = '<span class="grow good" title="You set this heading; the solve was '+
            'not consulted.">'+s.photo+' · heading '+
            (+s.yaw).toFixed(2)+'° · set by you</span>';
@@ -3456,10 +3819,15 @@ function photoRow(s){
   const fitrow = !fits.length ? '' :
     '<div class="fits"><span style="color:var(--faint);font-size:10px;'+
     'align-self:center">other fits</span>'+
-    fits.map(f => '<button title="the correlation\'s next best answer, '+
-      'scoring '+(+f.confidence).toFixed(1)+' -- trying it does not save a '+
-      'baseline" onclick="tryFit('+s.index+','+(+f.yaw_deg).toFixed(2)+
-      ')">'+(f.yaw_deg>0?'+':'')+(+f.yaw_deg).toFixed(1)+'° ('+
+    fits.map(f => '<button title="'+(f.from==='reflectivity'
+        ? 'What the SECOND method makes it -- lidar reflectivity against image '+
+          'brightness, which shares nothing with the edge solve but the cloud. '+
+          'The two disagree here, so one of these two angles is the right one.'
+        : 'the correlation\'s next best answer')+', scoring '+
+      (+f.confidence).toFixed(1)+' -- trying it does not save a baseline" '+
+      'onclick="tryFit('+s.index+','+(+f.yaw_deg).toFixed(2)+')">'+
+      (f.from==='reflectivity' ? '⊘ ' : '')+
+      (f.yaw_deg>0?'+':'')+(+f.yaw_deg).toFixed(1)+'° ('+
       (+f.confidence).toFixed(1)+')</button>').join('')+'</div>';
   /* ⭐ AND THE CAMERA HEIGHT, WHICH NOTHING IN STUDIO COULD SET UNTIL NOW.
      Every ray is taken from this point, so a centre that really sat a few
@@ -3479,6 +3847,7 @@ function photoRow(s){
          'min="-200" max="200" value="'+cz+'">'+
          '<span style="color:var(--faint)">cm</span>'+
          '<button class="mini" onclick="setCamera('+s.index+')">Set</button>'+
+         find+
          '<button class="mini step" title="Turn the photograph half a turn. '+
          'A half-turn error is the classic one here: the rig against a wall '+
          'puts a once-round-the-sphere term in both panoramas, and the '+
@@ -3491,7 +3860,10 @@ function photoRow(s){
 
 function refreshLists(){
   $('legend').innerHTML = V.scans.map(s=>
-    '<div class="scanrow"><div class="head">'+
+    '<div class="scanrow'+(s.index===V.picked?' sel':'')+
+    '" ondblclick="pickScan('+s.index+')" title="Double-click to work on '+
+    'this scan: the movement controls, the rotation ring and new cuts all '+
+    'follow whichever scan is picked."><div class="head">'+
     '<span class="grow"><span class="sw" style="background:rgb('+
     s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
     ' &middot; <span class="num">'+s.points.toLocaleString()+'</span>'+
@@ -3744,6 +4116,82 @@ async function setCamera(index){
              say('Could not set the camera height: '+e.message, 'bad'); }
 }
 
+/* Which photograph in this folder belongs to this scan?
+
+   ⛔ THE ANSWER IS A RANKING, NOT A VERDICT, AND IT SAYS SO. The top row is
+   the best of what was in the folder, which is not the same as right: if the
+   scan's own photograph is not there, something else still comes first. Both
+   numbers are shown for exactly that reason, and only a row where the two
+   independent methods agree is called confirmed. */
+async function findPhoto(index){
+  const s=V.scans.find(x=>x.index===index);
+  let folder=null;
+  if(!s || !s.photo){
+    try{
+      const b=await post('photo/browse', {});
+      if(!b.ok) throw new Error(b.error||'no picker available');
+      if(!b.paths.length) return;          /* cancelled is not a failure */
+      folder=b.paths[0];                   /* any image in the folder will do */
+    }catch(e){
+      say('Attach a photo first, or use a picker: '+e.message, 'warn');
+      return;
+    }
+  }
+  say('scoring every photograph in the folder\u2026'); watch(true);
+  try{
+    const j=await post('photo/find', {index, folder});
+    if(!j.ok) throw new Error(j.error||'could not search that folder');
+    watch(false);
+    showFinds(index, j);
+  }catch(e){ watch(false); say('Could not search: '+e.message, 'bad'); }
+}
+
+function showFinds(index, j){
+  const rows=(j.results||[]).map(r => {
+    const both = (r.mi_confidence==null) ? ''
+      : ' / '+(+r.mi_confidence).toFixed(1)+
+        (r.agree_deg==null ? '' : ', '+(+r.agree_deg).toFixed(1)+'\u00b0 apart');
+    return '<div style="margin-top:3px"><button class="mini" '+
+      'onclick="usePhoto('+index+',\''+r.path.replace(/\\/g,'\\\\')
+        .replace(/'/g,"\\'")+'\')">use</button> '+
+      (r.corroborated ? '<b class="good">\u2713</b> ' : '')+
+      r.name+' <span class="num">'+(+r.confidence).toFixed(1)+both+
+      '</span></div>';
+  }).join('');
+  const head = j.scanned+' photograph'+(j.scanned===1?'':'s')+' in '+
+    j.folder.split(/[\\/]/).pop()+
+    (j.dropped ? ' ('+j.dropped+' more not looked at)' : '')+
+    (j.unreadable ? ', '+j.unreadable+' unreadable' : '')+
+    (j.attached ? '. Attached now: '+j.attached : '')+
+    (j.has_second ? '' : '. No reflectivity on this cloud, so ONE method only.');
+  $('finds').innerHTML='<div style="margin-top:6px">'+head+'</div>'+rows+
+    '<div style="margin-top:4px;color:var(--faint)">confidence / second '+
+    'opinion. \u2713 means both methods agree \u2014 the strongest evidence here. '+
+    'A ranking is not a verdict: if the right photograph is not in the '+
+    'folder, something else still comes first.</div>';
+  say('Scored '+j.scanned+'. '+((j.results||[]).some(r=>r.corroborated)
+      ? 'One is confirmed by both methods \u2014 marked \u2713.'
+      : 'NONE is confirmed by both methods, so treat the order as a hint '+
+        'and look at the result.'),
+      (j.results||[]).some(r=>r.corroborated) ? null : 'warn');
+}
+
+async function usePhoto(index, path){
+  say('attaching\u2026'); watch(true);
+  try{
+    const j=await post('photo/add', {index, path});
+    if(!j.ok) throw new Error(j.error||'could not attach it');
+    await afterColour(j);
+    $('finds').innerHTML='';
+    const i=j.info||{};
+    say('Attached '+(i.name||'it')+' at '+
+        (i.yaw_deg==null?'?':(+i.yaw_deg).toFixed(2))+'\u00b0'+
+        (i.corroborated ? ' \u2014 confirmed by both methods.'
+                        : '. '+(i.caution||'Look at the result.')),
+        i.corroborated ? null : 'warn');
+  }catch(e){ watch(false); say('Could not attach it: '+e.message, 'bad'); }
+}
+
 /* Ask the program what it thinks, again. */
 async function resolve(index){
   say('solving…'); watch(true);
@@ -3984,7 +4432,7 @@ const PICK_TOOLS = {pair:1, level:1, plumb:1};
 const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
-      spin=null, lx=0, ly=0, picking=null, drift=0;
+      spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
     /* the world widget is a control, and it is drawn over the canvas */
@@ -4019,22 +4467,32 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       if(i>=0){
         grip=handles()[i];
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
+      } else if(ringGap(e.clientX,e.clientY)<=10){
+        /* ⛔ AFTER the clip-box grips, never before. The grips are small
+           targets that often sit inside the ring, and a ring that swallowed
+           them would make the box impossible to resize near the tripod. */
+        ring=turnScan(e.clientX,e.clientY,null,e.shiftKey);
       }
     }
-    moving = !V.nav && V.grab && left && !panning && !grip && !lassoing;
+    moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
+             ring===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
     if(!down){
       const over = e.target.id==='cv' && !V.tool;
-      const was=V.hot;
+      const was=V.hot, wasRing=V.ring;
       V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;
-      if(was!==V.hot) invalidate();
+      /* Lit only when the ring is what a press would take, so the highlight
+         is a promise about the next click rather than a decoration. */
+      V.ring = over && V.hot<0 && ringGap(e.clientX,e.clientY)<=10;
+      if(was!==V.hot || wasRing!==V.ring) invalidate();
       return;
     }
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
     drift+=Math.abs(dx)+Math.abs(dy);
     if(lassoing) extendDraft(e.clientX,e.clientY);
+    else if(ring!==null) ring=turnScan(e.clientX,e.clientY,ring,e.shiftKey);
     else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
     else if(moving){
@@ -4090,7 +4548,8 @@ const DRAW_TOOLS = {lasso:1, rect:1};
   });
 }
 document.addEventListener('DOMContentLoaded', ()=>{
-  $('which').onchange=e=>{ V.active=parseInt(e.target.value,10);
+  $('which').onchange=e=>{ pickScan(parseInt(e.target.value,10));
+    V.active=parseInt(e.target.value,10);
                            /* a half-made pair belongs to the scan it was
                               started against, not to whichever is chosen next */
                            V.half=null; V.perr=null;
@@ -4157,6 +4616,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     e.target.classList.toggle('on',V.mode===0); invalidate(); };
   $('editwho').onchange=e=>{
     V.editWho=parseInt(e.target.value,10);
+    if(V.editWho>=0) V.picked=V.editWho;
+    refreshLists();
     say(V.editWho<0
       ? 'Cuts now go through every cloud at once.'
       : 'Cuts now take from '+whoName(V.editWho)+' only — the others are left '+

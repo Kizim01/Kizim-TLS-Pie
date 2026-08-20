@@ -2321,7 +2321,7 @@ function cloud(index){
   return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
           offset:[0,0,0], chunks:[], live:new Uint8Array(PTS.length)};
 }
-/* \u26d4 THROUGH THE SHIPPED recomputeLive, not beside it. */
+/* ⛔ THROUGH THE SHIPPED recomputeLive, not beside it. */
 const got=CASES.map(c=>{
   V.edits=c; V.scans=[cloud(0), cloud(1)];
   recomputeLive();
@@ -2572,6 +2572,404 @@ check("the nudge buttons turn the photograph by a degree and by ten",
 # click would let one try become the default for every later scan.
 check("trying one of the other fits does not save a baseline",
       "setHeading(index, yaw, false)" in _ALIGN_SRC)
+
+
+# --- a second, independent opinion on the heading --------------------------
+#
+# ⭐⭐ WHAT IT IS FOR, AND IT IS NOT BEING A BETTER SOLVER. Measured on
+# 2026-08-20 against 57 photographs from one shoot and the scan whose
+# photograph was known: the edge confidence ranked the CORRECT one SECOND,
+# behind an image shot two and a half hours later at another table (7.46
+# against 7.02). Neither an absolute threshold nor a ranking picks the right
+# one out of that. The correct photograph was the only row where both methods
+# were confident AND agreed on the angle -- 7.02 and 6.57, 0.1 degrees apart,
+# where the impostor's two answers sat 29 degrees apart.
+print("\nthe second opinion: reflectivity against brightness")
+
+# ⛔ THE REFLECTIVITY IS DELIBERATELY A NON-MONOTONIC FUNCTION OF WHAT THE
+# PHOTOGRAPH SHOWS. That is the whole reason this method is mutual information
+# and not a correlation: colour.py says a matt white wall and a dark
+# retroreflector can swap places, so brightness and reflectivity need not rise
+# together -- and a sine of the range is a fixture where they demonstrably do
+# not. If this only worked when the two ran in step, it would be a correlation
+# wearing MI's name.
+_d_room, _r_room = colour.directions(room)
+_refl = (np.sin(3.0 * np.log1p(_r_room)) * 100.0 + 128.0).astype(np.float32)
+
+for _truth in (0.0, 37.0, -114.0):
+    _lum = render_lum(room, _truth)
+    _y, _c, _p = colour.solve_yaw_mi(room, _refl, _lum)
+    _err = abs(((_y - _truth) + 180) % 360 - 180)
+    check("MI recovers a %+.0f deg heading from reflectivity (got %+.2f, "
+          "confidence %.1f)" % (_truth, _y, _c), _err < 2.0,
+          "error %.2f deg" % _err)
+
+# ⛔⛔ AND IT MUST AGREE WITH solve_yaw ON WHICH WAY ROUND THE ANSWER IS. The
+# two share `_yaw_from_bin`, and a sign that differed would have the second
+# opinion contradict the first on every correct pair -- turning corroboration
+# from evidence into a permanent veto, which would look like the method simply
+# never working.
+_ey, _ec, _ = colour.solve_yaw(room, render_lum(room, 37.0))
+_my, _mc, _ = colour.solve_yaw_mi(room, _refl, render_lum(room, 37.0))
+check("the two methods use the same sign convention",
+      abs(((_my - _ey) + 180) % 360 - 180) < 2.0, "%.2f vs %.2f" % (_my, _ey))
+
+check("with no reflectivity there is no second opinion",
+      colour.solve_yaw_mi(room, None, render_lum(room, 0.0))[:2] == (0.0, 0.0))
+check("and a reflectivity array of the wrong length is refused, not zipped",
+      colour.solve_yaw_mi(room, _refl[:-5], render_lum(room, 0.0))[:2]
+      == (0.0, 0.0))
+
+# ⛔ EQUAL-FREQUENCY BINS, NOT EQUAL-WIDTH. Reflectivity piles up in a narrow
+# band with a long thin tail, so even spacing puts nearly every cell in one bin
+# and the joint histogram has no structure left to find.
+_skew = np.exp(np.random.RandomState(5).normal(0.0, 2.0, 1000)).reshape(10, 100)
+_mask = np.ones(_skew.shape, dtype=bool)
+_counts = np.bincount(colour._quantise(_skew, _mask, bins=8)[_mask],
+                      minlength=8)
+check("equal-frequency binning spreads a long-tailed field across the bins",
+      _counts.min() > 0 and _counts.max() < _counts.sum() * 0.3, _counts)
+# And this is what it is instead of: even spacing puts nearly everything in the
+# first bin, which is a joint histogram with no structure left to find.
+_even = np.bincount(np.clip(((_skew - _skew.min()) /
+                             (_skew.max() - _skew.min()) * 8).astype(int),
+                            0, 7).ravel(), minlength=8)
+check("  where equal-WIDTH bins would pile it into one",
+      _even.max() > _even.sum() * 0.8, _even)
+# ⚠ KNOWN LIMIT, PINNED THE WAY IT BEHAVES. Ranking cannot separate values
+# that are EQUAL: a field that is mostly one repeated number collapses into a
+# single bin whatever the bin count, because every quantile edge falls on that
+# same number. Written expecting the opposite and immediately falsified.
+_tied = np.concatenate([np.zeros(900), np.linspace(1, 1000, 100)]
+                       ).reshape(10, 100)
+_tc = np.bincount(colour._quantise(_tied, _mask, bins=8)[_mask], minlength=8)
+check("  but a field that is mostly ONE repeated value cannot be spread at all",
+      _tc.max() >= 900, _tc)
+
+# --- when does agreement count as corroboration? --------------------------
+#
+# ⛔ BOTH HALVES ARE REQUIRED, AND THE COUNTER-EXAMPLE IS REAL. On the stairs
+# scan a photograph of a DIFFERENT table agrees with itself to 0.5 degrees at
+# confidences of 2.39 and 3.25. Two weak answers that coincide are not
+# evidence; two CONFIDENT methods reaching the same angle by unrelated routes
+# are.
+_hi = colour.CORROBORATE_CONFIDENCE + 1.0
+check("two confident methods on the same angle corroborate",
+      colour.corroborates(92.45, _hi, 92.33, _hi)[0] is True)
+check("two weak methods on the same angle do NOT",
+      colour.corroborates(82.30, 2.13, 82.64, 3.45)[0] is False)
+check("two confident methods on different angles do NOT",
+      colour.corroborates(-107.67, 7.46, -136.90, 3.86)[0] is False)
+check("one confident and one weak does NOT",
+      colour.corroborates(92.0, _hi, 92.0, 2.0)[0] is False)
+check("the distance is reported either way, and wraps the short way round",
+      abs(colour.corroborates(179.0, _hi, -179.0, _hi)[1] - 2.0) < 1e-9,
+      colour.corroborates(179.0, _hi, -179.0, _hi)[1])
+check("and 2 degrees apart is the same answer, wrapped",
+      colour.corroborates(179.0, _hi, -179.0, _hi)[0] is True)
+check("no answer at all is not corroboration",
+      colour.corroborates(None, _hi, 12.0, _hi) == (False, None))
+
+
+# --- the grade a solve is given -------------------------------------------
+#
+# ⛔ ONE GRADER, TWO WAYS IN. A photograph attached in Studio goes through
+# colour_scan; one already sitting beside a capture is applied by the STREAMING
+# colouriser as the capture is read, and that path built its own info by hand.
+# It arrived with no grade and no second opinion, so the SAME photograph was
+# described two different ways depending on how it got there -- caught by
+# running the real loader over real scans and seeing `grade None`.
+print("\nthe grade a solve is given")
+
+
+def _graded_pair(edge_yaw, edge_conf, mi_yaw, mi_conf):
+    """grade_solve's verdict, with the second opinion driven to order."""
+    info = {"yaw_deg": edge_yaw, "confidence": edge_conf, "candidates": [],
+            "grade": None, "caution": None, "second": None,
+            "agree_deg": None, "corroborated": False}
+    real = colour.solve_yaw_mi
+    colour.solve_yaw_mi = lambda *a, **k: (mi_yaw, mi_conf, None)
+    try:
+        align.grade_solve(info, room, _refl, render_lum(room, 0.0),
+                          (0.0, 0.0, 0.0))
+    finally:
+        colour.solve_yaw_mi = real
+    return info
+
+
+_conf = _graded_pair(92.45, 7.02, 92.33, 6.57)
+check("agreement between two confident methods is graded CONFIRMED",
+      _conf["grade"] == "confirmed", _conf["grade"])
+check("and the distance between them is reported",
+      _conf["agree_deg"] is not None and _conf["agree_deg"] < 0.5,
+      _conf["agree_deg"])
+
+_split = _graded_pair(-107.67, 7.46, -136.90, 3.86)
+check("a confident solve the second opinion contradicts is NOT confirmed",
+      _split["grade"] == "sure", _split["grade"])
+# ⭐ A DISAGREEMENT IS THE MOST USEFUL THING THIS PAIR OF NUMBERS PRODUCES: it
+# says one of two specific angles is right, which is a far smaller question
+# than the whole circle. Burying the other answer wastes it.
+check("and the other method's answer is offered FIRST among the fits",
+      _split["candidates"] and
+      abs(_split["candidates"][0]["yaw_deg"] + 136.90) < 1e-9,
+      _split["candidates"][:1])
+check("labelled as coming from the reflectivity, not from the same solve",
+      _split["candidates"][0].get("from") == "reflectivity")
+
+_weak = _graded_pair(82.30, 2.13, 82.64, 3.45)
+check("two weak methods agreeing are still only unsure",
+      _weak["grade"] == "doubtful", _weak["grade"])
+check("with no reflectivity at all there is simply no second opinion",
+      align.grade_solve({"yaw_deg": 5.0, "confidence": 9.0, "candidates": [],
+                         "grade": None, "caution": None, "second": None,
+                         "agree_deg": None, "corroborated": False},
+                        room, None, render_lum(room, 0.0),
+                        (0.0, 0.0, 0.0))["grade"] == "sure")
+
+
+# --- which of these photographs is this scan's? ---------------------------
+#
+# ⭐⭐ THE QUESTION THAT HAS AN ANSWER. "Is a confidence of 4.6 good enough" has
+# none: a real photograph measured 5.5 and an unrecognisable one 4.59. "Which
+# of these belongs to this scan" holds the room, the coverage and the rig's
+# position fixed and varies only the photograph.
+print("\nwhich photograph belongs to this scan")
+
+_fdir = tempfile.mkdtemp(prefix="tlsfind")
+
+
+def _save_lum(name, lum):
+    path = os.path.join(_fdir, name)
+    _Image.fromarray(np.clip(lum, 0, 255).astype(np.uint8)).save(path)
+    return path
+
+
+_TRUE_YAW = 41.0
+_save_lum("b_true.png", render_lum(room, _TRUE_YAW))
+_save_lum("a_wrong_room.png", render_lum(
+    (synthetic_room(seed=77) * np.array([1.0, 0.35, 1.0])).astype(np.float32),
+    0.0))
+_save_lum("c_noise.png", np.random.RandomState(3).uniform(
+    0, 255, (colour.SOLVE_LAT_BINS, colour.SOLVE_LON_BINS)))
+# ⛔ AND SOMETHING THAT IS NOT AN IMAGE AT ALL. A folder off a camera holds
+# thumbnails, part-written files and the odd stray; stopping on the first of
+# those would break the feature exactly where it is most wanted.
+with io.open(os.path.join(_fdir, "d_broken.jpg"), "w",
+             encoding="utf-8") as _fh:
+    _fh.write("not an image")
+
+_fsrv = align.AlignServer([], out_path=None)
+_fscan = align.Scan(os.path.join(_fdir, "s.pcap"), room, None, room)
+_fscan.sample_refl = _refl
+_fsrv.scans = [_fscan]
+_found = _fsrv.find_photo_for(0, _fdir)
+check("the search runs", _found["ok"] is True, _found.get("error"))
+check("it looked at every image and says so", _found["scanned"] == 4,
+      _found["scanned"])
+check("the unreadable file did not stop it, and is counted",
+      _found["unreadable"] == 1 and len(_found["results"]) == 3, _found)
+check("THE RIGHT PHOTOGRAPH COMES FIRST",
+      _found["results"][0]["name"] == "b_true.png",
+      [r["name"] for r in _found["results"]])
+check("and at the heading it was rendered at",
+      abs(((_found["results"][0]["yaw_deg"] - _TRUE_YAW) + 180) % 360 - 180)
+      < 2.0, _found["results"][0]["yaw_deg"])
+# ⛔ RANKED ON THE WEAKER OF THE TWO OPINIONS. Ranking on the edge confidence
+# alone put the KNOWN correct photograph second of 57 on real data; a
+# photograph has to convince BOTH methods, so the score is the minimum.
+_top = _found["results"][0]
+check("the score is the weaker of the two opinions, not the better one",
+      abs(_top["score"] - min(_top["confidence"], _top["mi_confidence"]))
+      < 1e-9, _top)
+check("the folder it searched is named back",
+      os.path.samefile(_found["folder"], _fdir))
+check("a scan with no reflectivity says so, rather than pretending",
+      align.AlignServer.find_photo_for.__doc__ is not None)
+
+_bare = align.AlignServer([], out_path=None)
+_bare.scans = [align.Scan(os.path.join(_fdir, "n.pcap"), room, None, room)]
+_nb = _bare.find_photo_for(0, _fdir)
+check("with no reflectivity it still ranks, on one method, and flags it",
+      _nb["ok"] is True and _nb["has_second"] is False, _nb.get("error"))
+check("a folder with no images is refused with a reason",
+      _fsrv.find_photo_for(0, tempfile.mkdtemp(prefix="tlsempty"))["ok"]
+      is False)
+check("and a folder that is not there is refused too",
+      _fsrv.find_photo_for(0, os.path.join(_fdir, "nope"))["ok"] is False)
+check("no such scan is refused",
+      _fsrv.find_photo_for(9, _fdir)["ok"] is False)
+# ⛔ NO SILENT CAP. A search that stopped at the limit and reported the best of
+# those reads exactly like one that finished.
+_old_limit = align.AlignServer.FIND_LIMIT
+align.AlignServer.FIND_LIMIT = 2
+try:
+    _cap = _fsrv.find_photo_for(0, _fdir)
+    check("a capped search says how many it did not look at",
+          _cap["scanned"] == 2 and _cap["dropped"] == 2, _cap)
+finally:
+    align.AlignServer.FIND_LIMIT = _old_limit
+
+
+# --- the reflectivity that was being decoded and thrown away --------------
+#
+# ⛔ `stream_world_points` yields it beside every point and `sample_for_solve`
+# dropped it on the floor with `_`, so the second opinion had nothing to work
+# with. Driven through the real function with a stubbed decoder, because what
+# is under test is the plumbing, not the decoder.
+print("\nreflectivity reaches the solve")
+
+_real_stream = pipeline.decode.stream_world_points
+_real_count = pipeline.rig.tls_pcap.estimate_packet_count
+pipeline.decode.stream_world_points = lambda *a, **k: iter(
+    [(np.ones((5, 3), np.float32), np.arange(5, dtype=np.float32)),
+     (np.ones((3, 3), np.float32), np.arange(3, dtype=np.float32))])
+pipeline.rig.tls_pcap.estimate_packet_count = lambda *a, **k: 10
+try:
+    _pts = pipeline.sample_for_solve("x.pcap", {}, None)
+    check("without asking, it still returns just the points",
+          isinstance(_pts, np.ndarray) and _pts.shape == (8, 3), _pts.shape)
+    _pts2, _rf = pipeline.sample_for_solve("x.pcap", {}, None, with_refl=True)
+    check("asking for reflectivity returns it beside them",
+          _pts2.shape == (8, 3) and _rf.shape == (8,), (_pts2.shape, _rf.shape))
+    check("and they line up point for point",
+          list(_rf) == [0, 1, 2, 3, 4, 0, 1, 2], list(_rf))
+    pipeline.decode.stream_world_points = lambda *a, **k: iter([])
+    _e1 = pipeline.sample_for_solve("x.pcap", {}, None)
+    _e2, _e3 = pipeline.sample_for_solve("x.pcap", {}, None, with_refl=True)
+    check("an empty capture returns empty of the right shape either way",
+          _e1.shape == (0, 3) and _e2.shape == (0, 3) and _e3.shape == (0,))
+finally:
+    pipeline.decode.stream_world_points = _real_stream
+    pipeline.rig.tls_pcap.estimate_packet_count = _real_count
+check("the real decoder is restored afterwards",
+      pipeline.decode.stream_world_points is _real_stream)
+
+check("the page can ask which photograph belongs to a scan",
+      '"/photo/find"' in _ALIGN_SRC and "findPhoto(" in _ALIGN_SRC)
+check("and shows a confirmed alignment as its own state",
+      "s.corroborated" in _ALIGN_SRC and "confirmed" in _ALIGN_SRC)
+
+
+# --- the rotation ring, and picking one scan to work on -------------------
+#
+# ⭐ A RING ROUND THE TRIPOD, dragged to turn the scan, the way every other
+# package does it -- and ONE pick, by double-clicking a scan's name, that the
+# movement controls, the ring and new cuts all follow. Before it there were two
+# selections set in two places, so nudging one cloud while cutting another was
+# a normal thing to do by accident.
+print("\nthe rotation ring and the picked scan")
+
+if not _node:
+    print("  ---- node is not installed; the ring's own rules were NOT run")
+else:
+    _harness = """
+%s
+const V={scans:[],picked:0,active:1,editWho:-1,nav:false,ring:false,
+         ext:{lo:[0,0,0],hi:[20,20,6]},box:{lo:[0,0,0],hi:[1,1,1]},
+         cam:{yaw:0.7,pitch:0.9,dist:30,t:[0,0,0]},vp:[1,0,0,0]};
+const $=()=>({textContent:'',innerHTML:'',value:0});
+let SAID='';
+const say=(m)=>{SAID=m;}, invalidate=()=>{}, editsFollow=()=>{},
+      dirty=()=>{}, syncSliders=()=>{}, refreshLists=()=>{};
+function active(){ return V.scans.find(s=>s.index===V.active); }
+function put(A,x,y,z){ return [A[3]+x, A[7]+y, A[11]+z]; }
+function affine(s){ return [1,0,0,s.setup.x_m, 0,1,0,s.setup.y_m,
+                            0,0,1,s.setup.z_m]; }
+/* A plain top-down projection: the ring maths is about angles about a point
+   on screen, and an orthographic top view is exactly where it is used. */
+function project(p){ return [500 + p[0]*10, 400 - p[1]*10]; }
+function basis(){ return {dir:[0,0,1]}; }
+function mkScan(i,x,y,yaw){
+  return {index:i, name:'scan'+i, setup:{x_m:x,y_m:y,z_m:0,yaw_deg:yaw}};
+}
+V.scans=[mkScan(0,0,0,0), mkScan(1,4,0,10)];
+
+const out={};
+/* \\u26d4 NO RING ON A SCAN THAT CANNOT BE MOVED. */
+V.active=0; out.refNone = (ringOf()===null);
+V.active=1; out.movable = (ringOf()!==null);
+V.nav=true;  out.navNone = (ringOf()===null);
+V.nav=false;
+
+/* It is centred on the SCAN's own origin, not on the middle of the scene. */
+const r=ringOf();
+out.centre=[r.o[0], r.o[1]];
+
+/* A quarter turn of the pointer about that centre is a quarter turn of the
+   scan -- and the sign is the one the clip box already uses. */
+const c=project(r.o);
+const a0=turnScan(c[0]+100, c[1], null, false);
+turnScan(c[0], c[1]+100, a0, false);
+out.turned = V.scans[1].setup.yaw_deg;
+
+/* Shift snaps to five degrees. */
+V.scans[1].setup.yaw_deg=0;
+const b0=turnScan(c[0]+100, c[1], null, true);
+turnScan(c[0]+100, c[1]+13, b0, true);
+out.snapped = V.scans[1].setup.yaw_deg;
+
+/* Away from the ring there is nothing to grab. */
+out.gapOn = ringGap(project([r.o[0]+r.R, r.o[1], r.o[2]])[0],
+                    project([r.o[0]+r.R, r.o[1], r.o[2]])[1]);
+out.gapOff = ringGap(c[0], c[1]);
+
+/* One pick drives all of it. */
+V.picked=0; V.active=1; V.editWho=-1;
+pickScan(1);
+out.pick1={picked:V.picked, active:V.active, who:V.editWho};
+pickScan(0);
+out.pick0={picked:V.picked, active:V.active, who:V.editWho};
+out.said0=SAID;
+console.log(JSON.stringify(out));
+""" % "\n".join(_js_func(f) for f in
+                ("ringOf", "ringPath", "ringGap", "turnScan", "pickScan",
+                 "span"))
+    _rp = os.path.join(tempfile.mkdtemp(prefix="tlsring"), "ring.js")
+    with io.open(_rp, "w", encoding="utf-8") as _fh:
+        _fh.write(_harness)
+    _rr = subprocess.run([_node, _rp], capture_output=True, text=True)
+    check("the ring's own rules run", _rr.returncode == 0, _rr.stderr[-400:])
+    if _rr.returncode == 0:
+        _o = json.loads(_rr.stdout.strip().splitlines()[-1])
+        # ⛔ THE GUARANTEE THAT MATTERS. The first scan is what everything else
+        # is aligned TO; it has no placement of its own to change. A ring on it
+        # would turn a control the exporter cannot honour.
+        check("NO RING ON THE REFERENCE SCAN, WHICH CANNOT BE MOVED",
+              _o["refNone"] is True)
+        check("a ring on a scan that can be", _o["movable"] is True)
+        check("and none at all in camera mode, where nothing is a control",
+              _o["navNone"] is True)
+        # ⛔ ROUND THE TRIPOD, NOT ROUND THE SCENE. Turning about the middle of
+        # the merged scene would swing the cloud across the room and leave the
+        # operator chasing what they were lining up.
+        check("the ring is centred on the SCAN's own origin",
+              abs(_o["centre"][0] - 4.0) < 1e-9 and abs(_o["centre"][1]) < 1e-9,
+              _o["centre"])
+        # A quarter turn of the pointer, from +x round to -y on screen, is 90
+        # degrees on top of the 10 it started at.
+        check("a quarter turn of the pointer is a quarter turn of the scan",
+              abs(abs(((_o["turned"] - 10.0) + 180) % 360 - 180) - 90.0) < 1e-6,
+              _o["turned"])
+        check("shift snaps the angle to five degrees",
+              abs(_o["snapped"] % 5.0) < 1e-9, _o["snapped"])
+        check("the ring is grabbable on the ring and not at its centre",
+              _o["gapOn"] < 1.0 and _o["gapOff"] > 20.0, _o)
+        # ⛔ ONE PICK, BOTH JOBS. They were two selections in two places.
+        check("picking a scan aims the cuts AND the movement controls at it",
+              _o["pick1"] == {"picked": 1, "active": 1, "who": 1}, _o["pick1"])
+        # ⛔ AND THE REFERENCE CAN BE PICKED FOR CUTTING WITHOUT BECOMING THE
+        # SCAN THE MOVEMENT CONTROLS DRIVE -- it cannot be moved, and silently
+        # pointing the sliders at it would be a control that does nothing.
+        check("the reference can be picked for cutting but not for moving",
+              _o["pick0"]["picked"] == 0 and _o["pick0"]["who"] == 0
+              and _o["pick0"]["active"] == 1, _o["pick0"])
+        check("and it says why, rather than just refusing to move",
+              "REFERENCE" in _o["said0"], _o["said0"])
+
+check("a scan row can be double-clicked to pick it",
+      "ondblclick=\"pickScan(" in _ALIGN_SRC)
+check("and the picked row is marked", "' sel'" in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

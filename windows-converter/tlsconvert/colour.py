@@ -158,6 +158,54 @@ MIN_CONFIDENCE = 4.0
 # marked unsure -- this is exactly the band the old gate refused.
 SURE_CONFIDENCE = 5.0
 
+# --- the second opinion ----------------------------------------------------
+#
+# ⭐⭐ WHY A SECOND METHOD AT ALL, AND WHAT IT IS ACTUALLY FOR. It is not a
+# better solver -- measured against the edge correlation it is about as good and
+# no better. What it can do is something no single method can do at any
+# threshold: CORROBORATE. Measured on 2026-08-20 against 57 photographs from one
+# shoot and the scan whose photograph was known:
+#
+#     photograph          edge conf   MI conf   they disagree by
+#     the impostor            7.46      3.86        29.2 deg
+#     THE CORRECT ONE         7.02      6.57         0.1 deg
+#     next four               5.36 ..   2.48 ..      4.2 .. 94.9
+#
+# ⛔ THE EDGE CONFIDENCE RANKED THE CORRECT PHOTOGRAPH SECOND OF 57. An image
+# shot two and a half hours later at another table scored HIGHER. Neither an
+# absolute threshold nor a ranking picks the right one out of that -- but the
+# correct photograph is the only row where BOTH methods are confident AND land
+# on the same angle, and that selects exactly one of the 57.
+#
+# ⛔ IT IS NOT A CURE, AND THE COUNTER-EXAMPLE IS ON RECORD. On the stairs
+# scan -- the rig hard against a wall, correlation peak 190 degrees wide -- the
+# true photograph scores 2.13/3.45 and a photograph of ANOTHER table scores
+# 2.39/3.25, and both agree with themselves to under a degree. On that cloud
+# nothing discriminates, which is why a heading set by hand still exists.
+#
+# ⛔ AND THE TWO MUST SHARE AS LITTLE AS POSSIBLE, or agreement means nothing.
+# The edge method matches DEPTH SILHOUETTES against image gradients; this one
+# matches LIDAR REFLECTIVITY against image BRIGHTNESS, through mutual
+# information. They share the cloud, the grid and nothing else -- and the
+# reflectivity channel was being decoded and thrown away by every caller.
+#
+# ⚠ THE BIN COUNT IS NOT A FREE PARAMETER, AND IT WAS FOUND EMPIRICALLY. At 8
+# and 16 bins the MI solve lands 130-140 degrees out on a pair whose answer is
+# confirmed; at 32 and 64 it lands within 0.2 degrees. 64 it is, and a future
+# change to it must be re-measured against a known pair, not reasoned about.
+MI_BINS = 64
+
+# How far two independent answers may sit apart and still be called the same
+# answer. Chosen from the measurement above: the correct pair agrees to 0.1
+# degrees and the nearest impostor to 4.2, so this is a fence between 0.1 and
+# 4.2 rather than a round number -- and it is the reason a corroborated
+# heading also needs both methods to be CONFIDENT, since 4.2 would clear it.
+AGREE_DEG = 3.0
+
+# Both methods must reach this before their agreement is allowed to mean
+# anything. Below it they are two guesses that happen to coincide.
+CORROBORATE_CONFIDENCE = 5.0
+
 # Half-width of the window around the peak that is excluded when judging how
 # far it stands out. The peak is genuinely this broad, so anything inside the
 # window is part of it rather than a rival to it.
@@ -380,6 +428,133 @@ def peaks(profile, count=4):
             break
     return [{"yaw_deg": _yaw_from_bin(profile, b),
              "confidence": float((profile[b] - mean) / sd)} for b in got]
+
+
+def field_panorama(xyz, values, camera=(0.0, 0.0, 0.0),
+                   lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
+    """
+    The mean of `values` per cell, on the grid `cloud_panorama` uses.
+
+    ⭐ THE REFLECTIVITY CHANNEL WAS ALREADY BEING DECODED AND THROWN AWAY.
+    `stream_world_points` yields it beside every point and every caller dropped
+    it; `cloud_panorama` even took a `refl` argument it never used. This is
+    what puts it to work.
+    """
+    d, r = directions(xyz, camera)
+    lon, lat = to_lonlat(d, 0.0)
+    iu = np.clip(((lon / (2.0 * math.pi)) + 0.5) * lon_bins,
+                 0, lon_bins - 1).astype(np.int32)
+    iv = np.clip((0.5 - lat / math.pi) * lat_bins,
+                 0, lat_bins - 1).astype(np.int32)
+    flat = iv * lon_bins + iu
+    size = lon_bins * lat_bins
+    total = np.bincount(flat, weights=np.asarray(values, dtype=np.float64),
+                        minlength=size)
+    count = np.bincount(flat, minlength=size)
+    filled = count > 0
+    out = np.zeros(size, dtype=np.float64)
+    out[filled] = total[filled] / count[filled]
+    return out.reshape(lat_bins, lon_bins), filled.reshape(lat_bins, lon_bins)
+
+
+def _quantise(field, mask, bins=MI_BINS):
+    """
+    Equal-FREQUENCY bins over the cells holding data.
+
+    ⛔ EQUAL-WIDTH BINS DO NOT WORK HERE. Reflectivity piles up in a narrow
+    band with a long thin tail of retroreflectors, so even spacing puts almost
+    every cell in one or two bins and the joint histogram carries no structure
+    to find. Ranking the values spreads them by construction, whatever the
+    instrument's scale happens to be.
+    """
+    vals = field[mask]
+    if vals.size == 0:
+        return np.zeros(field.shape, dtype=np.int32)
+    edges = np.quantile(vals, np.linspace(0.0, 1.0, bins + 1)[1:-1])
+    out = np.zeros(field.shape, dtype=np.int32)
+    out[mask] = np.searchsorted(edges, vals)
+    return np.clip(out, 0, bins - 1)
+
+
+def _solid_angle_weight(lat_bins=SOLVE_LAT_BINS, lon_bins=SOLVE_LON_BINS):
+    """
+    cos(latitude) per cell.
+
+    ⛔ A CELL AT THE POLE COVERS ALMOST NO SKY AND THERE ARE JUST AS MANY OF
+    THEM. Unweighted, the histogram is dominated by the floor directly under the
+    tripod and the ceiling directly above it -- the two places a photograph
+    taken on that tripod has least to say about.
+    """
+    lat_c = (np.arange(lat_bins) + 0.5) / lat_bins
+    return (np.cos((0.5 - lat_c) * math.pi)[:, None]
+            * np.ones((1, lon_bins)))
+
+
+def solve_yaw_mi(xyz, refl, lum, camera=(0.0, 0.0, 0.0), bins=MI_BINS):
+    """
+    Recover the camera's heading from REFLECTIVITY, not from silhouettes.
+
+    Returns (yaw_deg, confidence, profile), the same shape of answer
+    `solve_yaw` gives and scored the same way, so the two are comparable.
+
+    ⭐ MUTUAL INFORMATION IS THE RIGHT MEASURE PRECISELY BECAUSE THE
+    RELATIONSHIP IS NOT MONOTONIC. `cloud_panorama` says it outright: a matt
+    white wall and a dark retroreflector can swap places, so correlating
+    reflectivity against brightness finds nothing. MI does not care which way
+    round the two run or whether the mapping is even a function -- it asks only
+    whether knowing one tells you anything about the other, which at the right
+    rotation it does. This is Pandey et al.'s targetless calibration, on one
+    axis instead of six.
+    """
+    if refl is None or len(refl) != len(xyz):
+        return 0.0, 0.0, np.zeros(SOLVE_LON_BINS)
+    field, mask = field_panorama(xyz, refl, camera=camera)
+    if mask.mean() < MIN_FILLED_FRACTION:
+        return 0.0, 0.0, np.zeros(SOLVE_LON_BINS)
+    a = _quantise(field, mask, bins)
+    image = image_panorama(lum)
+    b = _quantise(image, np.ones(image.shape, dtype=bool), bins)
+
+    rows, cols = np.nonzero(mask)
+    ja = a[rows, cols]
+    weight = _solid_angle_weight()[rows, cols]
+    profile = np.zeros(SOLVE_LON_BINS)
+    for shift in range(SOLVE_LON_BINS):
+        jb = b[rows, (cols - shift) % SOLVE_LON_BINS]
+        joint = np.bincount(ja * bins + jb, weights=weight,
+                            minlength=bins * bins).reshape(bins, bins)
+        total = joint.sum()
+        if total <= 0:
+            continue
+        joint /= total
+        pa, pb = joint.sum(1), joint.sum(0)
+        nz = joint > 0
+        profile[shift] = float(np.sum(
+            joint[nz] * np.log(joint[nz] / (pa[:, None] * pb[None, :])[nz])))
+
+    best = int(np.argmax(profile))
+    mean, spread = _shoulder(profile, best)
+    confidence = float((profile[best] - mean) / spread) if spread else 0.0
+    return _yaw_from_bin(profile, best), confidence, profile
+
+
+def corroborates(edge_yaw, edge_conf, mi_yaw, mi_conf):
+    """
+    (agreed, how far apart in degrees) -- do two independent methods concur?
+
+    ⛔ BOTH HALVES ARE REQUIRED. Two weak answers that happen to coincide are
+    not corroboration: on the stairs scan a photograph of a DIFFERENT table
+    agrees with itself to 0.5 degrees at confidences of 2.39 and 3.25. What
+    earns the word is two CONFIDENT methods reaching the same angle by
+    unrelated routes.
+    """
+    if edge_yaw is None or mi_yaw is None:
+        return False, None
+    apart = abs((float(mi_yaw) - float(edge_yaw) + 180.0) % 360.0 - 180.0)
+    agreed = (apart <= AGREE_DEG
+              and float(edge_conf or 0.0) >= CORROBORATE_CONFIDENCE
+              and float(mi_conf or 0.0) >= CORROBORATE_CONFIDENCE)
+    return bool(agreed), float(apart)
 
 
 def solve_yaw(xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):

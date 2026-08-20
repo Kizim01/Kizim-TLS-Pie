@@ -111,7 +111,7 @@ def render(px, sparks=True, shards=True):
         _add(acc, np.exp(-(fd * 4.2) ** 2), EMBER, gain * lit)
 
     # --- the beams ---------------------------------------------------------
-    # \u26d4 DRAWN AS LIGHT, NOT AS SHAPES. The first version made each ray a
+    # ⛔ DRAWN AS LIGHT, NOT AS SHAPES. The first version made each ray a
     # long thin polygon and blurred it, which gives a BAR: constant brightness
     # to the end, hard sides, and a blunt stop. A beam is the other way round --
     # brightest on its own axis and at its own root, falling away in both -- so
@@ -160,7 +160,7 @@ def render(px, sparks=True, shards=True):
     # --- the crystal: a hexagon and a Y, which is a cube --------------------
     pts = _hex_points(c, c, r)
     spokes = [pts[0], pts[2], pts[4]]
-    # \u26d4 THREE PASSES, WIDEST AND DIMMEST FIRST. One crisp line at this size
+    # ⛔ THREE PASSES, WIDEST AND DIMMEST FIRST. One crisp line at this size
     # is a hairline that the 16 px downscale loses entirely; one soft line is a
     # smudge with no edge. A glow, a halo and a hard core on top is what reads
     # as a lit filament at 256 AND survives as a visible hexagon at 16.
