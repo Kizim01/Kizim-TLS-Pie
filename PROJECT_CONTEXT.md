@@ -503,13 +503,47 @@ against **320,000 steps/rev**, on the Pi.
 
 | Profile | Sweep | Return | Rate | Sweep leg | Whole scan |
 |---|---|---|---|---|---|
-| `slow` — 360° Slow | 378° | 18° | 1 °/s | 378.0 s | 6.36 min |
-| `fast` — 360° Quick | 378° | 18° | 2 °/s | 189.0 s | 3.21 min |
-| `rapid` — 180° Rapid | 190.8° | 190.8° | 2 °/s | 95.4 s | 2.07 min |
+| `slow` — 360° Slow | 378° | — | 1 °/s | 378.0 s | 6.32 min |
+| `fast` — 360° Quick | 378° | — | 2 °/s | 189.0 s | 3.17 min |
+| `rapid` — 180° Rapid | 190.8° | — | 2 °/s | 95.4 s | 1.61 min |
 
-The 360s overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live, then
-back off 18° to finish square with the start. The 180 sweeps 10.8° past the half turn and returns
-the whole way, so it nets zero instead of a revolution.
+The 360s overshoot to 378° so a full revolution is captured after `tcpdump` is confirmed live; the
+180 sweeps 10.8° past the half turn.
+
+### ⛔ THE RETURN LEG IS GONE — 2026-08-20 — AND I HAD ARGUED AGAINST THAT THE SAME MORNING
+
+The operator's call, and right. The return ran **after capture had stopped**, so it never touched the
+data; it only made them wait. On the 180 that was **27 s of a 124 s scan — 22% of the wall clock**
+spent walking back.
+
+**What I claimed that morning was wrong.** I asserted an invariant — *sweep minus return must be a
+whole number of turns* — on the reasoning that otherwise *"the head ends off its mark and the NEXT
+scan starts somewhere nobody recorded"*, and wrote a test enforcing it. The code says otherwise.
+`PanTrack.from_segments(..., start_deg=0.0)` builds **every sidecar's track from the sweep's segments
+beginning at zero**, so a scan is described relative to wherever the head happened to start, and the
+absolute angle is **never written down**. `position_steps` is read in exactly one place — the panel's
+**Restart** — and keeps tracking either way. The operator then confirmed there is **no slip ring and
+no cable constraint**, which was the only physical reason left. ⭐ *An invariant is only as good as
+its justification, and mine did not survive being checked.*
+
+**⭐ The test now pins the property that makes it safe, not the number that followed from it**: that
+a sidecar's pan track starts at zero, that it spans the sweep from there, and that
+`write_scan_meta` never records an absolute head angle. If a sidecar ever starts depending on where
+the head absolutely is, those fail and this decision gets revisited — which *"nets 360"* could never
+have told anyone. The head simply stays where the sweep ended; **Restart** walks it back on demand.
+
+⚠ The phase no longer announces `RETURNING` when nothing moves. *A phase called RETURNING while the
+head sits still is the kind of small lie that sends someone looking for a fault in the motor.*
+
+**✅ AND A 180 HAS BEEN RUN — `TLS_26_08_20_13_41_30`**, by the operator, before this change:
+**190.80° over 95.4 s exactly as planned**, 98.7 MB captured, **396,072 points**, bounds 74 × 82 ×
+10.5 m. ⭐ **The operator doubted the lidar had been on for it, so it went to the lens-cover detector
+rather than being taken on trust: reach 48.6 m against a 3 m threshold, `blocked: False`.** That is a
+working beam, and no packets reach a pcap filtered on `host 192.168.1.201` with the puck off — a
+puck powered but not spinning would give a thin fan, not 74 × 82 m of bounds. Recorded as evidence
+rather than as a claim, because the question was raised and settled by measurement. (Two other
+library entries do fit the doubt: `TLS_26_08_14_12_02_01` at **0 MB**, and `TLS_26_08_10_07_57_42`
+still **unregistered**.)
 
 **⭐ THE 180 IS NOT HALF A SCAN, AND THE BUTTON MUST NOT LET ANYONE THINK IT IS.** The puck is on its
 side, so its fan is a full vertical circle covering world azimuths `pan+90` and `pan−90` at once —
@@ -566,10 +600,9 @@ was changed server-side to `180° PROOF / rebuilt live` — the open page picked
 back, and the page followed again. The Pi's `tls_scan.py` was restored and **verified by sha256**
 against the committed file. Both directions, on the real screen.
 
-**⚠ If 2 min still feels slow, the lever is the return leg, not the sweep.** At 7 °/s the walk back
-is 27 s — **22% of this profile's wall clock**, against 1.4% on the 360s — and it runs with capture
-already stopped, so `TLSPIE_RETURN_DEG_PER_S` buys time at no cost in data. Going *forward* to a full
-turn instead would save only 3 s and wind the head another revolution.
+**✅ That 27 s of walking back is now simply gone** — see *The return leg is gone*, above. The 180
+runs in **1.61 min**, the 360s save 3 s each, and `TLSPIE_RETURN_DEG_PER_S` now only governs the
+panel's **Restart**.
 
 ### ✅ SETTLED ON THIS RIG, 2026-08-09: `STEPS_PER_REV` = 160,000
 

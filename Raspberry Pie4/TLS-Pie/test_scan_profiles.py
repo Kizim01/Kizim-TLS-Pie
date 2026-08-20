@@ -31,6 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import tls_geometry                                          # noqa: E402
 import tls_pitchcheck                                        # noqa: E402
 import tls_scan                                              # noqa: E402
 import tls_stepper                                           # noqa: E402
@@ -49,6 +50,7 @@ def check(name, cond, extra=""):
         print("  FAIL %s %s" % (name, extra))
 
 
+_SCAN_SRC = open(tls_scan.__file__, encoding="utf-8").read()
 PROFILES = tls_scan.SCAN_PROFILES
 BY_ORDER = sorted(PROFILES.items(), key=lambda kv: kv[1]["order"])
 DEG = "°"
@@ -67,14 +69,40 @@ for key, p in BY_ORDER:
               abs(want - tls_stepper.degrees_to_steps(deg)) < 1e-9,
               "%g steps" % want)
 
-# --- 2. every profile ends square with where it started ----------------------
-# Sweep forward, return back; the net must be a whole number of turns or the
-# head finishes off its mark. `slow` and `fast` net +360, one whole turn;
-# `rapid` nets 0. Either is fine. A net of 10 degrees compounds scan after scan.
-print("\nnet rotation is a whole number of turns")
+# --- 2. the head does not have to end where it started -----------------------
+# ⛔ THIS BLOCK USED TO ASSERT THE OPPOSITE, AND IT WAS WRONG. It required
+# sweep minus return to be a whole number of turns, on the reasoning that
+# otherwise "the head ends off its mark and the NEXT scan starts somewhere
+# nobody recorded". Checked against the code the same day, that justification
+# does not hold: `PanTrack.from_segments(..., start_deg=0.0)` builds every
+# sidecar's track from the SWEEP's segments beginning at zero, so a scan is
+# described relative to wherever the head happened to start and the absolute
+# angle is never written down. `position_steps` is read in exactly one place --
+# the panel's Restart -- and keeps tracking either way. With no slip ring and no
+# cable constraint on this rig, the return leg bought nothing but waiting, and
+# was removed on 2026-08-20.
+#
+# ⭐ SO PIN THE PROPERTY THAT MAKES THAT SAFE, NOT THE NUMBER THAT FOLLOWED
+# FROM IT. If a sidecar ever starts depending on where the head absolutely is,
+# these fail and the decision gets revisited -- which a "nets 360" check could
+# never have told anyone.
+print("\na scan is described relative to where the head began")
+_segs, _ = tls_stepper.plan_move(
+    tls_stepper.degrees_to_steps(190.8),
+    tls_stepper.deg_per_s_to_step_rate(2.0))
+_track = tls_geometry.PanTrack.from_segments(
+    _segs, tls_stepper.STEPS_PER_REV, forward=True)
+check("a sidecar's pan track starts at zero, wherever the head was standing",
+      abs(_track.angle_at(0.0)) < 1e-9, _track.angle_at(0.0))
+check("and runs from there to the end of the sweep",
+      abs(_track.total_deg - 190.8) < 1e-6, _track.total_deg)
+check("so nothing in the sidecar records an absolute head angle",
+      "position_steps" not in _SCAN_SRC.split("def write_scan_meta")[1]
+      .split("def ")[0])
+
 for key, p in BY_ORDER:
-    net = p["sweep_deg"] - p["return_deg"]
-    check("%s nets %+g deg" % (key, net), abs(net % 360.0) < 1e-9, net)
+    check("%s never walks back further than it swept" % key,
+          0.0 <= p["return_deg"] <= p["sweep_deg"], p["return_deg"])
 
 # --- 3. the sweep reaches every direction ------------------------------------
 # The puck is on its SIDE, so its fan is a full vertical circle and covers world

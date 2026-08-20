@@ -124,12 +124,29 @@ TCPDUMP_SETTLE_S = float(os.environ.get("TLSPIE_TCPDUMP_SETTLE_S", "0.3"))
 # --- Scan profiles --------------------------------------------------------
 #
 # Angles carried over from the MicroView firmware. The 360 scans overshoot to
-# 378 deg so a full revolution is captured after tcpdump is confirmed live,
-# then back off 18 deg to finish square with the start. The 180 scan sweeps
-# 190.8 deg (10.8 deg of overlap past the half turn) and returns fully.
+# 378 deg so a full revolution is captured after tcpdump is confirmed live; the
+# 180 sweeps 190.8 deg, which is 10.8 deg of overlap past the half turn.
 #
-# The return leg runs after capture has stopped, so its speed only affects how
-# long the operator waits.
+# THE RETURN LEG IS GONE -- 2026-08-20, at the operator's instruction.
+#
+# It ran after capture had stopped, so it never touched the data; it only made
+# the operator wait. On the 180 profile that was 27 s of a 124 s scan, 22% of
+# the wall clock spent walking back.
+#
+# ⛔ I ARGUED AGAINST THIS THE SAME MORNING AND I WAS WRONG. The claim was
+# that sweep minus return had to be a whole number of turns or "the head ends
+# off its mark and the NEXT scan starts somewhere nobody recorded". The code
+# says otherwise. `PanTrack.from_segments(..., start_deg=0.0)` builds every
+# sidecar's track from the SWEEP's segments starting at zero, so a scan is
+# described relative to wherever the head happened to begin; the absolute
+# angle is never written down and nothing downstream asks for it. And the
+# operator confirmed there is no slip ring and no cable constraint, which was
+# the only physical reason left. An invariant is only as good as its
+# justification, and that justification did not survive being checked.
+#
+# The head simply stays where the sweep ended. `position_steps` still tracks
+# it -- the panel's Restart still walks it back on demand, and that is the one
+# place in the program that ever read it.
 RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 
 # Three scans. The 180 came back on 2026-08-19, asked for by name: the quick
@@ -154,20 +171,23 @@ RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 # in its collect(). Check the pitch on a 360 scan.
 #
 # Every angle here is step-exact at 160,000 steps/rev, which is where the
-# firmware's odd-looking numbers come from: 378 = 168,000 steps, 190.8 = 84,800,
-# 18 = 8,000, 10.8 = 4,800. The 180 returns the whole 190.8 rather than carrying
-# on to a full turn, so it nets zero and ends square where it started; going
-# forward instead would save 3 seconds and wind the head another revolution.
+# firmware's odd-looking numbers come from: 378 = 168,000 steps, 190.8 = 84,800.
+# `degrees_to_steps` ROUNDS, so an angle that is not exact never raises -- the
+# head just stops a sliver short on every scan.
+#
+# `return_deg` is kept at 0.0 rather than deleted: the field is written into
+# every sidecar, so removing it would change the shape of a record that older
+# captures already carry, and a zero is the honest value for what now happens.
 SCAN_PROFILES = {
     "slow": {"label": "360° Slow", "detail": "1°/s · about 6½ min",
              "order": 1, "sweep_deg": 378.0, "deg_per_s": 1.0,
-             "return_deg": 18.0},
+             "return_deg": 0.0},
     "fast": {"label": "360° Quick", "detail": "2°/s · about 3¼ min",
              "order": 2, "sweep_deg": 378.0, "deg_per_s": 2.0,
-             "return_deg": 18.0},
-    "rapid": {"label": "180° Rapid", "detail": "2°/s · about 2 min · one pass",
+             "return_deg": 0.0},
+    "rapid": {"label": "180° Rapid", "detail": "2°/s · about 1½ min · one pass",
               "order": 3, "sweep_deg": 190.8, "deg_per_s": 2.0,
-              "return_deg": 190.8},
+              "return_deg": 0.0},
 }
 
 STATUSFILE = os.path.join(TMPDIR, "VLPrecord.status")
@@ -545,14 +565,21 @@ def run_scan(pi, stepper, profile_name, record=True):
             write_scan_meta(capture_file, profile_name, profile, stepper,
                             capture_started)
             _state.set(last_capture=capture_file)
-            status_update("RETURNING", "Captured %s — returning to start"
-                          % os.path.basename(capture_file))
-        else:
+            status_update("RETURNING",
+                          ("Captured %s — returning to start"
+                           % os.path.basename(capture_file))
+                          if profile["return_deg"] else
+                          ("Captured %s" % os.path.basename(capture_file)))
+        elif profile["return_deg"]:
             status_update("RETURNING", "Returning to start")
 
-        time.sleep(1.0)
-        stepper.move_degrees(-profile["return_deg"], RETURN_DEG_PER_S,
-                             should_abort=should_abort)
+        # ⛔ SAY WHAT IS HAPPENING, OR NOTHING AT ALL. A phase called
+        # RETURNING while the head does not move is the kind of small lie that
+        # sends someone looking for a fault in the motor.
+        if profile["return_deg"]:
+            time.sleep(1.0)
+            stepper.move_degrees(-profile["return_deg"], RETURN_DEG_PER_S,
+                                 should_abort=should_abort)
         _state.set(position_known=stepper.position_known)
         stepper.disable()
 
