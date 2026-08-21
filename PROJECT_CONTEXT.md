@@ -2735,6 +2735,8 @@ was saved: taken on trust, a later version's new tray would never be placed and 
 exists to report. `find` and a comparison. *The fourth diagnostic in this project that did not work in
 the situation it was written for.*
 
+Converter suite **673 → 696**.
+
 ⛔⛔ **AND THE TURN RING WAS NOT A WIDGET, IT WAS A MODE NOBODY CHOSE.** Reported as *"when a new
 scan comes in there is a rotate widget that is stuck in that function"*, and that is exactly right.
 `ringOf` returned a ring for whichever scan was **active**, unconditionally — so importing a scan made
