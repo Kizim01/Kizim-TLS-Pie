@@ -2899,6 +2899,7 @@ else:
     _harness = """
 %s
 const V={scans:[],picked:0,active:1,editWho:-1,nav:false,ring:false,
+         turnRing:true,
          ext:{lo:[0,0,0],hi:[20,20,6]},box:{lo:[0,0,0],hi:[1,1,1]},
          cam:{yaw:0.7,pitch:0.9,dist:30,t:[0,0,0]},vp:[1,0,0,0]};
 const $=()=>({textContent:'',innerHTML:'',value:0});
@@ -2912,17 +2913,36 @@ function affine(s){ return [1,0,0,s.setup.x_m, 0,1,0,s.setup.y_m,
                             0,0,1,s.setup.z_m]; }
 /* A plain top-down projection: the ring maths is about angles about a point
    on screen, and an orthographic top view is exactly where it is used. */
-function project(p){ return [500 + p[0]*10, 400 - p[1]*10]; }
-function basis(){ return {dir:[0,0,1]}; }
+function project(p){ return [500 + p[0]*100, 400 - p[1]*100]; }
+/* A HUNDRED pixels to the metre -- a close-up view, which is where a ring is
+   reached for. So a ring asked to be RING_PX across comes back at RING_PX/100
+   metres, and the check can do the arithmetic rather than restate it. At ten
+   the answer would be 6.2 m and `screenRadius` clamps at 6, so the check would
+   have measured the clamp instead of the sizing. */
+function basis(){ return {dir:[0,0,1], right:[1,0,0], up:[0,1,0]}; }
 function mkScan(i,x,y,yaw){
   return {index:i, name:'scan'+i, setup:{x_m:x,y_m:y,z_m:0,yaw_deg:yaw}};
 }
 V.scans=[mkScan(0,0,0,0), mkScan(1,4,0,10)];
 
+const RING_PX=62;
 const out={};
 /* \\u26d4 NO RING ON A SCAN THAT CANNOT BE MOVED. */
 V.active=0; out.refNone = (ringOf()===null);
 V.active=1; out.movable = (ringOf()!==null);
+/* \\u26d4\\u26d4 AND NONE AT ALL UNTIL IT IS ASKED FOR. */
+V.turnRing=false; out.offNone = (ringOf()===null);
+V.turnRing=true;
+/* \\u2b50 SIZED ON SCREEN: at ten pixels to the metre a 62-pixel ring is
+   6.2 m of world, whatever the room happens to measure. */
+out.radius = ringOf().R;
+/* \\u26d4 AND THE CLAMP IS REAL AND TESTED ON ITS OWN: pulled right out, a
+   ring sized purely in pixels would be kilometres of world. */
+out.clamped = screenRadius([0,0,0], 600000).R;
+out.tiny = screenRadius([0,0,0], 0.0001).R;
+V.scans[1].setup.x_m = 400;      /* a far bigger scene */
+out.radiusFar = ringOf().R;
+V.scans[1].setup.x_m = 4;
 V.nav=true;  out.navNone = (ringOf()===null);
 V.nav=false;
 
@@ -2957,8 +2977,8 @@ out.pick0={picked:V.picked, active:V.active, who:V.editWho};
 out.said0=SAID;
 console.log(JSON.stringify(out));
 """ % "\n".join(_js_func(f) for f in
-                ("ringOf", "ringPath", "ringGap", "turnScan", "pickScan",
-                 "span"))
+                ("screenRadius", "ringOf", "ringPath", "ringGap", "turnScan",
+                 "pickScan", "span"))
     _rp = os.path.join(tempfile.mkdtemp(prefix="tlsring"), "ring.js")
     with io.open(_rp, "w", encoding="utf-8") as _fh:
         _fh.write(_harness)
@@ -2972,6 +2992,28 @@ console.log(JSON.stringify(out));
         # would turn a control the exporter cannot honour.
         check("NO RING ON THE REFERENCE SCAN, WHICH CANNOT BE MOVED",
               _o["refNone"] is True)
+        # ⛔⛔ IT USED TO APPEAR FOR WHICHEVER SCAN WAS ACTIVE, WITH NO CONTROL
+        # ANYWHERE TO DISMISS IT -- so importing a scan raised a rotation
+        # widget nobody chose, at 16% of the floor span, and a press within ten
+        # pixels of a ring starts a turn. An orbit drag near a new cloud
+        # therefore turned the cloud. A widget that cannot be put away is a
+        # mode.
+        check("and none at all until it is asked for",
+              _o["offNone"] is True)
+        # ⭐ THE SIZE IS A QUESTION ABOUT THE SCREEN. At the harness's ten
+        # pixels to the metre a 62-pixel ring is 6.2 m of world -- and stays
+        # 62 pixels when the scene grows by a hundred times, which is the whole
+        # point: it used to be a fraction of the floor span, so it changed size
+        # every time another scan was added.
+        check("the ring is a fixed size on screen",
+              abs(_o["radius"] - 0.62) < 1e-9, _o["radius"])
+        check("and it is bounded both ways, so a view pulled right out does "
+              "not put a ring kilometres wide round the tripod",
+              _o["clamped"] == 6.0 and _o["tiny"] == 0.02,
+              (_o["clamped"], _o["tiny"]))
+        check("and it does not grow when the room does",
+              abs(_o["radiusFar"] - _o["radius"]) < 1e-9,
+              (_o["radius"], _o["radiusFar"]))
         check("a ring on a scan that can be", _o["movable"] is True)
         check("and none at all in camera mode, where nothing is a control",
               _o["navNone"] is True)
@@ -4346,6 +4388,52 @@ if _node:
     check("a tray knows its own name for the message", _t.get("name") == "B")
 else:
     print("  (node missing: the tray rules were not run)")
+
+
+# --- every widget is a toggle ----------------------------------------------
+#
+# ⛔⛔ THE TURN RING WAS NOT A WIDGET, IT WAS A MODE NOBODY CHOSE. `ringOf`
+# returned one for whichever scan was ACTIVE, unconditionally -- so importing a
+# scan made it active and raised a rotation ring around it with no control
+# anywhere to dismiss it. At 16% of the wider floor span it crossed most of the
+# screen, and a press within ten pixels of a ring starts a turn: an ordinary
+# orbit drag near a new cloud therefore turned the cloud.
+print("\nthe widgets, and putting them away")
+
+check("the turn ring has a control of its own",
+      'id="turnring"' in _ALIGN_SRC and "V.turnRing=!V.turnRing" in _ALIGN_SRC)
+check("and it starts off, so an import does not raise one",
+      "turnRing:false," in _ALIGN_SRC)
+# ⭐ ONE BUTTON PER WIDGET, ALL READING THE SAME WAY: the button carries `on`
+# for exactly as long as its widget is on screen, so pressing it again is
+# visibly the way to take it away.
+for _btn, _what in (("turnring", "the scan's turn ring"),
+                    ("wire", "the clip box outline"),
+                    ("gizmo", "the world axes"),
+                    ("ref", "the reference lines")):
+    # ⚠ THE ASSIGNMENT, NOT THE FIRST MENTION. Searching for
+    # `$('wire').onclick` finds the KEYBOARD SHORTCUT that calls the handler,
+    # because that line comes earlier in the file -- and the check then reads
+    # 400 characters of the wrong thing and reports a button that has toggled
+    # all along as broken. The earliest match in a path is not the definition.
+    _at = _ALIGN_SRC.find("$('%s').onclick=" % _btn)
+    check("%s toggles rather than only switching on" % _what,
+          _at > 0 and ("classList.toggle('on'"
+                       in _ALIGN_SRC[_at:_at + 400]), _btn)
+check("and the photograph's rings do too, from their own button",
+      "V.tiltRing = (V.tiltRing===index) ? null : index;" in _ALIGN_SRC)
+
+# ⛔ ONE PLACE DECIDES HOW BIG A WIDGET IS. Two copies of this measurement
+# drifting apart would put the photograph's rings and the scan's ring at
+# different sizes around the SAME tripod, which reads as one of them being
+# broken.
+check("both rings take their size from one function",
+      "function screenRadius" in _ALIGN_SRC
+      and _ALIGN_SRC.count("screenRadius(o, RING_PX)") == 1
+      and _ALIGN_SRC.count("screenRadius(o, TILT_PX)") == 1)
+check("and neither is a fraction of the room any more",
+      "0.16*Math.max(span(0)" not in _ALIGN_SRC
+      and "0.13*Math.max(span(0)" not in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

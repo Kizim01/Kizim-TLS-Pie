@@ -2779,6 +2779,11 @@ PAGE = r"""<!doctype html>
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
   <div class="row">
     <button id="grab">Drag to move</button>
+    <button id="turnring" title="Show a ring round this scan's tripod and
+      drag it to turn the scan. Press again to take it away. It is off until
+      you ask for it: a press near a ring starts a rotation, so a ring left
+      standing turns the cloud when you meant to orbit the view.">Turn
+      ring</button>
     <button id="zero">Reset</button>
   </div>
   <label>East / west <span class="num" id="xv">0.00</span> m</label>
@@ -3004,6 +3009,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
+           turnRing:false,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null}, nth:[], trays:{}, order:[],
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
@@ -3531,12 +3537,41 @@ function gizmoClick(mx,my){
    control that appears to work and silently does nothing is worse than one
    that is not there. A leaning ROOM is a different thing and has its own tool
    -- Level, which turns the whole merged frame. */
+/* ⭐⭐ HOW BIG A WIDGET SHOULD BE IS A QUESTION ABOUT THE SCREEN, NOT ABOUT
+   THE ROOM, and every widget here now asks it in one place. Sized as a
+   fraction of the floor span they came out metres wide -- a hoop bigger than
+   most of the furniture, centred on a tripod it was then too big to point at
+   -- and they changed size whenever another scan was added, because the span
+   did.
+
+   Measured off the projection rather than derived from the camera distance, so
+   it holds in orthographic as well as perspective: project the centre, project
+   a point one metre to its right, and the gap between them is what a metre is
+   worth in pixels just there. */
+function screenRadius(o, px){
+  const c=project(o, V.vp); if(!c) return null;
+  const b=basis();
+  const e=project([o[0]+b.right[0], o[1]+b.right[1], o[2]+b.right[2]], V.vp);
+  if(!e) return null;
+  const perM=Math.hypot(e[0]-c[0], e[1]-c[1]);
+  if(!(perM>1e-6)) return null;
+  return {c:c, R:Math.max(0.02, Math.min(6.0, px/perM))};
+}
+/* How many pixels across the scan's turn ring is drawn. */
+const RING_PX=62;
+
 function ringOf(){
+  /* ⛔⛔ ONLY WHEN IT HAS BEEN ASKED FOR. This used to appear for whichever
+     scan was active, which means every import raised a rotation widget nobody
+     chose, on a scan the operator had not started working on -- and a press
+     within ten pixels of a ring starts a turn, so an orbit drag near the new
+     cloud rotated the cloud. A widget that cannot be put away is a mode. */
+  if(!V.turnRing) return null;
   const s=active();
   if(!s || s.index===0 || V.nav) return null;   /* the reference cannot move */
   const o=put(affine(s), 0, 0, 0);              /* the tripod, placed+levelled */
-  const R=Math.max(1.2, 0.16*Math.max(span(0), span(1)));
-  return {s:s, o:o, R:R};
+  const g=screenRadius(o, RING_PX); if(!g) return null;
+  return {s:s, o:o, R:g.R, c:g.c};
 }
 function ringPath(r){
   const pts=[];
@@ -3613,14 +3648,8 @@ function tiltRingsOf(){
      orthographic as well as perspective: project the tripod, project a point
      one metre to its right, and the distance between them is how many pixels a
      metre is worth just here. */
-  const c=project(o, V.vp); if(!c) return null;
-  const b=basis();
-  const e=project([o[0]+b.right[0], o[1]+b.right[1], o[2]+b.right[2]], V.vp);
-  if(!e) return null;
-  const perM=Math.hypot(e[0]-c[0], e[1]-c[1]);
-  if(!(perM>1e-6)) return null;
-  const R=Math.max(0.02, Math.min(6.0, TILT_PX/perM));
-  return {s:s, o:o, R:R, c:c};
+  const g=screenRadius(o, TILT_PX); if(!g) return null;
+  return {s:s, o:o, R:g.R, c:g.c};
 }
 /* Each ring lies in its own plane through the tripod: the heading ring flat,
    the tip ring in the fore-and-aft vertical, the bank ring across it. */
@@ -5721,7 +5750,8 @@ const KEYHELP = [
     ['wheel button', 'pan \u00b7 hold shift to orbit'],
     ['double-click a scan', 'work on that one: the movement controls, its '+
      'ring, new cuts and the photograph tray all follow it'],
-    ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0'],
+    ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0 \u00b7 '+
+     'switch the ring on with Turn ring, under Place'],
     ['drag a tray\u2019s title', 'move it above or below another tray']]],
   ['Moving what is picked', [
     ['arrows', 'nudge 5 cm'],
@@ -7151,6 +7181,23 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('psaveas').onclick=()=>saveProject(true);
   $('popen').onclick=()=>openProject(null);
   showProject();
+  /* ⭐ EVERY WIDGET IS ITS OWN BUTTON, AND PRESSING IT AGAIN TAKES IT AWAY.
+     The photograph's three rings, the clip box's outline, the world axes and
+     now this one all read the same way: the button carries `on` while its
+     widget is on screen. */
+  $('turnring').onclick=e=>{
+    const s=active();
+    if(!s || s.index===0)
+      return say('The reference scan cannot be turned \u2014 everything else '+
+                 'is aligned to it. Pick another scan first.', 'warn');
+    V.turnRing=!V.turnRing;
+    e.target.classList.toggle('on', V.turnRing);
+    invalidate();
+    say(V.turnRing
+        ? 'Drag the ring round '+s.name+'\u2019s tripod to turn it. Shift '+
+          'snaps to 5\u00b0. Press Turn ring again to take it away.'
+        : 'Turn ring off. Dragging near the tripod orbits the view again.');
+  };
   $('grab').onclick=e=>{ V.grab=!V.grab; e.target.classList.toggle('on',V.grab);
     e.target.textContent=V.grab?'Moving scan':'Drag to move';
     cv.classList.toggle('move',V.grab);

@@ -2735,7 +2735,35 @@ was saved: taken on trust, a later version's new tray would never be placed and 
 exists to report. `find` and a comparison. *The fourth diagnostic in this project that did not work in
 the situation it was written for.*
 
-Converter suite **673 → 696**.
+⛔⛔ **AND THE TURN RING WAS NOT A WIDGET, IT WAS A MODE NOBODY CHOSE.** Reported as *"when a new
+scan comes in there is a rotate widget that is stuck in that function"*, and that is exactly right.
+`ringOf` returned a ring for whichever scan was **active**, unconditionally — so importing a scan made
+it active and raised a rotation ring around it, with **no control anywhere to dismiss it**. At 16% of
+the wider floor span (minimum 1.2 m) it crossed most of the screen, and a press within ten pixels of a
+ring **starts a rotation** — so an ordinary orbit drag anywhere near a newly-imported cloud turned the
+cloud instead of the view. It is off until asked for now, with a **Turn ring** button beside *Drag to
+move*, and pressing it again takes it away.
+
+⭐ **EVERY WIDGET IS ONE BUTTON THAT READS THE SAME WAY** — the scan's turn ring, the photograph's
+three rings, the clip-box outline, the world axes and the reference lines. The button carries `on` for
+exactly as long as its widget is on screen, so pressing it again is visibly how to put it away.
+
+⭐ **AND ONE FUNCTION DECIDES HOW BIG A WIDGET IS.** `screenRadius` measures a metre **off the
+projection** — project the centre, project a point one metre to its right — so it holds in
+orthographic as well as perspective, and both rings are now a fixed size on screen instead of a
+fraction of the floor span. Two copies of that measurement drifting apart would put the photograph's
+rings and the scan's ring at different sizes **around the same tripod**, which reads as one of them
+being broken. It is clamped both ways, so a view pulled right out does not put a ring kilometres wide
+round a tripod.
+
+⚠ **AND A CHECK OF MINE READ THE WRONG LINE, IN THE SHAPE THIS PROJECT HAS NOW MET THREE TIMES.**
+`find("$('wire').onclick")` returned the **keyboard shortcut that CALLS the handler**, because that
+line comes earlier in the file — so it read four hundred characters of the wrong thing and reported a
+button that had toggled all along as broken. *The earliest match in a path is not the definition.*
+Compare the DNS outage, where every dead bot's log named the first call in its path, and qBittorrent
+naming the first check rather than the cause.
+
+Converter suite **696 → 709**.
 
 ### ▶ NEXT SESSION STARTS HERE
 
