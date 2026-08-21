@@ -2432,6 +2432,81 @@ field, with a comment saying every new server field must be copied there "which 
 row was born broken once already" — and I added four fields without copying them. The check that
 compares the two lists is what caught it.
 
+#### ⛔⛔ THE SORTER MOVES AND DELETES NOW — AND WHAT MADE THE DELETION SAFE
+
+The operator's words: *"i want the sort shoot to delete aborted scans and move the scans not copy that
+creates too much duplicate data"*. Sixty captures at ~98 MB is **5.9 GB**, and copying leaves two piles
+with no way to tell which is real. So it moves, and the aborted sweeps are deleted rather than set aside.
+
+⛔⛔ **BUT "NO SIDECAR" IS NOT ENOUGH TO DELETE ON, AND THE OPERATOR'S OWN SHOOT IS WHY.** Measured on
+`D:\RESTAURANT SCAN` before writing a line of it: the sixty **complete** captures fall in **98.4–100.9 MB**
+— a tight band, because a sweep is a fixed number of degrees at a fixed rate — while every
+**sidecar-less** one is **3.7–65.2 MB**, since the sweep stopped early and the sidecar is written at the
+END. A full-size file with no sidecar is therefore a capture whose **sidecar was LOST**, not one that was
+aborted, and deleting it would destroy a real scan on the strength of a missing 2 kB file. Those are kept
+and named. `ABORTED_MAX_SHARE = 0.90`, and the scale is taken **from the shoot itself** — with no
+complete capture to measure against there is no scale, and then nothing is deleted at all.
+
+⭐ **ONE PHOTOGRAPH, ONE HOME.** Filing every photograph inside the window into every capture inside it
+was duplicating most of the shoot, because **a tripod position takes TWO captures** (190.8° sweep) **and
+TWO photographs**. Assigned greedily nearest-pair-first instead, it lands one on each — which is what the
+shoot actually is. Only a picture two captures genuinely share is copied, and that is counted.
+
+⛔ **A CAPTURE WITH NO PHOTOGRAPH IS NOT A FAILURE** — some rooms are too dark. They go to a **`no
+photos`** folder rather than a numbered one that would look like it had lost its picture.
+
+#### ⛔⛔ AN IMAGE FOLDER IS NOT A CLEAN SET — MEASURED, NOT ASSUMED
+
+`INSTA IMAGES` held **64 files but only 57 pictures**: an earlier attempt at organising had left copies in
+numbered subfolders renamed to capture stems, and in one group **the same picture had been filed into two
+different folders at once**. Left in, a duplicate burns an assignment slot, so a real photograph is bumped
+to "matched nothing" and a capture is handed a copy under a name from a previous run — which is exactly
+what happened: scan 1 was assigned `42\TLS_..._18_14_04.jpg` instead of the `IMG_..._014` this project has
+**confirmed by measurement**.
+
+⭐ Identity is **(size, timestamp)**, and it was **checked rather than assumed**: every group it found was
+confirmed byte-identical by MD5, **zero disagreements**. Two different frames sharing an exact byte length
+and the same EXIF second is not something a 360 camera does. The **shallowest path wins**, because a copy
+from a previous sort lives a level down while the camera's own file sits at the top.
+
+⭐ **AND A PHOTOGRAPH ALREADY BESIDE ITS CAPTURE IS A DECISION SOMEBODY ALREADY MADE.** `stem.jpg` next to
+`stem.pcap` is exactly the pairing this program looks for. ⛔ Without honouring it the sort would MOVE the
+capture and **orphan the picture in an empty folder**, then file a second copy from the pool — the
+duplication this was asked to stop, arriving by another door.
+
+⚠ **A WORKED EXAMPLE OF WHY THE ACCOUNTING CHECK EARNS ITS PLACE.** Between two runs the image count
+moved 64 → 57 with no explanation. The rehearsal's ledger — *every capture is filed, still in the source,
+or on the deletion list, and never two of those* — is what surfaced it. It turned out the **operator had
+deleted their earlier organised copies by hand** while the work was going on; nothing was lost. The lesson
+stands either way: **when a destructive tool's inputs change under you, stop and reconcile the count before
+running it.**
+
+#### ✅ THE REST OF THIS ROUND
+
+- **A real progress bar for the sort**, threaded from `shoot.plan` and `shoot.apply` into the existing
+  poller. ⛔ Counted **in files, not in captures**: a capture is a 98 MB `.pcap` plus a 2 kB sidecar plus a
+  photograph, so a bar stepping once per capture would sit still through the only part that takes time.
+  The plan's own slow loop is named too — it opens every photograph for its EXIF stamp.
+- **Import options**: *take the photograph from the same folder* (on — a sorted shoot puts both in one
+  folder, which is what `pipeline.find_photo` already looks for) and *align each one as it arrives* (off —
+  it costs a solve per scan). ⛔ One that will not fit **must not stop the rest**: the failures are named
+  at the end and those scans stay where they were put.
+- **A badge naming the numbered folder each capture came out of.** ⭐ After a shoot is sorted that number
+  is the **only thing on screen that tells two scans of the same room apart** — the capture's name is a
+  timestamp nobody reads, and the tint is handed out by load order so it changes when another arrives.
+  Adding a capture from a folder that is already open now says so, as a warning rather than a refusal,
+  because a folder is allowed to hold two captures.
+
+⛔ **AND A STALE CLAIM WAS FOUND ON SCREEN.** The import message still read *"Every scan is solved against
+the FIRST one, never against the previous, so errors do not accumulate down the chain"* — which stopped
+being true the moment the target became the nearest scan, and would have been a flat untruth in front of
+the operator. **A behaviour change has to be chased into the sentences that describe it.**
+
+⚠ **A TEST STUB THAT LOOKED RIGHT AND LIED.** `os.path.getsize = lambda q: _sizes.get(q, _real_getsize(q))`
+— a dict's default argument is evaluated **eagerly**, so the real `getsize` ran on every lookup, raised on
+the made-up paths, was caught by `dedupe`'s `except OSError`, and every size came back unknown. The check
+failed while reporting that nothing was a duplicate.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi
