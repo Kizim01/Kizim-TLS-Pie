@@ -963,32 +963,39 @@ class AlignServer(object):
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
-            # ⛔⛔ THE SOLVER IS SHOWN THE LEANED CLOUD, NOT THE RAW ONE.
-            # What is drawn on screen and what is written to the file is
-            # Setup(Lean(points)); solve against the raw points instead and the
-            # answer that comes back is the placement for a cloud that is not
-            # the one anybody is looking at -- out by the lean, in a way that
-            # looks like the fit simply failed. Both sides get the same
-            # treatment because the reference may be leaning too.
+            # ⭐⭐ THE MOVING CLOUD GOES IN RAW, AND ITS LEAN GOES IN AS PART
+            # OF THE STARTING POSE -- because the solver answers in full six
+            # degrees of freedom now and the lean is one of the things it
+            # solves FOR. (It was briefly pre-applied here instead, when the
+            # solver was 4-DOF and the lean was purely the operator's; a
+            # 6-DOF solve handed a pre-leaned cloud would return a second
+            # lean on top of the first.) The REFERENCE is still leaned and
+            # placed, because it is the fixed world being matched against.
             base = fixed.lean.apply(fixed.sample)
             if not fixed.setup.is_identity():
                 base = fixed.setup.apply(base)
-            sol = registration.solve_best(base,
-                                          scan.lean.apply(scan.sample),
-                                          progress=self._note, start=hint,
-                                          voxel=scan.rung)
+            sol = registration.solve_ladder(base, scan.sample,
+                                            progress=self._note, start=hint,
+                                            lean=scan.lean,
+                                            begin_voxel=scan.rung)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        self.scans[index].setup = sol.setup
+        scan.setup = sol.setup
+        scan.lean = sol.lean
+        # ⛔ ONE PRESS RUNS THE WHOLE LADDER NOW, so the rung is spent to the
+        # bottom: a second press with nothing moved gets the honest "already
+        # refined as far as this instrument supports", and any nudge, tilt or
+        # pair fit starts the ladder over.
+        scan.rung = registration.GICP_LADDER[-1]
         return {"ok": True, "index": index, "setup": _placement(scan),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
                 "voxel": sol.voxel, "exhausted": False, "target": target,
                 "warning": warn,
-                "text": "onto %s at a %.0f cm voxel — %s"
-                        % (fixed.name, (sol.voxel or 0) * 100, sol.describe())}
+                "text": "onto %s, coarse to fine — %s"
+                        % (fixed.name, sol.describe())}
 
     def take_leans(self, leans):
         """
@@ -1004,7 +1011,17 @@ class AlignServer(object):
         """
         for i, data in enumerate(leans or []):
             if i < len(self.scans):
-                self.scans[i].lean = registration.Lean.from_dict(data)
+                fresh = registration.Lean.from_dict(data)
+                held = self.scans[i].lean
+                # ⛔ A CHANGED TILT RESTARTS THE LADDER, exactly as a nudge
+                # does. The rung-reset below compares the page's SETUP against
+                # the stored one, and it cannot see a tilt -- this is the only
+                # moment the old and new leans exist side by side, because the
+                # assignment on the next line erases the evidence.
+                if (abs(fresh.pitch_deg - held.pitch_deg) > 1e-9
+                        or abs(fresh.roll_deg - held.roll_deg) > 1e-9):
+                    self.scans[i].rung = None
+                self.scans[i].lean = fresh
 
     def align_pairs(self, index, pairs):
         """
@@ -2841,7 +2858,7 @@ PAGE = r"""<!doctype html>
     </button></div>
   </div></div>
 <div class="tray" id="ty_move"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'move')"><span class="fold">▾</span><b class="grow">Move a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('move')">✕</button></div><div class="traybody">
-  <div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour; press it again and it refines.</div>
+  <div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour in one press — several starting headings, then coarse to fine — and it finds the tripod’s tip and bank as well as its turn.</div>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
@@ -4934,8 +4951,9 @@ async function autoAlign(){
     if(j.exhausted) say(j.text, 'warn');
     else say((j.trustworthy ? ''
         : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. '))+j.text+
-        '  Press again to refine further.',
-        j.trustworthy ? null : 'warn');
+        '  One press runs the whole search, coarse to fine \u2014 if it still '+
+        'looks off, nudge it towards what you can see is right and press '+
+        'again.', j.trustworthy ? null : 'warn');
   }catch(e){ watch(false); say('Auto-align failed: '+e.message, 'bad'); }
   $('auto').disabled=false;
 }

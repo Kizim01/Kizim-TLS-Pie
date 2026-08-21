@@ -3014,6 +3014,81 @@ been looking where it claimed.)
 
 Converter suite **796 → 816**.
 
+#### ⭐⭐ AUTO-ALIGN REBUILT: SIX DEGREES OF FREEDOM, ONE PRESS, A SEED FAN — AND THE BUG WAS ONE LINE READING BACK FOUR NUMBERS OF SIX
+
+Reported as *“I get the scans close but it still struggles to align … I would like the alignment to
+also tilt the cloud.”* Both halves of that sentence turned out to be **the same defect**.
+
+⛔⛔ **GICP HAS ALWAYS SOLVED THE TILT, AND `_setup_from` THREW IT AWAY.** The comment on
+`solve_gicp` said, in so many words, *“⭐ AND IT IS FULL 6-DOF, so a tripod … standing on an uneven
+floor is expressible here”* — and the line that read the answer back took `dx, dy, dz` and
+`atan2(T[1,0], T[0,0])`. Four of six. On a tripod a few degrees out of level the solver **found the
+tilt on every press** and the program discarded it — then **scored the flattened pose**, so a
+genuinely better answer priced worse than it was, and the never-worse guard could hand the operator
+back their own starting point. On the restaurant data the missing tilt is ~3°: **30 cm of smear at
+the far wall that no number of presses could remove.** `_decompose` now factors the full SE(3)
+answer into `Setup` (turn + shift) + `Lean` (tip + bank) — exact to 3×10⁻¹⁴ over the round trip —
+and the residual is priced on the pose that will actually be drawn and exported.
+
+⭐⭐ **ONE PRESS RUNS THE WHOLE LADDER NOW** (`solve_ladder`): a seed fan at the coarse rung, then
+10 → 5 → 2 → 1 cm, each rung seeding the next — the multi-scale-in-one-call shape every serious
+pipeline uses (Open3D `multi_scale_icp`, KISS-ICP's coarse-to-fine with an adaptive threshold; the
+coarse reach is widened to 1.5 m and narrows as the rungs descend). The per-press rung existed so
+that pressing again meant something; the operator's actual experience was a button pressed four
+times and judged by eye each time. The rung bookkeeping survives: a second press with nothing moved
+says *“already refined as far as this instrument supports”*, and a nudge — **or a changed tilt,
+which the setup-comparison cannot see and `take_leans` now catches at the only moment the old and
+new leans exist side by side** — starts the ladder over.
+
+⭐⭐ **THE COARSE RUNG IS A FAN, NOT A RUN.** ICP descends the nearest valley, so “close but
+struggling” is almost always the right valley's neighbour. From a placement: five yaw seeds
+(0, ±4°, ±10°). From nothing: eight headings round the circle. The losers are not wasted — the
+best genuinely-different one (`_apart`) is **re-priced at the final rung's bins** and becomes the
+rival, which is what makes AMBIGUOUS work on the GICP path at all. The operator's guard runs on the
+true start only (`guard=False` for perturbed seeds — a guard against a seed would keep a pose
+nobody chose and label it “yours”).
+
+**Verified on the operator's own data — restaurant scans 1 and 3, non-adjacent:**
+
+| run | result |
+|---|---|
+| **blind** (no placement at all) | 4.80 m away, turned −150.3°, **tipped +3.05° / banked +0.77°** — residual 0.036 m vs a 0.006 m floor, 6.0×, unambiguous, 520k inliers, 31 s |
+| **seeded** 0.5 m / 7° off | identical pose to **0.000° / 0.000 m**, 21 s, “improved on your placement's 0.427 m” |
+| through the **live server** | one press from a 0.35 m / 6° miss → 0.04° off, tilt carried to the page; second press honestly exhausted; a hand tilt restarts the ladder |
+
+Synthetic ground truth: yaw to 0.006°, tilt to 0.02°, shift to 1 mm; blind 8-way fan finds the same
+pose; a perfect start is not degraded; an **untilted pair comes back reading exactly 0.00** — the
+snap threshold had to sit above sensor noise (0.02° was tried; noise walked past it at 0.026°; it is
+0.05°, a sixth of the instrument's own range noise at its far wall).
+
+⛔⛔ **AN OPTIMISATION WAS REVERTED BECAUSE IT CHANGED THE ANSWER.** Thinning the clouds to 400k for
+the fan saved ten seconds — and on the restaurant pair the thinned judge picked a **shallower basin**
+(0.058 m against the true pose's 0.036), and a run seeded from that answer wandered 26° to a third
+one. A restaurant is repeating booths: rival minima a quarter-turn apart are the terrain, and
+choosing between them is precisely the fan's one job, so the fan is the last place to hand a noisier
+judge. The suite now asserts the fan is never handed a thinned cloud.
+
+⛔⛔ **TWO FLAGS LEAKED OPERATOR-LANGUAGE ONTO MACHINE STEPS.** In the chain, each finer rung guards
+against the *coarser rung's* answer; `kept_start` and `improved_from` inherited from that and
+`describe()` rendered them as *“Your own alignment was already the better fit, so nothing was
+moved”* — about a pose that came off rung one, after the scan had moved a third of a metre — and a
+**blind** solve printed *“improved on your placement's 0.036 m”* to an operator who had never placed
+anything. The guard behaviour was right; the claims now survive only when they are about the actual
+placement, re-priced on the same scale as the answer that replaced it.
+
+⛔ The solver is handed the **raw** moving cloud with the lean as part of the starting pose —
+reversing the previous session's rule, which was right for a 4-DOF solver and would make a 6-DOF one
+return a second lean on top of the first. The suite's check now asserts the opposite of what it
+asserted yesterday, with the reason in the comment.
+
+⚠ And two checks of mine failed in familiar shapes: the fan-purity check sliced from
+`def solve_ladder` **to the end of the file** and found the grid solver's legitimate `_thin` two
+functions later (the earliest match sets where you start reading, not where you stop); and a Bash
+heredoc collapsed `\ndef` into a real newline, breaking the suite file with a syntax error — the
+project's standing reason to patch through Write/Edit, met again.
+
+Converter suite **816 → 830**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

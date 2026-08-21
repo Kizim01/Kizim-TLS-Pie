@@ -402,6 +402,11 @@ class Solution(object):
         self.improved_from = None       # what it was before the tidy-up
         self.iterations = None          # GICP only
         self.voxel = None               # the ladder rung this was solved at
+        # ⭐ THE TILT IS PART OF THE ANSWER NOW. Identity from the planar
+        # grid solver, which structurally cannot find one; real from GICP.
+        self.lean = Lean()
+        self.wild_tilt = False          # GICP left the basin; tilt was refused
+        self.inliers = None             # correspondences the fit stood on
 
     @property
     def improvement(self):
@@ -455,6 +460,14 @@ class Solution(object):
                 "%.1fx better than untransformed"
                 % (self.setup.describe(), self.residual, self.floor,
                    self.improvement))
+        if not self.lean.is_identity():
+            # Lean.describe is already ASCII, like everything else here.
+            text += "  (and the tripod was %s)" % self.lean.describe()
+        if self.wild_tilt:
+            text += ("  NOTE: the fit wanted a tilt past what a standing "
+                     "tripod can hold, which usually means it slid into a "
+                     "wrong answer -- the tilt was refused and only the flat "
+                     "part kept. Check this one by eye.")
         if self.improved_from is not None:
             text += "  (improved on your placement's %.3f m)" % self.improved_from
         # ASCII only: this string reaches a cp1252 Windows console, where a
@@ -494,11 +507,30 @@ def have_gicp():
     return True
 
 
+#: Below this, a recovered tilt is the fit wobbling in the range noise, not a
+#: tripod standing on anything. Snapped to exactly zero so a scan that was
+#: never tilted keeps reading 0.00 rather than 0.03 -- a number that small in
+#: that box teaches the operator the instrument drifts, when it is the solver
+#: that does. ⛔ 0.02 was tried first and an untilted synthetic pair came
+#: back reading 0.026: the threshold has to sit ABOVE what sensor noise can
+#: produce, and 0.05 degrees is 5 mm at this instrument's far wall -- a sixth
+#: of its own +/-30 mm range noise, unresolvable by construction.
+TILT_SNAP_DEG = 0.05
+
+
 def _matrix(setup):
     t = np.radians(setup.yaw_deg)
     T = np.eye(4)
     T[:2, :2] = [[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]]
     T[0, 3], T[1, 3], T[2, 3] = setup.dx, setup.dy, setup.dz
+    return T
+
+
+def _pose_matrix(setup, lean=None):
+    """The full placement -- turn AND tilt -- as one 4x4, Rz(yaw) @ L."""
+    T = _matrix(setup)
+    if lean is not None and not lean.is_identity():
+        T[:3, :3] = T[:3, :3] @ lean.matrix()
     return T
 
 
@@ -508,7 +540,42 @@ def _setup_from(T):
                  yaw_deg=float(np.degrees(np.arctan2(T[1, 0], T[0, 0]))))
 
 
-def solve_gicp(xyz_ref, xyz_mov, start=None, voxel=GICP_VOXEL, progress=None):
+def _decompose(T):
+    """
+    A rigid transform back into the two objects this program stores.
+
+    ⭐⭐ THIS IS THE LINE THAT WAS MISSING FROM THE WHOLE SOLVE. GICP has
+    always worked in full SE(3) -- the comment on `solve_gicp` even said so --
+    and `_setup_from` then read back four of the six numbers, so on a tripod
+    that stood a degree out of level the solver FOUND the tilt on every press
+    and this file threw it away. Worse, the flattened pose was what got
+    scored, so a genuinely better answer priced worse than it was and the
+    never-worse guard could hand the operator back their own starting point.
+    "I get the scans close but it still struggles" is that, from the outside.
+
+    The factoring is exact: place() applies Rz(yaw) @ Rx(tip) @ Ry(-bank), so
+    R[2][1] = sin(tip), R[2][0]/R[2][2] carry the bank, and the yaw is read
+    from the middle column once the lean's share is divided out. Degenerate
+    only at |tip| = 90 degrees, which is not a tripod, it is a fallen-over one
+    -- and the third return value says whether the answer is one this program
+    is willing to store.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    R = T[:3, :3]
+    pitch = float(np.degrees(np.arcsin(min(1.0, max(-1.0, float(R[2, 1]))))))
+    roll = float(np.degrees(np.arctan2(R[2, 0], R[2, 2])))
+    yaw = float(np.degrees(np.arctan2(-R[0, 1], R[1, 1])))
+    if abs(pitch) < TILT_SNAP_DEG:
+        pitch = 0.0
+    if abs(roll) < TILT_SNAP_DEG:
+        roll = 0.0
+    ok = abs(pitch) <= Lean.MAX_DEG and abs(roll) <= Lean.MAX_DEG
+    return (Setup(dx=T[0, 3], dy=T[1, 3], dz=T[2, 3], yaw_deg=yaw),
+            Lean(pitch, roll) if ok else Lean(), ok)
+
+
+def solve_gicp(xyz_ref, xyz_mov, start=None, lean=None, voxel=GICP_VOXEL,
+               progress=None, reach=None, guard=True):
     """
     Generalised ICP, via koide3/small_gicp. Returns a Solution, or None.
 
@@ -537,12 +604,19 @@ def solve_gicp(xyz_ref, xyz_mov, start=None, voxel=GICP_VOXEL, progress=None):
 
     ref = np.ascontiguousarray(np.asarray(xyz_ref), dtype=np.float64)
     mov = np.ascontiguousarray(np.asarray(xyz_mov), dtype=np.float64)
-    init = _matrix(start) if start is not None else np.eye(4)
+    lean0 = lean or Lean()
+    init = (_pose_matrix(start, lean0) if start is not None
+            else _pose_matrix(Setup(), lean0))
     try:
         out = small_gicp.align(
             ref, mov, init_T_target_source=init,
             downsampling_resolution=voxel,
-            max_correspondence_distance=voxel * 4.0,
+            # ⭐ THE REACH IS A PARAMETER NOW, because the coarse rung is
+            # where a wrong basin is escaped and four voxels of reach cannot
+            # see across a metre of miss. The ladder widens it there and
+            # narrows it as the rungs descend -- the same shape KISS-ICP calls
+            # an adaptive threshold and Open3D's multi-scale ICP builds in.
+            max_correspondence_distance=(reach or voxel * 4.0),
             max_iterations=GICP_ITERATIONS,
             num_threads=max(1, (os.cpu_count() or 4)))
     except Exception:                                     # noqa: BLE001
@@ -552,21 +626,38 @@ def solve_gicp(xyz_ref, xyz_mov, start=None, voxel=GICP_VOXEL, progress=None):
 
     lon_b, lat_b = scoring_bins(voxel)
     prof = median_profile(ref, lon_b, lat_b)
-    setup = _setup_from(out.T_target_source)
-    residual = compare(prof, mov, setup, lon_b, lat_b)
+    # ⭐⭐ THE WHOLE ANSWER IS KEPT, TILT AND ALL -- see `_decompose`. And
+    # the residual is priced on the FULL pose: scoring the flattened one was
+    # how a better answer used to lose to the placement it improved on.
+    setup, found, tilt_ok = _decompose(out.T_target_source)
+    sol_lean = found if tilt_ok else lean0
+    scored = mov if sol_lean.is_identity() else sol_lean.apply(mov)
+    residual = compare(prof, scored, setup, lon_b, lat_b)
     sol = Solution(setup, residual, sampling_floor(ref),
                    compare(prof, mov, Setup(), lon_b, lat_b))
+    sol.lean = sol_lean
+    sol.wild_tilt = not tilt_ok
     sol.iterations = getattr(out, "iterations", None)
+    sol.inliers = int(getattr(out, "num_inliers", 0) or 0)
     sol.voxel = voxel
 
     # ⛔ The same guard the grid solver carries, for the same reason: an
     # alignment the operator made by hand must never be quietly replaced by a
-    # worse one. "I had it really close and auto align messed it up."
-    if start is not None and not start.is_identity():
-        began = compare(prof, mov, start, lon_b, lat_b)
+    # worse one. "I had it really close and auto align messed it up." The
+    # comparison prices the operator's TILT too, or a levelled-by-hand scan
+    # would be judged against a worse version of its own placement.
+    #
+    # ⛔ `guard=False` EXISTS FOR THE SEED FAN AND NOTHING ELSE. A perturbed
+    # seed is not the operator's placement; guarding against it would keep a
+    # pose nobody chose and label it "yours".
+    if guard and start is not None and not (start.is_identity()
+                                            and lean0.is_identity()):
+        was = mov if lean0.is_identity() else lean0.apply(mov)
+        began = compare(prof, was, start, lon_b, lat_b)
         if began == began and began <= residual:
             kept = Solution(start, began, sol.floor, sol.baseline)
             kept.kept_start = True
+            kept.lean = lean0
             kept.voxel = voxel
             return kept
         sol.improved_from = began
@@ -581,6 +672,172 @@ def next_voxel(previous):
         if step < previous - 1e-9:
             return step
     return None
+
+
+#: The seed fan at the coarse rung. Around an operator's placement the
+#: wobble to escape is small -- a few degrees of hand error -- so the fan is
+#: tight; with no placement at all every heading is equally plausible, so it
+#: is the whole circle at the coarsest step worth trying.
+FAN_NEAR_DEG = (0.0, 4.0, -4.0, 10.0, -10.0)
+FAN_BLIND_DEG = tuple(float(d) for d in range(0, 360, 45))
+#: How far the coarse rung may reach for a correspondence when the start is
+#: blind or badly off. Four voxels (40 cm) cannot see across a metre of miss.
+FAN_REACH_M = 1.5
+
+
+def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
+                 begin_voxel=None, max_shift=6.0):
+    """
+    The whole alignment in one press: seed fan, then coarse to fine.
+
+    ⭐⭐ ONE PRESS RUNS EVERY RUNG. The ladder used to advance one rung per
+    press so that pressing again meant something -- and the operator's actual
+    experience was a button that had to be pressed four times, judged each
+    time by eye, to get what the machine already knew how to do. Multi-scale
+    in a single call is what every serious registration pipeline does
+    (Open3D's multi_scale_icp, KISS-ICP's coarse-to-fine): the coarse rung is
+    cheap, tolerant of a bad start and hard to trap in a local minimum, and
+    each finer rung asks a harder question of a better answer.
+
+    ⭐⭐ AND THE COARSE RUNG IS A FAN, NOT A SINGLE RUN. ICP-family solvers
+    descend the nearest valley, so "close but struggling" is almost always
+    the right valley's neighbour. From a placement: five yaw seeds a few
+    degrees apart, priced with our own metric, best one wins. From nothing:
+    eight headings round the circle with the reach widened to 1.5 m. The
+    losers are not wasted -- the best one that is a genuinely DIFFERENT
+    answer (`_apart`) is re-priced at the final rung and reported as the
+    rival, which is what makes "AMBIGUOUS" work on this path at all.
+
+    ⛔ THE OPERATOR'S GUARD RUNS ON THE TRUE START ONLY. Each perturbed seed
+    runs unguarded (`guard=False`): a seed is scaffolding, not a placement,
+    and a guard against it would keep a pose nobody chose.
+    """
+    if not have_gicp():
+        if progress:
+            progress("GICP unavailable; falling back to the grid search", 0, 1)
+        lean0 = lean or Lean()
+        moved = xyz_mov if lean0.is_identity() else lean0.apply(xyz_mov)
+        sol = solve(xyz_ref, moved, max_shift=max_shift, progress=progress,
+                    start=start)
+        sol.lean = lean0
+        return sol
+
+    rungs = [v for v in GICP_LADDER
+             if begin_voxel is None or v <= begin_voxel + 1e-9]
+    if not rungs:
+        rungs = [GICP_LADDER[-1]]
+    coarse = rungs[0]
+
+    # ⭐ EVERY COARSE SEED GETS THE WIDE REACH, the true start included: the
+    # coarse rung's whole job is closing a miss the fine rungs cannot see
+    # across, and an operator half a metre out is exactly who this is for.
+    if start is None:
+        seeds = [(Setup(yaw_deg=d), FAN_REACH_M) for d in FAN_BLIND_DEG]
+        true_start = None
+    else:
+        seeds = [(Setup(start.dx, start.dy, start.dz,
+                        start.yaw_deg + d), FAN_REACH_M)
+                 for d in FAN_NEAR_DEG]
+        true_start = start
+
+    if progress:
+        progress("trying %d starting points at %.0f cm" %
+                 (len(seeds), coarse * 100), 0, len(rungs) + 2)
+    # ⛔⛔ THE FAN RUNS ON THE FULL CLOUDS, AND THAT WAS LEARNED THE EXPENSIVE
+    # WAY. Thinning them to 400k for the fan saved ten seconds and CHANGED THE
+    # ANSWER on the restaurant pair: the thinned judge picked a shallower
+    # basin (0.058 m against the true pose's 0.036), and a run seeded from
+    # that answer wandered 26 degrees to a third one. A restaurant is
+    # repeating booths -- rival minima a quarter-turn apart are the terrain,
+    # and choosing between them is precisely the fan's one job, so the fan is
+    # the last place to hand a noisier judge. Speed comes from anywhere else.
+    tried = []
+    for seed, reach in seeds:
+        got = solve_gicp(xyz_ref, xyz_mov, start=seed, lean=lean,
+                         voxel=coarse, reach=reach,
+                         guard=(true_start is not None
+                                and seed.yaw_deg == true_start.yaw_deg))
+        if got is not None and got.residual == got.residual:
+            tried.append(got)
+    if not tried:
+        if progress:
+            progress("GICP failed; falling back to the grid search", 0, 1)
+        lean0 = lean or Lean()
+        moved = xyz_mov if lean0.is_identity() else lean0.apply(xyz_mov)
+        sol = solve(xyz_ref, moved, max_shift=max_shift, progress=progress,
+                    start=start)
+        sol.lean = lean0
+        return sol
+    tried.sort(key=lambda t: t.residual)
+    sol = tried[0]
+    rival = next((t for t in tried[1:] if _apart(t.setup, sol.setup)), None)
+
+    lean0 = lean or Lean()
+    # ⛔ THE FAN'S WINNER WAS PRICED ON THE THINNED CLOUD, so if there is no
+    # finer rung to re-solve it on (a ladder entered at its own bottom), one
+    # pass over the full clouds puts every number that leaves this function
+    # back on the same scale as everything downstream compares it to.
+    if len(rungs) == 1:
+        full = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
+                          voxel=rungs[0], guard=False)
+        if full is not None and full.residual == full.residual:
+            sol = full
+    for i, v in enumerate(rungs[1:], start=1):
+        if progress:
+            progress("refining at %.0f cm" % (v * 100), i, len(rungs) + 2)
+        finer = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
+                           voxel=v)
+        if finer is not None and finer.residual == finer.residual:
+            # ⛔⛔ kept_start HERE MEANS "THE COARSER RUNG'S ANSWER STOOD",
+            # AND THAT IS NOT WHAT THE FLAG SAYS TO THE OPERATOR. describe()
+            # renders it as "Your own alignment was already the better fit, so
+            # nothing was moved" -- about a pose that came off rung one, after
+            # the scan had in fact been moved a third of a metre. The guard
+            # BEHAVIOUR is right (a finer rung must never make things worse);
+            # the CLAIM survives only if the pose really is the placement the
+            # operator made, tilt included.
+            if finer.kept_start:
+                a, b = finer.setup, true_start
+                finer.kept_start = (
+                    b is not None
+                    and abs(a.dx - b.dx) < 1e-4 and abs(a.dy - b.dy) < 1e-4
+                    and abs(a.dz - b.dz) < 1e-4
+                    and abs((a.yaw_deg - b.yaw_deg + 180) % 360 - 180) < 1e-4
+                    and abs(finer.lean.pitch_deg - lean0.pitch_deg) < 1e-4
+                    and abs(finer.lean.roll_deg - lean0.roll_deg) < 1e-4)
+            sol = finer
+
+    # ⛔ THE RIVAL -- AND THE OPERATOR'S OWN PLACEMENT -- ARE RE-PRICED AT
+    # THE RUNG THE WINNER WAS PRICED AT. The fan's residuals came off the
+    # coarse bins and the winner's off the fine ones; comparing across scales
+    # is how a decisive answer gets called a coin toss, or a coin toss
+    # decisive. And `improved_from` had the same leak `kept_start` had: each
+    # chained rung set it against the PREVIOUS RUNG's answer, so a blind solve
+    # reported "(improved on your placement's 0.036 m)" to an operator who
+    # had never placed anything. It now means one thing only: what the true
+    # start measures on the same scale as the answer that replaced it.
+    need_rival = rival is not None and _apart(rival.setup, sol.setup)
+    need_began = true_start is not None and not sol.kept_start
+    sol.improved_from = None
+    if need_rival or need_began:
+        if progress:
+            progress("pricing the runner-up", len(rungs) + 1, len(rungs) + 2)
+        lon_b, lat_b = scoring_bins(sol.voxel or rungs[-1])
+        prof = median_profile(xyz_ref, lon_b, lat_b)
+        if need_rival:
+            scored = (xyz_mov if rival.lean.is_identity()
+                      else rival.lean.apply(xyz_mov))
+            rr = compare(prof, scored, rival.setup, lon_b, lat_b)
+            if rr == rr:
+                sol.rival, sol.rival_residual = rival.setup, rr
+        if need_began:
+            was = xyz_mov if lean0.is_identity() else lean0.apply(xyz_mov)
+            began = compare(prof, was, true_start, lon_b, lat_b)
+            if began == began and began > sol.residual:
+                sol.improved_from = began
+    if progress:
+        progress("done", len(rungs) + 2, len(rungs) + 2)
+    return sol
 
 
 def solve_best(xyz_ref, xyz_mov, start=None, progress=None, max_shift=6.0,

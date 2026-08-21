@@ -4857,10 +4857,15 @@ check("Reset puts back all six numbers, not four",
 check("a tilt set by hand counts as having moved the scan, so Auto-align "
       "starts from it",
       "|| s.setup.pitch_deg || s.setup.roll_deg" in _ALIGN_SRC)
-# ⛔⛔ THE SOLVER IS SHOWN THE LEANED CLOUD. Solve against the raw points and
-# the answer is the placement for a cloud nobody is looking at.
-check("the solver fits the cloud as it is drawn, tilt and all",
-      "scan.lean.apply(scan.sample)" in _ALIGN_SRC
+# ⛔⛔ THE MOVING CLOUD GOES IN RAW AND THE LEAN GOES IN AS PART OF THE
+# STARTING POSE. This test used to demand the opposite -- the leaned cloud --
+# which was right while the solver was 4-DOF and the lean purely the
+# operator's. A 6-DOF solve handed a pre-leaned cloud would return a SECOND
+# lean on top of the first. The reference is still leaned and placed: it is
+# the fixed world being matched against.
+check("the solver gets the raw cloud and the lean as its starting pose",
+      "scan.lean.apply(scan.sample)" not in _ALIGN_SRC
+      and "lean=scan.lean" in _ALIGN_SRC
       and "base = fixed.lean.apply(fixed.sample)" in _ALIGN_SRC)
 check("and the page hands its tilts over with every fit it asks for",
       _ALIGN_SRC.count("leans:leansWire()") == 2
@@ -5030,6 +5035,138 @@ finally:
     else:
         os.environ["TLSPIE_CUDA"] = _was
     gpu.reset()
+
+
+# --- the 6-DOF solve -------------------------------------------------------
+#
+# ⛔⛔ GICP ALWAYS WORKED IN FULL SE(3) AND `_setup_from` READ BACK FOUR OF THE
+# SIX NUMBERS. On a tripod that stood a degree out of level the solver FOUND
+# the tilt on every press and this file threw it away -- then scored the
+# flattened pose, so a genuinely better answer priced worse than it was and
+# the never-worse guard could return the operator's own starting point.
+# "I get the scans close but it still struggles", from the inside.
+print("\nthe solve answers in six degrees of freedom")
+
+_rr = np.random.RandomState(3)
+_worst = 0.0
+for _ in range(60):
+    _su = registration.Setup(*_rr.uniform(-8, 8, 3),
+                             yaw_deg=_rr.uniform(-180, 180))
+    _ln = registration.Lean(_rr.uniform(-40, 40), _rr.uniform(-40, 40))
+    _T = registration._pose_matrix(_su, _ln)
+    _su2, _ln2, _ok6 = registration._decompose(_T)
+    _worst = max(_worst,
+                 abs((_su2.yaw_deg - _su.yaw_deg + 180) % 360 - 180),
+                 abs(_ln2.pitch_deg - _ln.pitch_deg),
+                 abs(_ln2.roll_deg - _ln.roll_deg),
+                 abs(_su2.dx - _su.dx), abs(_su2.dy - _su.dy),
+                 abs(_su2.dz - _su.dz))
+    if not _ok6:
+        _worst = 1e9
+check("a pose survives the round trip through a matrix exactly", _worst < 1e-9,
+      _worst)
+_pp = _rr.uniform(-5, 5, (64, 3))
+_su = registration.Setup(1.5, -2.0, 0.3, 37.0)
+_ln = registration.Lean(4.0, -3.0)
+_T = registration._pose_matrix(_su, _ln)
+check("and the matrix is exactly what apply() does, turn after tilt",
+      float(np.max(np.abs(_su.apply(_ln.apply(_pp))
+                          - (_pp @ _T[:3, :3].T + _T[:3, 3])))) < 1e-12)
+check("a yaw-only pose decomposes with NO tilt, exactly",
+      registration._decompose(
+          registration._pose_matrix(registration.Setup(yaw_deg=25.0))
+      )[1].is_identity())
+# ⛔ A TILT PAST WHAT A TRIPOD CAN STAND MEANS THE FIT LEFT THE BASIN.
+_bad = np.eye(4)
+_a80 = math.radians(80.0)
+_bad[:3, :3] = [[1, 0, 0], [0, math.cos(_a80), -math.sin(_a80)],
+                [0, math.sin(_a80), math.cos(_a80)]]
+check("an 80-degree tilt is refused rather than stored",
+      not registration._decompose(_bad)[2])
+
+if registration.have_gicp():
+    def _rm(n, seed):
+        rs = np.random.RandomState(seed)
+        k = n // 4
+        parts = [np.column_stack([rs.uniform(-6, 6, k), rs.uniform(-4, 4, k),
+                                  rs.normal(0, 0.004, k)]),
+                 np.column_stack([rs.uniform(-6, 6, k), np.full(k, 4.0),
+                                  rs.uniform(0, 2.6, k)]),
+                 np.column_stack([np.full(k, -6.0), rs.uniform(-4, 4, k),
+                                  rs.uniform(0, 2.6, k)])]
+        for i in range(4):
+            c = rs.uniform(-4, 4, 2)
+            parts.append(np.column_stack(
+                [c[0] + rs.uniform(-0.4, 0.4, k // 4),
+                 c[1] + rs.uniform(-0.3, 0.3, k // 4),
+                 rs.uniform(0, 1.0, k // 4)]))
+        return np.vstack(parts)
+
+    _ref6 = _rm(24000, 5)
+    _tsu = registration.Setup(2.4, -1.1, 0.15, 28.0)
+    _tln = registration.Lean(3.2, -2.1)
+    _Ti = np.linalg.inv(registration._pose_matrix(_tsu, _tln))
+    _mv6 = _rm(24000, 9) @ _Ti[:3, :3].T + _Ti[:3, 3]
+    _mv6 = _mv6 + np.random.RandomState(1).normal(0, 0.006, _mv6.shape)
+    # ⭐⭐ THE OPERATOR'S EXACT COMPLAINT AS A FIXTURE: close but wrong --
+    # 0.35 m off, 6 degrees off, and no tilt at all where the tripod had one.
+    _s0 = registration.Setup(_tsu.dx + 0.35, _tsu.dy - 0.25, 0.0,
+                             _tsu.yaw_deg - 6.0)
+    _got = registration.solve_ladder(_ref6, _mv6, start=_s0)
+    check("one press recovers the whole pose from a rough placement",
+          abs((_got.setup.yaw_deg - _tsu.yaw_deg + 180) % 360 - 180) < 0.5
+          and np.hypot(_got.setup.dx - _tsu.dx,
+                       _got.setup.dy - _tsu.dy) < 0.05,
+          _got.setup.describe())
+    check("...including the tilt the old solver threw away",
+          abs(_got.lean.pitch_deg - _tln.pitch_deg) < 0.3
+          and abs(_got.lean.roll_deg - _tln.roll_deg) < 0.3,
+          _got.lean.describe())
+    check("and does not pretend the operator's placement won",
+          not _got.kept_start)
+    check("what the placement measured is re-priced on the ANSWER's scale, "
+          "or reported not at all",
+          _got.improved_from is None or _got.improved_from > _got.residual)
+
+    # ⛔ AN UNTILTED PAIR MUST COME BACK READING EXACTLY ZERO. 0.02 was tried
+    # as the snap and sensor noise walked straight past it at 0.026.
+    _Tf = np.linalg.inv(registration._pose_matrix(_tsu))
+    _mvf = _rm(24000, 9) @ _Tf[:3, :3].T + _Tf[:3, 3]
+    _mvf = _mvf + np.random.RandomState(2).normal(0, 0.006, _mvf.shape)
+    _gf = registration.solve_ladder(_ref6, _mvf, start=_s0)
+    check("a pair with no tilt comes back with exactly none -- not 0.03",
+          _gf.lean.is_identity(), _gf.lean.describe())
+else:
+    print("  (small_gicp unavailable: ladder recovery checks skipped)")
+
+# --- and the wiring --------------------------------------------------------
+check("one press runs the whole ladder, so the rung is spent to the bottom",
+      "scan.rung = registration.GICP_LADDER[-1]" in _ALIGN_SRC)
+check("a changed tilt restarts the ladder, exactly as a nudge does",
+      "self.scans[i].rung = None" in _ALIGN_SRC)
+check("the seed fan exists at both strengths: near a placement, and blind",
+      "FAN_NEAR_DEG" in open(registration.__file__, encoding="utf-8").read()
+      and "FAN_BLIND_DEG" in open(registration.__file__,
+                                  encoding="utf-8").read())
+# ⛔⛔ THE FAN JUDGES ON THE FULL CLOUDS. Thinning them saved ten seconds and
+# CHANGED THE ANSWER on the restaurant pair -- the thinned judge picked a
+# shallower basin, 0.058 m against the true pose's 0.036. A restaurant is
+# repeating booths; choosing between rival minima is the fan's one job.
+# ⚠ SLICED TO THE FUNCTION, NOT TO THE END OF THE FILE. The first version of
+# this check read from `def solve_ladder` to EOF and found the GRID solver's
+# own legitimate `_thin` calls two functions later -- the earliest match sets
+# where you start reading, not where you should stop.
+_REG_SRC = open(registration.__file__, encoding="utf-8").read()
+_fan = _REG_SRC[_REG_SRC.find("def solve_ladder"):]
+_fan = _fan[:_fan.find("\ndef solve_best")]
+_fan_code = [ln for ln in _fan.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+check("the fan is never handed a thinned cloud to judge with",
+      not [ln for ln in _fan_code if "_thin" in ln],
+      [ln.strip() for ln in _fan_code if "_thin" in ln][:1])
+check("the page says what one press means now",
+      "One press runs the whole search, coarse to fine" in _ALIGN_SRC
+      and "Press again to refine further" not in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
