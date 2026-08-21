@@ -3314,6 +3314,7 @@ function boxAxis(a){ const R=boxRot(); return [R[0][a],R[1][a],R[2][a]]; }
    that centre still. Turning about the pivot would swing a corner box across
    the room and leave the operator chasing it. */
 function setTurn(yaw,pitch,roll){
+  boxTouched();
   V.boxSet=true;
   const c=boxCentre();
   V.box.yaw=yaw; V.box.pitch=pitch; V.box.roll=roll;
@@ -4437,6 +4438,14 @@ function undoLevel(){
   const was=V.level, pts=V.nth.slice(), lp=V.lvl.slice();
   return ()=>{ V.level=was; V.nth=pts; V.lvl=lp;
                showLevel(); showNorth(); invalidate(); editsFollow(); dirty(); };
+}
+/* ⭐⭐ ONE CHOKE POINT FOR THE WHOLE CLIP BOX. Nine sliders, two grips and
+   three buttons all move it, and putting a `remember` on each of the fourteen
+   would mean fourteen chances to forget -- which is how `undoBox` came to be
+   written and never called. Everything that moves the box goes through here
+   instead, coalesced so one drag of a face is one undo and not one per pixel. */
+function boxTouched(){
+  coalesce('box', 'changing the clip box', undoBox);
 }
 function undoBox(){
   const was=JSON.parse(JSON.stringify(V.box)), set=V.boxSet;
@@ -5979,7 +5988,8 @@ const KEYHELP = [
     ['Enter', 'delete what is inside the outline'],
     ['shift-Enter', 'keep only what is inside it'],
     ['Esc', 'throw the outline away'],
-    ['Ctrl-Z', 'undo'],
+    ['Ctrl-Z', 'undo \u2014 any tool, not just the cuts: a placement, a '+
+     'level, a lean, a heading, the clip box, a clean, a whole-shoot solve'],
     ['Ctrl-S', 'save project \u00b7 Ctrl-O open']]]];
 
 function buildKeys(){
@@ -6552,7 +6562,22 @@ async function addPhoto(index){
 /* ⛔ IT REPAINTS EVERY PHOTOGRAPHED SCAN, so it says what it will do first.
    A consensus applied across a whole survey is a lot to undo one scan at a
    time. */
+/* Undo for something that changed EVERY photograph at once. ⛔ Built from
+   the per-scan undo rather than beside it: one place knows how to put a
+   photograph's pose back, and a second copy would drift from it. */
+function undoAllPoses(){
+  const backs=V.scans.filter(s=>s.photo && s.yaw!=null)
+                     .map(s=>undoPose(s.index));
+  if(!backs.length) return null;
+  return async()=>{ for(const back of backs) await back(); };
+}
 async function solveShoot(){
+  /* ⛔⛔ THE LARGEST SINGLE ACTION IN THE PROGRAM AND IT COULD NOT BE TAKEN
+     BACK. It refits one camera heading across every photographed scan at once,
+     so a shoot where the rig was seated differently for part of the day comes
+     back changed in a dozen places -- and the operator's only recourse was to
+     re-attach each one by hand. */
+  remember('solving the whole shoot', undoAllPoses());
   say('scoring every photograph\u2026'); watch(true);
   try{
     const j=await post('photo/shoot', {apply:true});
@@ -6914,6 +6939,7 @@ async function usePhoto(index, path){
 
 /* Ask the program what it thinks, again. */
 async function resolve(index){
+  remember('solving that photograph again', undoPose(index));
   say('solving…'); watch(true);
   try{
     const j=await post('photo/resolve', {index});
@@ -7131,6 +7157,7 @@ document.addEventListener('mousedown', e=>{ if(e.button===1) e.preventDefault();
    with the same scale. Anything simpler (camera-distance times a constant) has
    the grip sliding out from under the pointer as the view turns. */
 function slideFace(axis,side,dx,dy){
+  boxTouched();
   const hs=handles();
   const h=hs.find(k=>!k.turn && k.axis===axis && k.side===side);
   const at=project(h.p, V.vp); if(!at) return;
@@ -7346,7 +7373,21 @@ const DRAW_TOOLS = {lasso:1, rect:1};
   }, {passive:false});
   addEventListener('keydown', e=>{
     const t=(e.target.tagName||'').toLowerCase();
-    if(t==='input'||t==='select') return;
+    /* ⛔⛔ CTRL-Z REACHES THE JOB EVEN FROM A NUMBER BOX, AND THAT IS NOT THE
+       USUAL RULE FOR A GOOD REASON. Every number box on this page shows a
+       value that has ALREADY BEEN APPLIED -- you type, you press Enter, the
+       cloud moves, and the box goes on displaying it. The field's own undo
+       would put the TEXT back and leave the cloud where it was, so the control
+       would then be lying about the scan: exactly the fault the clamped slider
+       had. Text boxes keep the browser's undo, because a half-typed file path
+       is not a change to anything yet. */
+    if(t==='select') return;
+    if(t==='input'){
+      const kind=(e.target.type||'text').toLowerCase();
+      const undoing=(e.ctrlKey||e.metaKey) && (e.key==='z'||e.key==='Z');
+      if(kind!=='number' || !undoing) return;
+      e.target.blur();
+    }
     const k=e.key;
     if((e.ctrlKey||e.metaKey) && (k==='s'||k==='S')) saveProject(e.shiftKey);
     else if((e.ctrlKey||e.metaKey) && (k==='o'||k==='O')) openProject(null);
@@ -7507,8 +7548,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('detv').textContent=detailText(V.detail);
   $('exv').textContent=detailText(V.exdet);
   $('zero').onclick=()=>{ const s=active(); if(!s) return;
+    /* ⛔ THE MOST DESTRUCTIVE BUTTON IN THIS TRAY HAD NO UNDO, and it sits
+       immediately beside the controls the placement was made with. */
+    remember('resetting '+s.name+' to where it was recorded',
+             undoSetup(s.index));
     s.setup={x_m:0,y_m:0,z_m:0,yaw_deg:0,method:'manual'};
-    s.rung=null; syncSliders(); invalidate(); editsFollow(); say(''); };
+    s.rung=null; syncSliders(); invalidate(); editsFollow();
+    say(s.name+' put back where the capture recorded it. Ctrl-Z restores the '+
+        'placement.'); };
   $('mode').onclick=e=>{
     V.mode=(V.mode+1)%3;
     e.target.textContent=['By scan','Height','Photo / intensity'][V.mode];
@@ -7567,6 +7614,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
     e.target.textContent=V.clip?'On':'Off';
     e.target.classList.toggle('on',V.clip); invalidate(); };
   $('clipfit').onclick=()=>{
+    /* ⛔ REMEMBERED BEFORE `setTurn` GETS THERE. This replaces the whole box
+       in one press, and `setTurn`'s own coalesce would be recording the
+       ALREADY-RESET box a few lines later -- an undo that restored the answer
+       rather than the question. */
+    remember('fitting the clip box to the view', undoBox());
     /* Snap the box to the room and switch on, so one press does something
        visible -- a clip box that starts wide open looks broken otherwise. */
     const turn=[V.box.yaw,V.box.pitch,V.box.roll];
@@ -7580,6 +7632,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     clipLabels(); invalidate(); };
   [['cx0','cx1',0],['cy0','cy1',1],['cz0','cz1',2]].forEach(([a,b,ax])=>{
     const f=()=>{
+      boxTouched();
       const u=parseFloat($(a).value), v=parseFloat($(b).value);
       V.boxSet=true;
       V.box.lo[ax]=fromSlider(ax, Math.min(u,v));

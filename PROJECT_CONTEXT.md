@@ -2806,6 +2806,40 @@ shoe.
 
 Converter suite **709 → 730**.
 
+#### ⭐⭐ CTRL-Z IS UNIVERSAL NOW — AND A DEAD FUNCTION IS WHAT GAVE THE GAPS AWAY
+
+⛔⛔ **`undoBox()` WAS DEFINED AND NEVER CALLED, ANYWHERE IN THE FILE.** The entire clip box — six
+face sliders, three turn sliders, two grips, *Fit to view*, *Square to view*, *Square to world* — sat
+outside the undo stack, while the function written to reverse it had no caller. **A dead undo is a
+strong signal**: somebody meant to and did not, and nothing failed to say so. The audit it prompted
+found three more:
+
+| what | why it mattered |
+|---|---|
+| **Reset** | wiped a scan's whole placement — the most destructive button in the tray, sitting immediately beside the controls the placement was made with |
+| **Solve the whole shoot** | the largest single action in the program: it refits one camera heading across *every* photographed scan, so a shoot where the rig was seated differently for part of the day comes back changed in a dozen places, and the only recourse was to re-attach each one by hand |
+| **Re-solve** | replaced a heading with no way back to the one that was there |
+
+⭐ **THE BOX GOT ONE CHOKE POINT RATHER THAN FOURTEEN REMINDERS.** Nine sliders, two grips and three
+buttons move it; a `remember` on each would be fourteen chances to forget, which is exactly how the
+dead one came about. Everything now goes through `boxTouched()`, coalesced so one drag of a face is one
+undo and not one per pixel. ⛔ *Fit to view* remembers **before** it resets, because `setTurn`'s own
+coalesce runs a few lines after the box has already been replaced — relying on it would have recorded
+the answer instead of the question.
+
+⭐ **AND THE TEST THAT WOULD HAVE CAUGHT IT IS NOW IN THE SUITE**: every snapshot helper must be
+*used*, not merely written. A helper that exists to reverse something and is never asked to means that
+something cannot be reversed.
+
+⛔⛔ **CTRL-Z REACHES THE JOB EVEN FROM A NUMBER BOX, WHICH IS NOT THE USUAL RULE AND IS DELIBERATE.**
+Every number box on this page shows a value that has **already been applied** — you type, press Enter,
+the cloud moves, and the box goes on displaying it. The field's own undo would put the **text** back and
+leave the cloud where it was, so the control would then be lying about the scan: *precisely the fault
+the clamped slider had*. Text boxes keep the browser's undo, because a half-typed file path is not a
+change to anything yet.
+
+Converter suite **730 → 749**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

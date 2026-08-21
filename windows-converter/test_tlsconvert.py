@@ -4607,5 +4607,82 @@ else:
     print("  (node missing: the move gizmo's rules were not run)")
 
 
+# --- Ctrl-Z reaches everything ---------------------------------------------
+#
+# ⛔⛔ `undoBox()` WAS DEFINED AND NEVER CALLED. The whole clip box -- six face
+# sliders, three turn sliders, two grips and three buttons -- sat outside the
+# undo stack, and the function written to reverse it had no caller anywhere in
+# the file. A dead undo is a strong signal: somebody meant to and did not, and
+# nothing failed to say so.
+print("\nundo, everywhere")
+
+# ⭐ EVERY SNAPSHOT HELPER IS USED. This is the check that would have caught it:
+# a helper that exists to reverse something, and is never asked to, means that
+# something cannot be reversed.
+for _u in ("undoSetup", "undoPose", "undoLevel", "undoBox", "undoClean",
+           "undoAllPoses"):
+    _defs = _ALIGN_SRC.count("function " + _u)
+    _uses = _ALIGN_SRC.count(_u + "(") - _defs
+    check("%s is actually used, not merely written" % _u, _uses >= 1,
+          (_defs, _uses))
+
+# ⛔ ONE CHOKE POINT FOR THE BOX. Nine sliders, two grips and three buttons
+# move it; a `remember` on each would be fourteen chances to forget, which is
+# how the dead one came about.
+check("there is one place that remembers the clip box",
+      "function boxTouched" in _ALIGN_SRC)
+# ⭐ NAMED PATHS, NOT A COUNT. Every way the box can move ends in one of these
+# three, and the turn grip reaches `setTurn` rather than sitting beside it --
+# so counting call sites would report a fault every time two paths were
+# merged, which is to say every time the code improved.
+for _fn, _paths in (("function setTurn", "the turn sliders, Square to view, "
+                                         "Square to world and the turn grip"),
+                    ("function slideFace", "dragging a face grip"),
+                    ("const f=()=>{", "the six face sliders")):
+    _at = _ALIGN_SRC.find(_fn)
+    check("%s remembers the box first" % _paths,
+          _at > 0 and "boxTouched();" in _ALIGN_SRC[_at:_at + 260], _fn)
+# ⛔ AND Fit to view REMEMBERS BEFORE IT RESETS. `setTurn`'s own coalesce runs
+# a few lines after the box has already been replaced, so relying on it would
+# record the answer instead of the question.
+_fit = _ALIGN_SRC[_ALIGN_SRC.find("$('clipfit').onclick"):]
+check("and fitting the box to the view remembers the box it replaced, not "
+      "the one it made",
+      _fit.find("remember('fitting the clip box") < _fit.find("resetBox()"),
+      _fit[:120])
+
+check("Reset -- the most destructive button in the move tray -- is undoable",
+      "remember('resetting '+s.name" in _ALIGN_SRC)
+# ⛔⛔ THE LARGEST SINGLE ACTION IN THE PROGRAM. It refits one camera heading
+# across every photographed scan at once, so a shoot where the rig was seated
+# differently for part of the day comes back changed in a dozen places -- and
+# the only recourse was to re-attach each one by hand.
+check("solving the whole shoot is undoable, in one step",
+      "remember('solving the whole shoot'" in _ALIGN_SRC)
+check("and its undo is built from the per-scan one rather than beside it",
+      "undoPose(s.index)" in _ALIGN_SRC.split("function undoAllPoses")[1][:400])
+check("re-solving one photograph is undoable",
+      "remember('solving that photograph again'" in _ALIGN_SRC)
+
+# ⛔⛔ CTRL-Z REACHES THE JOB EVEN FROM A NUMBER BOX. Every number box on this
+# page shows a value that has ALREADY been applied -- type, press Enter, the
+# cloud moves, the box goes on displaying it. The field's own undo would put
+# the TEXT back and leave the cloud where it was, so the control would then be
+# lying about the scan: the same fault the clamped slider had.
+_kd = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('keydown'"):]
+check("Ctrl-Z works from a number box, where the field's own undo would make "
+      "the control lie about the cloud",
+      "kind!=='number' || !undoing" in _kd[:1400], _kd[:200])
+check("and a text box keeps the browser's undo, because a half-typed path is "
+      "not a change to anything yet",
+      "t==='select') return;" in _kd[:1400])
+check("the shortcut list says what the undo covers now",
+      "any tool, not just the cuts" in _ALIGN_SRC)
+# ⛔ AN UNDO THAT SILENTLY SKIPS WHAT IT CANNOT REVERSE IS WORSE THAN NONE.
+check("and something that cannot be undone says so rather than being stepped "
+      "over in silence", "cannot be undone, so nothing was changed"
+      in _ALIGN_SRC)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
