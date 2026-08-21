@@ -3514,12 +3514,47 @@ check("and the aborted sweep is set aside, not numbered",
       len(_plan["aborted"]) == 1
       and "sidecar" in (_plan["aborted"][0]["why"] or ""), _plan["aborted"])
 
+# ⛔⛔ A SIDECAR-LESS FILE AT FULL SIZE IS NOT AN ABORTED SWEEP, AND THIS IS THE
+# CHECK THAT STOPS A REAL SCAN BEING DELETED. Measured on the operator's own
+# shoot: the sixty complete captures fall in 98.4-100.9 MB -- a tight band,
+# because a sweep is a fixed number of degrees at a fixed rate -- while every
+# sidecar-less one is 3.7-65.2 MB, since the sweep stopped early and the sidecar
+# is written at the END. So a full-size file with no sidecar is a capture whose
+# sidecar was LOST, and removing it would destroy a scan on the strength of a
+# missing 2 kB file.
+for _i in range(6):
+    with open(os.path.join(_scans2, "TLS_26_08_20_1%d_00_00.pcap" % _i),
+              "wb") as _fh:
+        _fh.write(b"x" * 4096)              # what a complete sweep looks like
+with open(os.path.join(_scans2, "TLS_26_08_20_10_09_59.pcap"), "wb") as _fh:
+    _fh.write(b"x" * 64)                    # short: a genuine abort
+_fake_capture("TLS_26_08_20_23_00_00", 0.0, sidecar=False)
+with open(os.path.join(_scans2, "TLS_26_08_20_23_00_00.pcap"), "wb") as _fh:
+    _fh.write(b"x" * 4096)                  # full size, but no sidecar
+_before_caps = len(shoot.find_captures(_scans2))
+_plan = shoot.plan(_scans2, _imgs2, offset=0.0)
+check("a short sidecar-less capture is offered for deletion",
+      "TLS_26_08_20_10_09_59.pcap" in _plan["deletable"], _plan["deletable"])
+check("but a FULL-SIZE one with no sidecar is kept, not deleted",
+      "TLS_26_08_20_23_00_00.pcap" in _plan["kept_aborted"],
+      _plan["kept_aborted"])
+check("and the plan says why, in words, before anything is removed",
+      "lost sidecar is not an aborted sweep" in _plan["note"], _plan["note"])
+
 _dest2 = os.path.join(_sdir2, "out")
-_did = shoot.apply(_plan, _dest2)
+_did = shoot.apply(_plan, _dest2, move=True, delete_aborted=True)
 check("applying it makes one numbered folder per capture",
-      _did["ok"] and sorted(os.listdir(_dest2))
-      == ["1", "2", "3", "4", "5", "6", "aborted sweeps"],
+      _did["ok"] and sorted((d for d in os.listdir(_dest2) if d.isdigit()),
+                            key=int) == ["1", "2", "3", "4", "5", "6"],
       sorted(os.listdir(_dest2)) if _did.get("ok") else _did)
+# ⛔ THE ABORTED ONES ARE GONE FROM THE DISK, not tucked into a folder. That is
+# what the operator asked for, and the plan named them before it happened.
+check("the short aborted sweep really is deleted",
+      not os.path.exists(os.path.join(_scans2,
+                                      "TLS_26_08_20_10_09_59.pcap")),
+      sorted(os.listdir(_scans2)))
+check("and the full-size one really is still there",
+      os.path.exists(os.path.join(_scans2, "TLS_26_08_20_23_00_00.pcap")))
 check("each folder holds the capture and its sidecar",
       set(os.listdir(os.path.join(_dest2, "1")))
       >= {"TLS_26_08_20_10_00_00.pcap", "TLS_26_08_20_10_00_00.json"},
@@ -3534,17 +3569,120 @@ check("and the photograph filed under the capture's own stem",
       any(n.startswith("TLS_26_08_20_10_00_00") and n.endswith(".jpg")
           for n in os.listdir(os.path.join(_dest2, "1"))),
       os.listdir(os.path.join(_dest2, "1")))
-# ⛔ THE ORIGINALS STAY PUT. This rearranges a whole day on a pairing a clock
-# proposed; a wrong offset that copies costs disk, a wrong offset that moves
-# costs the shoot.
-check("the originals are left where they were",
-      os.path.exists(os.path.join(_scans2, "TLS_26_08_20_10_00_00.pcap")))
+# ⛔⛔ IT MOVES, AND THE ORIGINAL IS GONE. Sixty captures at ~98 MB is 5.9 GB,
+# and copying leaves the operator with two of everything and no way to tell
+# which pile is the real one. The safety is that the plan is read and confirmed
+# BEFORE this runs -- not that a duplicate is left behind. This check asserted
+# the opposite until the operator asked for moving, and was inverted knowingly.
+check("the original is gone, because it was moved and not copied",
+      not os.path.exists(os.path.join(_scans2, "TLS_26_08_20_10_00_00.pcap")),
+      sorted(os.listdir(_scans2)))
+# ⛔ AND NOTHING VANISHED DOING IT. Every capture is either filed, still in the
+# source, or on the deletion list -- which is the one property that matters
+# when an operation both moves and deletes, and the one a per-folder check
+# cannot see.
+check("every capture is accounted for: filed, left, or deliberately deleted",
+      len(shoot.find_captures(_dest2)) + len(shoot.find_captures(_scans2))
+      + len(_did["deleted"]) == _before_caps,
+      (len(shoot.find_captures(_dest2)), len(shoot.find_captures(_scans2)),
+       len(_did["deleted"]), _before_caps))
 # ⛔ AND IT REFUSES TO WRITE INTO NUMBERS THAT ARE ALREADY IN USE: two shoots
 # under one set of numbers cannot be untangled afterwards.
 _again = shoot.apply(_plan, _dest2)
 check("running it twice onto the same folders is refused, not merged",
       _again["ok"] is False and "already hold" in _again["error"], _again)
 shutil.rmtree(_sdir2, ignore_errors=True)
+
+# --- the dark scans, and a photograph already in place ---------------------
+#
+# ⛔ A CAPTURE WITH NO PHOTOGRAPH IS NOT A FAILURE. Some rooms are too dark to
+# photograph and the scan is still perfectly good, so it goes to its own named
+# folder rather than into a numbered one that would look like it had lost its
+# picture.
+print("\nfiling the ones with no photograph")
+_sdir3 = tempfile.mkdtemp(prefix="tlsdark")
+_scans3 = os.path.join(_sdir3, "caps")
+os.makedirs(_scans3)
+_B3 = shoot._stamp_seconds(2026, 8, 20, 22, 0, 0)
+for _i in range(3):
+    with open(os.path.join(_scans3, "TLS_26_08_20_22_0%d_00.pcap" % _i),
+              "wb") as _fh:
+        _fh.write(b"x" * 4096)
+    with open(os.path.join(_scans3, "TLS_26_08_20_22_0%d_00.json" % _i),
+              "w") as _fh:
+        json.dump({"capture": {"started_epoch": _B3 + 300.0 * _i},
+                   "sweep": {"track": [[0, 0], [95.0, 190.8]]}}, _fh)
+# ⭐ ONE OF THEM ALREADY HAS ITS PHOTOGRAPH FILED BESIDE IT, which is a decision
+# somebody already made -- by an earlier run, by the CLI, or by hand in
+# Explorer, which is how the restaurant shoot was half-organised while this was
+# being written. ⛔ Without honouring it the sort would MOVE the capture and
+# leave the picture behind in an empty folder, then file a second copy from the
+# pool: the duplication this was asked to stop, arriving by another door.
+with open(os.path.join(_scans3, "TLS_26_08_20_22_01_00.jpg"), "wb") as _fh:
+    _fh.write(b"not a jpeg, but a file")
+_p3 = shoot.plan(_scans3, _scans3, offset=0.0)
+_beside = [r for r in _p3["scans"] if r.get("beside")]
+check("a photograph already beside a capture is taken as its own",
+      len(_beside) == 1
+      and _beside[0]["assigned"]["name"] == "TLS_26_08_20_22_01_00.jpg",
+      [(r["name"], r.get("beside")) for r in _p3["scans"]])
+_d3 = os.path.join(_sdir3, "out")
+_r3 = shoot.apply(_p3, _d3, move=True, delete_aborted=True)
+check("the ones with no photograph get their own named folder",
+      os.path.isdir(os.path.join(_d3, shoot.NO_PHOTO_DIR)),
+      sorted(os.listdir(_d3)))
+check("and both of them are in it",
+      sum(1 for n in os.listdir(os.path.join(_d3, shoot.NO_PHOTO_DIR))
+          if n.endswith(".pcap")) == 2,
+      sorted(os.listdir(os.path.join(_d3, shoot.NO_PHOTO_DIR))))
+check("the photograph travelled with its own capture",
+      any(os.path.exists(os.path.join(_d3, n, "TLS_26_08_20_22_01_00.jpg"))
+          for n in os.listdir(_d3)), sorted(os.listdir(_d3)))
+check("and was not orphaned in the folder it came from",
+      not os.path.exists(os.path.join(_scans3, "TLS_26_08_20_22_01_00.jpg")))
+shutil.rmtree(_sdir3, ignore_errors=True)
+
+# --- the same picture under two names --------------------------------------
+#
+# ⛔⛔ AN IMAGE FOLDER IS NOT A CLEAN SET. The operator's own held 64 files and
+# 57 pictures: an earlier attempt at organising had left copies in numbered
+# subfolders renamed to capture stems -- and in one group the SAME picture had
+# been filed into two different folders. Left in, a duplicate burns an
+# assignment slot, so a real photograph is bumped to "matched nothing" and a
+# capture is handed a copy under a name from a previous run.
+#
+# ⭐ IDENTITY IS (SIZE, TIMESTAMP), AND IT WAS CHECKED RATHER THAN ASSUMED:
+# every group this finds on the real folder was confirmed byte-identical by
+# MD5, with zero disagreements.
+print("\nthe same picture under two names")
+_dupes = [{"path": os.path.join("a", "IMG_0001.jpg"), "at": 100.0},
+          {"path": os.path.join("a", "42", "TLS_x.jpg"), "at": 100.0},
+          {"path": os.path.join("a", "IMG_0002.jpg"), "at": 160.0}]
+_sizes = {_dupes[0]["path"]: 10, _dupes[1]["path"]: 10, _dupes[2]["path"]: 11}
+_real_getsize = os.path.getsize
+# ⛔ NOT `_sizes.get(q, _real_getsize(q))`. A dict's default argument is
+# evaluated EAGERLY, so that form calls the real getsize on every lookup --
+# which raises for these made-up paths, the raise reaches dedupe's `except
+# OSError`, every size comes back None, and the check fails while reporting
+# that nothing was a duplicate. The stub looked right and lied.
+os.path.getsize = lambda q: (_sizes[q] if q in _sizes
+                             else _real_getsize(q))
+try:
+    _kept, _dropped = shoot.dedupe(_dupes)
+finally:
+    os.path.getsize = _real_getsize
+check("the same picture under two names is counted once",
+      len(_kept) == 2 and len(_dropped) == 1,
+      ([q["path"] for q in _kept], [q["path"] for q in _dropped]))
+# ⭐ THE SHALLOWEST PATH WINS: a copy made by a previous sort lives one level
+# down in a numbered folder while the camera's own file sits at the top, and
+# that name still encodes the order the shoot was taken in.
+check("and it is the previous sort's copy that is dropped, not the camera's",
+      _dropped[0]["path"] == os.path.join("a", "42", "TLS_x.jpg"),
+      _dropped[0]["path"])
+check("two pictures that merely share a second are both kept",
+      len(shoot.dedupe([{"path": _dupes[0]["path"], "at": 100.0},
+                        {"path": _dupes[2]["path"], "at": 100.0}])[0]) == 2)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

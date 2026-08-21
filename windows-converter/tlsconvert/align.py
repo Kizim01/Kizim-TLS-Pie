@@ -584,8 +584,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/shoot/apply":
                 return self._json(srv.shoot_apply(
                     body.get("scans"), body.get("images"), body.get("dest"),
-                    body.get("move"), body.get("offset"),
-                    body.get("photos") or 1))
+                    body.get("move", True), body.get("offset"),
+                    body.get("delete_aborted", True)))
             if path == "/clean":
                 return self._json(srv.clean_scan(
                     body.get("index"), body.get("stray"),
@@ -630,7 +630,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.set_camera(body.get("index"),
                                                  body.get("z")))
             if path == "/add":
-                return self._json(srv.add(body.get("paths") or []))
+                return self._json(srv.add(body.get("paths") or [],
+                                          body.get("colour", True)))
             if path == "/remove":
                 return self._json(srv.remove(body.get("index")))
             if path == "/density":
@@ -655,6 +656,31 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 class _TCP(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+
+def _folder_number(path):
+    """
+    The name of the folder a capture sits in, when that is how it is filed.
+
+    ⛔ THE NAME ON DISK, NOT AN INDEX THIS INVENTS. `shoot.apply` files each
+    capture into a folder named for its position in the shoot, so the number
+    already exists and is the one the operator sees in Explorer. Deriving a
+    fresh one from load order would produce a second numbering that disagreed
+    with the first the moment a scan was opened out of sequence -- two numbers
+    for one thing, and no way to tell which the panel is showing.
+    """
+    try:
+        parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    except Exception:                                     # noqa: BLE001
+        return None
+    if not parent:
+        return None
+    # A numbered folder, or the one `shoot` puts the dark scans in. Anything
+    # else is just some folder, and a badge saying "Scan files" is noise.
+    if parent.isdigit():
+        return parent
+    from . import shoot as shoot_mod
+    return parent if parent == shoot_mod.NO_PHOTO_DIR else None
 
 
 class AlignServer(object):
@@ -746,6 +772,13 @@ class AlignServer(object):
                          "refined": info.get("refined"),
                          # The cleaning rule in force, so the panel can show it
                          # and an undo can put the previous one back.
+                         # ⭐ THE NUMBERED FOLDER THIS CAPTURE CAME OUT OF.
+                         # After a shoot is sorted, that number is the only
+                         # thing on screen that tells two scans of the same
+                         # room apart: the capture's own name is a timestamp
+                         # nobody reads, and the tint is handed out by load
+                         # order so it changes when another arrives.
+                         "folderNo": _folder_number(scan.path),
                          "clean": getattr(scan, "clean", None),
                          "hidden": (0 if getattr(scan, "keep", None) is None
                                     else int((~scan.keep).sum())),
@@ -984,7 +1017,7 @@ class AlignServer(object):
                     "error": "no native window, so no system file dialog"}
         return {"ok": True, "paths": desktop.pick_files()}
 
-    def add(self, paths):
+    def add(self, paths, colour=True):
         """
         Decode more captures into the open session.
 
@@ -1036,10 +1069,21 @@ class AlignServer(object):
                              "bookkeeping it is."
                              % os.path.basename(again[0])}
 
+        # ⭐ A FOLDER THAT IS ALREADY OPEN IS WORTH SAYING, BUT NOT WORTH
+        # REFUSING. The path guard above catches the same FILE twice; this
+        # catches the same numbered folder arriving under a different name --
+        # a .cloud exported next to its capture, or a file renamed. It is a
+        # warning rather than an error because a folder is perfectly allowed
+        # to hold two captures, and refusing a legitimate case to prevent an
+        # accidental one is the wrong trade.
+        open_folders = set(filter(None, (_folder_number(sc.path)
+                                         for sc in self.scans)))
+        clash = sorted({_folder_number(q) for q in paths} & open_folders)
+
         self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
         try:
             fresh = load(paths, voxel_m=self.align_voxel,
-                         progress=self._note)
+                         colour=bool(colour), progress=self._note)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
@@ -1053,7 +1097,8 @@ class AlignServer(object):
         # newcomer leaves the earlier ones over budget -- which is precisely the
         # case where a card refuses the upload.
         meta = self._rebuild()
-        return {"ok": True, "added": meta[first:], "scans": meta}
+        return {"ok": True, "added": meta[first:], "scans": meta,
+                "folder_clash": clash}
 
     def remove(self, index):
         """
@@ -1334,7 +1379,8 @@ class AlignServer(object):
         self._progress = {"stage": "reading the shoot", "n": 0, "total": 1,
                           "busy": True}
         try:
-            return shoot.plan(scans, images or None, offset=offset)
+            return shoot.plan(scans, images or None, offset=offset,
+                              progress=self._note)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not read that shoot (%s)"
                                           % exc}
@@ -1342,9 +1388,18 @@ class AlignServer(object):
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
 
-    def shoot_apply(self, scans, images=None, dest=None, move=False,
-                    offset=None, photos=1):
-        """Carry out a plan. Copies unless `move` is asked for explicitly."""
+    def shoot_apply(self, scans, images=None, dest=None, move=True,
+                    offset=None, delete_aborted=True):
+        """
+        Carry out a plan: move the shoot into numbered folders.
+
+        ⛔ THE PLAN IS REBUILT HERE RATHER THAN SENT BACK BY THE PAGE, and that
+        is the safety rather than a detail. A plan that travelled out to the
+        browser and back could have been edited, or could be describing files
+        that have moved since it was made -- and this one MOVES captures and
+        DELETES aborted sweeps. Rebuilding it means what is carried out is what
+        is on the disk at the moment it is carried out.
+        """
         from . import shoot
         made = self.shoot_plan(scans, images, offset=offset)
         if not made.get("ok"):
@@ -1355,7 +1410,9 @@ class AlignServer(object):
         self._progress = {"stage": "sorting the shoot", "n": 0,
                           "total": len(made["scans"]), "busy": True}
         try:
-            return shoot.apply(made, dest, move=bool(move), photos=int(photos))
+            return shoot.apply(made, dest, move=bool(move),
+                               delete_aborted=bool(delete_aborted),
+                               progress=self._note)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not sort that shoot (%s)"
                                           % exc}
@@ -2401,6 +2458,9 @@ PAGE = r"""<!doctype html>
 .stage>summary::before{content:'\25b8';position:absolute;left:3px;
   color:var(--faint);transition:transform .15s ease}
 .stage[open]>summary::before{transform:rotate(90deg)}
+.fno{display:inline-block;padding:0 5px;border-radius:3px;
+  background:rgba(126,224,192,.16);color:#7ee0c0;font-size:10px;
+  font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .stage>.blurb{font-size:10.5px;color:var(--faint);margin:0 0 6px 2px}
 @media (prefers-reduced-motion:reduce){
   .stage>summary::before{transition:none}
@@ -2424,6 +2484,15 @@ PAGE = r"""<!doctype html>
     rather than sorting around a guess.</div>
 
   <label>Add another scan</label>
+  <label><input type="checkbox" id="impphoto" checked> Take the photograph
+    from the same folder</label>
+  <label><input type="checkbox" id="impalign"> Align each one as it arrives
+  </label>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
+    A sorted shoot puts each capture and its photograph in one numbered folder,
+    so the first of these is nearly always what you want. <b>Aligning on import
+    costs a solve for every scan</b>, so it is off until you ask — and it is
+    the coarse fit only: press <b>Auto-align</b> afterwards to refine it.</div>
   <div class="row"><button id="browse" class="go">Browse…</button></div>
   <input type="text" id="addpath" placeholder="…or paste a .pcap path"
          style="margin-top:7px">
@@ -3551,6 +3620,7 @@ async function loadScan(m){
           setup:m.setup, tint:m.tint, lo, hi,
           tintf:m.tint.map(v=>v/255),
           source:m.source, folder:m.folder, organised:!!m.organised,
+          folderNo:m.folderNo||null,
           photo:m.photo, photoOk:!!m.photoOk, photoWhy:m.photoWhy,
           confidence:m.confidence, yaw:m.yaw,
           photoGiven:!!m.photoGiven, anchor:m.anchor, baseline:m.baseline,
@@ -5119,6 +5189,18 @@ function refreshLists(){
     (s.source==='cloud' ? ' <span class="num" title="An exported cloud: no '+
       'pan track, so the detail slider and the pitch check cannot apply to '+
       'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
+      : '')+
+    /* ⭐ WHICH NUMBERED FOLDER IT CAME OUT OF. After a shoot is sorted every
+       capture lives in a folder named for its position, and that number is
+       the only thing on screen that tells two scans of the same room apart --
+       the capture's own name is a timestamp nobody reads, and the tint is
+       handed out by load order, so it changes the moment another is added.
+       Without it the honest way to find out whether folder 23 is already open
+       is to open it again and see. */
+    (s.folderNo ? ' <span class="fno" title="This capture came out of folder '+
+      s.folderNo+'. Shown so you can see at a glance which folders are '+
+      'already open.">'+(/^\d+$/.test(s.folderNo) ? '#'+s.folderNo
+                                                  : s.folderNo)+'</span>'
       : '')+'</span>'+
     '<button class="mini'+(KILL[0]===s.index?' ask':'')+
     '" title="Take this cloud out of the session. The capture on disk is not '+
@@ -5517,18 +5599,35 @@ async function sortShoot(){
     const ok=confirm(plan.note+'\n\n'+lines+
       (plan.scans.length>8 ? '\n  \u2026and '+(plan.scans.length-8)+' more'
                            : '')+
-      '\n\nSort '+plan.scans.length+' captures into numbered folders? '+
-      'Files are COPIED, never moved \u2014 the originals stay where they are.');
-    if(!ok) return say('Nothing was sorted.');
+      '\n\nThis will MOVE '+plan.scans.length+' captures into numbered '+
+      'folders \u2014 the originals do NOT stay where they are.'+
+      ((plan.deletable||[]).length
+        ? '\n\nIt will also PERMANENTLY DELETE '+plan.deletable.length+
+          ' aborted sweep'+(plan.deletable.length===1?'':'s')+'. Those have '+
+          'no sidecar AND are far shorter than a full sweep, so nothing can '+
+          'decode them.'
+        : '')+
+      ((plan.kept_aborted||[]).length
+        ? '\n\n'+plan.kept_aborted.length+' file(s) have no sidecar but are '+
+          'the FULL size of a sweep, so they are kept rather than deleted \u2014 '+
+          'a lost sidecar is not an aborted sweep.'
+        : '')+
+      '\n\nGo ahead?');
+    if(!ok) return say('Nothing was sorted, moved or deleted.');
     const dest=await askFolder('where the numbered folders should go');
     if(!dest) return;
     say('sorting\u2026'); watch(true);
-    const done=await post('shoot/apply', {scans, images, dest, move:false});
+    const done=await post('shoot/apply',
+                          {scans, images, dest, move:true,
+                           delete_aborted:true});
     watch(false);
     if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
-    say('Sorted '+done.folders.length+' captures into numbered folders under '+
-        done.dest+(done.aborted ? ', and set '+done.aborted+' aborted '+
-        'sweep(s) aside.' : '.'));
+    say(done.text+' Under '+done.dest+'.'+
+        ((done.failed||[]).length
+          ? '  \u26a0 '+done.failed.length+' file(s) could not be deleted \u2014 '+
+            'probably open in something else: '+done.failed.join('; ')
+          : ''),
+        (done.failed||[]).length ? 'warn' : null);
   }catch(e){ watch(false); say('Could not sort: '+e.message, 'bad'); }
 }
 
@@ -5721,16 +5820,52 @@ function useBaseline(index){
   setHeading(index, +s.baseline.yaw_deg);
 }
 
+/* ⭐ WHAT THE TWO IMPORT BOXES MEAN, IN ONE PLACE. A sorted shoot puts a
+   capture and its photograph in one numbered folder, which is exactly what
+   `pipeline.find_photo` already looks for -- so "take the photograph from the
+   same folder" is the ordinary case and is on. Aligning costs a solve for
+   every scan, so that one stays off until it is asked for. */
+function importOpts(){
+  return {colour: !$('impphoto') || $('impphoto').checked,
+          align:  !!($('impalign') && $('impalign').checked)};
+}
+/* ⛔ ALIGNED ONE AT A TIME, IN THE ORDER THEY ARRIVED, each against the scan
+   nearest it -- which is what a survey is: a walk, where every tripod overlaps
+   the one before it and shares nothing with the one at the far end.
+
+   ⛔ AND ONE THAT WILL NOT FIT MUST NOT STOP THE REST. Import is the wrong
+   place to lose twenty good solves to a single scan of a blank corridor; the
+   failure is reported at the end and the scan simply stays where it was put. */
+async function alignArrivals(from){
+  const bad=[];
+  for(let i=Math.max(1,from); i<V.scans.length; i++){
+    const sc=V.scans[i];
+    say('aligning '+sc.name+' ('+i+' of '+(V.scans.length-1)+')…');
+    try{
+      const j=await post('solve', {index:sc.index});
+      if(j && j.ok){ sc.setup=j.setup; syncSliders(); invalidate(); }
+      else bad.push(sc.name);
+    }catch(e){ bad.push(sc.name); }
+  }
+  editsFollow(); dirty();
+  say('Imported and aligned'+(bad.length ? ', except '+bad.join(', ')+
+      ' — place those by hand' : '')+
+      '. This was the coarse fit only: press Auto-align on a scan to refine '+
+      'it, and again to refine further.', bad.length ? 'warn' : null);
+}
+
 async function ingest(paths){
   say('decoding…'); watch(true);
   $('add').disabled=true; $('browse').disabled=true;
   try{
+    const opt=importOpts();
     const r=await fetch('add',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({paths})});
+      body:JSON.stringify({paths, colour:opt.colour})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not add it');
     const first = V.scans.length===0;
+    const was = V.scans.length;
     await rebuildFrom(j.scans||j.added);
     measure(); refreshLists(); syncSliders();
     syncClipSliders(); showTurn(); clipLabels();
@@ -5740,8 +5875,14 @@ async function ingest(paths){
     $('addpath').value='';
     say('added '+j.added.map(a=>a.name).join(', ')+
         (V.scans.length>1
-          ? '. Every scan is solved against the FIRST one, never against the '+
-            'previous, so errors do not accumulate down the chain.'
+          /* ⛔ THIS LINE USED TO SAY "every scan is solved against the FIRST
+             one, never against the previous, so errors do not accumulate" --
+             which stopped being true the moment the target became the nearest
+             scan, and would have been a flat untruth on screen. A survey is a
+             walk: position twenty shares no surface with position one, so
+             there was never anything to fit it to. */
+          ? '. Each scan is solved against the one NEAREST it, or against '+
+            'whichever you name in Align to.'
           : '. Add a second scan from elsewhere in the room to align to it.')+
         /* The box staying put is the point -- but a box that now hides half of
            what was just loaded has to say so, or the new cloud looks as though
@@ -5750,6 +5891,14 @@ async function ingest(paths){
           ? ' Your clip box was left where you put it and clipping is ON, so '+
             'part of the new cloud may be hidden — Fit to view re-fits it.'
           : ' Your clip box was left where you put it.') : ''));
+    /* ⛔ AFTER the message, not instead of it. Aligning takes a while, and a
+       page that said nothing until every solve had finished would look as
+       though the import itself had hung. */
+    if((j.folder_clash||[]).length)
+      say('⚠ folder '+j.folder_clash.join(', ')+' was already open, so '+
+          'this may be the same position twice. The number beside each scan '+
+          'in the list says which folder it came out of.', 'warn');
+    if(opt.align && V.scans.length>1) await alignArrivals(Math.max(1, was));
   }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
   $('add').disabled=false; $('browse').disabled=false;
 }

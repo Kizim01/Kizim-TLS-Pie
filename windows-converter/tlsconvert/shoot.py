@@ -75,6 +75,28 @@ MIN_OFFSET_CONFIDENCE = 3.0
 # them, which is a statement about the shoot rather than about the histogram.
 MIN_OFFSET_SHARE = 0.30
 
+# The folder for captures made in the dark, with no photograph to go with
+# them. They are still perfectly good scans -- they just have no colour.
+NO_PHOTO_DIR = "no photos"
+
+# ⛔⛔ A MISSING SIDECAR IS NOT ENOUGH TO DELETE ON, AND THE OPERATOR'S OWN
+# SHOOT IS WHY. Measured on D:\RESTAURANT SCAN, 2026-08-21: the sixty COMPLETE
+# captures run 98.4 to 100.9 MB -- a tight band, because a sweep is a fixed
+# number of degrees at a fixed rate -- while the thirteen sidecar-less ones run
+# 3.7 to 65.2 MB. Every real abort is short, because the sweep stopped early
+# and the sidecar is written at the END.
+#
+# So a sidecar-less file at FULL size is not an aborted sweep at all. It is a
+# complete capture whose sidecar was lost -- moved, overwritten, or eaten by a
+# disk error -- and deleting it would destroy a real scan on the strength of a
+# missing 2 kB file. Those are kept and named instead.
+#
+# The scale is taken from the shoot itself rather than written in here, because
+# it is a property of the sweep settings and not of this program; with no
+# complete capture to measure against there is no scale, and then nothing is
+# deleted at all.
+ABORTED_MAX_SHARE = 0.90
+
 
 def _stamp_seconds(y, mo, d, h, mi, sec):
     """
@@ -201,6 +223,49 @@ def find_images(folder):
     return sorted(out)
 
 
+def dedupe(photos):
+    """
+    (kept, duplicates) -- the same picture under two names counted once.
+
+    ⛔⛔ AN IMAGE FOLDER IS NOT A CLEAN SET, AND THE OPERATOR'S OWN IS THE
+    PROOF. the operator''s INSTA IMAGES folder holds 64 files but only 57
+    pictures: an earlier attempt at organising left copies in numbered
+    subfolders, renamed to capture stems. Measured 2026-08-21 -- and in one
+    group the SAME picture had been filed into two different folders, which is
+    precisely the duplication the one-photograph-one-home rule exists to stop.
+    Left in, they burn assignment slots, so a real photograph gets bumped to
+    "matched nothing" and a capture is handed a copy under a name from a
+    previous run.
+
+    ⭐ IDENTITY IS (SIZE, TIMESTAMP), AND IT WAS CHECKED RATHER THAN ASSUMED:
+    every group this finds was confirmed byte-identical by MD5, with zero
+    disagreements. Two DIFFERENT frames sharing an exact byte length and the
+    same EXIF second is not something a 360 camera does.
+
+    ⭐ THE SHALLOWEST PATH WINS, because a copy made by a previous sort lives
+    one level down in a numbered folder while the camera's own file sits at the
+    top. That also keeps the name the camera gave it, which still encodes the
+    order the shoot was taken in.
+    """
+    groups = {}
+    for ph in photos:
+        try:
+            size = os.path.getsize(ph["path"])
+        except OSError:
+            size = None
+        groups.setdefault((size, ph.get("at")), []).append(ph)
+    kept, dups = [], []
+    for (size, at), members in groups.items():
+        if size is None or at is None or len(members) == 1:
+            kept.extend(members)
+            continue
+        members.sort(key=lambda q: (q["path"].count(os.sep), q["path"]))
+        kept.append(members[0])
+        dups.extend(members[1:])
+    kept.sort(key=lambda q: q["path"])
+    return kept, dups
+
+
 def estimate_offset(scan_ends, photo_times, window_s=3 * 3600.0):
     """
     (shift, confidence, count) -- what lines the photographs up with the scans.
@@ -257,7 +322,8 @@ def estimate_offset(scan_ends, photo_times, window_s=3 * 3600.0):
     return (lo + peak + 0.5) * OFFSET_BIN_S, float(conf), near
 
 
-def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None):
+def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
+         progress=None):
     """
     Which photographs belong to which capture, and what the folders would be.
 
@@ -271,22 +337,74 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None):
     that cannot be opened -- a promise the sort cannot keep. They are set aside
     under their own name and counted, never silently dropped.
     """
+    def note(stage, n=0, total=0):
+        if progress:
+            progress(stage, n, total)
+
+    note("finding the captures")
     caps = find_captures(scan_folder)
+    note("finding the photographs")
     imgs = find_images(image_folder or scan_folder)
     rows, aborted = [], []
+    # The size a complete sweep comes out at, taken from this shoot's own
+    # complete captures. See ABORTED_MAX_SHARE.
+    sizes = sorted(os.path.getsize(c) for c in caps if has_sidecar(c))
+    full = float(sizes[len(sizes) // 2]) if sizes else None
     for c in caps:
         start, end, src = scan_times(c)
-        (aborted if not has_sidecar(c) else rows).append(
+        if has_sidecar(c):
+            rows.append({"path": c, "name": os.path.basename(c),
+                         "start": start, "end": end, "time_from": src,
+                         "why": None})
+            continue
+        size = float(os.path.getsize(c))
+        short = full is not None and size < ABORTED_MAX_SHARE * full
+        aborted.append(
             {"path": c, "name": os.path.basename(c), "start": start,
-             "end": end, "time_from": src,
-             "why": None if has_sidecar(c) else
-                    "no .json sidecar -- an aborted sweep, so there is no pan "
-                    "track and nothing can decode it"})
+             "end": end, "time_from": src, "size_mb": size / 1e6,
+             # \u26d4 "DELETABLE" IS A SEPARATE JUDGEMENT FROM "UNUSABLE", and
+             # only the first one is allowed to remove a file.
+             "deletable": bool(short),
+             "why": ("no .json sidecar and only %.0f MB against a full sweep's "
+                     "%.0f -- an aborted sweep, so there is no pan track and "
+                     "nothing can decode it"
+                     % (size / 1e6, (full or 0) / 1e6)) if short else
+                    ("no .json sidecar, but it is %.0f MB -- the size of a "
+                     "COMPLETE sweep. This is a capture whose sidecar was "
+                     "lost, not one that was aborted, so it is kept"
+                     % (size / 1e6))})
     photos = []
-    for i in imgs:
+    for at, i in enumerate(imgs):
+        # ⛔ THE SLOW PART IS HERE, NOT IN THE SORT. Every photograph is opened
+        # for its EXIF timestamp -- sixty 20-megapixel equirectangulars off a
+        # spinning disk is long enough that a page with no bar looks hung, and
+        # this is the one loop whose length is known in advance.
+        note("reading photograph times", at, len(imgs))
         at, src = image_time(i)
         photos.append({"path": i, "name": os.path.basename(i), "at": at,
                        "time_from": src})
+    photos, duplicates = dedupe(photos)
+    # ⭐⭐ A PHOTOGRAPH ALREADY SITTING BESIDE ITS CAPTURE IS A DECISION SOMEBODY
+    # ALREADY MADE, AND IT IS HONOURED RATHER THAN RE-DERIVED. `stem.jpg` next
+    # to `stem.pcap` is exactly the pairing this whole program looks for, so a
+    # capture that has one is already paired -- by a previous run of this, by
+    # the CLI, or by the operator in Explorer, which is how the restaurant
+    # shoot was half-organised while this was being written.
+    #
+    # ⛔ AND WITHOUT THIS THE SORT WOULD ORPHAN IT. Moving a capture takes the
+    # .pcap, the sidecar and the cloud; a sibling photograph left behind would
+    # sit in an empty folder while a SECOND copy of the same picture was filed
+    # from the pool -- the duplication this was asked to stop, arriving by
+    # another door.
+    siblings = {}
+    for r in rows:
+        stem = os.path.splitext(r["path"])[0]
+        for ext in IMAGE_EXTS:
+            if os.path.exists(stem + ext):
+                siblings[r["name"]] = stem + ext
+                break
+    beside = set(siblings.values())
+    photos = [q for q in photos if q["path"] not in beside]
     timed = [p for p in photos if p["at"] is not None]
     ends = [r["end"] for r in rows if r["end"] is not None]
     if offset is None:
@@ -295,11 +413,13 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None):
         offset, conf, hits = float(offset), float("inf"), len(timed)
 
     rows.sort(key=lambda r: (r["start"] is None, r["start"] or 0, r["name"]))
-    used = set()
+    pairs = []
     for n, r in enumerate(rows, 1):
         r["number"] = n
         r["photos"] = []
         r["gap_s"] = None
+        r["assigned"] = None
+        r["shared"] = False
         if offset is None or r["end"] is None:
             continue
         # ⛔ MEASURED FROM THE END OF THE SWEEP, NOT ITS START. The photograph
@@ -311,13 +431,53 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None):
             if -window_s <= gap <= window_s:
                 r["photos"].append({"name": pth["name"], "path": pth["path"],
                                     "gap_s": round(gap, 1)})
+                pairs.append((abs(gap), n, pth["path"]))
         r["photos"].sort(key=lambda q: abs(q["gap_s"]))
-        for q in r["photos"]:
-            used.add(q["path"])
         r["gap_s"] = r["photos"][0]["gap_s"] if r["photos"] else None
 
+    # ⭐⭐ ONE PHOTOGRAPH, ONE HOME -- ASSIGNED GREEDILY, NEAREST PAIR FIRST.
+    # Filing every photograph inside the window into every capture inside it
+    # duplicated most of the shoot: a tripod position produces TWO captures
+    # (the rig sweeps 190.8 degrees, so it takes two to cover the sphere) and
+    # TWO photographs, so a blanket rule hands each capture both pictures and
+    # copies the lot twice over. Taking them nearest-pair-first instead lands
+    # one photograph on each capture -- which is what the shoot actually is --
+    # and duplicates nothing.
+    by_number = {r["number"]: r for r in rows}
+    claimed, taken = set(), set()
+    for _gap, number, path in sorted(pairs):
+        if number in taken or path in claimed:
+            continue
+        row = by_number[number]
+        row["assigned"] = next(q for q in row["photos"] if q["path"] == path)
+        claimed.add(path)
+        taken.add(number)
+    # ⛔ A CAPTURE WHOSE ONLY PHOTOGRAPH IS ALREADY SPOKEN FOR SHARES IT RATHER
+    # THAN BEING CALLED UNPHOTOGRAPHED. That happens when a position produced
+    # two captures but only one usable frame, and sending the second to "no
+    # photos" would be a lie about the shoot -- there IS a picture of that
+    # spot. It is the only case that copies, and it is counted and reported.
+    # A capture that already had one keeps it, whatever the clock proposed.
+    for r in rows:
+        if r["name"] in siblings:
+            r["assigned"] = {"name": os.path.basename(siblings[r["name"]]),
+                             "path": siblings[r["name"]], "gap_s": 0.0}
+            r["shared"] = False
+            r["beside"] = True
+    for r in rows:
+        if r["assigned"] is None and r["photos"]:
+            r["assigned"] = r["photos"][0]
+            r["shared"] = True
+
+    used = {r["assigned"]["path"] for r in rows if r["assigned"]}
     spare = [p for p in photos if p["path"] not in used]
     return {"ok": True, "folder": os.path.abspath(scan_folder),
+            "full_mb": (full / 1e6) if full else None,
+            "deletable": [a["name"] for a in aborted if a["deletable"]],
+            "kept_aborted": [a["name"] for a in aborted
+                             if not a["deletable"]],
+            "shared": [r["number"] for r in rows if r.get("shared")],
+            "duplicates": [os.path.basename(d["path"]) for d in duplicates],
             "images": os.path.abspath(image_folder or scan_folder),
             "offset_s": offset, "offset_confidence": conf,
             "offset_hits": hits,
@@ -325,10 +485,11 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None):
             "unmatched": [{"name": p["name"], "path": p["path"]}
                           for p in spare],
             "no_photo": [r["number"] for r in rows if not r["photos"]],
-            "note": _plan_note(offset, conf, rows, spare, aborted)}
+            "note": _plan_note(offset, conf, rows, spare, aborted,
+                               duplicates)}
 
 
-def _plan_note(offset, conf, rows, spare, aborted):
+def _plan_note(offset, conf, rows, spare, aborted, dups=()):
     if offset is None:
         return ("The photographs could not be lined up with the scans: their "
                 "gaps do not cluster (confidence %.1f, need %.1f, and the "
@@ -346,15 +507,38 @@ def _plan_note(offset, conf, rows, spare, aborted):
     bits = ["The photographs sit %s the scans by %s (confidence %.1f)%s."
             % ("after" if offset >= 0 else "before",
                _hms(abs(offset)), conf, split)]
-    got = sum(1 for r in rows if r["photos"])
+    got = sum(1 for r in rows if r.get("assigned"))
+    dark = len(rows) - got
     bits.append("%d of %d captures got a photograph." % (got, len(rows)))
-    if aborted:
-        bits.append("%d aborted sweep%s set aside (no sidecar, so nothing can "
-                    "decode them)." % (len(aborted),
-                                       "" if len(aborted) == 1 else "s"))
+    if dark:
+        bits.append("%d had none and go into a \"%s\" folder."
+                    % (dark, NO_PHOTO_DIR))
+    shared = sum(1 for r in rows if r.get("shared"))
+    if shared:
+        bits.append("%d share a photograph with the capture beside them (the "
+                    "only thing that gets copied twice)." % shared)
+    gone = [a for a in aborted if a["deletable"]]
+    kept = [a for a in aborted if not a["deletable"]]
+    if gone:
+        bits.append("%d aborted sweep%s (no sidecar, all short) will be "
+                    "DELETED." % (len(gone), "" if len(gone) == 1 else "s"))
+    if kept:
+        bits.append("%d capture%s missing a sidecar but at FULL size will be "
+                    "kept, not deleted -- a lost sidecar is not an aborted "
+                    "sweep: %s." % (len(kept), "" if len(kept) == 1 else "s",
+                                    ", ".join(a["name"] for a in kept)))
     if spare:
         bits.append("%d photograph%s matched nothing."
                     % (len(spare), "" if len(spare) == 1 else "s"))
+    beside = sum(1 for r in rows if r.get("beside"))
+    if beside:
+        bits.append("%d already had a photograph filed beside them and keep "
+                    "it." % beside)
+    if dups:
+        bits.append("%d file%s ignored as duplicates of a picture already in "
+                    "the folder (same size, same second) -- most likely copies "
+                    "left by an earlier sort."
+                    % (len(dups), "" if len(dups) == 1 else "s"))
     return " ".join(bits)
 
 
@@ -367,44 +551,48 @@ def _hms(sec):
     return "%dm %02ds" % (m, sec) if m else "%ds" % sec
 
 
-def apply(made, dest, move=False, photos=2):
+def apply(made, dest, move=True, delete_aborted=True, progress=None):
     """
     Carry out a plan: one numbered folder per capture.
 
-    ⛔ COPIES BY DEFAULT, AND THAT IS NOT TIMIDITY. This rearranges a whole
-    day's work in one press -- seventy-odd captures at a hundred megabytes each
-    -- on a pairing that a clock proposed. A wrong offset that copies costs
-    disk; a wrong offset that moves costs the shoot. `move=True` is there for
-    when the plan has been read and believed.
+    ⭐⭐ IT MOVES, BECAUSE COPYING A SHOOT IS SIX GIGABYTES OF THE SAME DATA.
+    Sixty captures at ~98 MB is 5.9 GB, and copying leaves the operator with two
+    of everything and no way to tell which pile is the real one. The safety
+    lives in the plan being read and confirmed BEFORE this runs, not in leaving
+    a duplicate behind.
 
-    ⛔ AND IT REFUSES ONTO ANYTHING THAT IS ALREADY THERE. A numbered folder
-    that already holds a capture is either a second run of this or somebody
-    else's numbering, and writing into it would interleave two shoots under one
-    set of numbers -- which nothing downstream could untangle.
+    ⛔ PHOTOGRAPHS MOVE TOO, WITH ONE EXCEPTION: a picture that two captures
+    share is copied for the second, because both genuinely need it. That is the
+    only duplication left, and `plan` counts it.
 
-    `photos` is how many of the ranked photographs to file: the nearest in time
-    is the one the pipeline will use (it takes the capture's stem), and the
-    rest are copied under their own names so the operator can swap one in.
+    ⛔⛔ AND THE SHARES ARE TAKEN BEFORE THE MOVES, WHICH IS NOT A STYLE
+    CHOICE. A shared photograph is moved into its primary capture's folder; a
+    share taken afterwards would find its source already gone, and the second
+    capture would silently end up with no picture -- the exact failure sharing
+    exists to prevent.
 
-    ⭐ TWO BY DEFAULT, BECAUSE THE SHOOT COMES IN TWOS. Measured on the
-    operator's restaurant shoot: the rig sweeps 190.8 degrees, so a tripod
-    position takes TWO captures to cover the sphere, and the camera is fired
-    twice at each position -- the gaps come out alternating, about 0 s for the
-    second capture of a position and about +130 to +175 s for the first. Both
-    photographs belong to both captures, and filing only the nearest would
-    leave the operator with no second shot to try when the first has somebody
-    walking through it.
+    ⛔ A CAPTURE WITH NO PHOTOGRAPH IS NOT A FAILURE. Some rooms are too dark
+    to photograph and the scan is still good, so those go to their own named
+    folder rather than into a numbered one that would look like it had lost its
+    picture.
+
+    ⛔⛔ AND DELETION IS NARROWER THAN "NO SIDECAR". See ABORTED_MAX_SHARE: a
+    sidecar-less file at the FULL size of a sweep is a capture whose sidecar was
+    lost, not one that was aborted, and it is kept. Only the short ones go.
     """
     if not made.get("ok"):
         return made
     dest = os.path.abspath(dest)
     rows = made["scans"]
+    withpic = [r for r in rows if r.get("assigned")]
+    dark = [r for r in rows if not r.get("assigned")]
+
     clashes = []
-    for r in rows:
-        folder = os.path.join(dest, str(r["number"]))
+    for n, _r in enumerate(withpic, 1):
+        folder = os.path.join(dest, str(n))
         if os.path.isdir(folder) and any(
-                n.lower().endswith(".pcap") for n in os.listdir(folder)):
-            clashes.append(str(r["number"]))
+                x.lower().endswith(".pcap") for x in os.listdir(folder)):
+            clashes.append(str(n))
     if clashes:
         return {"ok": False,
                 "error": "folder%s %s already hold%s a capture, so nothing "
@@ -414,48 +602,117 @@ def apply(made, dest, move=False, photos=2):
                             ", ".join(clashes[:6]),
                             "s" if len(clashes) == 1 else "")}
 
-    done, moved_files = [], []
     op = shutil.move if move else shutil.copy2
+    done, deleted, failed = [], [], []
+    # ⛔ COUNTED IN FILES, NOT IN CAPTURES. A capture is a 98 MB .pcap plus a
+    # 2 kB sidecar plus a photograph, and on the same disk the .pcap is
+    # essentially the whole wait -- so a bar that stepped once per capture
+    # would sit still through the only part that takes any time. Every file
+    # placed steps it.
+    total = sum(1 for _r in rows) * 3
+    moved_n = [0]
+
+    def step(what):
+        moved_n[0] += 1
+        if progress:
+            progress(what, moved_n[0], total)
+
+    def _place(row, folder, stem):
+        os.makedirs(folder, exist_ok=True)
+        here = os.path.dirname(row["path"])
+        for ext in (".pcap", ".json", ".cloud") + IMAGE_EXTS:
+            src = os.path.join(here, stem + ext)
+            if os.path.exists(src):
+                step("%s %s" % ("moving" if move else "copying",
+                                stem + ext))
+                op(src, os.path.join(folder, stem + ext))
+        got = row.get("assigned")
+        # A photograph that travelled with the capture is already in place.
+        if not got or row.get("beside"):
+            return os.path.basename(got["path"]) if got else None
+        ext = os.path.splitext(got["path"])[1].lower()
+        # ⭐ THE PHOTOGRAPH TAKES THE CAPTURE'S STEM, which is the name
+        # `pipeline.find_photo` looks for -- so the CLI, Studio's import and
+        # every later session find it with no memory of this having been run.
+        target = os.path.join(folder, stem + ext)
+        if row.get("shared") or not move:
+            shutil.copy2(got["path"], target)
+        else:
+            shutil.move(got["path"], target)
+        return os.path.basename(target)
+
     try:
-        for r in rows:
-            folder = os.path.join(dest, str(r["number"]))
-            os.makedirs(folder, exist_ok=True)
-            stem = os.path.splitext(os.path.basename(r["path"]))[0]
-            here = os.path.dirname(r["path"])
-            # The capture, its sidecar and any cloud already exported beside it
-            # travel together: a capture without its sidecar cannot be decoded.
-            for ext in (".pcap", ".json", ".cloud"):
-                src = os.path.join(here, stem + ext)
-                if os.path.exists(src):
-                    op(src, os.path.join(folder, stem + ext))
-                    moved_files.append(os.path.join(folder, stem + ext))
-            filed = []
-            for at, q in enumerate(r["photos"][:max(0, int(photos))]):
-                ext = os.path.splitext(q["path"])[1].lower()
-                # ⭐ THE FIRST ONE TAKES THE CAPTURE'S STEM, which is the name
-                # `pipeline.find_photo` looks for -- so the CLI and every later
-                # session find it with no memory of this having been run.
-                name = (stem + ext) if at == 0 else os.path.basename(q["path"])
-                # A photograph is COPIED even when the captures are moved: it
-                # may serve more than one capture of the same tripod position.
-                shutil.copy2(q["path"], os.path.join(folder, name))
-                filed.append(name)
-            done.append({"number": r["number"], "folder": folder,
-                         "scan": stem, "photos": filed})
-        if made.get("aborted"):
+        numbers = {id(r): n for n, r in enumerate(withpic, 1)}
+        order = ([r for r in withpic if r.get("shared")]
+                 + [r for r in withpic if not r.get("shared")])
+        for row in order:
+            n = numbers[id(row)]
+            folder = os.path.join(dest, str(n))
+            stem = os.path.splitext(os.path.basename(row["path"]))[0]
+            filed = _place(row, folder, stem)
+            done.append({"number": n, "folder": folder, "scan": stem,
+                         "photo": filed, "shared": bool(row.get("shared"))})
+
+        for row in dark:
+            stem = os.path.splitext(os.path.basename(row["path"]))[0]
+            folder = os.path.join(dest, NO_PHOTO_DIR)
+            _place(row, folder, stem)
+            done.append({"number": None, "folder": folder, "scan": stem,
+                         "photo": None, "shared": False})
+
+        if delete_aborted:
+            for a in made.get("aborted") or []:
+                if not a.get("deletable"):
+                    continue
+                base = os.path.splitext(os.path.basename(a["path"]))[0]
+                for ext in (".pcap", ".json", ".cloud"):
+                    src = os.path.join(os.path.dirname(a["path"]), base + ext)
+                    if not os.path.exists(src):
+                        continue
+                    try:
+                        step("deleting " + os.path.basename(src))
+                        os.remove(src)
+                        deleted.append(os.path.basename(src))
+                    except OSError as exc:
+                        # ⛔ A FILE THAT WILL NOT DELETE IS REPORTED, NOT
+                        # RETRIED AND NOT SWALLOWED. It is usually open in
+                        # something else, and the operator needs to know which
+                        # one is still on the disk rather than believing the
+                        # tidy-up finished.
+                        failed.append("%s (%s)" % (os.path.basename(src), exc))
+        elif made.get("aborted"):
             spare = os.path.join(dest, "aborted sweeps")
-            os.makedirs(spare, exist_ok=True)
             for a in made["aborted"]:
                 base = os.path.splitext(os.path.basename(a["path"]))[0]
                 for ext in (".pcap", ".json", ".cloud"):
                     src = os.path.join(os.path.dirname(a["path"]), base + ext)
                     if os.path.exists(src):
+                        os.makedirs(spare, exist_ok=True)
                         op(src, os.path.join(spare, base + ext))
     except Exception as exc:                              # noqa: BLE001
         return {"ok": False, "written": done,
                 "error": "stopped after %d folder%s (%s). Nothing already "
-                         "written was removed -- look at what is there before "
-                         "running it again."
+                         "written was put back -- look at what is there "
+                         "before running it again."
                          % (len(done), "" if len(done) == 1 else "s", exc)}
+
+    kept = [a["name"] for a in (made.get("aborted") or [])
+            if not a.get("deletable")]
+    bits = ["%d capture%s filed" % (len(done), "" if len(done) == 1 else "s")]
+    if dark:
+        bits.append("%d with no photograph, in \u201c%s\u201d"
+                    % (len(dark), NO_PHOTO_DIR))
+    if deleted:
+        bits.append("%d aborted-sweep file%s deleted"
+                    % (len(deleted), "" if len(deleted) == 1 else "s"))
+    if kept:
+        bits.append("%d kept despite having no sidecar, because they are the "
+                    "full size of a sweep" % len(kept))
+    if failed:
+        bits.append("%d could not be deleted (%s)"
+                    % (len(failed), "; ".join(failed[:3])))
     return {"ok": True, "dest": dest, "folders": done, "moved": bool(move),
-            "aborted": len(made.get("aborted") or [])}
+            "deleted": deleted, "kept_aborted": kept, "failed": failed,
+            "no_photo": len(dark),
+            "shared": sum(1 for d in done if d["shared"]),
+            "text": ", ".join(bits) + "."}
