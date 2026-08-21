@@ -2767,6 +2767,45 @@ naming the first check rather than the cause.
 
 Converter suite **696 → 709**.
 
+#### ⭐⭐ REAL CONTROLS FOR PLACING A SCAN — AND TWO FAULTS IN THE SLIDERS
+
+A **Move gizmo**: three arms through the tripod, dragged to slide the scan along one axis at a time,
+toggled by its own button like every other widget. Beside it, **a button each way and a box to type
+into for all four axes**, driven by a typed *move by* (metres) and *turn by* (degrees). The sliders
+stay — they are the right control for a coarse sweep — but they were never the right one for
+"14.37 m", and until now there was nothing else.
+
+⛔⛔ **THE ARMS POINT ALONG THE AXES THE SLIDERS MOVE, WHICH IS NOT THE WORLD'S.** A `Setup` is
+applied **before** the levelling rotation, so once a room is levelled "east" in a setup is a few
+degrees off east in the world. Drawing world axes while writing into a setup would slide the scan
+slightly sideways of the arrow being dragged — wrong in a way that reads as *imprecision* rather than
+as a bug, which is the worst way for it to be wrong. ⭐ So the directions are **measured, not
+derived**: bump the setup a metre, ask the existing transform where the tripod went, put it back. Exact
+by construction, and still exact if that transform ever changes — which a second copy of the levelling
+maths here would not be. (The test levels the frame on purpose and checks the x-arm follows the
+*setup's* x.)
+
+⛔⛔ **AN AXIS POINTING AT THE EYE CANNOT BE DRAGGED AND NOW SAYS SO.** Seen end-on an arm is a few
+pixels long, so the projection divides by almost nothing and a small movement of the hand throws the
+scan across the room. Not hypothetical: **the height arm is exactly end-on in the top view**, which is
+the view people place scans in.
+
+⛔⛔ **THE SLIDERS RECORDED NO UNDO.** `nudge()` has always called `coalesce` before touching a
+setup, so the arrow keys could be taken back; the four sliders wrote **straight into it**. A careful
+quarter of an hour of placement could go to one stray drag, with Ctrl-Z stepping over it to whatever
+happened before. Coalesced under the same key as every other move of that scan, so one drag is one undo
+rather than four hundred.
+
+⛔⛔ **AND A SCAN FURTHER OUT THAN A SLIDER COULD REACH GOT YANKED BACK.** `<input type=range>`
+**clamps what it is given, silently**: the east/west range was ±10 m, so a scan auto-aligned to 14 m
+read **10** on the slider while the setup still said 14 — the picture right and the control lying. The
+first touch of that slider then committed the 10, jumping the cloud four metres in a direction nobody
+had dragged. The range grows to fit now, and deliberately **does not shrink back**: a range that
+resized itself mid-drag would move the thumb under the hand, which is the same fault wearing the other
+shoe.
+
+Converter suite **709 → 730**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

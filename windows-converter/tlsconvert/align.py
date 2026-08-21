@@ -2584,6 +2584,8 @@ PAGE = r"""<!doctype html>
   .photo .deg{width:62px;flex:none;padding:1px 4px;font-size:10.5px;
     text-align:right}
   .photo .warn{color:#FFD60A}
+  /* The same row, but not indented under a scan's name. */
+  .photo.axis{margin-left:0;margin-top:8px}
   .photo .step{padding:2px 5px;font-size:10.5px;min-width:0}
   /* The runners-up. Quiet, because most of the time the first one is right. */
   .fits{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 0 15px}
@@ -2779,6 +2781,10 @@ PAGE = r"""<!doctype html>
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
   <div class="row">
     <button id="grab">Drag to move</button>
+    <button id="movegiz" title="Show three arms through this scan&#39;s tripod
+      and drag them to slide it along one axis at a time. Press again to take
+      them away. The arms point along the axes the SLIDERS move, which after
+      levelling is not quite the same as the world&#39;s.">Move gizmo</button>
     <button id="turnring" title="Show a ring round this scan's tripod and
       drag it to turn the scan. Press again to take it away. It is off until
       you ask for it: a press near a ring starts a rotation, so a ring left
@@ -2786,13 +2792,14 @@ PAGE = r"""<!doctype html>
       ring</button>
     <button id="zero">Reset</button>
   </div>
-  <label>East / west <span class="num" id="xv">0.00</span> m</label>
+  <div class="photo axis"><span class="grow">move by</span><input class="deg" id="mvstep" type="number" step="0.01" min="0.001" value="0.05" title="How far one press of an arrow moves the scan."><span style="color:var(--faint)">m</span><span class="grow" style="text-align:right">turn by</span><input class="deg" id="trstep" type="number" step="0.1" min="0.001" value="1.0" title="How far one press of a turn arrow turns it."><span style="color:var(--faint)">&deg;</span></div>
+  <div class="photo axis"><span class="grow">East / west <span class="num" id="xv">0.00</span> m</span><input class="deg" id="ax_x_m" type="number" step="0.01" value="0" title="Type an exact move it west / east by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;x_m&quot;)"><button class="mini step" title="move it west / east by the step above" onclick="nudgeAxis(&quot;x_m&quot;,-1)">&#9664;</button><button class="mini step" title="move it west / east by the step above" onclick="nudgeAxis(&quot;x_m&quot;,1)">&#9654;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;x_m&quot;)">Set</button></div>
   <input type="range" id="tx" min="-10" max="10" step="0.01" value="0">
-  <label>North / south <span class="num" id="yv">0.00</span> m</label>
+  <div class="photo axis"><span class="grow">North / south <span class="num" id="yv">0.00</span> m</span><input class="deg" id="ax_y_m" type="number" step="0.01" value="0" title="Type an exact move it south / north by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;y_m&quot;)"><button class="mini step" title="move it south / north by the step above" onclick="nudgeAxis(&quot;y_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it south / north by the step above" onclick="nudgeAxis(&quot;y_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;y_m&quot;)">Set</button></div>
   <input type="range" id="ty" min="-10" max="10" step="0.01" value="0">
-  <label>Height <span class="num" id="zv2">0.00</span> m</label>
+  <div class="photo axis"><span class="grow">Height <span class="num" id="zv2">0.00</span> m</span><input class="deg" id="ax_z_m" type="number" step="0.005" value="0" title="Type an exact lower / raise it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;z_m&quot;)"><button class="mini step" title="lower / raise it by the step above" onclick="nudgeAxis(&quot;z_m&quot;,-1)">&#9660;</button><button class="mini step" title="lower / raise it by the step above" onclick="nudgeAxis(&quot;z_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;z_m&quot;)">Set</button></div>
   <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
-  <label>Turn <span class="num" id="rv">0.0</span>&deg;</label>
+  <div class="photo axis"><span class="grow">Turn <span class="num" id="rv">0.00</span> &deg;</span><input class="deg" id="ax_yaw_deg" type="number" step="0.1" value="0" title="Type an exact turn it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;yaw_deg&quot;)"><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,-1)">&#8634;</button><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,1)">&#8635;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;yaw_deg&quot;)">Set</button></div>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
   </div></div>
 <div class="tray" id="ty_autoalign"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
@@ -3009,7 +3016,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
-           turnRing:false,
+           turnRing:false, moveGiz:false, moveAxis:null, moveHot:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null}, nth:[], trays:{}, order:[],
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
@@ -3560,6 +3567,181 @@ function screenRadius(o, px){
 /* How many pixels across the scan's turn ring is drawn. */
 const RING_PX=62;
 
+
+/* ============================ moving a scan ============================== */
+/* How far out the move gizmo's arms reach, in pixels. Longer than the turn
+   ring so its knobs sit clear of it rather than on it. */
+const MOVE_PX = 86;
+const MOVE_AXES = [
+  {key:'x_m', c:'rgba(255,105,97',  lab:'east / west',   unit:'m'},
+  {key:'y_m', c:'rgba(120,230,150', lab:'north / south', unit:'m'},
+  {key:'z_m', c:'rgba(90,170,255',  lab:'height',        unit:'m'}];
+
+/* ⭐⭐ THE ARMS POINT ALONG THE AXES THE SLIDERS ACTUALLY MOVE, AND THAT IS
+   NOT THE SAME AS THE WORLD AXES. A Setup is applied BEFORE the levelling
+   rotation, so once a room has been levelled "east" in a setup is a few
+   degrees off east in the world. Drawing world axes and writing the result
+   into a setup would move the scan very slightly sideways of the arrow the
+   operator was dragging -- wrong in a way that looks like imprecision rather
+   than like a bug.
+
+   ⛔ SO THE DIRECTIONS ARE MEASURED, NOT DERIVED. Bump the setup by one metre,
+   ask the existing transform where the tripod went, put it back. That is exact
+   by construction and stays exact if the transform ever changes, which a
+   second copy of the levelling maths here would not. */
+function moveAxes(){
+  if(!V.moveGiz) return null;
+  const s = active();
+  if(!s || s.index === 0 || V.nav) return null;
+  const o = put(affine(s), 0, 0, 0);
+  const g = screenRadius(o, MOVE_PX); if(!g) return null;
+  const arms = [];
+  for(const ax of MOVE_AXES){
+    const was = +s.setup[ax.key];
+    s.setup[ax.key] = was + 1;
+    const q = put(affine(s), 0, 0, 0);
+    s.setup[ax.key] = was;
+    const d = [q[0]-o[0], q[1]-o[1], q[2]-o[2]];
+    const n = Math.hypot(d[0], d[1], d[2]) || 1;
+    arms.push({key:ax.key, c:ax.c, lab:ax.lab,
+               u:[d[0]/n, d[1]/n, d[2]/n]});
+  }
+  return {s:s, o:o, R:g.R, c:g.c, arms:arms};
+}
+function armEnds(g, arm){
+  return [project([g.o[0]-arm.u[0]*g.R, g.o[1]-arm.u[1]*g.R,
+                   g.o[2]-arm.u[2]*g.R], V.vp),
+          project([g.o[0]+arm.u[0]*g.R, g.o[1]+arm.u[1]*g.R,
+                   g.o[2]+arm.u[2]*g.R], V.vp)];
+}
+/* Distance from a point to a SEGMENT, not to the infinite line: an arm is a
+   thing of a certain length, and the line it lies on carries on across the
+   whole window. */
+function segGap(px, py, a, b){
+  const vx = b[0]-a[0], vy = b[1]-a[1];
+  const L = vx*vx + vy*vy;
+  let t = L > 0 ? ((px-a[0])*vx + (py-a[1])*vy) / L : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(a[0] + t*vx - px, a[1] + t*vy - py);
+}
+function moveGrip(mx, my){
+  const g = moveAxes(); if(!g) return null;
+  let best = null;
+  for(const arm of g.arms){
+    const [a, b] = armEnds(g, arm);
+    if(!a || !b) continue;
+    const d = segGap(mx, my, a, b);
+    if(!best || d < best.d) best = {d:d, key:arm.key};
+  }
+  return (best && best.d <= 9) ? best : null;
+}
+/* ⛔ THE DRAG IS APPLIED LIVE, UNLIKE THE PHOTOGRAPH'S. Nothing here goes to
+   the server -- a Setup is a number the page owns until the project is saved
+   -- so the cloud can follow the hand at frame rate. */
+function moveDrag(mx, my, from){
+  const g = moveAxes(); if(!g || !V.moveAxis) return from;
+  const arm = g.arms.find(a => a.key === V.moveAxis); if(!arm) return from;
+  const c = project(g.o, V.vp);
+  const e = project([g.o[0]+arm.u[0]*g.R, g.o[1]+arm.u[1]*g.R,
+                     g.o[2]+arm.u[2]*g.R], V.vp);
+  if(!c || !e) return from;
+  const sx = e[0]-c[0], sy = e[1]-c[1], L = sx*sx + sy*sy;
+  /* ⛔⛔ AN AXIS POINTING AT THE EYE CANNOT BE DRAGGED, AND MUST SAY SO RATHER
+     THAN DIVIDE BY ALMOST NOTHING. Seen end-on, an arm is a few pixels long,
+     so a small movement of the hand divides by a tiny number and throws the
+     scan across the room. This is not hypothetical: the height arm is exactly
+     end-on in the top view, which is the view people place scans in. */
+  if(L < 64){
+    say('That axis is pointing almost straight at you, so dragging it cannot '
+        + 'mean anything. Orbit a little, or use the slider.', 'warn');
+    return from;
+  }
+  if(from === null) return [mx, my];
+  const along = g.R * ((mx-from[0])*sx + (my-from[1])*sy) / L;
+  coalesce('move'+g.s.index, 'moving '+g.s.name, ()=>undoSetup(g.s.index));
+  g.s.setup[V.moveAxis] = +(+g.s.setup[V.moveAxis] + along).toFixed(4);
+  syncSliders(); invalidate(); editsFollow(); dirty();
+  say('moving ' + g.s.name.slice(0,18) + ' — ' + arm.lab + ' '
+      + (+g.s.setup[V.moveAxis]).toFixed(2) + ' m');
+  return [mx, my];
+}
+function drawMoveGizmo(){
+  const g = moveAxes(); if(!g) return;
+  oc.save(); oc.setLineDash([]);
+  for(const arm of g.arms){
+    const [a, b] = armEnds(g, arm);
+    if(!a || !b) continue;
+    const hot = (V.moveAxis === arm.key) || (V.moveHot === arm.key);
+    /* Drawn twice, as every other overlay here is: a wide dim pass so it
+       reads against a bright cloud and a thin bright one so it reads against
+       a dark one. */
+    for(const [w, col] of [[5.5, 'rgba(10,16,26,.5)'],
+                           [hot ? 3 : 2, arm.c + (hot ? ',.99)' : ',.8)')]]){
+      oc.beginPath(); oc.moveTo(a[0], a[1]); oc.lineTo(b[0], b[1]);
+      oc.lineWidth = w; oc.strokeStyle = col; oc.stroke();
+    }
+    for(const q of [a, b]){
+      oc.beginPath(); oc.arc(q[0], q[1], hot ? 6 : 4.5, 0, 6.2832);
+      oc.fillStyle = arm.c + ',.95)'; oc.fill();
+    }
+    /* ⛔ ONLY THE ARM UNDER THE HAND IS LABELLED. Three labels on a gizmo this
+       size overlap each other and the cloud behind it. */
+    if(hot){
+      oc.font = '11px ui-sans-serif,system-ui';
+      oc.fillStyle = 'rgba(255,255,255,.92)';
+      oc.fillText(arm.lab + ' ' + (+g.s.setup[arm.key]).toFixed(2) + ' m',
+                  b[0] + 9, b[1] - 7);
+    }
+  }
+  oc.beginPath(); oc.arc(g.c[0], g.c[1], 3, 0, 6.2832);
+  oc.fillStyle = 'rgba(255,255,255,.85)'; oc.fill();
+  oc.restore();
+}
+
+/* ⭐ HOW FAR ONE PRESS OF AN ARROW IS WORTH. Two boxes, because metres and
+   degrees are not the same question -- and defaulted rather than refused when
+   a box is empty, since an arrow that silently does nothing is worse than an
+   arrow that moves five centimetres. */
+function moveStep(){
+  const v = parseFloat(($('mvstep')||{}).value);
+  return (isFinite(v) && v > 0) ? v : 0.05;
+}
+function turnStep(){
+  const v = parseFloat(($('trstep')||{}).value);
+  return (isFinite(v) && v > 0) ? v : 1.0;
+}
+function nudgeAxis(key, sign){
+  const s = active();
+  if(!s) return;
+  if(s.index === 0)
+    return say('The reference scan cannot be moved — everything else is '
+               + 'aligned to it. Pick another scan first.', 'warn');
+  if(key === 'yaw_deg') nudge(0, 0, sign*turnStep());
+  else if(key === 'x_m') nudge(sign*moveStep(), 0, 0);
+  else if(key === 'y_m') nudge(0, sign*moveStep(), 0);
+  else nudge(0, 0, 0, sign*moveStep());
+  const lab = {x_m:'east / west', y_m:'north / south', z_m:'height',
+               yaw_deg:'turn'}[key];
+  say(s.name.slice(0,18) + ' — ' + lab + ' now '
+      + (+s.setup[key]).toFixed(key === 'yaw_deg' ? 1 : 2)
+      + (key === 'yaw_deg' ? '°' : ' m'));
+}
+/* Type an exact placement. ⛔ The same path as everything else, so it records
+   an undo and the cuts follow the scan. */
+function setAxis(key){
+  const s = active(); if(!s) return;
+  if(s.index === 0)
+    return say('The reference scan cannot be moved.', 'warn');
+  const box = $('ax_'+key);
+  const to = box ? parseFloat(box.value) : NaN;
+  if(!isFinite(to)) return say('Type a number first.', 'warn');
+  const by = to - (+s.setup[key]);
+  if(key === 'yaw_deg') nudge(0, 0, by);
+  else if(key === 'x_m') nudge(by, 0, 0);
+  else if(key === 'y_m') nudge(0, by, 0);
+  else nudge(0, 0, 0, by);
+}
+
 function ringOf(){
   /* ⛔⛔ ONLY WHEN IT HAS BEEN ASKED FOR. This used to appear for whichever
      scan was active, which means every import raised a rotation widget nobody
@@ -3840,6 +4022,7 @@ function drawDraft(){
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
   drawRing();
+  drawMoveGizmo();
   drawTiltRings();
   drawNorth();
   drawGizmo();
@@ -4176,14 +4359,38 @@ function pickScan(index){
        : ' \u2014 but it is the REFERENCE, so it cannot be moved: everything '+
          'else is aligned to it. Pick another scan to move that one instead.'));
 }
+/* ⛔⛔ A RANGE INPUT CLAMPS WHAT IT IS GIVEN, SILENTLY, AND THAT MADE THE
+   SLIDER LIE. The east/west range was ±10 m, so a scan auto-aligned to 14 m
+   read 10 on the slider while the setup still said 14 -- the picture right,
+   the control wrong -- and the first touch of it committed the 10, jumping the
+   cloud four metres in a direction nobody dragged.
+
+   ⭐ IT GROWS TO FIT AND DOES NOT SHRINK BACK. Widening is what stops the lie;
+   narrowing again while a scan is being dragged would move the thumb under the
+   hand, which is the same fault wearing the other shoe. */
+function fitRange(id, value){
+  const el=$(id); if(!el) return;
+  const want=Math.abs(+value);
+  const have=Math.abs(parseFloat(el.max));
+  if(isFinite(want) && want > have){
+    const to=(Math.ceil(want*1.25)).toFixed(0);
+    el.max=to; el.min=(-to);
+  }
+  el.value=value;
+}
 function syncSliders(){
   const s=active(); if(!s) return;
-  $('tx').value=s.setup.x_m; $('ty').value=s.setup.y_m;
-  $('tz').value=s.setup.z_m; $('rz').value=s.setup.yaw_deg;
+  fitRange('tx', s.setup.x_m); fitRange('ty', s.setup.y_m);
+  fitRange('tz', s.setup.z_m); $('rz').value=s.setup.yaw_deg;
   $('xv').textContent=(+s.setup.x_m).toFixed(2);
   $('yv').textContent=(+s.setup.y_m).toFixed(2);
   $('zv2').textContent=(+s.setup.z_m).toFixed(2);
   $('rv').textContent=(+s.setup.yaw_deg).toFixed(1);
+  /* The typed boxes read what the sliders read, or they are two controls
+     claiming different things about one scan. */
+  const box=(id,v,dp)=>{ const b=$(id); if(b) b.value=(+v).toFixed(dp); };
+  box('ax_x_m', s.setup.x_m, 2); box('ax_y_m', s.setup.y_m, 2);
+  box('ax_z_m', s.setup.z_m, 3); box('ax_yaw_deg', s.setup.yaw_deg, 1);
 }
 /* ⭐⭐ ONE UNDO FOR EVERY TOOL, NOT ONE PER TOOL. Ctrl-Z used to reach the
    cut list alone, so an accidental level, a mis-dragged scan, a lean sent by a
@@ -7022,6 +7229,9 @@ const DRAW_TOOLS = {lasso:1, rect:1};
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
   let tilting=null;
+  /* Which of the move gizmo's arms is being dragged, and where the hand was
+     last frame. */
+  let axis=null;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
     /* the world widget is a control, and it is drawn over the canvas */
@@ -7064,6 +7274,13 @@ const DRAW_TOOLS = {lasso:1, rect:1};
            centre, so without an order the two would fight over every pixel. */
         V.tiltAxis=tiltGrip(e.clientX,e.clientY).axis;
         tilting=tiltDrag(e.clientX,e.clientY,null);
+      } else if(moveGrip(e.clientX,e.clientY)){
+        /* ⛔ THE ARMS COME BEFORE THE RING. They share a centre, and they
+           cross where an arm passes through the ring's radius -- but an arm is
+           a thin line the operator aimed at, while the ring passes near
+           everything at that distance from the tripod. */
+        V.moveAxis=moveGrip(e.clientX,e.clientY).key;
+        axis=moveDrag(e.clientX,e.clientY,null);
       } else if(ringGap(e.clientX,e.clientY)<=10){
         /* ⛔ AFTER the clip-box grips, never before. The grips are small
            targets that often sit inside the ring, and a ring that swallowed
@@ -7072,7 +7289,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       }
     }
     moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
-             ring===null && tilting===null;
+             ring===null && tilting===null && axis===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -7082,8 +7299,11 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;
       /* Lit only when the ring is what a press would take, so the highlight
          is a promise about the next click rather than a decoration. */
-      V.ring = over && V.hot<0 && ringGap(e.clientX,e.clientY)<=10;
-      if(was!==V.hot || wasRing!==V.ring) invalidate();
+      const wasArm=V.moveHot;
+      const arm = over && V.hot<0 ? moveGrip(e.clientX,e.clientY) : null;
+      V.moveHot = arm ? arm.key : null;
+      V.ring = over && V.hot<0 && !arm && ringGap(e.clientX,e.clientY)<=10;
+      if(was!==V.hot || wasRing!==V.ring || wasArm!==V.moveHot) invalidate();
       return;
     }
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
@@ -7091,6 +7311,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(lassoing) extendDraft(e.clientX,e.clientY);
     else if(tilting!==null)
       tilting=tiltDrag(e.clientX,e.clientY,tilting);
+    else if(axis!==null) axis=moveDrag(e.clientX,e.clientY,axis);
     else if(ring!==null) ring=turnScan(e.clientX,e.clientY,ring,e.shiftKey);
     else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
@@ -7113,6 +7334,10 @@ const DRAW_TOOLS = {lasso:1, rect:1};
        the server; one request per pointermove would queue dozens and land
        somewhere the hand never was. */
     if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
+    /* ⛔ A CUT FOLLOWS THE SCAN IT WAS MADE ON, and the gizmo moves a scan
+       exactly as the free drag does -- so it owes the same recompute. */
+    if(axis!==null && V.edits.length) recomputeLive();
+    axis=null; V.moveAxis=null;
     down=false; moving=false; grip=null; lassoing=false;
     cv.classList.remove('drag'); });
   addEventListener('wheel', e=>{
@@ -7167,10 +7392,19 @@ document.addEventListener('DOMContentLoaded', ()=>{
                               started against, not to whichever is chosen next */
                            V.half=null; V.perr=null;
                            syncSliders(); showPairs(); invalidate(); };
+  /* ⛔⛔ A SLIDER RECORDS AN UNDO LIKE EVERYTHING ELSE THAT MOVES A SCAN.
+     `nudge()` has always called `coalesce` before it touches a setup, so the
+     arrow keys and the gizmo can be taken back; these four wrote straight into
+     it, so a careful quarter of an hour of placement could go to one stray
+     drag and Ctrl-Z would step over it to whatever happened before. Coalesced
+     under the same key as every other move of the same scan, so one drag is
+     one undo rather than four hundred. */
   const bind=(id,key,fmt,lbl)=>{ $(id).oninput=e=>{
     const s=active(); if(!s) return;
+    coalesce('move'+s.index, 'moving '+s.name, ()=>undoSetup(s.index));
     s.setup[key]=parseFloat(e.target.value);
     $(lbl).textContent=fmt(s.setup[key]);
+    const box=$('ax_'+key); if(box) box.value=fmt(s.setup[key]);
     invalidate(); editsFollow(); dirty(); }; };
   bind('tx','x_m',v=>v.toFixed(2),'xv');
   bind('ty','y_m',v=>v.toFixed(2),'yv');
@@ -7185,6 +7419,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
      The photograph's three rings, the clip box's outline, the world axes and
      now this one all read the same way: the button carries `on` while its
      widget is on screen. */
+  $('movegiz').onclick=e=>{
+    const s=active();
+    if(!s || s.index===0)
+      return say('The reference scan cannot be moved \u2014 everything else '+
+                 'is aligned to it. Pick another scan first.', 'warn');
+    V.moveGiz=!V.moveGiz;
+    e.target.classList.toggle('on', V.moveGiz);
+    invalidate();
+    say(V.moveGiz
+        ? 'Drag an arm to slide '+s.name+' along that axis. Red is east and '+
+          'west, green north and south, blue up. Press Move gizmo again to '+
+          'take them away.'
+        : 'Move gizmo off.');
+  };
   $('turnring').onclick=e=>{
     const s=active();
     if(!s || s.index===0)

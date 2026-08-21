@@ -4436,5 +4436,176 @@ check("and neither is a fraction of the room any more",
       and "0.13*Math.max(span(0)" not in _ALIGN_SRC)
 
 
+# --- placing a scan: a gizmo, a button and a box per axis ------------------
+print("\nmoving a scan")
+
+check("there is a gizmo for it, and it is a toggle like every other widget",
+      'id="movegiz"' in _ALIGN_SRC and "V.moveGiz=!V.moveGiz" in _ALIGN_SRC
+      and "moveGiz:false" in _ALIGN_SRC)
+check("every axis has a button both ways and a box to type into",
+      _ALIGN_SRC.count("nudgeAxis(&quot;") == 8
+      and _ALIGN_SRC.count("setAxis(&quot;") == 8)
+check("and the sliders are still there",
+      'id="tx"' in _ALIGN_SRC and 'id="ty"' in _ALIGN_SRC
+      and 'id="tz"' in _ALIGN_SRC and 'id="rz"' in _ALIGN_SRC)
+# ⛔⛔ THE SLIDERS RECORDED NO UNDO. `nudge()` has always called `coalesce`
+# before touching a setup, so the arrow keys could be taken back; the four
+# sliders wrote straight into it, and a careful quarter of an hour of placement
+# could go to one stray drag with Ctrl-Z stepping over it.
+_bind = _ALIGN_SRC[_ALIGN_SRC.find("const bind=(id,key,fmt,lbl)"):]
+check("a slider records an undo, as every other way of moving a scan does",
+      "coalesce('move'+s.index" in _bind[:600], _bind[:200])
+# ⛔ COALESCED UNDER THE SAME KEY AS EVERY OTHER MOVE OF THAT SCAN, or one drag
+# would be four hundred undo entries.
+check("and one drag is one undo, not one per pixel",
+      _ALIGN_SRC.count("coalesce('move'+s.index") >= 2)
+
+if _node:
+    _probe = "\n".join(_js_func(f) for f in
+                       ("moveAxes", "armEnds", "segGap", "moveGrip",
+                        "moveDrag", "fitRange", "moveStep", "turnStep")) + """
+    const MOVE_PX = 86;
+    const MOVE_AXES = [
+      {key:'x_m', c:'r', lab:'east / west', unit:'m'},
+      {key:'y_m', c:'g', lab:'north / south', unit:'m'},
+      {key:'z_m', c:'b', lab:'height', unit:'m'}];
+    const BOXES = {};
+    const V = {moveGiz:true, nav:false, moveAxis:null, active:1, vp:[1],
+               edits:[], scans:[]};
+    function mk(i,x,y,z){ return {index:i, name:'s'+i,
+      setup:{x_m:x, y_m:y, z_m:z, yaw_deg:0}}; }
+    V.scans = [mk(0,0,0,0), mk(1,2,3,0)];
+    function active(){ return V.scans.find(s=>s.index===V.active); }
+    /* ⭐ A LEVELLED FRAME ON PURPOSE: the setup's axes are NOT the world's
+       once a room has been levelled, and the arms have to follow the setup's.
+       Here the transform swaps x and y, so an arm that came out along world x
+       would be pointing at the wrong slider. */
+    function affine(s){ return [0,1,0, s.setup.y_m,
+                                1,0,0, s.setup.x_m,
+                                0,0,1, s.setup.z_m]; }
+    function put(A,x,y,z){ return [A[0]*x+A[1]*y+A[2]*z+A[3],
+                                   A[4]*x+A[5]*y+A[6]*z+A[7],
+                                   A[8]*x+A[9]*y+A[10]*z+A[11]]; }
+    function project(p){ return [500 + p[0]*100, 400 - p[1]*100]; }
+    function basis(){ return {dir:[0,0,1], right:[1,0,0], up:[0,1,0]}; }
+    function screenRadius(o, px){
+      const c=project(o); const e=project([o[0]+1,o[1],o[2]]);
+      const perM=Math.hypot(e[0]-c[0], e[1]-c[1]);
+      return {c:c, R:Math.max(0.02, Math.min(6.0, px/perM))};
+    }
+    let SAID='';
+    const say=(m)=>{SAID=m;}, invalidate=()=>{}, editsFollow=()=>{},
+          dirty=()=>{}, syncSliders=()=>{}, undoSetup=()=>{};
+    let COALESCED=0;
+    function coalesce(){ COALESCED++; }
+    function $(id){ return BOXES[id] || null; }
+
+    const out = {};
+    const g = moveAxes();
+    out.arms = g.arms.map(a=>a.key);
+    // the x arm must point along the SETUP's x, which this transform sends to
+    // world y -- not along world x
+    out.xArm = g.arms[0].u.map(v=>+v.toFixed(6));
+    out.yArm = g.arms[1].u.map(v=>+v.toFixed(6));
+    // and moving must not have left the setup disturbed
+    out.intact = [active().setup.x_m, active().setup.y_m, active().setup.z_m];
+    out.offNone = (function(){ V.moveGiz=false; const r=moveAxes();
+                               V.moveGiz=true; return r===null; })();
+    out.refNone = (function(){ V.active=0; const r=moveAxes();
+                               V.active=1; return r===null; })();
+    // ⛔ the height arm is edge-on in this top view: dragging it must refuse
+    V.moveAxis='z_m';
+    const beforeZ = active().setup.z_m;
+    moveDrag(600, 400, [500, 400]);
+    out.zRefused = (active().setup.z_m === beforeZ);
+    out.zSaid = SAID;
+    // dragging the x arm moves the x setup by the right amount
+    V.moveAxis='x_m';
+    const c = project(g.o);
+    const e = project([g.o[0]+g.arms[0].u[0]*g.R,
+                       g.o[1]+g.arms[0].u[1]*g.R,
+                       g.o[2]+g.arms[0].u[2]*g.R]);
+    const before = active().setup.x_m;
+    moveDrag(e[0], e[1], [c[0], c[1]]);   // a drag of exactly one arm length
+    out.moved = +(active().setup.x_m - before).toFixed(4);
+    out.armLen = +g.R.toFixed(4);
+    out.coalesced = COALESCED;
+    // segment, not infinite line
+    out.onSeg = +segGap(50, 10, [0,0], [100,0]).toFixed(3);
+    out.pastEnd = +segGap(150, 0, [0,0], [100,0]).toFixed(3);
+    // ⛔ the range grows to fit rather than clamping what it is shown
+    BOXES.tx = {max:'10', min:'-10', value:0};
+    fitRange('tx', 14);
+    out.grewMax = BOXES.tx.max; out.grewVal = BOXES.tx.value;
+    fitRange('tx', 2);
+    out.keptMax = BOXES.tx.max;
+    // the steps default rather than refusing when a box is empty
+    out.stepDefault = moveStep();
+    BOXES.mvstep = {value:'0.25'};
+    out.stepTyped = moveStep();
+    BOXES.trstep = {value:''};
+    out.turnDefault = turnStep();
+    console.log(JSON.stringify(out));
+    """
+    _mp = os.path.join(tempfile.mkdtemp(prefix="tlsmove"), "move.js")
+    with io.open(_mp, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe)
+    _mr = subprocess.run([_node, _mp], capture_output=True, text=True)
+    check("the move gizmo's own rules run", _mr.returncode == 0,
+          (_mr.stderr or "")[:400])
+    _m = (json.loads(_mr.stdout.strip().splitlines()[-1])
+          if _mr.returncode == 0 else {})
+    check("there is one arm per slider", _m.get("arms")
+          == ["x_m", "y_m", "z_m"], _m.get("arms"))
+    # ⛔⛔ THE ARMS FOLLOW THE SETUP'S AXES, NOT THE WORLD'S. A Setup is applied
+    # BEFORE the levelling rotation, so in a levelled room "east" in a setup is
+    # a few degrees off east in the world -- and drawing world axes while
+    # writing into a setup would slide the scan sideways of the arrow being
+    # dragged, which reads as imprecision rather than as a bug.
+    check("an arm points along the axis its slider moves, not along the "
+          "world's", _m.get("xArm") == [0, 1, 0], _m.get("xArm"))
+    check("and the next one likewise", _m.get("yArm") == [1, 0, 0],
+          _m.get("yArm"))
+    # ⛔ MEASURING THE DIRECTION MUST NOT MOVE THE SCAN. It works by bumping the
+    # setup a metre and asking where the tripod went; leaving that bump in
+    # place would walk every scan one metre per redraw.
+    check("measuring the directions leaves the scan exactly where it was",
+          _m.get("intact") == [2, 3, 0], _m.get("intact"))
+    check("no arms until the gizmo is asked for", _m.get("offNone") is True)
+    check("and none on the reference scan, which cannot be moved",
+          _m.get("refNone") is True)
+    # ⛔⛔ AN AXIS POINTING AT THE EYE CANNOT BE DRAGGED. Seen end-on an arm is
+    # a few pixels long, so a small movement of the hand divides by almost
+    # nothing and throws the scan across the room -- and the height arm is
+    # exactly end-on in the top view, which is the view scans are placed in.
+    check("an axis pointing at the eye refuses the drag instead of dividing "
+          "by almost nothing", _m.get("zRefused") is True)
+    check("and says why", "pointing almost straight at you"
+          in (_m.get("zSaid") or ""), _m.get("zSaid"))
+    check("dragging an arm its own length moves the scan that far",
+          abs(_m.get("moved", 0) - _m.get("armLen", 1)) < 1e-3,
+          (_m.get("moved"), _m.get("armLen")))
+    check("and it records an undo", _m.get("coalesced", 0) >= 1)
+    check("an arm is a segment, not the line it lies on",
+          _m.get("onSeg") == 10.0 and _m.get("pastEnd") == 50.0,
+          (_m.get("onSeg"), _m.get("pastEnd")))
+    # ⛔⛔ A RANGE INPUT CLAMPS WHAT IT IS GIVEN, SILENTLY. A scan auto-aligned
+    # to 14 m read 10 on a ±10 slider while the setup still said 14 -- and the
+    # first touch of that slider committed the 10, jumping the cloud four
+    # metres in a direction nobody dragged.
+    check("a slider grows to fit a scan further out than it could show",
+          float(_m.get("grewMax", 0)) >= 14 and _m.get("grewVal") == 14,
+          (_m.get("grewMax"), _m.get("grewVal")))
+    check("and it does not shrink back under the hand",
+          float(_m.get("keptMax", 0)) >= 14, _m.get("keptMax"))
+    check("the steps default rather than doing nothing when a box is empty",
+          _m.get("stepDefault") == 0.05 and _m.get("turnDefault") == 1.0,
+          (_m.get("stepDefault"), _m.get("turnDefault")))
+    check("and are taken from the box when one is typed",
+          _m.get("stepTyped") == 0.25, _m.get("stepTyped"))
+else:
+    print("  (node missing: the move gizmo's rules were not run)")
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
