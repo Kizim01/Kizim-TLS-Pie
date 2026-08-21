@@ -2314,6 +2314,7 @@ const BLOCK = 1 << 19;
 const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
       _wz=new Float64Array(BLOCK);
 const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
+         hidden:{},
          boxSet:false,box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
          ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:0,alive:0,total:0};
 const $=()=>({textContent:'',innerHTML:'',value:0});
@@ -2360,7 +2361,12 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
                             old:boxSize([[-1,-1,-1],[1,2,3]])}));
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "editPlan", "planFor", "markBox",
-                  "forgetScan", "measure", "resetBox", "span", "boxSize")),
+                  "forgetScan", "measure", "resetBox", "span", "boxSize",
+                  # ⛔ ADDED BECAUSE THE SHIPPED CODE NOW CALLS THEM. A harness
+                  # that runs the real functions has to follow them wherever
+                  # they go, and the reward for not doing so is a ReferenceError
+                  # in node that reads like the page being broken.
+                  "shown", "cutScope", "showHidden")),
        "", json.dumps([_as_page(c) for c in _cases]),
        json.dumps(_PTS.tolist()))
 
@@ -2368,8 +2374,12 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
     with io.open(_jsp, "w", encoding="utf-8") as _fh:
         _fh.write(_harness)
     _run = subprocess.run([_node, _jsp], capture_output=True, text=True)
+    # ⛔ THE TOP OF THE STACK, NOT THE BOTTOM. `stderr[-400:]` is always
+    # node's own module loader -- the same four lines whatever went wrong --
+    # so a failure here reported nothing usable and had to be reproduced by
+    # hand before it could be read. The message is at the START.
     check("the page's rules run at all", _run.returncode == 0,
-          _run.stderr[-400:])
+          (_run.stderr or "")[:400])
     if _run.returncode == 0:
         _lines = [l for l in _run.stdout.strip().splitlines() if l.strip()]
         _got = json.loads(_lines[0])
@@ -2936,7 +2946,8 @@ console.log(JSON.stringify(out));
     with io.open(_rp, "w", encoding="utf-8") as _fh:
         _fh.write(_harness)
     _rr = subprocess.run([_node, _rp], capture_output=True, text=True)
-    check("the ring's own rules run", _rr.returncode == 0, _rr.stderr[-400:])
+    check("the ring's own rules run", _rr.returncode == 0,
+          (_rr.stderr or "")[:400])
     if _rr.returncode == 0:
         _o = json.loads(_rr.stdout.strip().splitlines()[-1])
         # ⛔ THE GUARANTEE THAT MATTERS. The first scan is what everything else
@@ -3683,6 +3694,149 @@ check("and it is the previous sort's copy that is dropped, not the camera's",
 check("two pictures that merely share a second are both kept",
       len(shoot.dedupe([{"path": _dupes[0]["path"], "at": 100.0},
                         {"path": _dupes[2]["path"], "at": 100.0}])[0]) == 2)
+
+
+# --- hiding a cloud, and not cutting what cannot be seen --------------------
+#
+# ⛔⛔ THE BUG THIS FIXES. There was already a show-one control, and it changed
+# the PICTURE AND NOTHING ELSE: a lasso drawn while one scan was isolated still
+# cut through every cloud. So the one gesture an operator makes when clouds
+# overlap -- hide the front one, cut the back one -- silently deleted points
+# from the cloud they had just taken off the screen. In a program whose whole
+# safety story is "you look at what you are about to remove", that is the worst
+# thing it could do quietly.
+print("\nhiding a cloud")
+
+_hs = pipeline.Box([0, 0, 0], [1, 1, 1], scan=[2, 0, 2])
+check("a cut can name several clouds, kept sorted and unique",
+      _hs.scan == (0, 2), _hs.scan)
+check("one cloud is still stored as one index, not a list of one",
+      pipeline.Box([0, 0, 0], [1, 1, 1], scan=3).scan == 3)
+check("and every cloud is still stored as nothing at all",
+      pipeline.Box([0, 0, 0], [1, 1, 1]).scan is None)
+# ⛔ AN EMPTY SCOPE IS "NO CLOUD", NOT "EVERY CLOUD". It is what a cut made with
+# everything hidden means, and turning it into None would send that cut through
+# the entire job -- the exact inversion the operator is protecting against.
+_none = pipeline.Box([0, 0, 0], [1, 1, 1], scan=[])
+check("an empty scope means no cloud, never all of them", _none.scan == ())
+check("so it touches nothing",
+      not pipeline.Edit(drop=[_none]).for_scan(0).drop)
+
+_wide = pipeline.Edit(drop=[_hs])
+check("a several-cloud cut reaches the clouds it names",
+      len(_wide.for_scan(0).drop) == 1 and len(_wide.for_scan(2).drop) == 1)
+check("and leaves out the one it does not",
+      not _wide.for_scan(1).drop)
+check("scoped lists every cloud named, flattened",
+      _wide.scoped == [0, 2], _wide.scoped)
+
+# ⛔ AND IT HAS TO SURVIVE THE PROJECT FILE, or the preview and the exported
+# cloud part company at the one moment nobody is watching.
+_rt = pipeline.Box.parse(json.loads(json.dumps(_hs.as_dict())))
+check("a several-cloud scope round-trips through JSON", _rt.scan == (0, 2),
+      _rt.scan)
+check("and it is written as a list, which JSON has, not a tuple, which it "
+      "has not", isinstance(_hs.as_dict()["scan"], list))
+check("while a single-cloud scope still writes a bare integer, as before",
+      pipeline.Box([0, 0, 0], [1, 1, 1], scan=3).as_dict()["scan"] == 3)
+_lrt = pipeline.Lasso.from_dict(json.loads(json.dumps(
+    pipeline.Lasso([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                   [[0, 0], [1, 0], [1, 1]], False, [1, 2]).as_dict())))
+check("a lasso carries one too", _lrt.scan == (1, 2), _lrt.scan)
+
+# --- the page's own rules, run as shipped ----------------------------------
+#
+# ⭐ THE REAL FUNCTIONS, NOT A RESTATEMENT OF THEM. `cutScope` decides what a
+# new cut is allowed to take from, and a test that re-implemented the rule
+# would pass while the shipped one did something else.
+if _node:
+    _probe = chr(10).join(_js_func(f) for f in
+                          ("shown", "cutScope", "planFor")) + """
+    var V = {scans:[{index:0},{index:1},{index:2}], hidden:{}, only:-1,
+             editWho:-1};
+    var out = {};
+    out.nothingHidden = cutScope();
+    V.hidden = {1:1};
+    out.oneHidden = cutScope();
+    V.hidden = {0:1, 1:1, 2:1};
+    out.allHidden = cutScope();
+    V.hidden = {};
+    V.only = 2;
+    out.isolated = cutScope();
+    V.only = -1; V.editWho = 1;
+    out.namedButHidden = (function(){ V.hidden={1:1}; return cutScope(); })();
+    V.hidden = {}; V.editWho = 1;
+    out.namedAndShown = cutScope();
+    // planFor must read a list the same way Python's _in_scope does
+    var plan = {keep:[], drop:[{scan:[0,2]}], lassos:[]};
+    out.listSeenBy0 = planFor(plan, 0).drop.length;
+    out.listSeenBy1 = planFor(plan, 1).drop.length;
+    console.log(JSON.stringify(out));
+    """
+    _hp = os.path.join(tempfile.mkdtemp(prefix="tlshide"), "hide.js")
+    with io.open(_hp, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe)
+    _hr = subprocess.run([_node, _hp], capture_output=True, text=True)
+    check("the page's own hide rules run", _hr.returncode == 0,
+          _hr.stderr[-400:])
+    _got = (json.loads(_hr.stdout.strip().splitlines()[-1])
+            if _hr.returncode == 0 else {})
+    check("with nothing hidden a cut goes through every cloud",
+          _got["nothingHidden"] is None, _got)
+    # ⛔⛔ THE HEART OF IT: a hidden cloud is not in the scope of a new cut.
+    check("a hidden cloud is left out of a new cut",
+          _got["oneHidden"] == [0, 2], _got["oneHidden"])
+    check("with everything hidden a cut takes from nothing, not everything",
+          _got["allHidden"] == [], _got["allHidden"])
+    # ⭐ AND THE OLD ISOLATE CONTROL IS HONOURED THE SAME WAY, which is what it
+    # never was: it used to change the picture and leave the cut alone.
+    check("isolating one cloud also narrows the cut to it",
+          _got["isolated"] == [2], _got["isolated"])
+    # ⛔ NAMING A CLOUD THAT IS HIDDEN CUTS NOTHING, rather than cutting a cloud
+    # the operator cannot see because they aimed at it earlier and forgot.
+    check("a cut aimed at a cloud that is hidden takes from nothing",
+          _got["namedButHidden"] == [], _got["namedButHidden"])
+    check("but aimed at a visible one it is that one alone",
+          _got["namedAndShown"] == 1, _got["namedAndShown"])
+    check("the page reads a list scope exactly as Python does",
+          _got["listSeenBy0"] == 1 and _got["listSeenBy1"] == 0, _got)
+else:
+    print("  (node missing: the page's hide rules were not run)")
+
+check("the page has a hide button and a way back",
+      "toggleHidden(" in _ALIGN_SRC and "function showAll" in _ALIGN_SRC)
+# ⛔ "Where has my cloud gone" is the failure mode of any hide, and a status
+# line that scrolled away twenty minutes ago cannot answer it.
+check("and a standing line saying what is hidden, not just a message",
+      'id="hidsay"' in _ALIGN_SRC and "function showHidden" in _ALIGN_SRC)
+check("the two-scan-era 'Both' label is gone",
+      "'Both'" not in _ALIGN_SRC and ">Both<" not in _ALIGN_SRC)
+
+
+# --- full detail on load ---------------------------------------------------
+#
+# ⛔⛔ THE FLAG THAT UNDER-REPORTED BY A FACTOR OF ELEVEN. `ViewerBuffer.
+# subsampled` answers "did THIS buffer thin what it was given" -- and with a
+# voxel accumulator upstream the buffer is handed an already-reduced cloud,
+# thins nothing, and honestly answers no. Measured on the operator's capture:
+# 23,464,814 returns decoded, 2,111,114 held, page told `subsampled: false`.
+print("\nfull detail, honestly reported")
+
+check("the load default keeps every return now",
+      align.DEFAULT_ALIGN_VOXEL == 0.0, align.DEFAULT_ALIGN_VOXEL)
+_vb = viewer.ViewerBuffer(max_points=1000)
+_vb.add(np.zeros((10, 3), np.float32), np.zeros((10, 3), np.uint8))
+check("a buffer holding all of a small cloud says so",
+      _vb.kept(10) and not _vb.subsampled)
+# ⛔ THE QUESTION IS AGAINST THE CAPTURE'S TOTAL, not against what this buffer
+# happened to be handed.
+check("a buffer holding a tenth of a capture does NOT say it kept it all",
+      not _vb.kept(100), _vb.count)
+check("and an unknown total is not treated as a shortfall", _vb.kept(0))
+_big = viewer.ViewerBuffer(max_points=16)
+_big.add(np.zeros((64, 3), np.float32), np.zeros((64, 3), np.uint8))
+check("a buffer that really did thin still reports it both ways",
+      _big.subsampled and not _big.kept(64), (_big.count, _big.subsampled))
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

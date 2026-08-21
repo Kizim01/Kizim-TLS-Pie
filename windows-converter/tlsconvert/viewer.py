@@ -136,6 +136,21 @@ class ViewerBuffer:
     def subsampled(self):
         return self._stride > 1
 
+    def kept(self, total):
+        """
+        Whether this buffer holds everything, given what the capture had.
+
+        ⛔⛔ `subsampled` IS NOT THAT QUESTION, AND READING IT AS THOUGH IT WERE
+        UNDER-REPORTED BY A FACTOR OF ELEVEN. It answers "did THIS buffer thin
+        what it was given" -- and when a voxel accumulator sits upstream the
+        buffer is handed an already-reduced cloud, thins nothing, and honestly
+        answers no. Measured on the operator's own capture: 23,464,814 returns
+        decoded, 2,111,114 held, and the page told `subsampled: false`. A
+        detail control that reports full detail at nine per cent is worse than
+        no detail control.
+        """
+        return not total or self._n >= int(total)
+
     def arrays(self):
         if not self._xyz:
             return (np.empty((0, 3), np.float32), np.empty((0, 3), np.uint8))

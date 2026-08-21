@@ -53,7 +53,24 @@ from . import library, pipeline, registration, viewer
 
 # A clip box is for seeing INTO a room, so it starts wide open. Anything else
 # and the operator's first impression is a cloud with pieces missing.
-DEFAULT_ALIGN_VOXEL = 0.02
+# ⭐⭐ FULL DETAIL BY DEFAULT, WHICH THE MEMORY ARGUMENT ALREADY ALLOWED.
+# This was 2 cm, and the reasoning was that two clouds on screen at once, both
+# transformed live every frame, need a workbench that stays responsive. But the
+# thing that actually bounds what is held is the viewer buffer's own cap
+# (`max_points` divided between the open scans), and at `voxel_m=0` the points
+# stream straight into it -- so full detail costs the same memory and the same
+# draw as before, and simply stops throwing away detail that fitted.
+#
+# Measured on the operator's capture: 23,464,814 returns, of which the 2 cm
+# voxel kept 2,111,114 -- NINE PER CENT. With one scan open the budget would
+# have held every one of them. The old default was discarding detail that cost
+# nothing to keep.
+#
+# ⛔ IT DOES NOT MAKE A SIXTY-SCAN SESSION UNBOUNDED. The per-scan share of the
+# budget still divides, so past a handful of scans the buffer thins exactly as
+# it did before; what changes is that a small session is no longer punished for
+# the large one's sake.
+DEFAULT_ALIGN_VOXEL = 0.0
 
 
 PROJECT_EXT = ".tlspie"
@@ -364,11 +381,12 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
     """
     Decode every capture once, into memory, at a chosen preview density.
 
-    ⚠ Full density is not the DEFAULT here, unlike everywhere else in this
-    program, but it is available -- `voxel_m=0` keeps every return. Alignment is
-    a judgement about where surfaces sit, two clouds are on screen at once, and
-    both survive a live transform every frame, so the default trades detail for
-    a workbench that stays responsive. The merge that comes out the far end is
+    ⭐ FULL DENSITY IS THE DEFAULT, as it is everywhere else in this program.
+    It was not, on the grounds that a live-transformed workbench should stay
+    responsive -- but what bounds the picture is the viewer buffer's cap, not
+    the voxel, so the voxel was only ever discarding detail that would have
+    fitted. `voxel_m` is still honoured for a session with many scans open,
+    where it saves the decode rather than the draw. The merge at the far end is
     written from the captures at whatever density is asked for; the voxel here
     only ever affected the picture.
 
@@ -734,7 +752,12 @@ class AlignServer(object):
             info = scan.colour_info or {}
             meta.append({"name": scan.name, "index": i, "points": buf.count,
                          "total": scan.total, "tint": _tint(i),
-                         "subsampled": buf.subsampled,
+                         # ⛔ AGAINST THE CAPTURE'S OWN TOTAL, not against
+                         # whatever this buffer happened to be handed. See
+                         # `ViewerBuffer.kept`: the old flag answered a
+                         # narrower question and reported full detail at nine
+                         # per cent.
+                         "subsampled": not buf.kept(scan.total),
                          "setup": scan.setup.as_dict(),
                          # Where it came from, so the panel can grey out the
                          # detail slider for a cloud rather than offering a
@@ -1080,10 +1103,22 @@ class AlignServer(object):
                                          for sc in self.scans)))
         clash = sorted({_folder_number(q) for q in paths} & open_folders)
 
+        # ⛔⛔ THE BUDGET COUNTS THE SCANS ALREADY OPEN, NOT JUST THESE ONES.
+        # `load` divides its allowance by the paths in the call, so adding
+        # scans ONE AT A TIME gave every one of them the whole budget -- which
+        # was invisible while the default voxel bounded a capture to two
+        # million points, and stopped being invisible the moment the default
+        # became full detail. Fifty-nine captures added one by one would each
+        # have held twenty-three million returns: about sixteen gigabytes, for
+        # a picture the card cannot draw anyway. `_rebuild` already divides the
+        # same budget the same way, so this simply stops the decode from
+        # holding what the encode is about to throw away.
+        per = max(1, self.max_points // (len(self.scans) + len(paths)))
         self._progress = {"stage": "decoding", "n": 0, "total": 1, "busy": True}
         try:
             fresh = load(paths, voxel_m=self.align_voxel,
-                         colour=bool(colour), progress=self._note)
+                         colour=bool(colour), progress=self._note,
+                         max_points=per * len(paths))
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
@@ -2468,6 +2503,7 @@ PAGE = r"""<!doctype html>
 </style>
 <div class="pnl" id="panel">
   <div id="legend"></div>
+  <div id="hidsay" style="font-size:10.5px;margin:3px 0 4px"></div>
   <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
   <label>Project</label>
   <div class="row"><button id="psave">Save project</button>
@@ -2498,8 +2534,8 @@ PAGE = r"""<!doctype html>
          style="margin-top:7px">
   <div class="row"><button id="add">Add pasted path</button></div>
   
-  <label>Preview detail <span class="num" id="detv">2 cm</span></label>
-  <input type="range" id="det" min="0" max="5" step="1" value="2">
+  <label>Preview detail <span class="num" id="detv">Full</span></label>
+  <input type="range" id="det" min="0" max="5" step="1" value="0">
   <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
   </div>
   <div class="row"><button id="applydet" class="go">Re-read at this detail
@@ -2691,7 +2727,11 @@ PAGE = r"""<!doctype html>
   
   <label>Colour</label>
   <div class="row"><button id="mode" class="on">By scan</button>
-    <button id="showb">Both</button></div>
+    <button id="showb" title="Cycle through showing one cloud at a time. The
+      per-cloud Hide buttons in the scan list are usually easier, and this is
+      released as soon as one of them is used.">All</button>
+    <button id="showall" title="Bring every hidden cloud back.">Show all
+      </button></div>
   <label>Point size <span class="num" id="psv">1.0</span></label>
   <input type="range" id="ps" min="0.2" max="8" step="0.05" value="1.2">
 </details></div>
@@ -2714,7 +2754,7 @@ const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
-           tool:'', draft:null, pending:null, detail:2, exdet:2, gizmo:true,
+           tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null}, nth:[],
@@ -2722,6 +2762,11 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
            tiltRing:null, tiltAxis:null,
+           /* Scan indices the operator has switched off. A VIEW state: it
+              changes what is drawn and what a NEW cut takes from, and it does
+              not change what is written -- taking a cloud out of the job is
+              Remove, a different button with a different meaning. */
+           hidden:{},
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            /* Which cloud the next cut belongs to: -1 for all of them. */
            editWho:-1,
@@ -3536,7 +3581,7 @@ function draw(){
                       R[1][0],R[1][1],R[1][2],
                       R[2][0],R[2][1],R[2][2]]));
   for(const s of V.scans){
-    if(V.only>=0 && s.index!==V.only) continue;
+    if(!shown(s.index)) continue;
     gl.uniformMatrix4fv(loc.uModel,false,model(s));
     gl.uniform3fv(loc.uScale,s.scale);
     gl.uniform3fv(loc.uOffset,s.offset);
@@ -3755,6 +3800,41 @@ function active(){ return V.scans.find(s=>s.index===V.active); }
    photographs apply to it exactly as they do to any other, and refusing to
    select it would mean the one cloud you cannot aim a cut at is the one you
    are aligning everything against. It is said out loud instead. */
+function toggleHidden(i){
+  if(V.hidden[i]) delete V.hidden[i]; else V.hidden[i]=1;
+  /* ⛔ THE OLD SHOW-ONE CONTROL IS RELEASED THE MOMENT THIS IS USED. Two
+     mechanisms deciding what is on screen is how a cloud goes missing with
+     neither control admitting to it. */
+  if(V.only>=0){ V.only=-1; const b=$('showb'); if(b) b.textContent='All'; }
+  refreshLists(); invalidate(); showHidden();
+  say(V.hidden[i]
+      ? whoName(i)+' hidden. New cuts leave it alone — it is still in the '+
+        'job and still exported. Use Remove to take it out.'
+      : whoName(i)+' is showing again.'+
+        (Object.keys(V.hidden).length ? ''
+         : ' Every cloud is back, so cuts go through all of them.'));
+}
+function showAll(){
+  if(!Object.keys(V.hidden).length && V.only<0)
+    return say('Nothing is hidden.');
+  V.hidden={}; V.only=-1;
+  const b=$('showb'); if(b) b.textContent='All';
+  refreshLists(); invalidate(); showHidden();
+  say('Every cloud is showing again, so cuts go through all of them.');
+}
+/* ⛔ A PERSISTENT LINE, NOT A ONE-OFF MESSAGE. "Where has my cloud gone" is
+   the failure mode of any hide, and a status line that scrolled away twenty
+   minutes ago cannot answer it. */
+function showHidden(){
+  const box=$('hidsay'); if(!box) return;
+  const off=V.scans.filter(x=>V.hidden[x.index]);
+  box.innerHTML = off.length
+    ? '<b style="color:#ffd60a">'+off.length+' cloud'+(off.length===1?'':'s')+
+      ' hidden</b> — '+off.map(x=>x.name).join(', ')+
+      '. New cuts leave them alone; the export does not.'
+    : '';
+}
+
 function pickScan(index){
   const s=V.scans.find(x=>x.index===index); if(!s) return;
   V.picked=index;
@@ -4010,8 +4090,15 @@ function editPlan(){
 }
 /* The part of the plan that applies to one cloud -- the page's copy of
    pipeline.Edit.for_scan, and it has to stay its copy. */
+/* ⛔ THE MIRROR OF `pipeline._in_scope`, AND IT HAS TO STAY ONE. A scope can
+   name one cloud or several -- several since hiding arrived, because a cut made
+   while some clouds are off screen belongs to the visible ones. If this and the
+   Python disagreed, the preview would show one thing and the exported file
+   would hold another, which is the failure this program keeps finding. */
 function planFor(plan, index){
-  const mine = o => (o.scan==null || o.scan===index);
+  const mine = o => (o.scan==null
+                     || (Array.isArray(o.scan) ? o.scan.indexOf(index)>=0
+                                               : o.scan===index));
   return {keep:plan.keep.filter(mine), drop:plan.drop.filter(mine),
           lassos:plan.lassos.filter(mine)};
 }
@@ -4059,11 +4146,17 @@ function showEdits(){
    would produce a cut that reads as belonging to one cloud in the list and cuts
    through all of them on export, which nothing on screen would show. */
 function pushEdit(e){
-  e.scan = (V.editWho==null || V.editWho<0) ? null : V.editWho;
+  e.scan = cutScope();
   V.edits.push(e); showEdits(); recomputeLive(); dirty();
 }
 function whoSuffix(){
-  return (V.editWho<0) ? '' : ' from '+whoName(V.editWho)+' only';
+  if(V.editWho>=0) return ' from '+whoName(V.editWho)+' only';
+  const off=V.scans.filter(x=>!shown(x.index));
+  /* ⛔ SAID OUT LOUD, because a cut that quietly spared some clouds is
+     indistinguishable from a cut that failed on them. */
+  return off.length ? ' from the '+(V.scans.length-off.length)+
+                      ' cloud(s) on screen — '+off.length+' hidden and left'+
+                      ' whole' : '';
 }
 function undoEdit(){
   if(V.pending){ V.pending=null; V.tool=''; setTool(''); invalidate(); return; }
@@ -4339,7 +4432,10 @@ function pickPoint(mx,my){
   const e=eye(), q=clipCtx();
   let tight=null, td=Infinity, wide=null, wd=PICK_WIDE*PICK_WIDE;
   for(const s of V.scans){
-    if(V.only>=0 && s.index!==V.only) continue;
+    /* ⛔ A HIDDEN CLOUD IS NOT PICKABLE EITHER. A pair point or a level point
+       taken off a cloud that is not on screen would be a measurement of
+       something the operator was not looking at. */
+    if(!shown(s.index)) continue;
     const m=mul(V.vp, model(s)), n=s.points, raw=s.raw,
           sc=s.scale, of=s.offset, live=s.live, A=affine(s);
     for(let i=0;i<n;i++){
@@ -5202,6 +5298,15 @@ function refreshLists(){
       'already open.">'+(/^\d+$/.test(s.folderNo) ? '#'+s.folderNo
                                                   : s.folderNo)+'</span>'
       : '')+'</span>'+
+    '<button class="mini'+(V.hidden[s.index]?' on':'')+
+    '" title="'+(V.hidden[s.index]
+      ? 'Hidden. Still in the job and still exported — it is just not drawn, '+
+        'and new cuts leave it alone.'
+      : 'Hide this cloud so you can work on the ones behind it. A hidden '+
+        'cloud is not drawn, not pickable, and NOT taken from by new cuts — '+
+        'but it IS still exported. Use Remove to take it out of the job.')+
+    '" onclick="toggleHidden('+s.index+')">'+
+    (V.hidden[s.index]?'Show':'Hide')+'</button>'+
     '<button class="mini'+(KILL[0]===s.index?' ask':'')+
     '" title="Take this cloud out of the session. The capture on disk is not '+
     'touched." onclick="askRemove('+s.index+')">'+
@@ -5282,9 +5387,20 @@ function forgetScan(gone){
                    .map(p => Object.assign({}, p,
                                            {ri:shift(p.ri), si:shift(p.si)}));
   V.half=null; V.perr=null;
-  if(V.only===gone){ V.only=-1; $('showb').textContent='Both'; }
+  if(V.only===gone){ V.only=-1; $('showb').textContent='All'; }
   else if(V.only>gone) V.only--;
   if(V.editWho===gone) V.editWho=-1; else if(V.editWho>gone) V.editWho--;
+  /* ⛔ THE HIDDEN SET IS RE-KEYED WITH EVERYTHING ELSE. It is keyed on the
+     index, and removing a cloud shifts every index above it -- so a set left
+     alone would start hiding the wrong scan, which looks exactly like a scan
+     that failed to load. */
+  { const moved={};
+    for(const k of Object.keys(V.hidden)){
+      const at=+k;
+      if(at===gone) continue;
+      moved[at>gone ? at-1 : at]=1;
+    }
+    V.hidden=moved; showHidden(); }
   return {edits:hadEdits-V.edits.length, pairs:hadPairs-V.pairs.length};
 }
 
@@ -6036,6 +6152,30 @@ function syncClipSliders(){
    a working feature, just the wrong one. A tool in neither table now leaves the
    drag to the camera, which is inert rather than misleading. */
 const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1};
+
+/* Is this cloud on screen? One home for the question, because the draw, the
+   picker and every new cut all have to agree about it. */
+function shown(i){ return !V.hidden[i] && (V.only<0 || V.only===i); }
+
+/* ⭐⭐ WHAT A NEW CUT IS ALLOWED TO TAKE FROM.
+
+   ⛔⛔ A HIDDEN CLOUD MUST NOT BE CUT, AND THAT IS THE WHOLE REASON HIDING
+   EXISTS. The operator hides a scan in order to work on the one behind it; a
+   lasso is a screen-space outline, so the hidden cloud's points sit inside it
+   too. Cutting them would delete points nobody could see, silently, in a
+   program whose entire safety story is that you look at what you are about to
+   remove. The show-one control that was already here did exactly that: it
+   changed the picture and nothing else, so a cut drawn while isolating one
+   scan went through all of them.
+
+   ⛔ AND THE SCOPE IS RECORDED ON THE CUT, not applied as a view filter. The
+   export re-reads the captures and re-applies the operations, so a scope that
+   lived only in the page would mean the file lost points the preview kept. */
+function cutScope(){
+  const on=V.scans.filter(s=>shown(s.index)).map(s=>s.index);
+  if(V.editWho>=0) return V.hidden[V.editWho] ? [] : V.editWho;
+  return on.length===V.scans.length ? null : on;
+}
 const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
@@ -6279,9 +6419,17 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('showb').onclick=e=>{
     const order=[-1].concat(V.scans.map(s=>s.index));
     V.only=order[(order.indexOf(V.only)+1)%order.length];
-    e.target.textContent = V.only<0 ? 'Both'
+    /* ⛔ "Both" WAS A TWO-SCAN-ERA LABEL. This shoot opens fifty-nine, and
+       a button reading "Both" over a list of fifty-nine is not a label, it is
+       a leftover from when a session meant two clouds. */
+    e.target.textContent = V.only<0 ? 'All'
       : V.scans.find(s=>s.index===V.only).name.slice(0,12);
-    invalidate(); };
+    /* Isolating and hiding are two answers to one question, so using one
+       releases the other rather than letting them disagree about what is on
+       screen. */
+    if(V.only>=0) V.hidden={};
+    refreshLists(); showHidden(); invalidate(); };
+  $('showall').onclick=showAll;
   $('ps').oninput=e=>{ V.psize=parseFloat(e.target.value);
     $('psv').textContent=V.psize.toFixed(2); invalidate(); };
   $('add').onclick=addScan;

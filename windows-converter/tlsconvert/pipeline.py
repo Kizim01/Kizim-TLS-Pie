@@ -158,6 +158,43 @@ def box_rotation(yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
     return rz @ ry @ rx
 
 
+def _scope(scan):
+    """
+    Normalise a cut's scope: None for every cloud, else a sorted tuple.
+
+    ⭐⭐ IT HOLDS A SET, NOT ONE INDEX, BECAUSE HIDING NEEDED IT TO. A cut made
+    while some clouds are hidden must apply to the visible ones and NOT to the
+    hidden ones -- hiding a scan in order to work on another is the whole point
+    of hiding it, and a lasso that reached through and deleted points nobody
+    could see would be the worst thing this program could do quietly.
+
+    ⛔ ONE INDEX STILL READS AND WRITES AS ONE INDEX. A project written before
+    this existed carries `"scan": 3`, and a cut aimed at exactly one cloud
+    still writes that -- so old files load unchanged and new ones stay readable
+    by eye. Only a genuine several-cloud scope becomes a list.
+    """
+    if scan is None:
+        return None
+    if isinstance(scan, (list, tuple, set, frozenset)):
+        got = tuple(sorted({int(v) for v in scan}))
+        if not got:
+            # ⛔ AN EMPTY SCOPE IS NOT "EVERY CLOUD". It is "no cloud", which
+            # is what a cut made with everything hidden would mean -- and
+            # turning that into None would send it through the whole job.
+            return ()
+        return got[0] if len(got) == 1 else got
+    return int(scan)
+
+
+def _in_scope(scope, index):
+    """Does a cut with this scope touch this cloud? One home for the test."""
+    if scope is None:
+        return True
+    if isinstance(scope, tuple):
+        return index in scope
+    return scope == index
+
+
 class Box(object):
     """
     A box that need not be square to the world -- it can be turned to a wall.
@@ -181,9 +218,9 @@ class Box(object):
         self.yaw_deg = float(yaw_deg)
         self.pitch_deg = float(pitch_deg)
         self.roll_deg = float(roll_deg)
-        # Which cloud this cut belongs to, or None for every cloud.
-        # See `Edit.for_scan`.
-        self.scan = None if scan is None else int(scan)
+        # Which cloud or clouds this cut belongs to, or None for every
+        # cloud. See `Edit.for_scan` and `_scope`.
+        self.scan = _scope(scan)
 
     @property
     def centre(self):
@@ -221,7 +258,11 @@ class Box(object):
         # reason the turn is stored beside the corners rather than replacing
         # them. An older project reads back unchanged.
         if self.scan is not None:
-            out["scan"] = self.scan
+            # A tuple is not a JSON type, and `_scope` never makes a one-long
+            # one -- so a cut aimed at a single cloud still writes a bare
+            # integer, exactly as it did before a scope could name several.
+            out["scan"] = (list(self.scan) if isinstance(self.scan, tuple)
+                           else self.scan)
         return out
 
     @classmethod
@@ -264,7 +305,7 @@ class Lasso(object):
         self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
         self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
         self.keep = bool(keep)
-        self.scan = None if scan is None else int(scan)
+        self.scan = _scope(scan)
 
     def inside(self, xyz):
         """True where a point falls within the drawn outline."""
@@ -288,7 +329,8 @@ class Lasso(object):
                "polygon": [[float(a), float(b)] for a, b in self.polygon],
                "keep": self.keep}
         if self.scan is not None:
-            out["scan"] = self.scan
+            out["scan"] = (list(self.scan) if isinstance(self.scan, tuple)
+                           else self.scan)
         return out
 
     @classmethod
@@ -370,7 +412,11 @@ class Edit(object):
         """Every cloud index this edit singles out, in order."""
         seen = set()
         for op in list(self.keep) + list(self.drop) + list(self.lassos):
-            if op.scan is not None:
+            if op.scan is None:
+                continue
+            if isinstance(op.scan, tuple):
+                seen.update(op.scan)
+            else:
                 seen.add(op.scan)
         return sorted(seen)
 
@@ -392,7 +438,7 @@ class Edit(object):
         """
         if index is None:
             return self
-        mine = (lambda op: op.scan is None or op.scan == index)
+        mine = (lambda op: _in_scope(op.scan, index))
         return Edit(keep=[b for b in self.keep if mine(b)],
                     drop=[b for b in self.drop if mine(b)],
                     lassos=[l for l in self.lassos if mine(l)])
