@@ -2609,8 +2609,7 @@ PAGE = r"""<!doctype html>
   /* The lasso is drawn on a 2D canvas over the scene rather than in GL: it is
      a screen-space mark, and a screen-space mark belongs in screen space. */
   #ov{position:fixed;inset:0;pointer-events:none;display:none;z-index:1}
-  #panel,#hud,#keys{z-index:2}
-  #keys{position:fixed;bottom:12px;left:18px;color:var(--faint);font-size:11px}
+  #panel,#hud{z-index:2}
   #err{position:fixed;inset:0;display:none;place-items:center;padding:40px;
     text-align:center;color:var(--red);font-size:15px;background:#05060a}
   .num{font-variant-numeric:tabular-nums}
@@ -2656,6 +2655,15 @@ PAGE = r"""<!doctype html>
 .drop button .tick{width:11px;color:#7ee0c0;font-size:11px}
 .drop .head{color:var(--faint);font-size:10px;text-transform:uppercase;
   letter-spacing:.06em;padding:5px 9px 3px}
+.drop.keys{min-width:372px;max-width:372px;max-height:78vh;overflow:auto;
+  padding:8px 10px 12px}
+.drop.keys .head{padding-top:10px}
+.drop.keys .head:first-child{padding-top:2px}
+.kr{display:flex;gap:9px;align-items:baseline;padding:2.5px 9px;
+  font-size:11.5px;color:var(--dim)}
+.kr kbd{flex:0 0 108px;text-align:right;font:inherit;font-size:11px;
+  color:var(--text);font-variant-numeric:tabular-nums}
+.kr span{flex:1}
 
 .tray{border:.5px solid var(--edge);border-radius:14px;margin:7px 0;
   background:rgba(255,255,255,.03);overflow:hidden}
@@ -2663,6 +2671,10 @@ PAGE = r"""<!doctype html>
   padding:7px 8px 7px 9px;background:rgba(255,255,255,.05);
   font-size:11.5px;letter-spacing:.02em;user-select:none}
 .trayhead:hover{background:rgba(255,255,255,.09)}
+.trayhead{cursor:grab}
+.tray.dragging{opacity:.55;outline:1px solid rgba(126,224,192,.55);
+  cursor:grabbing}
+.tray.dragging .trayhead{cursor:grabbing}
 .trayhead b{font-weight:600;color:var(--text)}
 .trayhead .fold{color:var(--faint);font-size:10px;width:10px;
   transition:transform .14s ease;display:inline-block}
@@ -2714,12 +2726,12 @@ PAGE = r"""<!doctype html>
 </style>
 <div class="pnl" id="panel">
 <div id="traysay"></div>
-<div class="tray" id="ty_scans"><div class="trayhead" onclick="foldTray('scans')"><span class="fold">▾</span><b class="grow">Scans in this job</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('scans')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_scans"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'scans')"><span class="fold">▾</span><b class="grow">Scans in this job</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('scans')">✕</button></div><div class="traybody">
   <div id="legend"></div>
   <div id="hidsay" style="font-size:10.5px;margin:3px 0 4px"></div>
   <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
   </div></div>
-<div class="tray" id="ty_project"><div class="trayhead" onclick="foldTray('project')"><span class="fold">▾</span><b class="grow">Project</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('project')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_project"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'project')"><span class="fold">▾</span><b class="grow">Project</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('project')">✕</button></div><div class="traybody">
   <label>Project</label>
   <div class="row"><button id="psave">Save project</button>
     <button id="psaveas">Save as…</button>
@@ -2727,7 +2739,7 @@ PAGE = r"""<!doctype html>
   <div id="pname" style="font-size:10.5px;color:var(--faint);margin-top:4px">
   </div>
   </div></div>
-<div class="tray" id="ty_sort"><div class="trayhead" onclick="foldTray('sort')"><span class="fold">▾</span><b class="grow">Sort a shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('sort')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_sort"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'sort')"><span class="fold">▾</span><b class="grow">Sort a shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('sort')">✕</button></div><div class="traybody">
   <div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
     Pairs a day of captures with a folder of 360 photographs by time and puts
@@ -2736,7 +2748,7 @@ PAGE = r"""<!doctype html>
     reported with a confidence — if the gaps do not cluster it says so
     rather than sorting around a guess.</div>
   </div></div>
-<div class="tray" id="ty_add"><div class="trayhead" onclick="foldTray('add')"><span class="fold">▾</span><b class="grow">Add a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('add')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_add"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'add')"><span class="fold">▾</span><b class="grow">Add a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('add')">✕</button></div><div class="traybody">
   <label>Add another scan</label>
   <label><input type="checkbox" id="impphoto" checked> Take the photograph
     from the same folder</label>
@@ -2752,7 +2764,7 @@ PAGE = r"""<!doctype html>
          style="margin-top:7px">
   <div class="row"><button id="add">Add pasted path</button></div>
   </div></div>
-<div class="tray" id="ty_detail"><div class="trayhead" onclick="foldTray('detail')"><span class="fold">▾</span><b class="grow">Preview detail</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('detail')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_detail"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'detail')"><span class="fold">▾</span><b class="grow">Preview detail</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('detail')">✕</button></div><div class="traybody">
   <label>Preview detail <span class="num" id="detv">Full</span></label>
   <input type="range" id="det" min="0" max="5" step="1" value="0">
   <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
@@ -2760,7 +2772,7 @@ PAGE = r"""<!doctype html>
   <div class="row"><button id="applydet" class="go">Re-read at this detail
     </button></div>
   </div></div>
-<div class="tray" id="ty_move"><div class="trayhead" onclick="foldTray('move')"><span class="fold">▾</span><b class="grow">Move a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('move')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_move"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'move')"><span class="fold">▾</span><b class="grow">Move a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('move')">✕</button></div><div class="traybody">
   <div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour; press it again and it refines.</div>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
@@ -2778,7 +2790,7 @@ PAGE = r"""<!doctype html>
   <label>Turn <span class="num" id="rv">0.0</span>&deg;</label>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
   </div></div>
-<div class="tray" id="ty_autoalign"><div class="trayhead" onclick="foldTray('autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_autoalign"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
   <button class="go" id="auto">Auto-align</button>
   <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
     Drag it roughly into place first — it starts from where you put it, which
@@ -2793,7 +2805,7 @@ PAGE = r"""<!doctype html>
     scan stops working a few positions in. Leave this on <b>nearest</b> and
     the chain builds itself; set it when you know better.</div>
   </div></div>
-<div class="tray" id="ty_pairs"><div class="trayhead" onclick="foldTray('pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_pairs"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
     <button id="pairgo" class="go">Align from pairs</button></div>
   <div class="row"><button id="pairundo">Undo pair</button>
@@ -2806,7 +2818,7 @@ PAGE = r"""<!doctype html>
     the other cannot say which way the scan is facing.</div>
   <div id="pairlist" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
-<div class="tray" id="ty_level"><div class="trayhead" onclick="foldTray('level')"><span class="fold">▾</span><b class="grow">Level to a surface</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('level')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_level"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'level')"><span class="fold">▾</span><b class="grow">Level to a surface</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('level')">✕</button></div><div class="traybody">
   <div class="blurb">Level to a surface, then say which way is north. Both act on the whole survey at once.</div>
   <label>Level to a surface</label>
   <div class="row"><button id="level">Pick level points</button>
@@ -2823,7 +2835,7 @@ PAGE = r"""<!doctype html>
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
-<div class="tray" id="ty_north"><div class="trayhead" onclick="foldTray('north')"><span class="fold">▾</span><b class="grow">Which way is north</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('north')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_north"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'north')"><span class="fold">▾</span><b class="grow">Which way is north</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('north')">✕</button></div><div class="traybody">
   <label>Which way is north</label>
   <div class="row"><button id="north">Sight a line</button>
     <button id="northclear">Clear</button></div>
@@ -2839,7 +2851,7 @@ PAGE = r"""<!doctype html>
     in a leaning frame it is not the one you sighted.</div>
   <div id="nthlist" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
-<div class="tray" id="ty_plumb"><div class="trayhead" onclick="foldTray('plumb')"><span class="fold">▾</span><b class="grow">Plumb and level check</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('plumb')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_plumb"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'plumb')"><span class="fold">▾</span><b class="grow">Plumb and level check</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('plumb')">✕</button></div><div class="traybody">
   <label>Plumb &amp; level reference</label>
   <div class="row"><button id="ref">Reference lines</button>
     <button id="plumb">Place / measure</button></div>
@@ -2854,11 +2866,11 @@ PAGE = r"""<!doctype html>
     vertical does not draw as a vertical on screen.</div>
   <div id="reflist" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
-<div class="tray" id="ty_photo"><div class="trayhead" onclick="foldTray('photo')"><span class="fold">▾</span><b class="grow">This scan&#39;s photograph</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('photo')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_photo"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'photo')"><span class="fold">▾</span><b class="grow">This scan&#39;s photograph</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('photo')">✕</button></div><div class="traybody">
   <div class="blurb">The photograph belonging to whichever scan is picked. Double-click a scan in <b>Scans in this job</b> to work on it.</div>
   <div id="photopane"></div>
   </div></div>
-<div class="tray" id="ty_shoot"><div class="trayhead" onclick="foldTray('shoot')"><span class="fold">▾</span><b class="grow">Solve the whole shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('shoot')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_shoot"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'shoot')"><span class="fold">▾</span><b class="grow">Solve the whole shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('shoot')">✕</button></div><div class="traybody">
   <label>Solve every photograph together</label>
   <div class="row"><button id="shootsolve" class="go">Solve the whole
     shoot</button></div>
@@ -2871,7 +2883,7 @@ PAGE = r"""<!doctype html>
     are named rather than overruled: that is how you find out the camera was
     seated differently that time.</div>
   </div></div>
-<div class="tray" id="ty_clean"><div class="trayhead" onclick="foldTray('clean')"><span class="fold">▾</span><b class="grow">Strays and weak returns</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clean')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_clean"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clean')"><span class="fold">▾</span><b class="grow">Strays and weak returns</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clean')">✕</button></div><div class="traybody">
   <div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
   <div class="row"><button id="clnstray" class="go">Remove strays</button>
     <button id="clnoff">Put them back</button></div>
@@ -2894,7 +2906,7 @@ PAGE = r"""<!doctype html>
     — a dark restaurant and a white office do not share a threshold.</div>
   <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
-<div class="tray" id="ty_clip"><div class="trayhead" onclick="foldTray('clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_clip"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
   <div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud.</div>
   <label>Clip box</label>
   <div class="row"><button id="clipon">Off</button>
@@ -2926,7 +2938,7 @@ PAGE = r"""<!doctype html>
   <div class="row"><button id="bfit">Square to view</button>
     <button id="bzero">Square to world</button></div>
   </div></div>
-<div class="tray" id="ty_cut"><div class="trayhead" onclick="foldTray('cut')"><span class="fold">▾</span><b class="grow">Delete points</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('cut')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_cut"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'cut')"><span class="fold">▾</span><b class="grow">Delete points</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('cut')">✕</button></div><div class="traybody">
   <label>Delete points</label>
   <select id="editwho"></select>
   <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
@@ -2950,13 +2962,13 @@ PAGE = r"""<!doctype html>
   </div>
   <div id="editlist"></div>
   </div></div>
-<div class="tray" id="ty_export"><div class="trayhead" onclick="foldTray('export')"><span class="fold">▾</span><b class="grow">Write the cloud out</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('export')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_export"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'export')"><span class="fold">▾</span><b class="grow">Write the cloud out</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('export')">✕</button></div><div class="traybody">
   <label>Export detail <span class="num" id="exv">as previewed</span></label>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
   <div class="row"><button id="save" class="go">Save merged</button>
     <button id="saveclip">Save clip box only</button></div>
   </div></div>
-<div class="tray" id="ty_view"><div class="trayhead" onclick="foldTray('view')"><span class="fold">▾</span><b class="grow">View</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('view')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_view"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'view')"><span class="fold">▾</span><b class="grow">View</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('view')">✕</button></div><div class="traybody">
   <label>View</label>
   <div class="row"><button id="nav" class="go">Camera</button>
     <button id="ortho">Perspective</button></div>
@@ -2967,7 +2979,7 @@ PAGE = r"""<!doctype html>
     <b>Camera</b> (C) gives the whole window to the view — no grips, no
     tools, nothing to catch a drag. Picking any tool leaves it again.</div>
   </div></div>
-<div class="tray" id="ty_colour"><div class="trayhead" onclick="foldTray('colour')"><span class="fold">▾</span><b class="grow">Colour and point size</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('colour')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_colour"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'colour')"><span class="fold">▾</span><b class="grow">Colour and point size</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('colour')">✕</button></div><div class="traybody">
   <label>Colour</label>
   <div class="row"><button id="mode" class="on">By scan</button>
     <button id="showb" title="Cycle through showing one cloud at a time. The
@@ -2980,16 +2992,7 @@ PAGE = r"""<!doctype html>
   </div></div>
 </div>
 <canvas id="ov"></canvas>
-<div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
-  shift-drag pan &middot; wheel button pans, shift-wheel-button orbits
-  &middot; arrows nudge 5 cm &middot; [ ] turn 0.5&deg;
-  &middot; C camera only &middot; R roam &middot; F recentre &middot; O orthographic
-  &middot; M rectangle &middot; L lasso &middot; P pick pairs
-  &middot; G level points &middot; T reference lines
-  &middot; B hide box &middot; Ctrl-Z undo
-  &middot; double-click a scan name to work on it
-  &middot; drag its ring to turn it (shift snaps 5&deg;)
-  &middot; Ctrl-S save project &middot; Ctrl-O open</div>
+
 <div id="err"></div>
 <script>
 const DEVICE = __DEVICE__, CUDA = __CUDA__;
@@ -3002,7 +3005,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
-           ref:false, plumb:{a:null,b:null}, nth:[], trays:{},
+           ref:false, plumb:{a:null,b:null}, nth:[], trays:{}, order:[],
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
@@ -3982,8 +3985,9 @@ async function boot(){
      end in `fail()`, and an operator staring at an error with no menus has no
      way to drop the preview detail and try again -- which is exactly what that
      error tells them to do. */
-  V.trays = trayState();
-  buildTopbar(); showTrays();
+  const st = trayState();
+  V.trays = st.trays; V.order = st.order;
+  buildTopbar(); applyOrder(); showTrays();
   addEventListener('click', closeMenus);
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
@@ -5682,24 +5686,180 @@ const MENUWHY = {
    that go with it instead of arming a tool whose panel is shut. */
 const TOOLTRAY = {rect:'cut', lasso:'cut', pair:'pairs', level:'level',
                   north:'north', plumb:'plumb'};
-const TRAYKEY = 'tlspie.trays.v1';
+const TRAYKEY = 'tlspie.trays.v2';
 
 /* Open, and folded, per tray. ⛔ KEPT ACROSS RELOADS. A tray arrangement is a
    working habit, and a page that forgets it every time teaches the operator
    not to bother arranging anything. */
 function trayState(){
-  let st = null;
-  try{ st = JSON.parse(localStorage.getItem(TRAYKEY)||'null'); }catch(e){}
-  if(!st || typeof st!=='object'){
+  let got = null;
+  try{ got = JSON.parse(localStorage.getItem(TRAYKEY)||'null'); }catch(e){}
+  let st = (got && typeof got === 'object' && got.trays) ? got.trays : null;
+  if(!st){
     st = {};
     for(const [id] of TRAYS) st[id] = {open:false, shut:false};
     for(const id of ['scans','add','autoalign','photo']) st[id].open = true;
   }
   for(const [id] of TRAYS) if(!st[id]) st[id] = {open:false, shut:false};
-  return st;
+  return {trays:st, order:trayOrder(got && got.order)};
 }
 function saveTrays(){
-  try{ localStorage.setItem(TRAYKEY, JSON.stringify(V.trays)); }catch(e){}
+  try{
+    localStorage.setItem(TRAYKEY,
+      JSON.stringify({trays:V.trays, order:V.order}));
+  }catch(e){}
+}
+
+
+/* ⭐ THE SAME LIST, READABLE. It was one run-on line of forty items separated
+   by middots, which is what a caption looks like when it is never read. */
+const KEYHELP = [
+  ['The mouse', [
+    ['drag', 'orbit'],
+    ['wheel', 'zoom \u2014 it flies through, it does not stop at the surface'],
+    ['shift-drag', 'pan'],
+    ['wheel button', 'pan \u00b7 hold shift to orbit'],
+    ['double-click a scan', 'work on that one: the movement controls, its '+
+     'ring, new cuts and the photograph tray all follow it'],
+    ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0'],
+    ['drag a tray\u2019s title', 'move it above or below another tray']]],
+  ['Moving what is picked', [
+    ['arrows', 'nudge 5 cm'],
+    ['[  ]', 'turn 0.5\u00b0']]],
+  ['The view', [
+    ['C', 'camera only \u2014 the whole window, no grips to catch a drag'],
+    ['R', 'roam'],
+    ['F', 'recentre'],
+    ['O', 'orthographic \u00b7 use it before trusting a vertical']]],
+  ['Tools', [
+    ['M', 'rectangle'],
+    ['L', 'lasso'],
+    ['P', 'pick pairs'],
+    ['G', 'level points'],
+    ['T', 'reference lines'],
+    ['B', 'hide the clip box without switching clipping off']]],
+  ['Committing and undoing', [
+    ['Enter', 'delete what is inside the outline'],
+    ['shift-Enter', 'keep only what is inside it'],
+    ['Esc', 'throw the outline away'],
+    ['Ctrl-Z', 'undo'],
+    ['Ctrl-S', 'save project \u00b7 Ctrl-O open']]]];
+
+function buildKeys(){
+  const d = document.createElement('div');
+  d.className = 'drop keys'; d.id = 'dr_keys';
+  d.onclick = e => e.stopPropagation();
+  d.innerHTML = KEYHELP.map(([head, rows]) =>
+    '<div class="head">'+head+'</div>'+
+    rows.map(([k, what]) =>
+      '<div class="kr"><kbd>'+k+'</kbd><span>'+what+'</span></div>').join('')
+  ).join('');
+  document.body.appendChild(d);
+}
+function toggleKeys(){
+  const d = $('dr_keys'), b = $('mt_keys');
+  const was = d.classList.contains('on');
+  closeMenus();
+  if(was) return;
+  const r = b.getBoundingClientRect();
+  /* Anchored to its own button and kept on screen: this one is wide and sits
+     far to the right, so left-aligning it the way the workflow menus are
+     would put half of it past the edge. */
+  d.style.left = Math.max(8, Math.min(r.left, innerWidth - 380))+'px';
+  d.classList.add('on'); b.classList.add('on');
+}
+
+
+/* ⭐⭐ THE ORDER OF THE TRAYS IS THE OPERATOR'S, NOT MINE. The default runs in
+   workflow order because that is the right thing to meet on the first run, but
+   the panel is a workbench: whichever two tools a job actually alternates
+   between want to be next to each other, and which two those are depends on
+   the job. Dragged by the title, saved with the rest of the arrangement.
+
+   ⛔ STORED AS THE LIST OF NAMES, AND RECONCILED AGAINST THE REAL ONE ON THE
+   WAY IN. A stored order is a snapshot of the trays that existed the day it
+   was saved; a later version adds one and removes another, and an order taken
+   on trust would then hide the new tray (never placed) and try to place one
+   that has gone. */
+function trayOrder(saved){
+  const real = TRAYS.map(t=>t[0]);
+  const out = (saved||[]).filter(id => real.indexOf(id) >= 0);
+  for(const id of real) if(out.indexOf(id) < 0) out.push(id);
+  return out;
+}
+/* Put the panel's children in that order. ⛔ ONLY WHEN IT HAS ACTUALLY
+   CHANGED: re-appending an element moves it, and moving the element a text box
+   lives in while somebody is typing in it takes the focus and the caret with
+   it. */
+function applyOrder(){
+  const panel = $('panel'); if(!panel) return;
+  const now = Array.from(panel.querySelectorAll('.tray')).map(
+    el => el.id.slice(3));
+  if(now.join() === V.order.join()) return;
+  for(const id of V.order){
+    const el = $('ty_'+id);
+    if(el) panel.appendChild(el);
+  }
+}
+
+let TRAYDRAG = null;
+function trayGrab(e, id){
+  /* ⛔ NOT THE CLOSE BUTTON. It sits inside the handle, so without this every
+     press on ✕ would begin a drag and the shut would land on pointerup as a
+     fold instead. */
+  if(e.button !== 0 || (e.target && e.target.classList
+      && e.target.classList.contains('x'))) return;
+  const el = $('ty_'+id); if(!el) return;
+  TRAYDRAG = {id:id, y0:e.clientY, moved:false};
+  const move = ev => {
+    if(!TRAYDRAG) return;
+    if(!TRAYDRAG.moved){
+      if(Math.abs(ev.clientY - TRAYDRAG.y0) < 5) return;
+      TRAYDRAG.moved = true;
+      el.classList.add('dragging');
+    }
+    trayOver(ev.clientY, id);
+  };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    el.classList.remove('dragging');
+    /* A press that never travelled is a click, and a click folds. */
+    if(TRAYDRAG && !TRAYDRAG.moved) foldTray(id);
+    else { saveTrays(); say(trayName(id)+' moved.'); }
+    TRAYDRAG = null;
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+  e.preventDefault();
+}
+function trayName(id){
+  const row = TRAYS.find(t=>t[0]===id);
+  return row ? row[2] : id;
+}
+/* Which open tray is under the pointer, and which side of its middle. */
+function trayOver(y, id){
+  for(const other of V.order){
+    if(other === id) continue;
+    if(!V.trays[other] || !V.trays[other].open) continue;
+    const el = $('ty_'+other); if(!el) continue;
+    const r = el.getBoundingClientRect();
+    if(y < r.top || y > r.bottom) continue;
+    const from = V.order.indexOf(id);
+    if(from < 0) return;
+    V.order.splice(from, 1);
+    const at = V.order.indexOf(other);
+    V.order.splice(y < r.top + r.height / 2 ? at : at + 1, 0, id);
+    applyOrder();
+    return;
+  }
+}
+/* Put the workflow order back, for when a panel has been rearranged into
+   something nobody can find anything in. */
+function resetTrays(){
+  V.order = TRAYS.map(t=>t[0]);
+  applyOrder(); saveTrays();
+  say('The trays are back in workflow order.');
 }
 
 function buildTopbar(){
@@ -5709,6 +5869,10 @@ function buildTopbar(){
     'onclick="event.stopPropagation();toggleMenu('+i+')"><i>'+(i+1)+
     '</i>'+m+'</button>').join('')+
     '<span class="sep"></span>'+
+    '<button class="mt" id="mt_keys" title="Every mouse gesture and keyboard '+
+    "shortcut. It used to be printed along the bottom of the window, where it "+
+    'reached across the whole screen and took clicks meant for the panel." '+
+    'onclick="event.stopPropagation();toggleKeys()">Keys</button>'+
     '<span class="hint">a tool opens its tray on the right \u00b7 '+
     '\u2715 shuts it</span>'+
     '<span class="dev'+(CUDA?' cuda':'')+'" title="'+
@@ -5727,6 +5891,7 @@ function buildTopbar(){
   /* The menus are siblings of the bar rather than children of the buttons:
      a dropdown inside a fixed flex row inherits its clipping. */
   for(const old of Array.from(document.querySelectorAll('.drop'))) old.remove();
+  buildKeys();
   MENUS.forEach((m,i) => {
     const d = document.createElement('div');
     d.className = 'drop'; d.id = 'dr_'+i;
@@ -5742,7 +5907,12 @@ function paintMenus(){
       TRAYS.filter(t=>t[1]===m).map(([id,,name]) =>
         '<button onclick="pickTray(\''+id+'\')"><span class="tick">'+
         (V.trays[id] && V.trays[id].open ? '\u2713' : '')+'</span>'+
-        name+'</button>').join('');
+        name+'</button>').join('')+
+      (m === MENUS[MENUS.length-1]
+        ? '<div class="head">the panel</div>'+
+          '<button onclick="resetTrays()"><span class="tick"></span>'+
+          'Put the trays back in workflow order</button>'
+        : '');
   });
 }
 function toggleMenu(i){
@@ -5761,6 +5931,12 @@ function closeMenus(){
     if(d) d.classList.remove('on');
     if(b) b.classList.remove('on');
   });
+  /* ⛔ THE SHORTCUTS PANEL IS DISMISSED BY THE SAME CLICK AS EVERY OTHER ONE.
+     Left out of here it would be the single panel on the page that had to be
+     closed by pressing its own button again, which nobody would discover. */
+  const k=$('dr_keys'), kb=$('mt_keys');
+  if(k) k.classList.remove('on');
+  if(kb) kb.classList.remove('on');
 }
 /* Picking a tray from a menu opens it if it is shut and shuts it if it is
    open -- and either way the menu goes away, because a menu that stays put

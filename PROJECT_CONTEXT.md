@@ -2707,6 +2707,36 @@ mistake and a fine one is not.
 
 Converter suite **616 → 673**.
 
+⛔⛔ **AND A CAPTION WAS TAKING THE CLICKS.** Reported as *"I can't change the point size"*. The
+shortcut ledger was `position:fixed; bottom:12px; left:18px` with **no width and no
+`pointer-events:none`**, at the panel's own z-index and *after* it in the document — so forty items
+separated by middots wrapped clear across the window, painted over the panel's lower half, and
+swallowed every click that landed there. The point-size slider is the last control in the last tray,
+which is the lowest thing on the panel, which is the thing most reliably covered. ⭐ **The other two
+fixed overlays got this right, and that is the tell:** `#hud` and `#ov` both carry
+`pointer-events:none`, because both are drawn over the scene and neither is meant to be clicked. A
+fixed element over the workspace either takes clicks on purpose or declares that it does not — there
+is no third option, and the one that looks like a third option is a bug that presents as an unrelated
+control being broken. The ledger is now a **Keys** panel in the bar, laid out as key-and-meaning rows
+rather than as one run-on line, which is what a caption looks like when nobody reads it.
+
+⭐ **THE TRAYS CAN BE DRAGGED ABOVE OR BELOW EACH OTHER.** Workflow order is the right thing to meet
+on the first run, but the panel is a workbench: whichever two tools a job alternates between want to be
+next to each other, and which two those are depends on the job. Dragged by the title, saved with the
+rest of the arrangement, and there is a *put them back in workflow order* entry in the last menu.
+⛔ **Folding had to move off `click`**: a header that is both a button and a drag handle cannot keep
+an `onclick`, because every drag ends in a click too — so every re-ordering would also fold the tray it
+had just moved. It folds on a press that did not travel. ⛔ **And the saved order is reconciled against
+the real one on the way in**, because a stored order is a snapshot of the trays that existed the day it
+was saved: taken on trust, a later version's new tray would never be placed and so never drawn.
+
+⚠ **A check of mine THREW instead of failing** and took the rest of the suite down with it —
+`_ALIGN_SRC.index(...)` raises when the thing it is looking for has moved, which is exactly the case it
+exists to report. `find` and a comparison. *The fourth diagnostic in this project that did not work in
+the situation it was written for.*
+
+Converter suite **673 → 696**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

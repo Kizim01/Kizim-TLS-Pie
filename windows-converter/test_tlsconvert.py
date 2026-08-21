@@ -1671,8 +1671,10 @@ try:
     # ⛔ Chromium's autoscroll widget takes the pointer for the whole drag.
     check("the browser's own middle-click is cancelled, or it eats the drag",
           "e.button===1) e.preventDefault()" in _page)
-    check("the operator is told, in the hint line and when a tool goes on",
-          "wheel button pans" in _page and
+    check("the operator is told the wheel button still drives the view, both "
+          "in the shortcut panel and at the moment a tool takes the left one",
+          "['wheel button', 'pan" in _page and
+          "hold shift to orbit" in _page and
           "the left button belongs to it now" in _page)
 
     # ⛔⛔ THE TEST THAT WOULD HAVE CAUGHT IT. Routing read `V.tool==='pair'` to
@@ -4177,9 +4179,16 @@ check("the arrangement survives a reload", "localStorage" in _ALIGN_SRC
 # ⛔ THE MENUS ARE BUILT BEFORE THE CLOUDS LOAD. Loading can end in fail(), and
 # that error tells the operator to drop the preview detail and try again --
 # which needs a menu.
+# ⛔ FIND, NOT INDEX. `index` RAISES, which takes the whole suite down with a
+# traceback and leaves every check after it unreported -- so the one form of
+# this check that cannot work is the one that throws when the thing it is
+# checking has moved.
+_boot = _ALIGN_SRC.find("buildTopbar();")
+_fails = _ALIGN_SRC.find("Could not load the clouds")
 check("the bar is built before anything that can fail",
-      _ALIGN_SRC.index("buildTopbar(); showTrays();")
-      < _ALIGN_SRC.index("Could not load the clouds"))
+      0 <= _boot < _fails, (_boot, _fails))
+check("and the saved arrangement is restored with it, not after the first "
+      "click", "applyOrder(); showTrays();" in _ALIGN_SRC)
 check("arming a tool with the keyboard opens the tray that explains it",
       "function trayForTool" in _ALIGN_SRC and "TOOLTRAY" in _ALIGN_SRC)
 
@@ -4220,6 +4229,123 @@ check("and the search does not touch the grade, because fitting a pose better "
 check("the photograph's controls are in one tray, not repeated in every row",
       "function photoBrief" in _ALIGN_SRC
       and "photoBrief(s)+'</div>')" in _ALIGN_SRC)
+
+
+# --- the shortcut ledger, which was eating clicks --------------------------
+#
+# ⛔⛔ IT WAS NOT MERELY IN THE WAY. `#keys` was fixed to the bottom-left with
+# NO width and NO `pointer-events:none`, at the panel's own z-index and after
+# it in the document -- so forty items separated by middots wrapped clear
+# across the window, painted over the panel's lower half, and SWALLOWED THE
+# CLICKS THAT LANDED ON IT. The point-size slider is the last control in the
+# last tray, which is the lowest thing on the panel, which is the thing most
+# reliably covered. It was reported as "I can't change the point size".
+print("\nthe shortcuts, off the workspace")
+
+check("the ledger no longer sits across the bottom of the window",
+      'id="keys"' not in _ALIGN_SRC and "#keys{position:fixed" not in
+      _ALIGN_SRC)
+check("and it is reachable from the bar instead",
+      'id="mt_keys"' in _ALIGN_SRC and "function toggleKeys" in _ALIGN_SRC
+      and "KEYHELP" in _ALIGN_SRC)
+# ⭐ THE OTHER TWO FIXED OVERLAYS GOT THIS RIGHT, WHICH IS THE TELL. Anything
+# drawn over the workspace either takes clicks on purpose or says it does not.
+for _who in ("#hud{", "#ov{"):
+    _at = _ALIGN_SRC.index(_who)
+    check("%s still declares that it does not take clicks" % _who.strip("{"),
+          "pointer-events:none" in _ALIGN_SRC[_at:_at + 220])
+check("the shortcuts panel is dismissed by the same click as every menu",
+      "dr_keys" in _ALIGN_SRC.split("function closeMenus")[1][:600])
+# ⛔ THE LIST HAS TO KEEP DESCRIBING THE PROGRAM. It is the only place several
+# of these are written down at all.
+for _key in ("'C'", "'L'", "'Ctrl-Z'", "'Esc'"):
+    check("the shortcut list still documents %s" % _key,
+          _key in _ALIGN_SRC)
+
+# --- dragging a tray above or below another --------------------------------
+print("\nrearranging the trays")
+check("a tray's title is a drag handle",
+      _ALIGN_SRC.count('onpointerdown="trayGrab(') == 19,
+      _ALIGN_SRC.count('onpointerdown="trayGrab('))
+# ⛔ A HEADER THAT IS BOTH A BUTTON AND A HANDLE CANNOT KEEP AN onclick: every
+# drag ends in a click too, so every re-ordering would also fold what it moved.
+check("and folding moved off click, onto a press that did not travel",
+      'onclick="foldTray(' not in _ALIGN_SRC
+      and "if(TRAYDRAG && !TRAYDRAG.moved) foldTray(id);" in _ALIGN_SRC)
+check("the arrangement can be put back to workflow order",
+      "function resetTrays" in _ALIGN_SRC)
+
+if _node:
+    _probe = "\n".join(_js_func(f) for f in
+                       ("trayOrder", "trayOver", "trayName")) + """
+    const TRAYS = [['a','M','A'],['b','M','B'],['c','M','C'],['d','M','D']];
+    const BOX = {a:[0,100], b:[100,200], c:[200,300], d:[300,400]};
+    const V = {order:['a','b','c','d'],
+               trays:{a:{open:1},b:{open:1},c:{open:1},d:{open:1}}};
+    function $(id){
+      const k = id.slice(3), r = BOX[k];
+      return r ? {getBoundingClientRect:()=>({top:r[0], bottom:r[1],
+                                              height:r[1]-r[0]})} : null;
+    }
+    function applyOrder(){}
+    const out = {};
+    out.keepsRealOnes = trayOrder(['c','a']);
+    out.dropsStale = trayOrder(['zz','b']);
+    out.fromNothing = trayOrder(null);
+    // drop 'a' onto the TOP half of 'c' -> it goes above c
+    V.order = ['a','b','c','d'];
+    trayOver(210, 'a');
+    out.above = V.order.join(',');
+    // drop 'a' onto the BOTTOM half of 'c' -> it goes below c
+    V.order = ['a','b','c','d'];
+    trayOver(290, 'a');
+    out.below = V.order.join(',');
+    // a tray that is shut is not a target
+    V.order = ['a','b','c','d'];
+    V.trays.c.open = 0;
+    trayOver(210, 'a');
+    out.skipsShut = V.order.join(',');
+    V.trays.c.open = 1;
+    // nothing under the pointer changes nothing
+    V.order = ['a','b','c','d'];
+    trayOver(999, 'a');
+    out.nowhere = V.order.join(',');
+    out.name = trayName('b');
+    console.log(JSON.stringify(out));
+    """
+    _tp = os.path.join(tempfile.mkdtemp(prefix="tlstray"), "tray.js")
+    with io.open(_tp, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe)
+    _tr = subprocess.run([_node, _tp], capture_output=True, text=True)
+    check("the tray rules run", _tr.returncode == 0, (_tr.stderr or "")[:400])
+    _t = (json.loads(_tr.stdout.strip().splitlines()[-1])
+          if _tr.returncode == 0 else {})
+    # ⛔ A STORED ORDER IS A SNAPSHOT OF THE TRAYS THAT EXISTED THE DAY IT WAS
+    # SAVED. Taken on trust, a later version's new tray would never be placed
+    # -- so it would never be drawn -- and a removed one would be placed
+    # anyway.
+    check("a saved order keeps what the operator arranged",
+          _t.get("keepsRealOnes")[:2] == ["c", "a"], _t.get("keepsRealOnes"))
+    check("and every tray it does not mention is still placed",
+          sorted(_t.get("keepsRealOnes")) == ["a", "b", "c", "d"],
+          _t.get("keepsRealOnes"))
+    check("a tray that no longer exists is dropped rather than placed",
+          "zz" not in _t.get("dropsStale"), _t.get("dropsStale"))
+    check("and with nothing saved it is the workflow order",
+          _t.get("fromNothing") == ["a", "b", "c", "d"], _t.get("fromNothing"))
+    check("dropping on the top half of a tray goes above it",
+          _t.get("above") == "b,a,c,d", _t.get("above"))
+    check("and on the bottom half, below it",
+          _t.get("below") == "b,c,a,d", _t.get("below"))
+    # ⛔ A SHUT TRAY IS NOT A PLACE TO DROP ONE. It is not on screen, so the
+    # operator cannot be aiming at it, and its element still has a rectangle.
+    check("a shut tray is not a drop target", _t.get("skipsShut")
+          == "a,b,c,d", _t.get("skipsShut"))
+    check("and a drop over nothing moves nothing",
+          _t.get("nowhere") == "a,b,c,d", _t.get("nowhere"))
+    check("a tray knows its own name for the message", _t.get("name") == "B")
+else:
+    print("  (node missing: the tray rules were not run)")
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
