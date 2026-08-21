@@ -113,6 +113,32 @@ def _same(a, b, tol=1e-6):
             and abs(a.dz - b.dz) < tol and abs(a.yaw_deg - b.yaw_deg) < tol)
 
 
+def _placement(scan):
+    """
+    Where a scan sits, as ONE dict: four numbers from the Setup, two from the
+    Lean.
+
+    ⭐⭐ ONE DICT, TWO OBJECTS, AND THAT IS WHY THE LEAN SURVIVES. A scan's
+    placement crosses the wire in five places -- the scan list, the solve's
+    answer, the pairs answer, the project file and the export -- and a lean
+    given a parallel list of its own would be five chances to forget it. The
+    photograph's pose reached the screen and not the file for exactly that
+    reason, twice. Here `Setup.from_dict` takes its four keys and
+    `Lean.from_dict` takes its two, out of the same dict, and neither has to
+    know the other exists.
+    """
+    out = scan.setup.as_dict()
+    out.update(getattr(scan, "lean", None) and scan.lean.as_dict()
+               or registration.Lean().as_dict())
+    return out
+
+
+def _take_placement(scan, data):
+    """The other direction, through the same one door."""
+    scan.setup = registration.Setup.from_dict(data)
+    scan.lean = registration.Lean.from_dict(data)
+
+
 def _tint(n):
     """Distinguishable at a glance, and still distinguishable when overlaid."""
     return [(255, 176, 64), (96, 190, 255), (150, 255, 150),
@@ -130,6 +156,12 @@ class Scan(object):
         self.rgb = rgb
         self.sample = sample           # decimated, for the solver
         self.setup = setup or registration.Setup()
+        # ⛔⛔ THE TRIPOD'S OWN TIP AND BANK, AND IT IS DELIBERATELY NOT PART
+        # OF THE SETUP. The solver returns a yaw and a shift; written back over
+        # a placement that also carried a lean, it would take the lean with it
+        # -- so the button that tidies an alignment would quietly undo the one
+        # correction that had to be made by eye. See `registration.Lean`.
+        self.lean = registration.Lean()
         # "capture" (a .pcap, re-decodable) or "cloud" (already exported).
         # ⛔ The difference is not cosmetic: a cloud cannot be re-read at
         # another density and has no pan track, so the detail slider and the
@@ -586,10 +618,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         try:
             if path == "/solve":
+                srv.take_leans(body.get("leans"))
                 return self._json(srv.solve(int(body.get("index", 1)),
                                             body.get("start"),
                                             body.get("target")))
             if path == "/pairs":
+                srv.take_leans(body.get("leans"))
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
                                                   body.get("pairs") or []))
             if path == "/level":
@@ -770,7 +804,7 @@ class AlignServer(object):
                          # narrower question and reported full detail at nine
                          # per cent.
                          "subsampled": not buf.kept(scan.total),
-                         "setup": scan.setup.as_dict(),
+                         "setup": _placement(scan),
                          # Where it came from, so the panel can grey out the
                          # detail slider for a cloud rather than offering a
                          # control that cannot do anything for it.
@@ -918,7 +952,7 @@ class AlignServer(object):
             scan.rung = None
         scan.rung = registration.next_voxel(getattr(scan, "rung", None))
         if scan.rung is None:
-            return {"ok": True, "index": index, "setup": scan.setup.as_dict(),
+            return {"ok": True, "index": index, "setup": _placement(scan),
                     "residual": None, "floor": None, "baseline": None,
                     "improvement": None, "trustworthy": True, "target": target,
                     "ambiguous": False, "exhausted": True, "warning": warn,
@@ -929,17 +963,25 @@ class AlignServer(object):
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
-            base = (fixed.sample if fixed.setup.is_identity()
-                    else fixed.setup.apply(fixed.sample))
+            # ⛔⛔ THE SOLVER IS SHOWN THE LEANED CLOUD, NOT THE RAW ONE.
+            # What is drawn on screen and what is written to the file is
+            # Setup(Lean(points)); solve against the raw points instead and the
+            # answer that comes back is the placement for a cloud that is not
+            # the one anybody is looking at -- out by the lean, in a way that
+            # looks like the fit simply failed. Both sides get the same
+            # treatment because the reference may be leaning too.
+            base = fixed.lean.apply(fixed.sample)
+            if not fixed.setup.is_identity():
+                base = fixed.setup.apply(base)
             sol = registration.solve_best(base,
-                                          self.scans[index].sample,
+                                          scan.lean.apply(scan.sample),
                                           progress=self._note, start=hint,
                                           voxel=scan.rung)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         self.scans[index].setup = sol.setup
-        return {"ok": True, "index": index, "setup": sol.setup.as_dict(),
+        return {"ok": True, "index": index, "setup": _placement(scan),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
@@ -947,6 +989,22 @@ class AlignServer(object):
                 "warning": warn,
                 "text": "onto %s at a %.0f cm voxel — %s"
                         % (fixed.name, (sol.voxel or 0) * 100, sol.describe())}
+
+    def take_leans(self, leans):
+        """
+        Accept the page's leans before doing anything that depends on them.
+
+        ⭐ THE PAGE OWNS A PLACEMENT UNTIL IT IS SAVED -- a Setup is a number
+        it can change at frame rate without asking anyone -- and a lean is part
+        of a placement, so it is owned the same way. Rather than a route of its
+        own, it rides along with the two requests that actually need it: the
+        solve and the pairs fit. A route would be a second door onto one piece
+        of state, and the two would drift apart the first time one was called
+        without the other.
+        """
+        for i, data in enumerate(leans or []):
+            if i < len(self.scans):
+                self.scans[i].lean = registration.Lean.from_dict(data)
 
     def align_pairs(self, index, pairs):
         """
@@ -975,7 +1033,7 @@ class AlignServer(object):
         # which is a fine way to converge confidently onto the wrong wall. A
         # placement made by hand is new information, exactly as a nudge is.
         scan.rung = None
-        return {"ok": True, "index": index, "setup": fit.setup.as_dict(),
+        return {"ok": True, "index": index, "setup": _placement(scan),
                 "rms": fit.rms, "errors": [float(e) for e in fit.errors],
                 "worst": fit.worst[0], "tolerance": fit.tolerance,
                 "trustworthy": fit.ok, "pairs": fit.count,
@@ -2156,7 +2214,8 @@ class AlignServer(object):
         if not self.scans:
             self.align_voxel = voxel
             return {"ok": True, "scans": [], "voxel": voxel}
-        keep = [(s.path, s.setup, getattr(s, "rung", None)) for s in self.scans]
+        keep = [(s.path, s.setup, getattr(s, "rung", None), s.lean)
+                for s in self.scans]
         self._progress = {"stage": "re-reading at the new detail", "n": 0,
                           "total": 1, "busy": True}
         try:
@@ -2167,9 +2226,10 @@ class AlignServer(object):
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        for scan, (_path, setup, rung) in zip(fresh, keep):
+        for scan, (_path, setup, rung, lean) in zip(fresh, keep):
             scan.setup = setup
             scan.rung = rung
+            scan.lean = lean
         self.scans = fresh
         self.align_voxel = voxel
         return {"ok": True, "scans": self._rebuild(), "voxel": voxel}
@@ -2303,7 +2363,7 @@ class AlignServer(object):
                               "busy": False}
         lost = []
         for scan, entry in zip(fresh, body.get("scans") or []):
-            scan.setup = registration.Setup.from_dict(entry.get("setup"))
+            _take_placement(scan, entry.get("setup"))
             if entry.get("clean"):
                 self.clean_scan(
                     fresh.index(scan),
@@ -2390,7 +2450,7 @@ class AlignServer(object):
             return {"ok": False, "error": "there is nothing open to save"}
         for i, data in enumerate(setups):
             if i < len(self.scans):
-                self.scans[i].setup = registration.Setup.from_dict(data)
+                _take_placement(self.scans[i], data)
         lvl = registration.Level.from_dict(level)
         plan = pipeline.Edit.from_dict(edit)
         # ⛔ A CUT THAT NAMES A CLOUD WHICH IS NOT OPEN IS REFUSED, LOUDLY.
@@ -2430,6 +2490,7 @@ class AlignServer(object):
                     roll_deg=pose.get("roll_deg") or 0.0,
                     camera=tuple(pose.get("camera") or (0.0, 0.0, 0.0)),
                     setup=(None if only.setup.is_identity() else only.setup),
+                    lean=(None if only.lean.is_identity() else only.lean),
                     edit=None if (mine is None or mine.is_empty()) else mine,
                     level=None if lvl.is_identity() else lvl,
                     voxel_m=(self.merge_voxel if voxel is None
@@ -2441,6 +2502,11 @@ class AlignServer(object):
                         else lvl.describe(), "single": True}
             info = pipeline.merge([s.path for s in self.scans], self.out_path,
                                   setups=[s.setup for s in self.scans],
+                                  # ⛔ PASSED EXPLICITLY, BECAUSE THE SETUPS
+                                  # GO OVER AS OBJECTS. `merge` reads a lean out
+                                  # of setup DICTS when it is given them; hand it
+                                  # Setups and there is nowhere for one to hide.
+                                  leans=[s.lean for s in self.scans],
                                   colours=[self.colour_pose(s)
                                            for s in self.scans],
                                   cleans=[getattr(s, "clean", None)
@@ -2790,6 +2856,10 @@ PAGE = r"""<!doctype html>
       you ask for it: a press near a ring starts a rotation, so a ring left
       standing turns the cloud when you meant to orbit the view.">Turn
       ring</button>
+    <button id="leanring" title="Show two rings round this scan&#39;s tripod
+      and drag them to tip and bank it. Press again to take them away. They
+      lie in the SCAN&#39;s own planes, which after levelling is not quite the
+      same as the world&#39;s.">Tilt rings</button>
     <button id="zero">Reset</button>
   </div>
   <div class="photo axis"><span class="grow">move by</span><input class="deg" id="mvstep" type="number" step="0.01" min="0.001" value="0.05" title="How far one press of an arrow moves the scan."><span style="color:var(--faint)">m</span><span class="grow" style="text-align:right">turn by</span><input class="deg" id="trstep" type="number" step="0.1" min="0.001" value="1.0" title="How far one press of a turn arrow turns it."><span style="color:var(--faint)">&deg;</span></div>
@@ -2801,6 +2871,14 @@ PAGE = r"""<!doctype html>
   <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
   <div class="photo axis"><span class="grow">Turn <span class="num" id="rv">0.00</span> &deg;</span><input class="deg" id="ax_yaw_deg" type="number" step="0.1" value="0" title="Type an exact turn it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;yaw_deg&quot;)"><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,-1)">&#8634;</button><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,1)">&#8635;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;yaw_deg&quot;)">Set</button></div>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
+  <div class="blurb">Tip and bank correct one tripod that was not level. A
+    whole room that leans is <b>Level</b> instead — a tilt shared by every scan
+    cancels between them, and taking it out scan by scan pulls the alignment
+    apart.</div>
+  <div class="photo axis"><span class="grow">Tip <span class="num" id="tipv">0.00</span> &deg;</span><input class="deg" id="ax_pitch_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact tip and press Enter. Positive lifts what is in front of the instrument." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;pitch_deg&quot;)"><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,-1)">&#8963;&minus;</button><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,1)">&#8963;+</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;pitch_deg&quot;)">Set</button></div>
+  <input type="range" id="rtip" min="-45" max="45" step="0.1" value="0">
+  <div class="photo axis"><span class="grow">Bank <span class="num" id="bankv">0.00</span> &deg;</span><input class="deg" id="ax_roll_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact bank and press Enter. Positive lifts the instrument&#39;s right-hand side." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;roll_deg&quot;)"><button class="mini step" title="drop the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,-1)">&#8635;</button><button class="mini step" title="lift the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,1)">&#8634;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;roll_deg&quot;)">Set</button></div>
+  <input type="range" id="rbank" min="-45" max="45" step="0.1" value="0">
   </div></div>
 <div class="tray" id="ty_autoalign"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
   <button class="go" id="auto">Auto-align</button>
@@ -3023,6 +3101,10 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
            tiltRing:null, tiltAxis:null,
+           /* And the SCAN's own tip and bank rings -- a third widget about the
+              same tripod, nested inside the turn ring so that the two do not
+              fight over the same pixels. */
+           leanRing:false, leanAxis:null, leanHot:null,
            /* Scan indices the operator has switched off. A VIEW state: it
               changes what is drawn and what a NEW cut takes from, and it does
               not change what is written -- taking a cloud out of the job is
@@ -3157,10 +3239,36 @@ function look(e,c,u){
 /* yaw about the sensor's vertical axis, then translate -- the same order the
    solver uses, so a number typed here means what it means there. This is the
    scan's PLACEMENT: it puts the cloud into the merged frame and stops there. */
+/* ⭐⭐ THE SCAN'S OWN TIP AND BANK, TAKEN OUT IN ITS OWN FRAME. A tripod
+   that was not level made the instrument measure the room turned slightly
+   about the SENSOR -- so the correction belongs there, before the placement,
+   which is exactly where `pipeline.convert` applies it. Bank about the scan's
+   +Y then tip about its +X, matching `registration.Lean.matrix` term for term:
+   the preview and the exported file are two readings of one formula, and the
+   day they stop agreeing is the day a survey is wrong on disk and right on
+   screen. */
+function leanMat(s){
+  const a=(+s.setup.pitch_deg||0)*Math.PI/180;
+  const b=(+s.setup.roll_deg||0)*Math.PI/180;
+  if(!a && !b) return [[1,0,0],[0,1,0],[0,0,1]];
+  const ca=Math.cos(a), sa=Math.sin(a), cb=Math.cos(b), sb=Math.sin(b);
+  /* tip * bank, multiplied out. Bank is Ry(-roll): a plain turn about +Y
+     takes +X downwards, and "bank +2" has to LIFT the right-hand side, which
+     is what the panel beside it and the photograph's own lean both say. */
+  return [[    cb, 0,    -sb],
+          [-sa*sb, ca, -sa*cb],
+          [ ca*sb, sa,  ca*cb]];
+}
 function place(s){
   const a=s.setup.yaw_deg*Math.PI/180, c=Math.cos(a), sn=Math.sin(a);
-  return new Float32Array([c,sn,0,0, -sn,c,0,0, 0,0,1,0,
-                           s.setup.x_m, s.setup.y_m, s.setup.z_m, 1]);
+  const L=leanMat(s);
+  /* Rz * L, written out column by column -- a column is where one of the
+     scan's own axes ends up, which is also what the move arms measure. */
+  return new Float32Array([
+    c*L[0][0]-sn*L[1][0], sn*L[0][0]+c*L[1][0], L[2][0], 0,
+    c*L[0][1]-sn*L[1][1], sn*L[0][1]+c*L[1][1], L[2][1], 0,
+    c*L[0][2]-sn*L[1][2], sn*L[0][2]+c*L[1][2], L[2][2], 0,
+    s.setup.x_m, s.setup.y_m, s.setup.z_m, 1]);
 }
 /* The minimal rotation taking the measured up-vector back onto +Z -- Rodrigues,
    and the same rule registration.Level uses. ⛔ MINIMAL matters: any rotation
@@ -3720,12 +3828,14 @@ function nudgeAxis(key, sign){
   if(key === 'yaw_deg') nudge(0, 0, sign*turnStep());
   else if(key === 'x_m') nudge(sign*moveStep(), 0, 0);
   else if(key === 'y_m') nudge(0, sign*moveStep(), 0);
+  else if(key === 'pitch_deg') leanScan(sign*turnStep(), 0);
+  else if(key === 'roll_deg') leanScan(0, sign*turnStep());
   else nudge(0, 0, 0, sign*moveStep());
   const lab = {x_m:'east / west', y_m:'north / south', z_m:'height',
-               yaw_deg:'turn'}[key];
+               yaw_deg:'turn', pitch_deg:'tip', roll_deg:'bank'}[key];
   say(s.name.slice(0,18) + ' — ' + lab + ' now '
-      + (+s.setup[key]).toFixed(key === 'yaw_deg' ? 1 : 2)
-      + (key === 'yaw_deg' ? '°' : ' m'));
+      + (+s.setup[key]).toFixed(DEGREES[key] ? 1 : 2)
+      + (DEGREES[key] ? '°' : ' m'));
 }
 /* Type an exact placement. ⛔ The same path as everything else, so it records
    an undo and the cuts follow the scan. */
@@ -3740,8 +3850,15 @@ function setAxis(key){
   if(key === 'yaw_deg') nudge(0, 0, by);
   else if(key === 'x_m') nudge(by, 0, 0);
   else if(key === 'y_m') nudge(0, by, 0);
+  else if(key === 'pitch_deg') leanScan(by, 0);
+  else if(key === 'roll_deg') leanScan(0, by);
   else nudge(0, 0, 0, by);
 }
+/* Which of the six placement numbers is an angle. ⛔ ONE LIST, because the
+   alternative is `key === 'yaw_deg'` written out again at every place a number
+   is formatted -- and the day a third angle arrives, one of them is missed and
+   a tilt is reported in metres. */
+const DEGREES = {yaw_deg:1, pitch_deg:1, roll_deg:1};
 
 function ringOf(){
   /* ⛔⛔ ONLY WHEN IT HAS BEEN ASKED FOR. This used to appear for whichever
@@ -3799,6 +3916,143 @@ function drawNorth(){
   }
   oc.restore();
 }
+/* --- the scan's own tip and bank ------------------------------------------
+
+   ⭐⭐ TWO RINGS, NOT THREE, AND THE MISSING ONE IS ALREADY ON SCREEN.
+   Turning a scan is the Turn ring; these two are the rotations it has never
+   had. They are separate widgets rather than one because they are asked for at
+   different times -- a cloud is turned in nearly every job and tilted in
+   almost none -- and a widget that cannot be put away is a mode.
+
+   ⛔⛔ THE RINGS LIE IN THE SCAN'S OWN PLANES, MEASURED OFF THE ONE
+   TRANSFORM. A lean is applied inside the scan's frame, before the placement
+   and before the level, so a ring drawn in the WORLD's planes would sit at a
+   visible angle to the rotation it performs: drag the top of it and the cloud
+   goes somewhere else, wrong in a way that reads as a sloppy widget rather
+   than as a bug. This is the same trap the move arms had. The cure is the
+   same: ask `affine` where the scan's own axes point instead of working it out
+   a second time here. */
+const LEAN_PX = 44;
+const LEAN_AXES = [
+  /* `u` and `v` index the scan's OWN axes: the ring for a rotation about one
+     axis is the circle spanned by the other two. */
+  {key:'pitch_deg', c:'rgba(120,230,150', lab:'tip',  f:1.00, u:1, v:2},
+  {key:'roll_deg',  c:'rgba(255,130,190', lab:'bank', f:0.72, u:2, v:0}];
+function leanRingsOf(){
+  if(!V.leanRing) return null;
+  const s=active();
+  if(!s || s.index===0 || V.nav) return null;   /* the reference cannot lean */
+  const A=affine(s);
+  const o=put(A, 0, 0, 0);
+  const g=screenRadius(o, LEAN_PX); if(!g) return null;
+  const ax=[[1,0,0],[0,1,0],[0,0,1]].map(e=>{
+    const q=put(A, e[0], e[1], e[2]);
+    const d=[q[0]-o[0], q[1]-o[1], q[2]-o[2]];
+    const n=Math.hypot(d[0],d[1],d[2])||1;
+    return [d[0]/n, d[1]/n, d[2]/n];
+  });
+  return {s:s, o:o, R:g.R, c:g.c, ax:ax};
+}
+function leanRingPath(r, a){
+  const U=r.ax[a.u], W=r.ax[a.v], R=r.R*a.f, pts=[];
+  for(let i=0;i<=72;i++){
+    const t=i/72*Math.PI*2, ct=Math.cos(t), st=Math.sin(t);
+    pts.push(project([r.o[0]+R*(U[0]*ct+W[0]*st),
+                      r.o[1]+R*(U[1]*ct+W[1]*st),
+                      r.o[2]+R*(U[2]*ct+W[2]*st)], V.vp));
+  }
+  return pts;
+}
+/* Where the needle sits for the angle this ring currently holds. */
+function leanNeedle(r, a, deg){
+  const U=r.ax[a.u], W=r.ax[a.v], R=r.R*a.f;
+  const t=(deg||0)*Math.PI/180, ct=Math.cos(t), st=Math.sin(t);
+  return project([r.o[0]+R*(U[0]*ct+W[0]*st),
+                  r.o[1]+R*(U[1]*ct+W[1]*st),
+                  r.o[2]+R*(U[2]*ct+W[2]*st)], V.vp);
+}
+/* ⛔⛔ WHICH WAY ROUND THE SCREEN IS "MORE", MEASURED RATHER THAN GUESSED.
+   Whether turning the hand clockwise should raise or lower the number depends
+   on which side of the ring's plane the eye is on, and a rule of thumb about
+   the view direction gets it right in one hemisphere and backwards in the
+   other -- so the cloud would follow the hand from the front and fight it from
+   behind, which is indistinguishable from a broken widget. Project the ring's
+   own two axes and look at which way the screen angle runs between them: that
+   is the answer, and it stays the answer if the projection ever changes. */
+function leanSense(r, a){
+  const c=project(r.o, V.vp);
+  const u=leanNeedle(r, a, 0), w=leanNeedle(r, a, 90);
+  if(!c || !u || !w) return 1;
+  const au=Math.atan2(u[1]-c[1], u[0]-c[0]);
+  const aw=Math.atan2(w[1]-c[1], w[0]-c[0]);
+  let d=aw-au;
+  while(d>Math.PI) d-=2*Math.PI;
+  while(d<-Math.PI) d+=2*Math.PI;
+  return d>=0 ? 1 : -1;
+}
+function leanGrip(mx,my){
+  const r=leanRingsOf(); if(!r) return null;
+  let best=null;
+  for(const a of LEAN_AXES){
+    for(const q of leanRingPath(r, a)){
+      if(!q) continue;
+      const d=Math.hypot(q[0]-mx, q[1]-my);
+      if(!best || d<best.d) best={d:d, key:a.key};
+    }
+  }
+  return (best && best.d<=9) ? best : null;
+}
+/* ⭐ APPLIED LIVE, LIKE THE MOVE ARMS AND UNLIKE THE PHOTOGRAPH'S RINGS.
+   Nothing here goes to the server -- a lean is a number the page owns until
+   the job is exported -- so the cloud can follow the hand at frame rate. */
+function leanDrag(mx,my,from){
+  const r=leanRingsOf(); if(!r || !V.leanAxis) return from;
+  const a=LEAN_AXES.find(x=>x.key===V.leanAxis); if(!a) return from;
+  const c=project(r.o, V.vp); if(!c) return from;
+  const now=Math.atan2(my-c[1], mx-c[0]);
+  if(from===null) return now;
+  let d=(now-from)*180/Math.PI;
+  while(d>180) d-=360;
+  while(d<-180) d+=360;
+  d*=leanSense(r, a);
+  leanScan(a.key==='pitch_deg' ? d : 0, a.key==='roll_deg' ? d : 0);
+  return now;
+}
+function drawLeanRings(){
+  const r=leanRingsOf(); if(!r) return;
+  oc.save(); oc.setLineDash([]);
+  oc.beginPath(); oc.arc(r.c[0], r.c[1], 3, 0, 6.2832);
+  oc.fillStyle='rgba(255,255,255,.85)'; oc.fill();
+  for(const a of LEAN_AXES){
+    const hot = V.leanAxis===a.key || V.leanHot===a.key;
+    const pts=leanRingPath(r, a);
+    for(const [w,col] of [[5,'rgba(10,16,26,.5)'],
+                          [hot?2.6:1.5, a.c+(hot?',.99)':',.72)')]]){
+      oc.beginPath();
+      let up=false;
+      for(const q of pts){
+        if(!q){ up=false; continue; }
+        if(up) oc.lineTo(q[0],q[1]); else { oc.moveTo(q[0],q[1]); up=true; }
+      }
+      oc.lineWidth=w; oc.strokeStyle=col; oc.stroke();
+    }
+    const deg=+r.s.setup[a.key]||0;
+    const h=leanNeedle(r, a, deg);
+    if(h){
+      oc.beginPath(); oc.arc(h[0],h[1], hot?6:4, 0, 6.2832);
+      oc.fillStyle=a.c+',.95)'; oc.fill();
+      /* Only the ring under the hand is labelled: two readings on a widget
+         this size overlap each other and the cloud behind them. */
+      if(hot){
+        oc.font='11px ui-sans-serif,system-ui';
+        oc.fillStyle='rgba(255,255,255,.92)';
+        oc.fillText(a.lab+' '+deg.toFixed(2)+'\u00b0', h[0]+9, h[1]-7);
+      }
+    }
+  }
+  oc.restore();
+}
+
 /* The photograph's own pose, as three rings about the tripod it was shot
    from.
 
@@ -3816,7 +4070,14 @@ function drawNorth(){
 function tiltRingsOf(){
   if(V.tiltRing==null) return null;
   const s=V.scans.find(x=>x.index===V.tiltRing);
-  if(!s || !s.photo || s.yaw==null || V.nav) return null;
+  /* ⛔⛔ A REFUSED HEADING USED TO MEAN NO RINGS AT ALL, SILENTLY. `yaw`
+     is null whenever the solve was not accepted -- which is the case the whole
+     row below it exists for, and the case on 2026-08-20 where the refused
+     heading turned out to be the correct one. The button lit, the message said
+     "drag the rings", and nothing appeared: a control that does nothing reads
+     as a program that is broken. The rings start from zero instead, which is
+     exactly what the heading box beside them already does. */
+  if(!s || !s.photo || V.nav) return null;
   const o=put(affine(s), 0, 0, 0);
   /* ⭐⭐ A FIXED SIZE ON SCREEN, NOT A FRACTION OF THE ROOM. It was 13% of the
      wider floor span, which in a restaurant is a ring three metres across --
@@ -3875,7 +4136,8 @@ function tiltGrip(mx,my){
 }
 function drawTiltRings(){
   const r=tiltRingsOf(); if(!r) return;
-  const now={yaw:+r.s.yaw||0, pitch:+r.s.pitch||0, roll:+r.s.roll||0};
+  const now={yaw:(r.s.yaw==null ? 0 : +r.s.yaw),
+             pitch:+r.s.pitch||0, roll:+r.s.roll||0};
   oc.save(); oc.setLineDash([]);
   /* The tripod itself, so a small gizmo still says what it is attached to. */
   oc.beginPath(); oc.arc(r.c[0], r.c[1], 3, 0, 6.2832);
@@ -3924,6 +4186,7 @@ function drawTiltRings(){
    catches up once. */
 function tiltDrag(mx,my,fromAngle){
   const r=tiltRingsOf(); if(!r) return fromAngle;
+  if(r.s.yaw==null) r.s.yaw=0;         /* a refused solve starts from zero */
   const c=project(r.o, V.vp); if(!c) return fromAngle;
   const now=Math.atan2(my-c[1], mx-c[0]);
   if(fromAngle===null) return now;
@@ -4024,6 +4287,7 @@ function drawDraft(){
   oc.clearRect(0,0,innerWidth,innerHeight);
   drawRing();
   drawMoveGizmo();
+  drawLeanRings();
   drawTiltRings();
   drawNorth();
   drawGizmo();
@@ -4392,6 +4656,18 @@ function syncSliders(){
   const box=(id,v,dp)=>{ const b=$(id); if(b) b.value=(+v).toFixed(dp); };
   box('ax_x_m', s.setup.x_m, 2); box('ax_y_m', s.setup.y_m, 2);
   box('ax_z_m', s.setup.z_m, 3); box('ax_yaw_deg', s.setup.yaw_deg, 1);
+  /* ⭐ NO `fitRange` FOR THESE TWO, AND THAT IS NOT AN OMISSION. The range a
+     slider offers has to cover everything the number can be, or it clamps what
+     it is handed and starts lying about the scan. Here the slider's ends and
+     `LEAN_MAX` are the same number by construction, so there is nothing
+     outside it to be dragged back from. */
+  const tip=Math.max(-LEAN_MAX, Math.min(LEAN_MAX, +s.setup.pitch_deg||0));
+  const bank=Math.max(-LEAN_MAX, Math.min(LEAN_MAX, +s.setup.roll_deg||0));
+  const put2=(id,v)=>{ const el=$(id); if(el) el.value=v; };
+  put2('rtip', tip); put2('rbank', bank);
+  const lab=(id,v)=>{ const el=$(id); if(el) el.textContent=v.toFixed(2); };
+  lab('tipv', tip); lab('bankv', bank);
+  box('ax_pitch_deg', tip, 2); box('ax_roll_deg', bank, 2);
 }
 /* ⭐⭐ ONE UNDO FOR EVERY TOOL, NOT ONE PER TOOL. Ctrl-Z used to reach the
    cut list alone, so an accidental level, a mis-dragged scan, a lean sent by a
@@ -4488,6 +4764,32 @@ function nudge(dx,dy,dyaw,dz){
   s.setup.yaw_deg=+s.setup.yaw_deg+dyaw;
   syncSliders(); invalidate(); editsFollow(); dirty();
 }
+/* ⛔ CLAMPED ON THE PAGE AS WELL AS ON THE SERVER, AND IT SAYS WHEN IT BITES.
+   `registration.Lean` refuses past 45 degrees, so a page that let the number
+   run past it would draw a cloud at 60 and export one at 45 -- the screen and
+   the file disagreeing, which is the one failure this program tries hardest
+   never to have. Said out loud, and with the tool that IS meant for a leaning
+   room named, because a limit that shows up as a control which has stopped
+   responding reads as a bug. */
+const LEAN_MAX = 45;
+function leanScan(dp, dr){
+  const s=active(); if(!s) return;
+  if(s.index === 0)
+    return say('The reference scan cannot be tilted — everything else is '
+               + 'aligned to it, so tilting it would lean the whole job. A '
+               + 'room that leans is Level\u2019s job.', 'warn');
+  coalesce('move'+s.index, 'tilting '+s.name, ()=>undoSetup(s.index));
+  const want=[(+s.setup.pitch_deg||0)+dp, (+s.setup.roll_deg||0)+dr];
+  const got=want.map(v=>Math.max(-LEAN_MAX, Math.min(LEAN_MAX, v)));
+  const bit = got[0]!==want[0] || got[1]!==want[1];
+  s.setup.pitch_deg=+got[0].toFixed(4);
+  s.setup.roll_deg=+got[1].toFixed(4);
+  syncSliders(); invalidate(); editsFollow(); dirty();
+  if(bit) say('That is as far as a tripod tilts — '+LEAN_MAX+'°. A cloud '
+              + 'that wants more than this is usually a turn typed into the '
+              + 'wrong box, or a room that leans, which is Level\u2019s job '
+              + 'and not this one\u2019s.', 'warn');
+}
 /* An edit is applied in the merged frame, so moving a scan moves it through
    whatever was cut. Recomputed on a trailing timer rather than per frame: at
    preview density this costs tens of milliseconds, which is nothing once but
@@ -4581,7 +4883,31 @@ function watch(on){
 }
 
 function moved(s){
-  return !!(s.setup.x_m || s.setup.y_m || s.setup.z_m || s.setup.yaw_deg);
+  /* ⛔ A TILT COUNTS. This decides whether Auto-align starts from where the
+     operator put the scan or searches from scratch, and it decides whether the
+     refinement ladder starts over. A lean set by eye is exactly the kind of
+     new information both of those questions are asking about. */
+  return !!(s.setup.x_m || s.setup.y_m || s.setup.z_m || s.setup.yaw_deg
+            || s.setup.pitch_deg || s.setup.roll_deg);
+}
+/* ⛔⛔ THE LEANS GO WITH EVERY SOLVE, BECAUSE THE PAGE OWNS THEM. A lean is
+   part of a placement and a placement is the page's until the job is written
+   out -- so the server's copy is only as fresh as the last request that
+   carried one. Sent with both fits rather than pushed on a route of its own:
+   one piece of state with two doors onto it drifts apart the first time one is
+   used without the other, and the drift here would be a fit computed against a
+   cloud in a slightly different attitude from the one on screen. */
+function leansWire(){
+  return V.scans.map(s=>({pitch_deg:+s.setup.pitch_deg||0,
+                          roll_deg:+s.setup.roll_deg||0}));
+}
+/* A point in the scan's own coordinates, leaned -- which is the frame a Setup
+   is solved in. See `pairWire`. */
+function leanPt(s,p){
+  const L=leanMat(s);
+  return [L[0][0]*p[0]+L[0][1]*p[1]+L[0][2]*p[2],
+          L[1][0]*p[0]+L[1][1]*p[1]+L[1][2]*p[2],
+          L[2][0]*p[0]+L[2][1]*p[1]+L[2][2]*p[2]];
 }
 /* ⭐ Your rough placement is sent as the starting point. It removes the global
    search AND the rival hunt -- a hand placement has already decided which of a
@@ -4598,7 +4924,8 @@ async function autoAlign(){
   try{
     const r=await fetch('solve',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index:s.index, start:hint, target:tgt})});
+      body:JSON.stringify({index:s.index, start:hint, target:tgt,
+                           leans:leansWire()})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
     s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
@@ -4852,6 +5179,15 @@ function markLasso(seg,k,l,to){
    reads as a tool that is broken. So choosing a tool, or Drag to move, turns
    camera mode OFF rather than being ignored by it, and the grips are drawn
    dimmed and smaller while it is on so their being inert is visible. */
+/* ⛔⛔ CAMERA MODE HID EVERY WIDGET WHILE LEAVING ITS BUTTON LIT. The
+   gizmos all refuse to draw while `V.nav` is on -- rightly, since the whole
+   point of camera mode is that nothing catches the pointer -- but asking for
+   one while it was on left a button reading `on` above an empty screen, which
+   is the same silent refusal in a third place. `Drag to move` has always
+   released camera mode on the way in; every widget does now, and says so. */
+function wantWidget(){
+  if(V.nav) setNav(false);
+}
 function setNav(on){
   V.nav=!!on;
   if(V.nav){
@@ -5085,8 +5421,14 @@ function pairEnds(p){
 /* And what goes to the solver: the reference half in the merged frame BEFORE
    levelling, because that is the frame a Setup lands in. */
 function pairWire(p){
-  const r=scanAt(p.ri);
-  return r ? {ref:preLevel(r,p.rp), mov:p.mp.slice()} : null;
+  const r=scanAt(p.ri), m=scanAt(p.si);
+  /* ⛔ THE MOVING HALF IS LEANED FIRST. `pairs_setup` returns the Setup that
+     carries these points onto their mates, and the exporter applies that Setup
+     to the LEANED cloud -- so a pick handed over raw would come back as a
+     placement out by the lean, on a scan whose picks looked perfectly well
+     matched. The reference half needs nothing done to it: `preLevel` goes
+     through the same `place` the drawing does, lean and all. */
+  return (r && m) ? {ref:preLevel(r,p.rp), mov:leanPt(m,p.mp)} : null;
 }
 function halfAt(){
   const s=V.half && scanAt(V.half.ri);
@@ -5202,7 +5544,7 @@ async function alignPairs(){
                                   'open. Clear them and pick again.', 'warn');
   const r=await fetch('pairs',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({index:s.index, pairs:wire})});
+    body:JSON.stringify({index:s.index, pairs:wire, leans:leansWire()})});
   const j=await r.json();
   if(!j.ok) return say(j.error||'that fit could not be made', 'warn');
   s.setup=j.setup; s.rung=null;
@@ -6679,12 +7021,23 @@ function setTilt(index, pitch, roll){
   return sendTilt(index, {pitch, roll}, 'Lean set');
 }
 function tiltRing(index){
+  const s=V.scans.find(x=>x.index===index);
+  /* ⛔ REFUSED OUT LOUD RATHER THAN SWITCHED ON OVER NOTHING. There is no
+     pose to drag without a photograph, and a lit button above an empty screen
+     is how a program teaches an operator that its controls cannot be trusted. */
+  if(V.tiltRing!==index && (!s || !s.photo))
+    return say('That scan has no photograph on it yet, so there is no camera '+
+               'to aim. Add one with Add photo, or Find\u2026 to search a '+
+               'folder for the one that belongs to it.', 'warn');
+  if(V.tiltRing!==index) wantWidget();
   V.tiltRing = (V.tiltRing===index) ? null : index;
   if(V.tiltRing!=null) V.picked = index;
   refreshLists(); invalidate();
   say(V.tiltRing==null ? 'Rings hidden.'
-      : 'Drag the rings to turn, tip and bank the photograph. Shift snaps to '+
-        'half a degree.');
+      : 'Drag the rings to turn, tip and bank the photograph'+
+        (s.yaw==null ? ', starting from level and facing zero \u2014 the solve '+
+         'was not accepted for this one, so there is nothing else to start '+
+         'from.' : '. Shift snaps to half a degree.'));
 }
 
 /* Re-encode the clouds after a change that is NOT about colour.
@@ -7255,7 +7608,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
-  let tilting=null;
+  let tilting=null, leaning=null;
   /* Which of the move gizmo's arms is being dragged, and where the hand was
      last frame. */
   let axis=null;
@@ -7308,6 +7661,15 @@ const DRAW_TOOLS = {lasso:1, rect:1};
            everything at that distance from the tripod. */
         V.moveAxis=moveGrip(e.clientX,e.clientY).key;
         axis=moveDrag(e.clientX,e.clientY,null);
+      } else if(leanGrip(e.clientX,e.clientY)){
+        /* ⛔ THE TILT RINGS COME BEFORE THE TURN RING AND AFTER THE ARMS, and
+           the order is the sizes. All three widgets share the tripod: the arms
+           are thin lines the operator aimed at, the tilt rings sit at 44 and
+           32 pixels and the turn ring at 62, so nesting decides the rest.
+           Without an order the innermost ring would be unreachable wherever
+           the outer one happened to pass near it. */
+        V.leanAxis=leanGrip(e.clientX,e.clientY).key;
+        leaning=leanDrag(e.clientX,e.clientY,null);
       } else if(ringGap(e.clientX,e.clientY)<=10){
         /* ⛔ AFTER the clip-box grips, never before. The grips are small
            targets that often sit inside the ring, and a ring that swallowed
@@ -7316,7 +7678,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       }
     }
     moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
-             ring===null && tilting===null && axis===null;
+             ring===null && tilting===null && axis===null && leaning===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -7329,8 +7691,16 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       const wasArm=V.moveHot;
       const arm = over && V.hot<0 ? moveGrip(e.clientX,e.clientY) : null;
       V.moveHot = arm ? arm.key : null;
-      V.ring = over && V.hot<0 && !arm && ringGap(e.clientX,e.clientY)<=10;
-      if(was!==V.hot || wasRing!==V.ring || wasArm!==V.moveHot) invalidate();
+      /* Lit only when it is what a press would take, so the highlight is a
+         promise about the next click rather than a decoration. */
+      const wasLean=V.leanHot;
+      const lean = over && V.hot<0 && !arm ? leanGrip(e.clientX,e.clientY)
+                                           : null;
+      V.leanHot = lean ? lean.key : null;
+      V.ring = over && V.hot<0 && !arm && !lean
+               && ringGap(e.clientX,e.clientY)<=10;
+      if(was!==V.hot || wasRing!==V.ring || wasArm!==V.moveHot
+         || wasLean!==V.leanHot) invalidate();
       return;
     }
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
@@ -7339,6 +7709,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     else if(tilting!==null)
       tilting=tiltDrag(e.clientX,e.clientY,tilting);
     else if(axis!==null) axis=moveDrag(e.clientX,e.clientY,axis);
+    else if(leaning!==null) leaning=leanDrag(e.clientX,e.clientY,leaning);
     else if(ring!==null) ring=turnScan(e.clientX,e.clientY,ring,e.shiftKey);
     else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
@@ -7364,7 +7735,11 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     /* ⛔ A CUT FOLLOWS THE SCAN IT WAS MADE ON, and the gizmo moves a scan
        exactly as the free drag does -- so it owes the same recompute. */
     if(axis!==null && V.edits.length) recomputeLive();
+    /* A cut is applied in the merged frame, so tilting a scan moves it through
+       whatever was cut -- the same debt the arms and the sliders owe. */
+    if(leaning!==null && V.edits.length) recomputeLive();
     axis=null; V.moveAxis=null;
+    leaning=null; V.leanAxis=null;
     down=false; moving=false; grip=null; lassoing=false;
     cv.classList.remove('drag'); });
   addEventListener('wheel', e=>{
@@ -7405,6 +7780,14 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
                            V.half=null; showPairs();
                            setTool(''); invalidate(); }
+    /* ⛔⛔ A LETTER ON ITS OWN IS A SHORTCUT; A LETTER WITH CTRL BELONGS
+       TO THE BROWSER. Every branch below tested the key and not the modifiers,
+       so Ctrl-C toggled camera mode INSTEAD of copying -- `preventDefault` at
+       the bottom of this handler took the copy away as well -- and Ctrl-P,
+       Ctrl-F, Ctrl-R, Ctrl-B and Ctrl-T each fired a tool nobody asked for on
+       their way past. The three combinations this program does claim are
+       handled above, deliberately, before this line. */
+    else if(e.ctrlKey || e.metaKey || e.altKey) return;
     else if(k==='c'||k==='C') setNav(!V.nav);
     else if(k==='ArrowLeft')  nudge(-0.05,0,0);
     else if(k==='ArrowRight') nudge(0.05,0,0);
@@ -7451,6 +7834,33 @@ document.addEventListener('DOMContentLoaded', ()=>{
   bind('ty','y_m',v=>v.toFixed(2),'yv');
   bind('tz','z_m',v=>v.toFixed(2),'zv2');
   bind('rz','yaw_deg',v=>v.toFixed(1),'rv');
+  /* ⛔ THE TWO LEAN SLIDERS GO THROUGH `leanScan`, NOT THROUGH `bind`. `bind`
+     writes the raw slider value straight into the setup; these two have to be
+     clamped and have to say when the clamp bites, and routing them through the
+     same door as the arrows and the typed boxes is what keeps one answer to
+     "how far can a scan tilt" instead of three. */
+  const bindLean=(id,key)=>{ const el=$(id); if(!el) return;
+    el.oninput=e=>{
+      const s=active(); if(!s) return;
+      const to=parseFloat(e.target.value); if(!isFinite(to)) return;
+      const by=to-(+s.setup[key]||0);
+      leanScan(key==='pitch_deg'?by:0, key==='roll_deg'?by:0); }; };
+  bindLean('rtip','pitch_deg'); bindLean('rbank','roll_deg');
+  $('leanring').onclick=e=>{
+    const s=active();
+    if(!s || s.index===0)
+      return say('The reference scan cannot be tilted — everything else is '+
+                 'aligned to it. Pick another scan first.', 'warn');
+    if(!V.leanRing) wantWidget();
+    V.leanRing=!V.leanRing;
+    e.target.classList.toggle('on', V.leanRing);
+    invalidate();
+    say(V.leanRing
+        ? 'Drag the green ring to tip '+s.name+' and the pink one to bank it. '+
+          'They lie in the scan\u2019s own planes. Press Tilt rings again to '+
+          'take them away.'
+        : 'Tilt rings off.');
+  };
   $('nav').onclick=()=>setNav(!V.nav);
   $('psave').onclick=()=>saveProject(false);
   $('psaveas').onclick=()=>saveProject(true);
@@ -7465,6 +7875,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!s || s.index===0)
       return say('The reference scan cannot be moved \u2014 everything else '+
                  'is aligned to it. Pick another scan first.', 'warn');
+    if(!V.moveGiz) wantWidget();
     V.moveGiz=!V.moveGiz;
     e.target.classList.toggle('on', V.moveGiz);
     invalidate();
@@ -7479,6 +7890,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!s || s.index===0)
       return say('The reference scan cannot be turned \u2014 everything else '+
                  'is aligned to it. Pick another scan first.', 'warn');
+    if(!V.turnRing) wantWidget();
     V.turnRing=!V.turnRing;
     e.target.classList.toggle('on', V.turnRing);
     invalidate();
@@ -7552,7 +7964,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
        immediately beside the controls the placement was made with. */
     remember('resetting '+s.name+' to where it was recorded',
              undoSetup(s.index));
-    s.setup={x_m:0,y_m:0,z_m:0,yaw_deg:0,method:'manual'};
+    s.setup={x_m:0,y_m:0,z_m:0,yaw_deg:0,
+             pitch_deg:0,roll_deg:0,method:'manual'};
     s.rung=null; syncSliders(); invalidate(); editsFollow();
     say(s.name+' put back where the capture recorded it. Ctrl-Z restores the '+
         'placement.'); };

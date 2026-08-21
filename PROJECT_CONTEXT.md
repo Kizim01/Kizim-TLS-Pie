@@ -2840,6 +2840,97 @@ change to anything yet.
 
 Converter suite **730 → 749**.
 
+#### ⭐⭐ A SCAN CAN BE TILTED NOW — AND THE STORAGE HAD TO COME BEFORE THE WIDGET
+
+Reported as *“I need a gizmo to tilt the point clouds in both directions”*. Two rings round the
+tripod, in the scan's own planes: green tips it, pink banks it. Typed boxes, arrows and sliders for
+both, all clamped at 45°, all reversible with Ctrl-Z.
+
+⛔⛔ **THE OBVIOUS VERSION OF THIS WOULD HAVE BEEN A CONTROL THAT SILENTLY DID NOTHING.** The
+file already said so, in the comment beside the turn ring: *“ONE RING, NOT THREE, AND THAT IS NOT A
+SIMPLIFICATION — a `registration.Setup` is a yaw and a translation, so pitch and roll rings on a
+SCAN would be controls the exporter has nowhere to put.”* Drawing the rings first and finding
+somewhere to keep the numbers afterwards would have produced a widget that moved the preview and
+exported an upright cloud — the survey right on screen and wrong on disk, which is the single
+failure this program is built hardest against. So the tilt went into `registration.Lean`,
+`pipeline.convert` and the project file first, and the rings were drawn onto something real.
+
+⛔⛔ **AND IT IS ITS OWN CLASS, NOT TWO MORE NUMBERS IN THE SETUP, FOR A REASON THE SUITE ALREADY
+KNEW.** A test written long before this one says *“a Setup still cannot express a tilt, which is why
+a Level is separate”*, and gives the reason: the solver returns a yaw and a shift, so writing its
+answer back over a placement that also carried a tilt would take the tilt with it. The operator
+would press Auto-align to tidy up a placement and lose the one correction that could only be made by
+eye — silently, because everything the solver knows about would be perfectly in order.
+**Verified on the operator's own two captures through the running server: tilt 3.5° / −2.25°, press
+Auto-align, and the placement comes back `pitch_deg: 3.5, roll_deg: -2.25` with a new yaw.**
+
+⭐⭐ **ONE DICT, TWO OBJECTS.** A placement crosses the wire in five places — the scan list, the
+solve's answer, the pairs answer, the project file and the export. A lean given a parallel list of
+its own would be five chances to forget it, and this project has watched a photograph's pose reach
+the screen and not the file twice for exactly that reason. So `Setup.from_dict` takes its four keys
+out of the dict and `Lean.from_dict` takes its two out of the same dict, and neither knows the other
+exists. `_placement` and `_take_placement` are the only two doors.
+
+⛔⛔ **THE ORDER IS THE MEANING: THE LEAN IS APPLIED IN THE SCAN'S OWN FRAME, BEFORE THE
+PLACEMENT.** A tripod that was not level made the instrument measure the room turned slightly about
+its OWN centre. Applied after the Setup instead, the same two numbers become a rotation about the
+world origin, and a scan standing ten metres away swings right out of the room — a different claim
+altogether, and one that changes every time the scan is moved. **Checked on the real capture at
+export**: 799,042 points, every range from the tripod unchanged to a tenth of a millimetre, the far
+end of the cloud moved 13.1 m, every point within 1.6 mm of where the two rotations predict.
+
+⛔ **AND THE SOLVER IS SHOWN THE LEANED CLOUD.** What is drawn and what is written is
+`Setup(Lean(points))`; fit against the raw points and the answer is the placement for a cloud nobody
+is looking at — out by the lean, in a way that reads as the fit having simply failed. Pair picks go
+over leaned for the same reason.
+
+⭐ **THE RINGS LIE IN THE SCAN'S OWN PLANES, MEASURED OFF THE ONE TRANSFORM** — the trap the move
+arms had, met a second time. A ring drawn in the world's planes sits at a visible angle to the
+rotation it performs, so dragging its top sends the cloud somewhere else: wrong in a way that reads
+as a sloppy widget rather than as a bug. ⛔⛔ **And which way round the screen means “more” is
+measured too.** A rule of thumb about the view direction is right in one hemisphere and backwards in
+the other, so the cloud would follow the hand from the front and fight it from behind. `leanSense`
+projects the ring's own two axes and reads which way the screen angle runs between them.
+
+⛔ **THE BANK SIGN WAS BACKWARDS, AND ONLY A TEST WRITTEN IN WORDS CAUGHT IT.** A plain
+right-handed turn about +Y takes +X *downwards*, so “bank +2” dropped the right-hand side while the
+panel beside it — and the photograph's own lean, a centimetre away — both say it lifts it. Nothing
+about the picture looks wrong; you only find it by asking, in a check, *which side goes up*. Bank is
+`Ry(-roll)` now, in both the exporter and the page.
+
+⭐ **AND THE SLIDERS CANNOT LIE THE WAY THE MOVE SLIDERS COULD.** `fitRange` exists because a
+±10 m slider silently clamped a 14 m scan; these two need none, because the slider's ends and
+`Lean.MAX_DEG` are the same number by construction. That is a property worth having on purpose
+rather than a coincidence, so the suite asserts all three agree.
+
+#### ⛔⛔ THE CAMERA CONTROLS “WOULD NOT ENGAGE” — THREE SEPARATE SILENT REFUSALS
+
+Reported as *“there is a bug in the camera controls, it wont let me engage the camera”*. Not one
+bug: three, all of the same shape, and that shape is this project's oldest one — **a control that
+does nothing reads as a program that is broken.**
+
+| what | what the operator saw |
+|---|---|
+| `tiltRingsOf` refused whenever `s.yaw` was null | The **rings** button lights, the message says *“drag the rings”*, and nothing appears. `yaw` is null exactly when the solve was **not accepted** — which is the case the whole heading row beneath it exists for, and the case on 2026-08-20 where the refused heading turned out to be the correct one. The rings start from zero now, which is what the box beside them already did. |
+| Camera mode hid every widget while leaving its button lit | Every gizmo refuses to draw while `V.nav` is on — rightly, since the point of camera mode is that nothing catches the pointer. But asking for one *while it was on* left a button reading `on` above an empty screen. **`Drag to move` has always released camera mode on the way in; nothing else did.** Now `wantWidget()` does it for all four. |
+| Ctrl-C toggled camera mode instead of copying | Every single-letter branch tested the key and **not the modifiers**, and `preventDefault` at the bottom took the browser's copy away as well. Ctrl-P, Ctrl-F, Ctrl-R, Ctrl-B and Ctrl-T each fired a tool on their way past too. One guard, placed **after** the three combinations this program does claim. |
+
+⭐ A fourth was refused rather than fixed: pressing **rings** on a scan with no photograph at all now
+says so, naming *Add photo* and *Find…*, instead of switching a widget on over nothing.
+
+⚠ **AND A CHECK OF MINE READ THE WRONG LINE AGAIN.** The new parity test extracts the page's tilt
+matrix and compares it against the exporter's — and it searched forward for `return [[`, which found
+the **identity short-circuit** for a scan that is not tilted at all. It then pronounced the two
+formulas identical, because they are: both were the identity. **The earliest match in a path is not
+the definition** — the fourth time in this project, after the DNS logs, qBittorrent's *“api key
+error”*, and `find("$('wire').onclick")` finding the shortcut that calls the handler.
+
+⚠ And an existing check counted arrow buttons and wanted exactly eight. Six axes now, so adding tip
+and bank **broke a test by making the thing it tested more true** — the third time a count has done
+that here. It names the six axes instead.
+
+Converter suite **749 → 796**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

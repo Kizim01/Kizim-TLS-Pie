@@ -108,6 +108,116 @@ class Setup(object):
         return "Setup(%s)" % self.describe()
 
 
+class Lean(object):
+    """
+    A scan's own tip and bank, about the sensor it was measured from.
+
+    ⛔⛔ HELD APART FROM `Setup` FOR THE SAME REASON A `Level` IS, AND THE
+    REASON IS THE WHOLE DESIGN. A Setup is what the solver produces: a yaw and a
+    translation, and nothing else. Fold a tilt into it and the very next
+    Auto-align writes its four numbers back over the operator's six, so an
+    afternoon of levelling one awkward tripod disappears at a press of the
+    button that was supposed to help -- silently, because the placement it
+    returns is perfectly good in every respect the solver knows about. Kept
+    here, a solve cannot touch it and it cannot touch a solve.
+
+    ⭐ IT IS APPLIED IN THE SCAN'S OWN FRAME, BEFORE THE PLACEMENT, because
+    that is where the thing it corrects happened. The tripod was not level; the
+    instrument therefore measured the room turned slightly out of true, about
+    the sensor's own centre. Applying it there is a statement about the
+    INSTRUMENT. Applying it after the placement would be a statement about where
+    the cloud sits in the merged room, which is a different claim and one that
+    stops being true the moment the scan is moved.
+
+    ⛔ AND IT IS NOT A LEVEL. A `Level` turns the whole merged frame at once
+    and is the right tool for a room that leans; a tilt common to every scan
+    cancels between them and must be taken out there, not scan by scan. This is
+    for the one tripod that stood on a soft floor while the others did not.
+    """
+
+    # ⛔ A CORRECTION, NOT A FREE ROTATION. A tripod that is 45 degrees out
+    # has fallen over, and a cloud tipped that far by hand is nearly always a
+    # yaw entered in the wrong box or a room that wants Level. The clamp is
+    # what keeps this control a statement about a tripod.
+    MAX_DEG = 45.0
+
+    def __init__(self, pitch_deg=0.0, roll_deg=0.0):
+        self.pitch_deg = self._clamp(pitch_deg)
+        self.roll_deg = self._clamp(roll_deg)
+
+    @classmethod
+    def _clamp(cls, v):
+        try:
+            v = float(v or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if v != v:                                   # NaN
+            return 0.0
+        return max(-cls.MAX_DEG, min(cls.MAX_DEG, v))
+
+    def is_identity(self):
+        return not (self.pitch_deg or self.roll_deg)
+
+    def matrix(self):
+        """
+        Bank about the scan's own +Y, then tip about its own +X.
+
+        ⭐ THE SAME TWO WORDS THE PHOTOGRAPH'S POSE USES, MEANING THE SAME TWO
+        THINGS. `tip` lifts what is in front of the instrument, `bank` lifts what
+        is to its right. One vocabulary across the program is worth more than a
+        second convention that happens to suit this file.
+        """
+        a = math.radians(self.pitch_deg)
+        b = math.radians(self.roll_deg)
+        ca, sa = math.cos(a), math.sin(a)
+        cb, sb = math.cos(b), math.sin(b)
+        # ⛔ BANK IS Ry(-roll), NOT Ry(roll), AND THE MINUS SIGN IS THE
+        # MEANING RATHER THAN A CONVENTION. A plain right-handed turn about +Y
+        # takes +X DOWNWARDS, so "bank +2" would drop the right-hand side while
+        # the panel beside it, and the photograph's own lean, both say it lifts
+        # it. Two controls a centimetre apart, spelled the same, doing opposite
+        # things is worse than either choice on its own.
+        tip = np.array([[1.0, 0.0, 0.0], [0.0, ca, -sa], [0.0, sa, ca]])
+        bank = np.array([[cb, 0.0, -sb], [0.0, 1.0, 0.0], [sb, 0.0, cb]])
+        return tip @ bank
+
+    def apply(self, xyz):
+        xyz = np.asarray(xyz)
+        if self.is_identity():
+            return xyz
+        return np.asarray(xyz, dtype=np.float64) @ self.matrix().T
+
+    def as_dict(self):
+        return {"pitch_deg": self.pitch_deg, "roll_deg": self.roll_deg}
+
+    @classmethod
+    def from_dict(cls, data):
+        """
+        Read from whatever dict is going past -- including a Setup's.
+
+        ⭐⭐ THAT IS THE POINT, AND IT IS WHAT KEEPS THE TWO FROM DRIFTING
+        APART. The page, the project file and the exporter each carry ONE dict
+        per scan describing where it sits; a Setup reads four keys out of it and
+        a Lean reads two, and neither knows about the other. Give the lean a
+        parallel list of its own and every one of those paths becomes a place to
+        forget it -- which is precisely how a photograph's pose used to reach
+        the screen and not the file.
+        """
+        if not data:
+            return cls()
+        return cls(pitch_deg=data.get("pitch_deg", 0.0),
+                   roll_deg=data.get("roll_deg", 0.0))
+
+    def describe(self):
+        if self.is_identity():
+            return "upright"
+        return "tipped %+.2f deg, banked %+.2f deg" % (self.pitch_deg,
+                                                       self.roll_deg)
+
+    def __repr__(self):
+        return "Lean(%s)" % self.describe()
+
+
 def median_profile(xyz, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     """
     Per-bin median range: the room as a distance in every direction.

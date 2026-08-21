@@ -641,7 +641,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             colouriser=None, progress=None, viewer_sink=None,
             setup=None, writer=None, edit=None, level=None,
             photo=LOOK_BESIDE, pitch_deg=0.0, roll_deg=0.0,
-            clean_spec=None):
+            clean_spec=None, lean=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -653,6 +653,11 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     `setup` is a registration.Setup placing this capture in another scan's
     frame; `writer` lets several captures share one output file. Together they
     are how `merge` works, and both default to the single-scan behaviour.
+
+    `lean` is a registration.Lean: this one tripod's own tip and bank, taken
+    out in the instrument's frame before the placement. See the ordering note
+    at the transform below -- it is the whole reason the argument is separate
+    from `setup` rather than four more numbers inside it.
     """
     meta, meta_path = load_meta(pcap_path)
     if meta is None:
@@ -716,6 +721,21 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # from THIS scan's own origin, so it has to see the points where the
         # sensor saw them. Transform first and every colour is looked up from
         # the wrong direction -- a fully coloured cloud that is quietly wrong.
+        # ⛔⛔ THE SCAN'S OWN LEAN COMES FIRST, IN ITS OWN FRAME, AND THE
+        # ORDER IS THE MEANING. A `Lean` says the tripod was not level, so the
+        # instrument measured the room turned a little about its OWN centre --
+        # which is a rotation about (0, 0, 0) here, before anything has moved.
+        # Applied after the Setup it would instead be a rotation about the
+        # world origin, and a scan standing ten metres away would swing right
+        # out of the room: the same two numbers, a completely different claim,
+        # and one that changes every time the scan is moved.
+        #
+        # ⭐ AND IT IS AFTER THE COLOUR, WITH THE PLACEMENT, FOR THE REASON
+        # DIRECTLY ABOVE. The panorama was shot from this sensor, so the
+        # colouriser has to see the points where the sensor saw them -- leaning
+        # first would look colour up from a direction the camera never pointed.
+        if lean is not None and not lean.is_identity():
+            xyz = lean.apply(xyz)
         if setup is not None and not setup.is_identity():
             xyz = setup.apply(xyz)
         # ⛔ LEVELLING COMES AFTER THE PLACEMENT AND BEFORE THE EDIT, and that
@@ -859,7 +879,7 @@ def _pose_kwargs(colours, i):
 
 
 def merge(captures, out_path, setups=None, progress=None, edit=None,
-          level=None, colours=None, cleans=None, **kwargs):
+          level=None, colours=None, cleans=None, leans=None, **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -882,12 +902,26 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
         setups = [s for s, _ in solved]
         solutions = [sol for _, sol in solved]
     else:
+        # ⭐ THE DICTS ARE READ FOR A LEAN BEFORE THEY BECOME Setups, AND
+        # THAT ORDER IS LOAD-BEARING. A lean travels inside the same per-scan
+        # dict the placement does -- see `Lean.from_dict` -- so a caller that
+        # already passes `setups` as dicts carries it along without knowing it
+        # exists. Convert first and the two keys are gone: `Setup.from_dict`
+        # reads four and quietly drops the rest, so the export would come out
+        # upright with nothing anywhere to say what had been lost.
+        if leans is None:
+            leans = [registration.Lean.from_dict(x if isinstance(x, dict)
+                                                 else None) for x in setups]
         setups = [registration.Setup.from_dict(s)
                   if isinstance(s, dict) else s for s in setups]
         solutions = [None] * len(setups)
 
     if isinstance(level, dict):
         level = registration.Level.from_dict(level)
+    # A caller passing Setup OBJECTS has nowhere to hide a lean, which is what
+    # the argument is for; no lean at all is every scan upright.
+    leans = [registration.Lean.from_dict(x) if isinstance(x, dict) else x
+             for x in (leans or [])]
 
     comment = "merged: %s" % ", ".join(os.path.basename(c) for c in captures)
     if colours is not None and len(colours) != len(captures):
@@ -917,6 +951,7 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
             # so the one case it was built for exported grey.
             parts.append(convert(path, out_path, setup=setup, writer=writer,
                                  progress=None, level=level,
+                                 lean=(leans[i] if i < len(leans) else None),
                                  edit=None if (mine is None or mine.is_empty())
                                  else mine,
                                  clean_spec=(cleans[i] if cleans

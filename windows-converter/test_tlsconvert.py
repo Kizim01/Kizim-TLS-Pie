@@ -4442,9 +4442,16 @@ print("\nmoving a scan")
 check("there is a gizmo for it, and it is a toggle like every other widget",
       'id="movegiz"' in _ALIGN_SRC and "V.moveGiz=!V.moveGiz" in _ALIGN_SRC
       and "moveGiz:false" in _ALIGN_SRC)
-check("every axis has a button both ways and a box to type into",
-      _ALIGN_SRC.count("nudgeAxis(&quot;") == 8
-      and _ALIGN_SRC.count("setAxis(&quot;") == 8)
+# ⛔ NAMED AXES, NOT A COUNT. This asked for exactly eight arrows and
+# eight Sets, which is a statement about how much code there is rather than
+# about what the panel offers -- so adding tip and bank broke it while making
+# it more true. The third time a count has done this here.
+for _ax in ("x_m", "y_m", "z_m", "yaw_deg", "pitch_deg", "roll_deg"):
+    check("%s has an arrow each way, a box and a Set" % _ax,
+          _ALIGN_SRC.count('nudgeAxis(&quot;%s&quot;,-1)' % _ax) == 1
+          and _ALIGN_SRC.count('nudgeAxis(&quot;%s&quot;,1)' % _ax) == 1
+          and _ALIGN_SRC.count('setAxis(&quot;%s&quot;)' % _ax) == 2
+          and 'id="ax_%s"' % _ax in _ALIGN_SRC)
 check("and the sliders are still there",
       'id="tx"' in _ALIGN_SRC and 'id="ty"' in _ALIGN_SRC
       and 'id="tz"' in _ALIGN_SRC and 'id="rz"' in _ALIGN_SRC)
@@ -4682,6 +4689,218 @@ check("the shortcut list says what the undo covers now",
 check("and something that cannot be undone says so rather than being stepped "
       "over in silence", "cannot be undone, so nothing was changed"
       in _ALIGN_SRC)
+
+
+# --- a scan's own tilt -----------------------------------------------------
+#
+# ⛔⛔ THE SCAN HAD NO TILT AT ALL, AND THAT WAS DELIBERATE UNTIL NOW. A
+# `Setup` is a yaw and a shift, so the turn ring was the only rotation a cloud
+# had; drawing tip and bank rings on top of it would have offered two rotations
+# the exporter had nowhere to put. The storage came first, then the widget.
+print("\ntilting one scan")
+
+_lean = registration.Lean(3.0, -2.0)
+check("a lean knows when it is nothing", registration.Lean().is_identity())
+check("and a scan that has been tilted is not nothing", not _lean.is_identity())
+# ⛔ IT IS STILL NOT PART OF THE SETUP, and that is the whole reason it exists
+# as its own class: the solver returns four numbers, and writing them back over
+# a placement that also carried a tilt would take the tilt with it. The check
+# above at `a Setup still cannot express a tilt` guards the other half.
+check("a Setup still carries no tilt, so no solve can wipe one out",
+      not hasattr(registration.Setup(), "pitch_deg")
+      and "pitch_deg" not in registration.Setup().as_dict())
+
+_lm = _lean.matrix()
+check("the rotation is a rotation: orthonormal, and not a reflection",
+      float(np.max(np.abs(_lm @ _lm.T - np.eye(3)))) < 1e-12
+      and float(np.linalg.det(_lm)) > 0)
+# ⭐ THE TWO WORDS MEAN WHAT THE PANEL SAYS THEY MEAN. `tip` lifts what is in
+# front of the instrument, `bank` lifts what is on its right -- the same two
+# words, meaning the same two things, as the photograph's own pose.
+check("a positive tip lifts what is in front of the instrument",
+      registration.Lean(5.0, 0.0).apply(np.array([[0.0, 1.0, 0.0]]))[0][2] > 0)
+check("and a positive bank lifts what is on its right",
+      registration.Lean(0.0, 5.0).apply(np.array([[1.0, 0.0, 0.0]]))[0][2] > 0)
+# ⛔ A CORRECTION, NOT A FREE ROTATION. A tripod 45 degrees out has fallen over.
+check("it refuses to tilt further than a tripod can stand",
+      registration.Lean(400.0, -400.0).as_dict()
+      == {"pitch_deg": 45.0, "roll_deg": -45.0})
+check("and nonsense is upright rather than an exception",
+      registration.Lean(float("nan"), None).is_identity())
+
+# ⭐⭐ ONE DICT, TWO OBJECTS. A placement crosses the wire in five places, and
+# a lean given a parallel list of its own would be five chances to forget it.
+_pdict = dict(registration.Setup(1.0, 2.0, 3.0, 40.0).as_dict(),
+              **_lean.as_dict())
+check("a Setup and a Lean read out of the SAME dict without knowing about "
+      "each other",
+      registration.Setup.from_dict(_pdict).yaw_deg == 40.0
+      and registration.Lean.from_dict(_pdict).pitch_deg == 3.0)
+check("and a dict with no tilt in it reads back upright, not as an error",
+      registration.Lean.from_dict(
+          registration.Setup(1.0).as_dict()).is_identity())
+
+
+class _Held(object):
+    def __init__(self):
+        self.setup = registration.Setup(1.0, 2.0, 3.0, 40.0)
+        self.lean = registration.Lean(3.0, -2.0)
+
+
+_held = _Held()
+check("the server says where a scan sits in one dict, all six numbers",
+      set(align._placement(_held)) >= {"x_m", "y_m", "z_m", "yaw_deg",
+                                       "pitch_deg", "roll_deg"})
+align._take_placement(_held, align._placement(_held))
+check("and reads its own answer back unchanged",
+      _held.setup.yaw_deg == 40.0 and _held.lean.roll_deg == -2.0)
+# ⛔ A SCAN THAT HAS NEVER BEEN TILTED STILL HAS TO ANSWER. Reading a project
+# written before any of this existed must give upright, not a missing key that
+# the page then draws as NaN.
+align._take_placement(_held, {"x_m": 1.0})
+check("a placement written before tilts existed reads back upright",
+      _held.lean.is_identity())
+
+# ⛔⛔ THE EXPORTER APPLIES IT IN THE SCAN'S OWN FRAME, BEFORE THE PLACEMENT.
+# Applied afterwards it would be a rotation about the WORLD origin, and a scan
+# standing ten metres away would swing right out of the room -- the same two
+# numbers, a completely different claim.
+_pts = _rs.uniform(-4, 4, (50, 3))
+_su = registration.Setup(10.0, 0.0, 0.0, 30.0)
+check("a tilt turns a scan about its own tripod, not about the world origin",
+      float(np.max(np.abs(_su.apply(registration.Lean(6.0, 0.0).apply(_pts))
+                          - _su.apply(_pts)))) < 1.0)
+check("and the tripod itself does not move when a scan is tilted",
+      float(np.max(np.abs(
+          _su.apply(registration.Lean(20.0, -15.0).apply(np.zeros((1, 3))))
+          - _su.apply(np.zeros((1, 3)))))) < 1e-12)
+import inspect as _inspect                                    # noqa: E402
+check("the exporter takes a lean at all",
+      "lean" in _inspect.signature(pipeline.convert).parameters
+      and "leans" in _inspect.signature(pipeline.merge).parameters)
+
+# ⭐⭐ THE PREVIEW AND THE FILE ARE TWO READINGS OF ONE FORMULA, so the suite
+# reads the page's arithmetic and checks it against the exporter's -- the day
+# they disagree is the day a survey is right on screen and wrong on disk.
+# ⛔ THE LAST `return [[` IN THE FUNCTION, NOT THE FIRST. The first one is
+# the identity short-circuit for a scan that is not tilted at all, so reading
+# forwards found a matrix that is trivially equal to nothing and pronounced the
+# two formulas identical. The earliest match in a path is not the definition --
+# the same shape as the DNS logs and qBittorrent's "api key error".
+_jsm = _ALIGN_SRC[_ALIGN_SRC.find("function leanMat"):][:900]
+_jsm = _jsm[_jsm.rfind("return [["):]
+_jsm = _jsm[len("return "):_jsm.find("];") + 1]
+_a, _b = math.radians(7.0), math.radians(-4.0)
+_env = {"ca": math.cos(_a), "sa": math.sin(_a),
+        "cb": math.cos(_b), "sb": math.sin(_b)}
+_L = np.array(eval(_jsm, {"__builtins__": {}}, _env))          # noqa: S307
+check("the page's tilt matrix is the exporter's, term for term",
+      float(np.max(np.abs(_L - registration.Lean(7.0, -4.0).matrix()))) < 1e-12,
+      _jsm.replace("\n", " ")[:60])
+# ...and the same for the whole placement: turn, then tilt, then shift.
+_jsp = _ALIGN_SRC[_ALIGN_SRC.find("function place(s){"):]
+_jsp = _jsp[_jsp.find("new Float32Array(["):]
+_jsp = _jsp[len("new Float32Array("):_jsp.find("s.setup.x_m")]
+_cols = eval(_jsp.rstrip().rstrip(",") + "]", {"__builtins__": {}},
+             dict(_env, c=math.cos(math.radians(40.0)),
+                  sn=math.sin(math.radians(40.0)), L=_L.tolist()))  # noqa: S307
+_yaw = math.radians(40.0)
+_rz = np.array([[math.cos(_yaw), -math.sin(_yaw), 0.0],
+                [math.sin(_yaw), math.cos(_yaw), 0.0], [0.0, 0.0, 1.0]])
+check("and the page turns the scan AFTER tilting it, exactly as the exporter "
+      "does",
+      float(np.max(np.abs(
+          np.array(_cols).reshape(3, 4)[:, :3].T - _rz @ _L))) < 1e-12)
+
+# --- and the controls for it ----------------------------------------------
+check("there are two more rings, and they are drawn",
+      "function leanRingsOf" in _ALIGN_SRC and "drawLeanRings();" in _ALIGN_SRC)
+# ⛔⛔ IN THE SCAN'S OWN PLANES, MEASURED OFF THE ONE TRANSFORM -- the trap the
+# move arms had. A ring drawn in the WORLD's planes sits at a visible angle to
+# the rotation it performs.
+_lr = _ALIGN_SRC[_ALIGN_SRC.find("function leanRingsOf"):][:900]
+check("the rings take the scan's own axes from the transform rather than "
+      "working them out a second time",
+      "affine(s)" in _lr and "put(A," in _lr)
+# ⛔⛔ WHICH WAY ROUND THE SCREEN IS "MORE" IS MEASURED, NOT GUESSED. A rule of
+# thumb about the view direction is right in one hemisphere and backwards in
+# the other, so the cloud would follow the hand from the front and fight it
+# from behind -- indistinguishable from a broken widget.
+check("and which way the hand turns the number is measured off the projection",
+      "function leanSense" in _ALIGN_SRC
+      and "leanSense(r, a)" in _ALIGN_SRC)
+check("the rings are a widget that can be put away, like every other one",
+      'id="leanring"' in _ALIGN_SRC and "V.leanRing=!V.leanRing" in _ALIGN_SRC)
+check("a press near a tilt ring is taken before the turn ring, which is "
+      "outside it",
+      _ALIGN_SRC.find("leanGrip(e.clientX,e.clientY)")
+      < _ALIGN_SRC.find("ringGap(e.clientX,e.clientY)<=10"))
+for _id in ("ax_pitch_deg", "ax_roll_deg", "rtip", "rbank"):
+    check("there is a typed box and a slider for it: %s" % _id,
+          'id="%s"' % _id in _ALIGN_SRC)
+# ⛔ ONE DOOR. The arrows, the typed boxes, the sliders and the rings all reach
+# the same clamp, or "how far can a scan tilt" gets three different answers.
+_ways = _ALIGN_SRC.count("leanScan(")
+check("every way of tilting a scan goes through one place", _ways >= 6, _ways)
+check("and it says so when the clamp bites, rather than going quiet",
+      "That is as far as a tripod tilts" in _ALIGN_SRC)
+# ⛔ THE SLIDER'S ENDS AND THE CLAMP ARE THE SAME NUMBER, which is what makes
+# `fitRange` unnecessary here -- see the range input that silently yanked a
+# 14 m scan back to 10.
+check("the tilt sliders cannot lie the way the move sliders could: their ends "
+      "are the clamp",
+      'id="rtip" min="-45" max="45"' in _ALIGN_SRC
+      and "const LEAN_MAX = 45;" in _ALIGN_SRC
+      and registration.Lean.MAX_DEG == 45.0)
+check("Reset puts back all six numbers, not four",
+      "pitch_deg:0,roll_deg:0,method:'manual'" in _ALIGN_SRC)
+check("a tilt set by hand counts as having moved the scan, so Auto-align "
+      "starts from it",
+      "|| s.setup.pitch_deg || s.setup.roll_deg" in _ALIGN_SRC)
+# ⛔⛔ THE SOLVER IS SHOWN THE LEANED CLOUD. Solve against the raw points and
+# the answer is the placement for a cloud nobody is looking at.
+check("the solver fits the cloud as it is drawn, tilt and all",
+      "scan.lean.apply(scan.sample)" in _ALIGN_SRC
+      and "base = fixed.lean.apply(fixed.sample)" in _ALIGN_SRC)
+check("and the page hands its tilts over with every fit it asks for",
+      _ALIGN_SRC.count("leans:leansWire()") == 2
+      and "srv.take_leans(body.get(\"leans\"))" in _ALIGN_SRC)
+check("a pair picked on a tilted scan is sent in the frame the fit is solved "
+      "in", "mov:leanPt(m,p.mp)" in _ALIGN_SRC)
+
+# --- the camera controls that would not engage ------------------------------
+print("\nthe camera, and controls that did nothing")
+
+# ⛔⛔ A REFUSED HEADING MEANT NO RINGS AT ALL, SILENTLY. `yaw` is null whenever
+# the solve was not accepted -- which is the case the whole heading row exists
+# for. The button lit, the message said "drag the rings", and nothing appeared.
+_tro = _ALIGN_SRC[_ALIGN_SRC.find("function tiltRingsOf"):][:700]
+check("the photograph's rings no longer vanish when its heading was refused",
+      "s.yaw==null" not in _tro and "!s.photo" in _tro)
+check("and they start from zero in that case, which is what the box beside "
+      "them already does",
+      "if(r.s.yaw==null) r.s.yaw=0;" in _ALIGN_SRC)
+# ⛔ AND A SCAN WITH NO PHOTOGRAPH AT ALL IS REFUSED OUT LOUD.
+check("asking for camera rings on a scan with no photograph says why",
+      "has no photograph on it yet, so there is no camera" in _ALIGN_SRC)
+# ⛔⛔ CAMERA MODE HID EVERY WIDGET WHILE LEAVING ITS BUTTON LIT. `Drag to
+# move` has always released it on the way in; nothing else did.
+check("asking for a widget releases camera mode, so it cannot be lit over an "
+      "empty screen", "function wantWidget" in _ALIGN_SRC)
+_n = _ALIGN_SRC.count("wantWidget();")
+check("and every widget does it, not just the one that always did", _n >= 4, _n)
+# ⛔⛔ A LETTER ON ITS OWN IS A SHORTCUT; A LETTER WITH CTRL BELONGS TO THE
+# BROWSER. Ctrl-C toggled camera mode INSTEAD of copying, because the branch
+# tested the key and not the modifiers -- and `preventDefault` took the copy
+# away as well.
+_kd = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('keydown'"):]
+check("Ctrl and a letter is the browser's, not a tool shortcut",
+      _kd.find("e.ctrlKey || e.metaKey || e.altKey) return")
+      < _kd.find("k==='c'||k==='C'"), _kd[:80])
+check("...and that guard sits AFTER the three combinations this program does "
+      "claim, or it would swallow them too",
+      _kd.find("undoAny()")
+      < _kd.find("e.ctrlKey || e.metaKey || e.altKey) return"))
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
