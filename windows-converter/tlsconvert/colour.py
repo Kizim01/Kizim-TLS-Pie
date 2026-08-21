@@ -35,8 +35,11 @@ refuses rather than guessing.
 """
 
 import math
+import time
 
 import numpy as np
+
+from . import gpu
 
 # Bins for the alignment panoramas.
 #
@@ -327,15 +330,100 @@ def to_lonlat(d, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
     return lon, np.arcsin(np.clip(t[:, 2], -1.0, 1.0))
 
 
+#: A chunk small enough that a 4 GB card is never the reason an export fails.
+#: At 24 bytes a point for the working arrays this is about 100 MB in flight.
+GPU_CHUNK = 4_000_000
+
+#: The panorama, already on the card. ⛔ A STRONG REFERENCE TO THE HOST ARRAY
+#: IS PART OF THE KEY, NOT AN OVERSIGHT. The cache is keyed on `id()`, and
+#: `id()` is only unique among objects that are ALIVE -- a freed panorama's
+#: address can be handed straight to the next one, and the cache would then
+#: colour a cloud from the previous scan's photograph. Keeping the host array
+#: alive makes the key honest for exactly as long as it is used.
+_ON_CARD = {"key": None, "host": None, "img": None}
+
+
+def _resident(rgb):
+    """`rgb` as an array on the card, uploaded at most once."""
+    key = (id(rgb), rgb.shape, rgb.dtype.str)
+    if _ON_CARD["key"] != key:
+        _ON_CARD["img"] = gpu.xp().asarray(rgb)
+        _ON_CARD["host"] = rgb
+        _ON_CARD["key"] = key
+    return _ON_CARD["img"]
+
+
 def sample(xyz, rgb, yaw_deg=0.0, camera=(0.0, 0.0, 0.0),
            pitch_deg=0.0, roll_deg=0.0):
-    """Colour per point, sampled from the panorama. Nearest pixel."""
+    """
+    Colour per point, sampled from the panorama. Nearest pixel.
+
+    ⭐ THIS IS THE HEAVIEST PER-POINT PASS IN THE PROGRAM. Every point of every
+    capture goes through it on the way to being coloured -- twenty-three
+    million for one full-detail load of the restaurant, fifty-nine million for
+    an export -- and each one costs an arctangent, an arcsine and a square
+    root. It is exactly the shape of work the card is for.
+
+    ⛔⛔ THE PANORAMA HAS TO LIVE ON THE CARD, AND THE MIDDLE ROW BELOW IS
+    THE ONE TO REMEMBER. Measured on 3,000,000 points against a 2944x1472
+    panorama:
+
+        processor                            0.71 s
+        card, panorama copied per gather     1.06 s      SLOWER than the CPU
+        card, panorama resident              0.06 s      twelve times faster
+
+    Computing WHERE to look on the card and then looking on the host was the
+    obvious arrangement and it LOST, because it sends two int32 arrays home per
+    chunk and leaves the gather -- the memory-bound half -- exactly where it
+    was. All it buys is a transfer. A 52 MB photograph resident on a 4 GB card
+    is a fiftieth of it, for the length of one export.
+
+    ⛔ AND IT IS CHUNKED, because this is the one path whose input size is set
+    by the capture rather than by the grid: twenty-three million points for a
+    full-detail load, fifty-nine for an export. A job must not die of an
+    out-of-memory on the card when it would have finished on the processor.
+    """
     h, w = rgb.shape[:2]
-    d, _ = directions(xyz, camera)
-    lon, lat = to_lonlat(d, yaw_deg, pitch_deg, roll_deg)
-    u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * w, 0, w - 1).astype(np.int32)
-    v = np.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(np.int32)
-    return rgb[v, u]
+    xp = gpu.xp()
+    if xp is np or len(xyz) < 200_000:
+        # Small enough that the copy across would cost more than the work.
+        d, _ = directions(xyz, camera)
+        lon, lat = to_lonlat(d, yaw_deg, pitch_deg, roll_deg)
+        u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * w, 0,
+                    w - 1).astype(np.int32)
+        v = np.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(np.int32)
+        return rgb[v, u]
+
+    upright = is_upright(pitch_deg, roll_deg)
+    rot = None if upright else xp.asarray(
+        camera_matrix(yaw_deg, pitch_deg, roll_deg).T)
+    cam = xp.asarray(np.asarray(camera, dtype=np.float64))
+    gimg = _resident(rgb)
+    out = np.empty((len(xyz), rgb.shape[2]) if rgb.ndim == 3 else len(xyz),
+                   dtype=rgb.dtype)
+    for i in range(0, len(xyz), GPU_CHUNK):
+        part = np.asarray(xyz[i:i + GPU_CHUNK], dtype=np.float64)
+        d = xp.asarray(part) - cam
+        r = xp.sqrt((d * d).sum(axis=1))
+        d = d / xp.maximum(r, 1e-6)[:, None]
+        if upright:
+            lon = xp.arctan2(d[:, 0], d[:, 1]) + math.radians(yaw_deg)
+            z = d[:, 2]
+        else:
+            t = d @ rot
+            lon = xp.arctan2(t[:, 0], t[:, 1])
+            z = t[:, 2]
+        lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
+        lat = xp.arcsin(xp.clip(z, -1.0, 1.0))
+        u = xp.clip(((lon / (2.0 * math.pi)) + 0.5) * w, 0,
+                    w - 1).astype(xp.int32)
+        v = xp.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(xp.int32)
+        # ⭐ THE GATHER HAPPENS ON THE CARD AND ONLY THE COLOURS COME BACK.
+        # Three bytes a point home, against twenty-four out and eight back if
+        # the looking-up were done on the host -- and the gather is the
+        # memory-bound half, so leaving it behind was most of the work.
+        out[i:i + GPU_CHUNK] = gpu.to_host(gimg[v, u])
+    return out
 
 
 def cloud_panorama(xyz, refl=None, camera=(0.0, 0.0, 0.0),
@@ -513,6 +601,92 @@ def field_panorama(xyz, values, camera=(0.0, 0.0, 0.0),
     out = np.zeros(size, dtype=np.float64)
     out[filled] = total[filled] / count[filled]
     return out.reshape(lat_bins, lon_bins), filled.reshape(lat_bins, lon_bins)
+
+
+def _panoramas(xyz, refl, camera, lon_bins, lat_bins, retro_min=None):
+    """
+    Depth, what is filled, mean reflectivity and retroreflector count -- from
+    ONE walk of the cloud.
+
+    ⛔⛔ THREE FUNCTIONS WERE EACH WALKING A MILLION POINTS TO PRODUCE FOUR
+    NUMBERS PER CELL FROM THE SAME ARITHMETIC. `cloud_panorama`, `field_panorama`
+    and the retroreflector count each recomputed the direction of every point,
+    its longitude, its latitude and its cell -- which is all of the work -- and
+    then differed only in what they summed into it. Measured: 537 ms per change
+    of camera height, against 3.6 ms for a pose. Sharing the walk is not a
+    micro-optimisation, it is most of the cost of the axis the deep search is
+    slowest on.
+
+    The three public functions are left exactly as they were: they are used
+    elsewhere, one at a time, where sharing would buy nothing.
+    """
+    # ⭐⭐ THIS IS THE ONE PLACE IN THE SOLVE WORTH PUTTING ON THE GRAPHICS
+    # CARD, and it is worth it for a reason that is visible in the line below:
+    # every step here is the same arithmetic done a million times over, with no
+    # branch in it and nothing to carry from one point to the next. A square
+    # root, an arctangent, an arcsine and a histogram. Measured on this
+    # machine, whole round trip included: 53.9 ms on the processor against 3.9
+    # on the card.
+    #
+    # ⛔ THE REST OF THE SOLVE IS DELIBERATELY LEFT ALONE. A pose evaluation
+    # works on 32,400 cells and takes 3.7 ms; the launch overhead of the dozen
+    # kernels it would take to move it is the same order as the work, so it
+    # would buy nothing and could cost. The rule this file follows is: the card
+    # gets the passes that touch every POINT, and the processor keeps the ones
+    # that touch every CELL.
+    #
+    # ⛔ AND IT IS float64 THROUGHOUT, ON PURPOSE. Every number on record in
+    # this project -- the confidences, the 3.0 corroboration bar, the confirmed
+    # 92.314 degrees -- was measured on the NumPy path, and a backend that
+    # quietly dropped to float32 for speed would re-price all of them without
+    # anybody deciding to.
+    xp = gpu.xp()
+    on_card = xp is not np
+    pts = xp.asarray(np.asarray(xyz, dtype=np.float64))
+    cam = xp.asarray(np.asarray(camera, dtype=np.float64))
+    d = pts - cam
+    r = xp.sqrt((d * d).sum(axis=1))
+    lon = xp.arctan2(d[:, 0], d[:, 1])
+    lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
+    lat = xp.arcsin(xp.clip(d[:, 2] / xp.maximum(r, 1e-6), -1.0, 1.0))
+    iu = xp.clip(((lon / (2.0 * math.pi)) + 0.5) * lon_bins,
+                 0, lon_bins - 1).astype(xp.int32)
+    iv = xp.clip((0.5 - lat / math.pi) * lat_bins,
+                 0, lat_bins - 1).astype(xp.int32)
+    flat = iv * lon_bins + iu
+    size = lon_bins * lat_bins
+    shape = (lat_bins, lon_bins)
+    count = xp.bincount(flat, minlength=size)
+    # log range, exactly as `cloud_panorama`: a doorway 25 m off should not
+    # swamp the 2 m room around it.
+    total = xp.bincount(flat, weights=xp.log1p(r), minlength=size)
+    field = retro = None
+    if refl is not None:
+        rf = xp.asarray(np.asarray(refl, dtype=np.float64))
+        field = xp.bincount(flat, weights=rf, minlength=size)
+        if retro_min is not None:
+            retro = xp.bincount(flat[rf >= retro_min], minlength=size)
+    # ⭐ ONE CROSSING BACK, WITH EVERYTHING ON IT. Copying each of the four
+    # arrays home separately would pay the latency four times for 32,400
+    # numbers apiece, which on a small grid is most of what the card just
+    # saved.
+    if on_card:
+        count = gpu.to_host(count)
+        total = gpu.to_host(total)
+        if field is not None:
+            field = gpu.to_host(field)
+        if retro is not None:
+            retro = gpu.to_host(retro)
+    filled = count > 0
+    depth = np.zeros(size, dtype=np.float64)
+    depth[filled] = total[filled] / count[filled]
+    if field is not None:
+        out = np.zeros(size, dtype=np.float64)
+        out[filled] = field[filled] / count[filled]
+        field = out.reshape(shape)
+        if retro is not None:
+            retro = np.asarray(retro).reshape(shape)
+    return depth.reshape(shape), filled.reshape(shape), field, retro
 
 
 def _quantise(field, mask, bins=MI_BINS):
@@ -800,10 +974,19 @@ MAX_CAMERA_Z_M = 0.5
 PREFILTER_SCALE = 4
 
 
-def _prefiltered(lum, scale=PREFILTER_SCALE):
-    """The photograph box-filtered onto a grid `scale` times the solving one."""
-    return image_panorama(lum, lon_bins=SOLVE_LON_BINS * scale,
-                          lat_bins=SOLVE_LAT_BINS * scale)
+def _prefiltered(lum, scale=PREFILTER_SCALE, lon_bins=SOLVE_LON_BINS,
+                 lat_bins=SOLVE_LAT_BINS):
+    """
+    The photograph box-filtered onto a grid `scale` times the solving one.
+
+    ⛔ THE SCALE IS AGAINST THE GRID BEING SOLVED ON, NOT AGAINST A CONSTANT.
+    The deep search screens candidates on a quarter-size panorama; prefiltering
+    that to the full grid's 4x would hand it a photograph sixteen times finer
+    than the cells it is sampling into, which is the aliasing this function
+    exists to prevent, arriving by the other door.
+    """
+    return image_panorama(lum, lon_bins=int(lon_bins) * scale,
+                          lat_bins=int(lat_bins) * scale)
 
 
 def grid_directions(lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
@@ -865,36 +1048,68 @@ class PoseScorer(object):
     room can also do well. See the note above the constants.
     """
 
-    def __init__(self, xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
+    def __init__(self, xyz, lum, camera=(0.0, 0.0, 0.0), refl=None,
+                 lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
         self.xyz = xyz
-        self.refl = refl
+        self.refl = (None if refl is None
+                     else np.asarray(refl, dtype=np.float64))
         self.camera = tuple(float(v) for v in camera)
-        self.pre = _prefiltered(lum)
-        self.dirs = grid_directions()
+        # ⭐ THE GRID IS A PARAMETER SO THE DEEP SEARCH CAN SCREEN CHEAPLY.
+        # A quarter-size panorama costs a sixteenth of the work per pose, which
+        # is what makes sweeping every heading with three measures affordable;
+        # the finalists are then re-scored on the full grid, because comparing
+        # a coarse score with a fine one compares two different questions.
+        self.lon_bins = int(lon_bins)
+        self.lat_bins = int(lat_bins)
+        self.pre = _prefiltered(lum, lon_bins=self.lon_bins,
+                                lat_bins=self.lat_bins)
+        self.dirs = grid_directions(self.lon_bins, self.lat_bins)
+        self.weight = _solid_angle_weight(self.lat_bins, self.lon_bins)
         self.evaluations = 0
-        self._for_z = None
-        self._cloud = None
+        # ⛔⛔ MORE THAN ONE HEIGHT IS KEPT, AND KEEPING ONE WAS A REAL FAULT
+        # RATHER THAN A MISSED OPTIMISATION. A pattern search probes an axis
+        # both ways from where it stands: it asks about z+step, then z-step,
+        # and if neither wins it goes back to z. With a cache of one that is
+        # THREE full rebuilds of the cloud to answer two questions, and the
+        # third is a rebuild of something that was in hand a moment earlier.
+        # Every height the search is actually working between now stays.
+        self._cache = {}
+        self._order = []
 
-    def cloud_edges(self, camera_z=None):
+    def _at(self, camera_z=None):
         """
-        The cloud's own edge panorama, rebuilt only when the camera moves.
+        Everything the tripod sees from one height, built once and kept.
 
         ⭐ CACHED ON THE HEIGHT BECAUSE THE HEIGHT IS THE ONLY THING THAT
         CHANGES IT. Turning or tilting the camera moves the PHOTOGRAPH over the
-        cloud; it does not change what the cloud looks like from the tripod.
-        Rebuilding it per trial pose would make the refinement about forty
-        times slower for an identical answer.
+        cloud; it does not change what the cloud looks like from the tripod, or
+        what it reflects, or where its retroreflectors are. Rebuilding per trial
+        pose would make the search two orders of magnitude slower for an
+        identical answer.
         """
         z = self.camera[2] if camera_z is None else float(camera_z)
-        if self._cloud is None or self._for_z != z:
-            depth, filled = cloud_panorama(
-                self.xyz, camera=(self.camera[0], self.camera[1], z))
-            self._cloud = (_edges(fill_holes(depth, filled)), filled)
-            self._for_z = z
-        return self._cloud
+        got = self._cache.get(z)
+        if got is None:
+            depth, filled, field, retro = _panoramas(
+                self.xyz, self.refl,
+                (self.camera[0], self.camera[1], z),
+                self.lon_bins, self.lat_bins,
+                retro_min=(None if self.refl is None else DEEP_RETRO_MIN))
+            got = {"edges": _edges(fill_holes(depth, filled)),
+                   "filled": filled,
+                   "cell": self._cells(field, retro, filled)}
+            self._cache[z] = got
+            self._order.append(z)
+            while len(self._order) > CACHE_HEIGHTS:
+                self._cache.pop(self._order.pop(0), None)
+        return got
+
+    def cloud_edges(self, camera_z=None):
+        got = self._at(camera_z)
+        return got["edges"], got["filled"]
 
     def filled(self, camera_z=None):
-        return self.cloud_edges(camera_z)[1].mean()
+        return self._at(camera_z)["filled"].mean()
 
     def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
         self.evaluations += 1
@@ -902,6 +1117,109 @@ class PoseScorer(object):
         b = _edges(image_at_pose(self.pre, self.dirs,
                                  yaw_deg, pitch_deg, roll_deg))
         return float((a * b).sum())
+
+    def refl_cells(self, camera_z=None):
+        """
+        The reflectivity panorama, ready to compare against a photograph.
+
+        Returns None when this cloud carries no reflectivity -- an exported
+        cloud does not, so the two measures that need it simply stand down
+        rather than quietly scoring zero and dragging the sum toward nothing.
+        """
+        return self._at(camera_z)["cell"]
+
+    def _cells(self, field, retro, mask):
+        """Build that, once, for one height. See `refl_cells`."""
+        if field is None:
+            return None
+        rows, cols = np.nonzero(mask)
+        lat = (0.5 - (rows + 0.5) / float(self.lat_bins)) * 180.0
+        away = np.abs(lat) <= DEEP_BEACON_LAT_DEG
+            # ⭐⭐ THE CELLS WHERE THE LASER SAW A RETROREFLECTOR -- what the
+            # operator called "high laser return patterns".
+            #
+            # ⛔ COUNTED PER POINT, NOT AVERAGED PER CELL. `field_panorama`
+            # gives each cell the MEAN of its returns, and a mean buries the
+            # thing being looked for: one retroreflective point among twenty
+            # off a plaster wall averages to about forty, which is nothing.
+            # A cell qualifies if any beam in it came back over the line.
+        hot = retro[rows, cols]
+        eligible = np.nonzero(away & (hot > 0))[0]
+        order = (eligible if eligible.size >= DEEP_MIN_BEACONS
+                 else np.zeros(0, dtype=np.int64))
+        return {"mask": mask, "rows": rows, "cols": cols,
+                "a": _quantise(field, mask, MI_BINS)[rows, cols],
+                "w": self.weight[rows, cols],
+                "bright": order, "bw": self.weight[rows, cols][order]}
+
+    def mutual(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
+               camera_z=None):
+        """
+        Mutual information between reflectivity and brightness, AT A POSE.
+
+        `solve_yaw_mi` does this on one axis by sliding the image's columns.
+        Nothing about the measure needed that restriction -- it was the
+        cheapest way to move the image when only the heading was in play. Here
+        `image_at_pose` resamples the photograph at any heading, tip, bank and
+        height, and the same histogram is built from the result, so Pandey et
+        al.'s measure finally runs on all the axes it was written for.
+
+        ⭐ THE IMAGE IS BINNED OVER THE FILLED CELLS ONLY, AND THAT IS NOT
+        BOOKKEEPING. Equal-frequency bins over exactly the population being
+        compared keep the image's own marginal near-uniform at every pose --
+        so a pose cannot raise the score just by landing the panorama's
+        brighter half where the cloud happens to have data.
+        """
+        # ⛔ ONE BIN COUNT FOR BOTH SIDES, AND IT IS NOT A PARAMETER HERE.
+        # The two halves of a joint histogram have to be quantised the same
+        # way; a `bins` argument on this method could disagree with the one the
+        # reflectivity side was built with, and the result would be a histogram
+        # indexed off the end of its own marginal.
+        bins = MI_BINS
+        cell = self.refl_cells(camera_z)
+        if cell is None:
+            return None
+        self.evaluations += 1
+        img = image_at_pose(self.pre, self.dirs, yaw_deg, pitch_deg, roll_deg)
+        b = _quantise(img, cell["mask"], bins)[cell["rows"], cell["cols"]]
+        joint = np.bincount(cell["a"] * bins + b, weights=cell["w"],
+                            minlength=bins * bins).reshape(bins, bins)
+        total = joint.sum()
+        if total <= 0:
+            return 0.0
+        joint = joint / total
+        pa, pb = joint.sum(1), joint.sum(0)
+        nz = joint > 0
+        return float(np.sum(joint[nz] * np.log(
+            joint[nz] / (pa[:, None] * pb[None, :])[nz])))
+
+    def beacon(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        """
+        How bright the photograph is where the laser came back hardest.
+
+        A z-score: how far the brightness at the strongest-return cells sits
+        above the brightness across all of them, in their own standard
+        deviations.
+
+        ⛔ MEASURED AGAINST THIS POSE'S OWN SAMPLE, NOT AGAINST A FIXED MEAN.
+        Turning the photograph changes which of its pixels land on the filled
+        cells at all, so an absolute brightness would reward a pose for
+        pointing the camera at the bright half of the panorama. The question
+        that survives that is comparative: are the retroreflectors brighter
+        THAN THE REST OF WHAT THIS POSE IS LOOKING AT.
+        """
+        cell = self.refl_cells(camera_z)
+        if cell is None or not cell["bright"].size:
+            return None
+        self.evaluations += 1
+        img = image_at_pose(self.pre, self.dirs, yaw_deg, pitch_deg, roll_deg)
+        v = img[cell["rows"], cell["cols"]]
+        mean = float(np.average(v, weights=cell["w"]))
+        sd = float(math.sqrt(np.average((v - mean) ** 2, weights=cell["w"])))
+        if sd <= 0:
+            return 0.0
+        hot = float(np.average(v[cell["bright"]], weights=cell["bw"]))
+        return (hot - mean) / sd
 
 
 #: The rungs, in the order a repeated press climbs them. Each keeps everything
@@ -1014,6 +1332,550 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 # evidence about the pair rather than a tidy answer.
                 railed=list(railed),
                 exhausted=bool(sc.evaluations >= budget))
+
+
+# --- the deep alignment ----------------------------------------------------
+#
+# ⭐⭐ WHAT MAKES THIS A DIFFERENT THING FROM `refine_pose`, IN ONE SENTENCE:
+# that one improves a pose which is already right, and this one asks whether it
+# is. The refinement is local by construction -- it is railed at
+# MAX_REFINE_YAW_DEG precisely so it cannot quietly re-solve -- and it looks at
+# ONE kind of evidence, depth silhouettes against image gradients. Neither is a
+# criticism of it. They are the two reasons it cannot rescue a pose that is in
+# the wrong basin, which is the failure the operator actually has.
+#
+# ⭐⭐ SO THE DEEP SEARCH CHANGES BOTH THINGS AT ONCE.
+#
+#   1. IT LOOKS EVERYWHERE. A full sweep of the heading, then a local search
+#      from each distinct bump it found, not only from where the pose sits.
+#   2. IT LOOKS WITH THREE UNRELATED EYES. Silhouettes, mutual information
+#      between LIDAR REFLECTIVITY and image brightness, and where the very
+#      hardest laser returns land in the picture.
+#
+# ⭐ THE SECOND EYE IS PANDEY, McBRIDE, SAVARESE AND EUSTICE (AAAI 2012),
+# "Automatic Extrinsic Calibration of Vision and Lidar by Maximizing Mutual
+# Information" -- the same work `solve_yaw_mi` already implements on one axis.
+# All this does is stop holding the other axes still: `image_at_pose` already
+# resamples the photograph at any heading, tip and bank, so the same histogram
+# can be built at any pose instead of only at a column shift.
+#
+# ⭐ THE THIRD EYE IS WHAT THE OPERATOR ASKED FOR IN THEIR OWN WORDS -- "high
+# laser return patterns". Retroreflective things (signs, tape, number plates,
+# hi-vis, the glass-bead strips on fire equipment) come back at reflectivities
+# nothing else in a room reaches, they are SPARSE, and they are almost always
+# bright in a photograph too. Mutual information over the whole panorama can
+# afford to be a little wrong about a few hundred cells; a term that looks only
+# at those cells cannot, so it is sharp exactly where MI is broad. It is
+# weighted lower than the other two because it is the one a window or a lamp
+# can fool.
+#
+# ⛔⛔ THE THREE ARE STANDARDISED BEFORE THEY ARE ADDED, AND SUMMING THEM RAW
+# WOULD BE MEANINGLESS. A cosine lives in [-1, 1]; mutual information over 64
+# bins runs to a few nats; the beacon term is a z-score of its own. Added as
+# they come, "the sum" would be mutual information with a rounding error -- the
+# same trap `standardise` exists for on the joint-yaw side, arriving from a
+# different direction.
+#
+# ⛔ AND THEY ARE STANDARDISED ONCE, AGAINST A FIXED REFERENCE SWEEP, NOT
+# RE-STANDARDISED AS THE SEARCH GOES. If the scale moved with the search then
+# "this pose beats that one" would depend on the order they were tried in, and
+# the one guarantee this control has to keep -- that it never hands back
+# something worse than it was given -- would stop being a guarantee at all.
+DEEP_LON_BINS = 180
+DEEP_LAT_BINS = 45
+
+#: How many camera heights the scorer keeps built at once. See the note in
+#: `PoseScorer.__init__`: a pattern search probes an axis both ways and then
+#: returns, so a cache of one turns two questions into three rebuilds.
+CACHE_HEIGHTS = 4
+
+#: How many distinct bumps of the sweep are followed up, besides the pose the
+#: operator already has. ⛔ The incumbent is ALWAYS one of the candidates: that
+#: is what makes the answer "the best of these, INCLUDING where you were"
+#: rather than "wherever the search wandered off to".
+DEEP_SEEDS = 5
+
+#: ⭐⭐ WHAT COUNTS AS A STRONG RETURN IS THE INSTRUMENT'S OWN LINE, NOT A
+#: PERCENTILE. The VLP-16 reports reflectivity as a byte with a documented
+#: split: 0-100 is a diffuse reflector, 101-255 is a RETROREFLECTOR. That is a
+#: physical statement about what the beam came back off, and it travels between
+#: rooms, which "the top two per cent" does not.
+#:
+#: ⛔ AND THE PERCENTILE WAS MEASURABLY THE WRONG QUESTION. Asked for the top
+#: 2% away from the poles, this room answered with cells down to reflectivity
+#: 84 -- pale plaster, not retroreflective anything -- and the term landed
+#: 169.55 degrees from a heading confirmed to 0.02, at confidence 2.84. It was
+#: not finding retroreflectors badly. There were none to find: 0.2245% of
+#: filled cells here are over 100, sixteen of them.
+DEEP_RETRO_MIN = 101.0
+
+#: Below this many retroreflective cells the term STANDS DOWN and says so,
+#: rather than averaging over a handful and reporting a number.
+#:
+#: ⛔⛔ STANDING DOWN IS THE FEATURE, NOT A FALLBACK. A measure that always
+#: returns something returns noise when it has nothing, and noise inside a
+#: weighted sum is indistinguishable from evidence -- it just moves the answer
+#: a little, in a direction nobody can audit. The whole reason the sum can be
+#: trusted is that each term is either contributing or absent, and `used()`
+#: says which.
+DEEP_MIN_BEACONS = 24
+
+#: ⛔⛔ AND THE POLES ARE THROWN OUT BEFORE THE STRONGEST ARE PICKED, BECAUSE
+#: OTHERWISE THE STRONGEST ARE THE POLES. Measured on the confirmed pair: the
+#: top 2% of cells by reflectivity had a MEDIAN LATITUDE OF +88 DEGREES -- 143
+#: cells of ceiling directly above the tripod, which comes back harder than any
+#: retroreflector in the room because it is two metres away at normal
+#: incidence. That patch looks much the same whichever way the camera is
+#: pointing, so the term carried no heading information whatsoever, and still
+#: scored 3.17 against its own shoulders. This is `_solid_angle_weight`'s
+#: problem wearing a different hat: there it was that a pole cell covers almost
+#: no sky, here it is that a pole cell is almost the same in every answer.
+DEEP_BEACON_LAT_DEG = 60.0
+
+#: How much each term is worth WHEN IT IS VOTING. Whether it votes at all is
+#: not set here -- see DEEP_TERM_MIN_CONFIDENCE.
+DEEP_WEIGHTS = {"edge": 1.0, "mi": 1.0, "beacon": 0.5}
+
+#: ⭐⭐ A TERM JOINS THE VOTE ONLY IF IT SHOWS, ON THIS CLOUD, THAT IT KNOWS
+#: SOMETHING. The sweep already scores each measure alone across all 360
+#: headings, so the prominence of each one's own best peak is sitting there for
+#: free, on the same shoulder-excluded scale `solve_yaw` reports. A term whose
+#: own peak does not stand out is not evidence about this room; it is noise,
+#: and noise inside a weighted sum is indistinguishable from evidence -- it
+#: just moves the answer a little, in a direction nobody can audit afterwards.
+#:
+#: ⛔ MEASURED ON THE CONFIRMED PAIR, AND THIS IS WHY IT EXISTS. Sweeping alone
+#: on TLS_26_08_20_16_03_15: edges 0.98 degrees off at confidence 5.20, mutual
+#: information 0.32 degrees off at 4.36 -- and the retroreflector term 176.30
+#: degrees off at 2.20. Given a fixed weight it made the combined peak steadily
+#: worse (prominence 6.21 at weight 0, 6.09 at 0.15, 5.45 at 0.5) in exchange
+#: for moving the answer two hundredths of a degree. The gate drops it here and
+#: keeps it available where it earns a place.
+#:
+#: ⚠ AND WHY IT PROBABLY FAILED HERE, WHICH IS NOT "THE IDEA IS WRONG". A
+#: restaurant has almost nothing retroreflective in it. What comes back over
+#: the instrument's retro line is glass, cutlery, polished metal and a mirror
+#: -- SPECULAR, not retroreflective. A specular highlight sits where it does
+#: because of where the observer is, so the lidar's highlights and the camera's
+#: are in different places by construction and there is nothing for the term to
+#: match. On a site with genuine retroreflective targets -- signage, hi-vis,
+#: survey tape -- it should behave completely differently, and that is
+#: UNTESTED. See `queued` in PROJECT_CONTEXT.md.
+#:
+#: The bar is deliberately below MIN_CONFIDENCE: the question is not "does this
+#: term know the answer on its own", it is "does it have anything at all to
+#: say", and a real but broad peak still helps a sum.
+DEEP_TERM_MIN_CONFIDENCE = 3.0
+
+#: Wall clock in seconds, and evaluations. "Use as much compute as required"
+#: still needs a number, because a control with no bound is one an operator
+#: cannot use before lunch. Both are ceilings, not targets -- the search
+#: normally stops when the step falls below its floor, long before either.
+DEEP_SECONDS = 240.0
+DEEP_BUDGET = 30000
+
+#: A move further than this is not a refinement, it is a different answer, and
+#: it is reported in those words rather than folded in quietly.
+DEEP_FAR_DEG = 20.0
+
+
+def _profile_peaks(profile, count=DEEP_SEEDS):
+    """
+    The best few DISTINCT headings of a profile INDEXED BY HEADING.
+
+    ⛔⛔ DELIBERATELY NOT `peaks`, AND THE DIFFERENCE IS A SIGN. `peaks` reads
+    a CORRELATION, whose peak sits at the lag carrying the cloud onto the
+    image, so `_yaw_from_bin` negates it -- and that negation is the single
+    easiest thing in this file to get wrong, which is why it has exactly one
+    home. This profile is not a correlation. Every entry of it is the objective
+    EVALUATED AT that heading, so bin i means heading i and nothing has to be
+    turned round. Running it through `_yaw_from_bin` would mirror the entire
+    search about the camera, which looks wrong everywhere and obviously wrong
+    nowhere.
+    """
+    profile = np.asarray(profile, dtype=np.float64)
+    n = profile.size
+    if n < 3:
+        return []
+    step = 360.0 / n
+    best = int(np.argmax(profile))
+    mean, sd = _shoulder(profile, best)
+    apart = max(1, int(PEAK_EXCLUDE_DEG / step))
+    got = []
+    for b in np.argsort(profile)[::-1]:
+        b = int(b)
+        if any(min(abs(b - o), n - abs(b - o)) < apart for o in got):
+            continue
+        got.append(b)
+        if len(got) >= count:
+            break
+    out = []
+    for b in got:
+        y0, y1, y2 = profile[(b - 1) % n], profile[b], profile[(b + 1) % n]
+        denom = y0 - 2 * y1 + y2
+        shift = b + (0.5 * (y0 - y2) / denom if denom else 0.0)
+        # ⛔ THE SWEEP LAYS BIN i AT i*step - 180, SO THE HEADING COMES
+        # BACK THE SAME WAY. Written as `+ 180` this returned the ANTIPODE of
+        # every bump -- and the search still landed on the right answer,
+        # because the incumbent seed has a free heading and walked there
+        # unaided, so nothing on screen looked wrong. It was caught by asking
+        # the one pair whose answer is known and comparing against a plain
+        # argmax. See the sign note on `_yaw_from_bin`: this file has two
+        # different ways to turn a bin into an angle and they are not
+        # interchangeable.
+        out.append({"yaw_deg": float((shift * step) % 360.0 - 180.0),
+                    "confidence": float((y1 - mean) / sd) if sd else 0.0,
+                    "value": float(y1)})
+    return out
+
+
+class DeepObjective(object):
+    """
+    Three kinds of evidence about one pose, on one scale, as one number.
+
+    ⛔ IT IS STILL NOT A CONFIDENCE, AND IT IS EVEN LESS OF ONE THAN THE COSINE
+    WAS. `PoseScorer.score` at least asks a question a wrong photograph can
+    fail; this adds two more of those and weights them, and a photograph of a
+    similar room will still score respectably at its own best pose. What it is
+    for is CHOOSING BETWEEN POSES OF THE SAME PAIR. The grade stays where it
+    was -- with the global sweep and the reflectivity witness -- and this must
+    never be allowed to write it.
+    """
+
+    TERMS = ("edge", "mi", "beacon")
+
+    def __init__(self, scorer, weights=None):
+        self.sc = scorer
+        self.weights = dict(DEEP_WEIGHTS)
+        if weights:
+            self.weights.update(weights)
+        self.stats = {}
+        self.have = {}
+        self.calls = 0
+
+    def raw(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        """Each term in its own natural units. None where it cannot be had."""
+        return {"edge": self.sc.score(yaw_deg, pitch_deg, roll_deg, camera_z),
+                "mi": self.sc.mutual(yaw_deg, pitch_deg, roll_deg, camera_z),
+                "beacon": self.sc.beacon(yaw_deg, pitch_deg, roll_deg,
+                                         camera_z)}
+
+    def sweep(self, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+              bins=SOLVE_LON_BINS, deadline=None):
+        """
+        Every heading, at the given lean and height. Sets the scale AND finds
+        the bumps -- one pass doing two jobs, because they want the same
+        numbers and this is the expensive part.
+
+        Returns (headings, combined profile, per-term profiles), or three Nones
+        if it ran out of time.
+        """
+        yaws = (np.arange(bins) / float(bins)) * 360.0 - 180.0
+        raw = dict((t, np.zeros(bins)) for t in self.TERMS)
+        probe = self.raw(float(yaws[0]), pitch_deg, roll_deg, camera_z)
+        self.have = dict((t, probe[t] is not None) for t in self.TERMS)
+        for i, y in enumerate(yaws):
+            got = probe if i == 0 else self.raw(float(y), pitch_deg, roll_deg,
+                                                camera_z)
+            for t in self.TERMS:
+                raw[t][i] = 0.0 if got[t] is None else float(got[t])
+            if deadline is not None and i % 16 == 15 and time.time() > deadline:
+                # ⛔ A TRUNCATED SWEEP IS NOT A SWEEP. Standardising against
+                # half a circle and carrying on would give every later
+                # comparison a scale taken from whichever headings happened to
+                # fit in the time. Say so instead.
+                return None, None, None
+        self.stats = {}
+        for t in self.TERMS:
+            if self.have[t]:
+                self.stats[t] = (float(raw[t].mean()), float(raw[t].std()))
+        return yaws, self.combine(raw), raw
+
+    def combine(self, raw):
+        """Per-term profiles -> the standardised, weighted sum."""
+        total = None
+        for t in self.TERMS:
+            if t not in self.stats:
+                continue
+            mean, sd = self.stats[t]
+            if sd <= 0:
+                continue
+            part = (self.weights.get(t, 0.0)
+                    * (np.asarray(raw[t], dtype=np.float64) - mean) / sd)
+            total = part if total is None else total + part
+        if total is None:
+            return np.zeros(np.asarray(raw["edge"]).shape)
+        return total
+
+    def used(self):
+        """The terms actually contributing, so the report can name them."""
+        return [t for t in self.TERMS
+                if t in self.stats and self.stats[t][1] > 0
+                and self.weights.get(t, 0.0)]
+
+    def __call__(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        self.calls += 1
+        got = self.raw(yaw_deg, pitch_deg, roll_deg, camera_z)
+        total = 0.0
+        for t in self.TERMS:
+            if t not in self.stats or got[t] is None:
+                continue
+            mean, sd = self.stats[t]
+            if sd > 0:
+                total += self.weights.get(t, 0.0) * (float(got[t]) - mean) / sd
+        return total
+
+
+def _pattern(obj, start, live, step, floor, budget, deadline, score=None):
+    """
+    A bounded pattern search. Returns (pose, score, the axes it railed on).
+
+    ⛔⛔ THE ONE PROPERTY EVERYTHING ELSE HERE RESTS ON: it adopts a trial only
+    when the trial BEAT the incumbent, so the pose it returns is the best it
+    saw, which includes the pose it was handed. Every promise the deep search
+    makes about not making things worse is this loop's promise, inherited.
+    """
+    best = dict(start)
+    best_score = (obj(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
+                      best["camera_z"]) if score is None else float(score))
+    railed = []
+    step = float(step)
+    while step >= floor and obj.calls < budget:
+        if deadline is not None and time.time() > deadline:
+            break
+        moved = False
+        for name, lo, hi, scale in live:
+            size = step * scale
+            for sign in (1.0, -1.0):
+                trial = dict(best)
+                trial[name] = best[name] + sign * size
+                if ((lo is not None and trial[name] < lo)
+                        or (hi is not None and trial[name] > hi)):
+                    if name not in railed:
+                        railed.append(name)
+                    continue
+                got = obj(trial["yaw_deg"], trial["pitch_deg"],
+                          trial["roll_deg"], trial["camera_z"])
+                if got > best_score:
+                    best, best_score, moved = trial, got, True
+                    break
+                if obj.calls >= budget:
+                    break
+            if obj.calls >= budget:
+                break
+        if not moved:
+            step *= 0.5
+    best["yaw_deg"] = (best["yaw_deg"] + 180.0) % 360.0 - 180.0
+    return best, float(best_score), railed
+
+
+def _live_axes(free_yaw=True, height=True):
+    """
+    (name, low, high, step scale) for the things a pose has.
+
+    ⭐⭐ THE HEIGHT IS LEFT OUT WHILE THE SEARCH IS STILL LOOKING FOR THE RIGHT
+    HEADING, AND THAT IS THE SINGLE BIGGEST SAVING HERE. Every other axis moves
+    the PHOTOGRAPH over a cloud that is already built; the height moves the
+    TRIPOD, so it rebuilds what the cloud looks like, what it reflects and
+    where its retroreflectors are -- profiled at 194 ms against 3.8 ms for a
+    pose, fifty times the cost. Probing it while the answer is still a hundred
+    degrees away spends that fifty-fold cost on refining a pose that is about
+    to be thrown away. It joins the search for the two finalists, where a
+    centimetre of camera actually decides something.
+    """
+    got = [("yaw_deg", None if free_yaw else -MAX_REFINE_YAW_DEG,
+            None if free_yaw else MAX_REFINE_YAW_DEG, 1.0),
+           ("pitch_deg", -MAX_TILT_DEG, MAX_TILT_DEG, 1.0),
+           ("roll_deg", -MAX_TILT_DEG, MAX_TILT_DEG, 1.0)]
+    if height:
+        # ⛔ METRES, NOT DEGREES. The same step number on this axis would ask
+        # for a metre of travel per degree of heading, which is not a scale,
+        # it is a different search.
+        got.append(("camera_z", -MAX_CAMERA_Z_M, MAX_CAMERA_Z_M, 0.02))
+    return got
+
+
+def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
+               pitch_deg=0.0, roll_deg=0.0, weights=None,
+               seconds=DEEP_SECONDS, budget=DEEP_BUDGET, seeds=DEEP_SEEDS,
+               progress=None):
+    """
+    Search the whole circle for the best pose of one photograph on one cloud.
+
+    Returns a dict; never raises. See the note above `DEEP_LON_BINS`.
+
+    ⛔⛔ THIS ONE CAN MOVE A LONG WAY, WHICH IS BOTH THE POINT AND THE DANGER.
+    `refine_pose` is railed so that it cannot quietly re-solve; this
+    deliberately is not, because the failure it exists for is a pose in the
+    WRONG BASIN -- a photograph a hundred and thirty degrees round from where
+    it belongs, which no amount of local refinement ever reaches. So it is
+    honest about the size of what it did: a move past DEEP_FAR_DEG is reported
+    as a DIFFERENT ANSWER rather than as a refinement, and the note says to go
+    and look at it.
+
+    ⛔ AND IT STILL CANNOT HAND BACK SOMETHING WORSE. The pose it was given is
+    always one of the candidates, every candidate is judged by the same fine
+    objective, and the best of them wins. Moving far and getting worse are two
+    different things and only one of them is prevented.
+    """
+    began = time.time()
+    deadline = began + float(seconds)
+    start = {"yaw_deg": float(yaw_deg), "pitch_deg": float(pitch_deg or 0.0),
+             "roll_deg": float(roll_deg or 0.0),
+             "camera_z": float(camera[2] if len(camera) > 2 else 0.0)}
+
+    def tell(stage, n=0, total=5):
+        if progress:
+            try:
+                progress(stage, n, total)
+            except Exception:                             # noqa: BLE001
+                pass
+
+    tell("reading the cloud from the tripod", 0)
+    coarse = PoseScorer(xyz, lum, camera=camera, refl=refl,
+                        lon_bins=DEEP_LON_BINS, lat_bins=DEEP_LAT_BINS)
+    if coarse.filled(start["camera_z"]) < MIN_FILLED_FRACTION:
+        return dict(start, ok=False, improved=False,
+                    reason="this cloud's panorama is too sparse to search "
+                           "against -- the same bar the solve itself sets")
+
+    obj_c = DeepObjective(coarse, weights)
+    tell("sweeping all 360 headings, three ways", 1)
+    yaws, profile, per = obj_c.sweep(start["pitch_deg"], start["roll_deg"],
+                                     start["camera_z"], deadline=deadline)
+    if profile is None:
+        return dict(start, ok=False, improved=False,
+                    reason="ran out of time during the sweep -- give it "
+                           "longer, or use Auto-align, which is local and "
+                           "quick")
+    # ⛔⛔ WHICH TERMS VOTE IS DECIDED HERE, ONCE, BEFORE ANY POSE IS
+    # COMPARED WITH ANY OTHER -- and the same decision is then handed to the
+    # fine objective below. Deciding it later, or separately per grid, would
+    # mean two poses being judged by two different functions, which is exactly
+    # the thing the fixed standardisation was introduced to prevent.
+    solo, quiet = {}, []
+    for term in obj_c.TERMS:
+        if not obj_c.have.get(term):
+            continue
+        got = _profile_peaks(per[term], 1)
+        solo[term] = float(got[0]["confidence"]) if got else 0.0
+        if solo[term] < DEEP_TERM_MIN_CONFIDENCE:
+            quiet.append(term)
+    # ⛔ UNLESS THAT WOULD SILENCE EVERY ONE OF THEM. On a cloud where nothing
+    # stands out -- the rig hard against a wall, the correlation peak spread
+    # across half the circle -- the honest reply is a weak answer clearly
+    # labelled, not no answer at all.
+    if quiet and len(quiet) < len(solo):
+        for term in quiet:
+            obj_c.weights[term] = 0.0
+        profile = obj_c.combine(per)
+    else:
+        quiet = []
+    bumps = _profile_peaks(profile, seeds)
+
+    # ⭐ EVERY DISTINCT BUMP GETS A LOOK, AND SO DOES WHERE YOU ALREADY ARE.
+    # The sweep is taken at ONE lean and ONE height, so its ranking is only a
+    # nomination: a bump that comes second by half a degree of tip can come
+    # first once the tip is free to move. That is what this pass is for.
+    tell("following up %d candidate headings" % (len(bumps) + 1), 2)
+    screen = _live_axes(free_yaw=True, height=False)
+    tried = []
+    for cand in ([{"yaw_deg": start["yaw_deg"], "confidence": None,
+                   "seed": "where you are"}]
+                 + [dict(b, seed="sweep") for b in bumps]):
+        if time.time() > deadline:
+            break
+        pose = dict(start, yaw_deg=float(cand["yaw_deg"]))
+        got, sc, _r = _pattern(obj_c, pose, screen, 2.0, 0.05,
+                               min(budget, obj_c.calls + 900), deadline)
+        tried.append({"from_deg": float(cand["yaw_deg"]), "pose": got,
+                      "coarse": float(sc), "seed": cand.get("seed"),
+                      "sweep_confidence": cand.get("confidence")})
+
+    # ⛔ THE FINAL WORD BELONGS TO ONE JUDGE, AT FULL RESOLUTION. The screening
+    # ran on a quarter-size panorama for speed; comparing a pose scored there
+    # against a pose scored here would be comparing the answers to two
+    # different questions and calling the bigger one better.
+    tell("judging the finalists on the full grid", 3)
+    fine = PoseScorer(xyz, lum, camera=camera, refl=refl)
+    obj_f = DeepObjective(fine, obj_c.weights)
+    _y, _p, per_f = obj_f.sweep(start["pitch_deg"], start["roll_deg"],
+                                start["camera_z"], bins=72, deadline=None)
+    if per_f is None:
+        return dict(start, ok=False, improved=False,
+                    reason="could not set a scale on the full grid")
+
+    tried.sort(key=lambda t: -t["coarse"])
+    short = tried[:2]
+    here = [t for t in short
+            if abs((t["pose"]["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0
+                   - 180.0) < 1e-6]
+    if not here:
+        short = short + [{"from_deg": start["yaw_deg"], "pose": dict(start),
+                          "coarse": None, "seed": "where you are",
+                          "sweep_confidence": None}]
+
+    tell("polishing", 4)
+    live = _live_axes(free_yaw=True, height=True)
+    best, best_score, railed = None, None, []
+    for t in short:
+        pose, sc, rail = _pattern(obj_f, t["pose"], live, 0.5, 0.004,
+                                  budget, deadline)
+        t["fine"] = float(sc)
+        if best_score is None or sc > best_score:
+            best, best_score, railed = pose, float(sc), rail
+
+    # ⛔⛔ AND THE POSE IT WAS HANDED IS JUDGED BY THE SAME JUDGE, LAST. Every
+    # candidate above came out of a search that could only improve on its own
+    # seed -- but the shortlist is chosen on the COARSE score, so without this
+    # a pose that the coarse grid ranked third could beat the incumbent there
+    # and lose to it here. This is the line that turns "the best of what it
+    # tried" into "never worse than what you had".
+    was = obj_f(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
+                start["camera_z"])
+    if best is None or was > best_score:
+        best, best_score, railed = dict(start), float(was), []
+
+    moved = abs((best["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0 - 180.0)
+    r0 = obj_f.raw(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
+                   start["camera_z"])
+    r1 = obj_f.raw(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
+                   best["camera_z"])
+    tell("done", 5)
+    return dict(best, ok=True,
+                improved=bool(best_score > was + 1e-9),
+                score=float(best_score), was=float(was),
+                gain=float(best_score - was),
+                terms_was=dict((k, None if v is None else float(v))
+                               for k, v in r0.items()),
+                terms_now=dict((k, None if v is None else float(v))
+                               for k, v in r1.items()),
+                used=obj_f.used(),
+                # ⭐ WHAT EACH MEASURE SAID ON ITS OWN, AND WHO WAS DROPPED.
+                # Three methods sharing only the cloud is the strongest
+                # evidence this program has; reporting only their sum would
+                # throw away the part that is actually diagnostic.
+                solo=dict((k, round(v, 2)) for k, v in solo.items()),
+                stood_down=list(quiet),
+                turned_deg=float(moved),
+                far=bool(moved > DEEP_FAR_DEG),
+                tilted_deg=float(math.hypot(
+                    best["pitch_deg"] - start["pitch_deg"],
+                    best["roll_deg"] - start["roll_deg"])),
+                raised_m=float(best["camera_z"] - start["camera_z"]),
+                candidates=[{"yaw_deg": float(t["pose"]["yaw_deg"]),
+                             "from_deg": float(t["from_deg"]),
+                             "seed": t.get("seed"),
+                             "fine": t.get("fine"),
+                             "sweep_confidence": t.get("sweep_confidence")}
+                            for t in tried],
+                sweep=[{"yaw_deg": b["yaw_deg"],
+                        "confidence": b["confidence"]} for b in bumps],
+                railed=list(railed),
+                evaluations=int(obj_c.calls + obj_f.calls),
+                seconds=float(time.time() - began),
+                exhausted=bool(time.time() > deadline
+                               or obj_f.calls >= budget))
 
 
 class Colouriser:

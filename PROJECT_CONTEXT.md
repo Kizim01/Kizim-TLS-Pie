@@ -2564,6 +2564,149 @@ is always node's own module loader — the same four lines whatever went wrong. 
 TOP of a stack**, and the failure had to be reproduced by hand before it could be read. Now `[:400]`.
 *Third time this project has found a diagnostic that worked except in the case it existed for.*
 
+#### ⭐⭐ A DEEP SEARCH FOR A PHOTOGRAPH'S POSE — AND WHAT MEASURING IT COST
+
+**Auto-align improves a pose that is already right; this asks whether it is.** The refinement is local
+*by construction* — railed at `MAX_REFINE_YAW_DEG` precisely so it cannot quietly re-solve — and it
+looks at one kind of evidence. Neither is a fault. They are the two reasons it cannot rescue a
+photograph sitting in the **wrong basin**, which after a clock-sorted shoot is the failure the operator
+actually has. **Deep align** sweeps all 360 headings, follows up every distinct bump, and judges with
+three unrelated measures: depth silhouettes, mutual information between **lidar reflectivity and image
+brightness** (Pandey, McBride, Savarese, Eustice, AAAI 2012 — the same work `solve_yaw_mi` already
+did on one axis, now on all of them), and where the hardest laser returns land in the picture.
+
+**Verified end to end on the confirmed pair, through the server.** Forced 130° wrong, it came back to
+**92.331° — 0.017° from the answer confirmed on 2026-08-21 — in nine seconds**, and correctly reported
+the move as a DIFFERENT answer rather than a refinement. From 40° wrong and from 170° wrong, likewise.
+
+⛔⛔ **THE FIRST BUG SHIPPED AND WAS INVISIBLE, AND ONLY A KNOWN ANSWER FOUND IT.** `_profile_peaks`
+built its heading as `shift*step + 180` where the sweep lays bin *i* at `i*step - 180`, so **every
+candidate it nominated was the ANTIPODE of a real bump**. The search still landed on the truth from all
+three starting points, because the incumbent seed has a free heading and walked there unaided — so
+nothing on screen, and no plausible unit test, looked wrong. It was caught by running the per-term
+argmax beside `_profile_peaks` on the one pair whose answer is known. *This file already warned that
+the sign is the easiest thing in it to get wrong and gave `_yaw_from_bin` one home; the lesson is that
+a SECOND way to turn a bin into an angle needs the same discipline and does not inherit it.*
+
+⛔⛔ **THE SECOND: THE "HIGH LASER RETURNS" WERE THE CEILING.** Asked for the top 2% of cells by
+reflectivity, this room answered with a **median latitude of +88°** — 143 cells of ceiling directly
+above the tripod, which comes back harder than any retroreflector because it is two metres away at
+normal incidence. That patch looks much the same whichever way the camera points, so the term carried
+**no heading information at all** and still scored 3.17 against its own shoulders. This is
+`_solid_angle_weight`'s problem in a different hat: there a pole cell covers almost no sky, here a pole
+cell is almost the same in every answer.
+
+⭐ **AND WHAT COUNTS AS A STRONG RETURN IS NOW THE INSTRUMENT'S OWN LINE, NOT A PERCENTILE.** The
+VLP-16 documents 0–100 as diffuse and **101–255 as retroreflective** — a physical statement that
+travels between rooms, which "the top two per cent" does not. Counted **per point, not per averaged
+cell**: `field_panorama` gives each cell a mean, and one retroreflective return among twenty off
+plaster averages to about forty. 304 cells here contain a retro return; only 16 *average* over 100.
+
+⛔⛔ **AND THE TERM STILL FAILED, SO IT IS GATED BY EVIDENCE RATHER THAN BY A WEIGHT.** Sweeping alone
+on the confirmed pair: **edges 0.98° off at confidence 5.20, mutual information 0.32° off at 4.36, and
+retroreflectors 176.30° off at 2.20.** Given a fixed weight the last one made the combined peak
+steadily *worse* — prominence 6.21 at weight 0, 6.09 at 0.15, **5.45 at 0.5** — in exchange for moving
+the answer two hundredths of a degree. A fixed weight was **the wrong shape of decision**. Each term
+now has to show a peak of its own *on this cloud* before it joins the sum
+(`DEEP_TERM_MIN_CONFIDENCE`), the panel prints what each said alone, and the note says which stood
+down. ⚠ Why it probably failed here is **not** "the idea is wrong": a restaurant has almost nothing
+retroreflective, and what crosses the line is glass, cutlery and a mirror — **specular**, whose
+highlights sit where the observer is, so the lidar's and the camera's are in different places by
+construction. **Untested on a site with real retroreflective targets, and queued.**
+
+⛔ **THREE MEASURES ARE STANDARDISED ONCE, AGAINST A FIXED REFERENCE SWEEP.** A cosine lives in
+[-1,1] and mutual information runs to a few nats; added raw, "the sum" is MI with a rounding error —
+the trap `standardise` exists for, arriving from the other side. And standardising **once** is what
+keeps the promise that the search cannot hand back something worse: if the scale moved as the search
+went, "this pose beats that one" would depend on the order they were tried in.
+
+#### ⭐⭐ PROFILE FIRST: THE SEARCH WENT FROM 180 SECONDS TO 14, AND MOST OF IT WAS NOT THE CARD
+
+Profiled before optimising, which changed what to optimise. A pose evaluation costs **3.7 ms** on the
+fine grid; **moving the camera's height cost 537 ms**, fifty times more, because it invalidates
+everything taken from the tripod. Three faults were hiding in that one number:
+
+| | |
+|---|---|
+| **Three walks of a million points where one would do** | `cloud_panorama`, `field_panorama` and the retro count each recomputed every point's direction, longitude, latitude and cell — all of the work — and differed only in what they summed. `_panoramas` shares the walk. **537 → 194 ms** |
+| **A cache of one, which thrashed** | a pattern search probes an axis both ways and then returns: three full rebuilds to answer two questions, the third of something in hand moments earlier. **`CACHE_HEIGHTS = 4`** |
+| **Probing the height while the heading was still unknown** | fifty times the cost of any other axis, spent refining a pose about to be thrown away. The screening pass now leaves it alone and the two finalists get it. |
+
+Together: **180 s → 14–19 s**, accuracy unchanged (0.000–0.017° from truth). *The card had not been
+touched yet.*
+
+#### ⭐ THE NVIDIA CARD — WHAT IS ON IT, WHAT DELIBERATELY IS NOT, AND WHAT IT COST TO FIND OUT
+
+`tlsconvert/gpu.py` is optional, probed once, and falls back to NumPy silently. The rule it follows:
+**the card gets the passes that touch every POINT; the processor keeps the ones that touch every
+CELL.** A pose is 32,400 cells and a dozen kernel launches cost about what the work does — measured
+unchanged at 3.3 ms either way. Measured on an RTX 3050 Ti Laptop:
+
+| pass | processor | card |
+|---|---|---|
+| the panorama the solver sees (1.2 M points) | 142 ms | **26 ms** |
+| colouring 3 M points from the photograph | 0.74 s | **0.11 s** |
+| one pose evaluation (32,400 cells) | 3.3 ms | not moved, on purpose |
+
+⛔⛔ **AND THE ARRANGEMENT THAT LOOKED OBVIOUS LOST TO THE CPU.** Computing *where to look* on the
+card and doing the looking on the host measured **1.06 s against the processor's 0.71** — slower —
+because it sends two int32 arrays home per chunk and leaves the gather, the memory-bound half, exactly
+where it was. All it buys is a transfer. With the **panorama resident on the card** the same work is
+**0.06–0.11 s**. *The first GPU port of anything should be assumed to be this one until measured.*
+
+⛔ **IT IS float64 THROUGHOUT AND THE TESTS CHECK BIT-FOR-BIT.** Every number on record here — the
+confidences, the 3.0 bar, the confirmed 92.314° — was measured on the NumPy path, and a backend that
+quietly dropped to float32 for speed would re-price all of them without anybody deciding to.
+
+⛔ **THE PROBE IS A REAL KERNEL, NOT `import cupy`.** On this machine CuPy imported happily, reported
+the card, and then raised *"Failed to find CUDA headers"* on its first reduction. Had the probe been
+the import, every solve would have died on its first array. `pip install "cupy-cuda13x[ctk]"` — the
+`[ctk]` is not optional, and the version must match the driver's CUDA.
+
+⛔⛔ **AND IT MUST NEVER REACH THE .exe: THE FIRST BUILD AFTER INSTALLING IT WENT FROM 35 MB TO
+1,032 MB AND REPORTED SUCCESS.** `gpu.py` imports cupy inside a function, which PyInstaller follows
+perfectly happily, and cupy drags the NVIDIA CUDA runtime wheels — **1,485 MB** installed — behind it.
+⛔ **The `.spec` files are OUTPUT, not input:** `build_exe.py` assembles its own command line and
+PyInstaller writes the spec from it, so excludes added to the three `.spec` files were **inert**, and
+the 1,032 MB build is what proved it. The excludes live in `build_exe.py` now. **The packaged program
+runs on the processor, which is correct rather than broken** — and the workbench says which one it is
+using in the bar along the top, so it is never a guess.
+
+#### ⭐⭐ THE PANEL BECAME A WORKFLOW BAR AND A SET OF TRAYS
+
+Eight stages all open at once had turned the right-hand side into every control in the program stacked
+in one column, most of them for a job finished an hour ago. Now: the **workflow runs left to right
+across the top**, each title opening a menu of that step's tools; picking a tool opens its **tray** on
+the right, and a tray can be **folded** (keeps its place, title showing) or **shut** (off the panel
+altogether). Both exist on purpose — conflating them would mean the only way to reduce clutter was to
+lose your place. The arrangement survives a reload.
+
+⛔ **A SHUT TRAY IS HIDDEN, NEVER REMOVED.** Every id on that page is bound by hand elsewhere and read
+whether it is on screen or not — `$('clnv').value` does not care that the cleaning tray is closed — so
+a restructure that emptied the DOM would break several dozen of those silently. And **shutting the last
+tray says why the panel is empty**, because a blank rectangle reads as a program that has broken.
+
+⭐ **The photograph's controls moved out of the scan list.** They were repeated in every row: on this
+shoot that is fifty-nine copies of a heading box, a lean, a camera height and two search buttons. The
+list now carries one line per scan saying where its photograph stands — *including when it was found
+and NOT applied, which is the case that most needs seeing* — and the controls follow whichever scan is
+picked.
+
+⭐ **The rings shrank and are now measured in pixels.** They were 13% of the wider floor span — three
+metres across in a restaurant, so the tripod sat inside a hoop bigger than most of the furniture. A
+gizmo is a **handle**, and how big a handle should be is a question about the screen, not about the
+room; the size is taken off the projection so it holds in orthographic too. The three rings are
+**nested** rather than sharing one radius, because three circles of equal size in three planes cross at
+the poles and there the grab is a coin toss.
+
+⭐ **And every angle can be typed.** The lean had six buttons and no box, so a camera measured at
+**2.44°** could only be reached by pressing half a degree five times and living with 2.50. Tip and bank
+are boxes now, and a **"move by"** box sets what one press of an arrow is worth — on the heading as
+well as the lean. The coarse ±10° jumps stay fixed, because a quarter-turn error is a fixed-size
+mistake and a fine one is not.
+
+Converter suite **616 → 673**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi
@@ -2578,7 +2721,7 @@ as **root**, and the directory is `lipi:lipi` 755, which was tested writable).
 
 **✅ THAT LIVE JOB IS DONE — THE RESTAURANT SHOOT IS SORTED (2026-08-21).** It read: *the photographs are paired with the wrong scans; open Studio and press Find… on each one.* The operator instead ran the new **Sort a shoot**, and the result is on disk: `D:\RESTAURANT SCAN` now holds **folders 1–59 plus `no photos`**, each numbered folder carrying its `.pcap`, its `.json` sidecar and its photograph renamed to the capture's stem. Verified afterwards: **60 captures, all 60 with sidecars, no numbered folder missing a sidecar or a photograph**, and the 13 aborted sweeps deleted. ⚠ The empty per-scan subfolders left in `Scan files` are leftovers of an earlier hand-organisation and are harmless.
 
-⭐⭐ **WHAT REPLACED IT AS THE NEXT THING TO DO: CHECK THE PAIRING BY GEOMETRY, NOT BY CLOCK.** The sorter pairs on **time**, and time is a proposal — the whole design is *time proposes, geometry disposes*. Two of its answers are worth testing before the job is trusted: the clock put `IMG_..._015` on `TLS_26_08_20_16_07_12` (now folder 2), which is what the original filename order had, **and geometry previously disagreed with that pairing by 134°**. Open the sorted folders, press **Solve the whole shoot** — which fits one camera heading across every photographed scan at once — and read the scans it names as *confident and disagreeing*. Those are the ones where the clock and the room tell different stories.
+⭐⭐ **THE NEXT THING TO DO: CHECK THE PAIRING BY GEOMETRY, NOT BY CLOCK — AND THERE IS NOW A BUTTON FOR IT.** The sorter pairs on **time**, and time is a proposal; the design is *time proposes, geometry disposes*. Worth testing before the job is trusted: the clock put `IMG_..._015` on `TLS_26_08_20_16_07_12` (now folder 2), which is what the original filename order had, **and geometry previously disagreed with that pairing by 134°**. Two ways to ask, both new: **Solve the whole shoot** fits one camera heading across every photographed scan at once and names the scans that are *confident and disagreeing*; **Deep align** searches one scan's whole circle and reports a move past 20° as a DIFFERENT answer rather than a refinement — which is exactly the shape a mis-paired photograph takes. Verified on folder 1: forced 130° wrong, it returned to 0.017° of the confirmed heading in nine seconds and flagged the move.
 
 **⭐⭐ A SECOND, INDEPENDENT METHOD NOW CORROBORATES A PHOTOGRAPH (2026-08-20).** Reflectivity against brightness through mutual information, which shares nothing with the edge solve but the cloud — because on 57 photographs the edge confidence ranked the KNOWN correct one **second**. Also: a **rotation ring** per scan, **double-click a scan name** to point every control at it, **which way is north**, and **Find…** to score a whole folder of photographs against a scan. ⛔ The operator's actual problem turned out to be a **photograph attached to the wrong scan**, not a threshold. Converter suite **515**.
 

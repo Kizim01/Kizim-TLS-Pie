@@ -2581,9 +2581,23 @@ finally:
 check("the page can ask for a camera height", "'photo/camera'" in _ALIGN_SRC
       or '"/photo/camera"' in _ALIGN_SRC)
 check("and for a fresh solve", '"/photo/resolve"' in _ALIGN_SRC)
-check("the nudge buttons turn the photograph by a degree and by ten",
-      "nudgeHeading(" in _ALIGN_SRC and "step(-10," in _ALIGN_SRC and
-      "step(1,'" in _ALIGN_SRC)
+# ⭐ COARSE IS FIXED, FINE IS TYPED. The ten-degree jumps stay what they were
+# because a quarter-turn error is a fixed-size mistake; the single-degree ones
+# became "whatever is in the move-by box", because the fine mistake is not a
+# fixed size and a camera measured at 2.44 degrees could not be reached at all
+# by pressing half a degree repeatedly.
+check("the coarse nudges are still a fixed ten degrees",
+      "nudgeHeading(" in _ALIGN_SRC and "step(-10," in _ALIGN_SRC
+      and "step(10," in _ALIGN_SRC)
+check("and the fine ones take their size from the typed box",
+      "stepBy(1," in _ALIGN_SRC and "stepBy(-1," in _ALIGN_SRC
+      and "function stepOf" in _ALIGN_SRC)
+check("the lean can be typed as two numbers rather than only nudged",
+      "function setLean" in _ALIGN_SRC and "id=\"tp\'+s.index" in _ALIGN_SRC
+      and "id=\"bk\'+s.index" in _ALIGN_SRC)
+check("and the lean nudges use the same typed step",
+      "function nudgeTiltBy" in _ALIGN_SRC
+      and "function nudgeHeadingBy" in _ALIGN_SRC)
 # ⛔ TRYING A CANDIDATE IS A QUESTION, NOT A CLAIM. The baseline is a statement
 # about how the camera sits on the tripod; harvesting it from an exploratory
 # click would let one try become the default for every later scan.
@@ -2888,7 +2902,8 @@ const V={scans:[],picked:0,active:1,editWho:-1,nav:false,ring:false,
 const $=()=>({textContent:'',innerHTML:'',value:0});
 let SAID='';
 const say=(m)=>{SAID=m;}, invalidate=()=>{}, editsFollow=()=>{},
-      dirty=()=>{}, syncSliders=()=>{}, refreshLists=()=>{};
+      dirty=()=>{}, syncSliders=()=>{}, refreshLists=()=>{},
+      openTray=()=>{};
 function active(){ return V.scans.find(s=>s.index===V.active); }
 function put(A,x,y,z){ return [A[3]+x, A[7]+y, A[11]+z]; }
 function affine(s){ return [1,0,0,s.setup.x_m, 0,1,0,s.setup.y_m,
@@ -3837,6 +3852,374 @@ _big = viewer.ViewerBuffer(max_points=16)
 _big.add(np.zeros((64, 3), np.float32), np.zeros((64, 3), np.uint8))
 check("a buffer that really did thin still reports it both ways",
       _big.subsampled and not _big.kept(64), (_big.count, _big.subsampled))
+
+
+# --- the deep search -------------------------------------------------------
+#
+# ⛔⛔ EVERY NUMBER BELOW THAT LOOKS LIKE A JUDGEMENT WAS MEASURED ON THE ONE
+# PAIR IN THIS PROJECT WHOSE ANSWER IS KNOWN: TLS_26_08_20_16_03_15 with what
+# was IMG_20260820_160520_00_014, confirmed at 92.314 degrees and corroborated
+# to 0.017 by a method sharing nothing with the first but the cloud. Sweeping
+# alone on that pair: edges 0.98 degrees off at confidence 5.20, mutual
+# information 0.32 off at 4.36, retroreflectors 176.30 off at 2.20.
+print("\ndeep alignment")
+
+# ⛔⛔ THE SIGN. This is the bug that shipped and was caught by comparing
+# against a plain argmax on a known answer: `_profile_peaks` built its heading
+# as `shift*step + 180` where the sweep lays bin i at `i*step - 180`, so every
+# candidate it nominated was the ANTIPODE of a real bump. Nothing looked wrong,
+# because the incumbent seed has a free heading and walked to the right answer
+# unaided. `peaks` reads a correlation and DOES negate; these two must not be
+# confused, and this check is the fence between them.
+_prof = np.zeros(colour.SOLVE_LON_BINS)
+for _b, _v in ((45, 3.0), (300, 1.4)):
+    _prof[_b] = _v
+_pk = colour._profile_peaks(_prof, 2)
+check("a profile indexed by heading reports the heading it peaked at, not "
+      "its antipode",
+      abs(_pk[0]["yaw_deg"] - (45 * 360.0 / colour.SOLVE_LON_BINS - 180.0))
+      < 0.6, _pk[0]["yaw_deg"])
+check("and the runner-up too",
+      abs(_pk[1]["yaw_deg"] - (300 * 360.0 / colour.SOLVE_LON_BINS - 180.0))
+      < 0.6, _pk[1]["yaw_deg"])
+# ⛔ WITH A FLOOR, NOT WITHOUT ONE. The confidence is the peak measured
+# against the spread of everything away from it, so a profile that is exactly
+# zero off the bump divides by nothing and reports millions. No correlation
+# this program produces has a flat floor.
+_wrng = np.random.default_rng(4)
+_wide = _wrng.normal(0.0, 0.02, colour.SOLVE_LON_BINS)
+for _i in range(colour.SOLVE_LON_BINS):
+    _off = min(abs(_i - 120), colour.SOLVE_LON_BINS - abs(_i - 120))
+    _wide[_i] += math.exp(-(_off / 6.0) ** 2)
+_shortlist = colour._profile_peaks(_wide, 4)
+check("the strongest bump comes first",
+      abs(_shortlist[0]["yaw_deg"] - (120 * 360.0 / colour.SOLVE_LON_BINS
+                                      - 180.0)) < 0.6,
+      _shortlist[0]["yaw_deg"])
+# ⛔ TWO LAGS EITHER SIDE OF ONE BUMP ARE ONE ANSWER OFFERED TWICE, which reads
+# as a choice and is not. ⚠ The list is still FILLED -- from the noise floor if
+# there is only one real bump -- because deciding which entries are worth
+# having is the confidence's job, not this function's. That is why every entry
+# carries one.
+_apart = min(abs((a["yaw_deg"] - b["yaw_deg"] + 180.0) % 360.0 - 180.0)
+             for i, a in enumerate(_shortlist)
+             for b in _shortlist[i + 1:])
+# ⚠ THE WINDOW IS COUNTED IN BINS AND THE PEAK IS THEN INTERPOLATED BETWEEN
+# THEM, so two entries can sit up to half a bin either side of the nominal
+# window without either being the other's shoulder.
+check("and no two entries are the same bump seen twice",
+      _apart >= colour.PEAK_EXCLUDE_DEG - 1.05, _apart)
+check("the runners-up on a single-bump profile are visibly nothing, which is "
+      "what the confidence is for",
+      _shortlist[0]["confidence"] > 4.0
+      and _shortlist[1]["confidence"] < 3.0,
+      [round(p["confidence"], 2) for p in _shortlist])
+check("and the peak window is a width in DEGREES turned into bins, so it "
+      "means the same on a coarse profile as on a fine one",
+      colour.PEAK_EXCLUDE_DEG == 20.0)
+
+
+class _Deep(object):
+    """A scorer with a known best pose, and terms that can be made useless."""
+
+    def __init__(self, best=30.0, mi=True, beacon=True, mi_flat=False):
+        self.best, self.want_mi, self.want_beacon = best, mi, beacon
+        self.mi_flat = mi_flat
+        self.evaluations = 0
+        self.lon_bins, self.lat_bins = 8, 4
+
+    def _bump(self, yaw, pitch, roll, z, width):
+        off = abs((yaw - self.best + 180.0) % 360.0 - 180.0)
+        return (math.exp(-(off / width) ** 2)
+                - 0.01 * (abs(pitch) + abs(roll) + abs(z or 0.0)))
+
+    def score(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+        self.evaluations += 1
+        return self._bump(yaw, pitch, roll, z, 25.0)
+
+    def mutual(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+        if not self.want_mi:
+            return None
+        return 0.5 if self.mi_flat else self._bump(yaw, pitch, roll, z, 18.0)
+
+    def beacon(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+        if not self.want_beacon:
+            return None
+        # deliberately wrong: peaks half a turn from the truth
+        off = abs((yaw - self.best - 180.0 + 180.0) % 360.0 - 180.0)
+        return math.exp(-(off / 30.0) ** 2)
+
+    def filled(self, z=None):
+        return 1.0
+
+
+_obj = colour.DeepObjective(_Deep())
+_yy, _cc, _raw = _obj.sweep(0.0, 0.0, 0.0, bins=colour.SOLVE_LON_BINS)
+check("the sweep evaluates every heading", _cc.size == colour.SOLVE_LON_BINS)
+check("and it standardises each measure before adding them, so a term with a "
+      "bigger natural range cannot outvote one with a smaller",
+      set(_obj.stats) == {"edge", "mi", "beacon"}, sorted(_obj.stats))
+# ⛔ A TERM THAT NEVER MOVES CARRIES NO INFORMATION AND MUST NOT BE DIVIDED BY
+# ITS OWN ZERO SPREAD.
+_flat = colour.DeepObjective(_Deep(mi_flat=True))
+_flat.sweep(0.0, 0.0, 0.0, bins=colour.SOLVE_LON_BINS)
+check("a measure that says the same thing at every heading is left out",
+      "mi" not in _flat.used(), _flat.used())
+check("and the others still vote", set(_flat.used()) == {"edge", "beacon"},
+      _flat.used())
+# ⛔ A CLOUD WITH NO REFLECTIVITY -- an exported cloud carries none -- must not
+# score zero for the two measures that need it and drag the sum toward nothing.
+_none = colour.DeepObjective(_Deep(mi=False, beacon=False))
+_none.sweep(0.0, 0.0, 0.0, bins=colour.SOLVE_LON_BINS)
+check("with no reflectivity the two measures that need it stand down",
+      _none.used() == ["edge"], _none.used())
+
+# --- the vote is earned on this cloud, not assumed -------------------------
+#
+# ⛔⛔ THE RETROREFLECTOR TERM MEASURED 176.30 DEGREES WRONG AT CONFIDENCE 2.20
+# ON THE CONFIRMED PAIR, and given a fixed weight it made the combined peak
+# steadily worse -- prominence 6.21 at weight 0, 6.09 at 0.15, 5.45 at 0.5 --
+# while moving the answer two hundredths of a degree. A fixed weight was the
+# wrong SHAPE of decision, so each term now has to show a peak of its own on
+# this cloud before it is allowed into the sum.
+check("the bar for voting sits below the bar for being believed on its own, "
+      "because 'has anything to say' is a weaker claim than 'knows the answer'",
+      colour.DEEP_TERM_MIN_CONFIDENCE < colour.MIN_CONFIDENCE,
+      (colour.DEEP_TERM_MIN_CONFIDENCE, colour.MIN_CONFIDENCE))
+
+# --- the pattern search cannot lose ground ---------------------------------
+_o2 = colour.DeepObjective(_Deep(best=30.0))
+_o2.stats = {"edge": (0.0, 1.0)}
+_o2.weights = {"edge": 1.0, "mi": 0.0, "beacon": 0.0}
+_start = {"yaw_deg": 24.0, "pitch_deg": 3.0, "roll_deg": -2.0,
+          "camera_z": 0.05}
+_was = _o2(_start["yaw_deg"], _start["pitch_deg"], _start["roll_deg"],
+           _start["camera_z"])
+_pose, _sc, _rail = colour._pattern(_o2, _start, colour._live_axes(),
+                                    2.0, 0.01, 4000, None)
+check("a pattern search never returns a pose worse than the one it was given",
+      _sc >= _was - 1e-12, (_was, _sc))
+check("and here it found the answer", abs(_pose["yaw_deg"] - 30.0) < 0.5,
+      _pose["yaw_deg"])
+check("it stops at the rails rather than handing back a pose no tripod held",
+      abs(_pose["pitch_deg"]) <= colour.MAX_TILT_DEG
+      and abs(_pose["camera_z"]) <= colour.MAX_CAMERA_Z_M)
+
+# ⭐ THE HEIGHT IS LEFT OUT WHILE THE HEADING IS STILL UNKNOWN -- profiled at
+# 142 ms against 3.4 ms for a pose, so probing it from a hundred degrees away
+# spends fifty times the cost refining a pose about to be thrown away.
+check("the screening pass does not move the camera's height",
+      "camera_z" not in [a[0] for a in colour._live_axes(height=False)])
+check("and the final polish does",
+      "camera_z" in [a[0] for a in colour._live_axes(height=True)])
+
+# --- one walk of the cloud, not three --------------------------------------
+#
+# ⛔ A REGRESSION GUARD WITH TEETH: `_panoramas` replaced three functions that
+# each walked every point, and it has to give bit-for-bit what they gave --
+# they are still used elsewhere, one at a time, so a drift between them would
+# be a solve and an export disagreeing about the same cloud.
+print("\none walk of the cloud")
+_rng = np.random.default_rng(11)
+_pts = ((_rng.random((40000, 3)) - 0.5) * 9).astype(np.float32)
+_rf = (_rng.random(40000) * 255).astype(np.float32)
+_cam = (0.0, 0.0, 0.07)
+_d1, _f1 = colour.cloud_panorama(_pts, camera=_cam, lon_bins=90, lat_bins=30)
+_d2, _f2, _v2, _r2 = colour._panoramas(_pts, _rf, _cam, 90, 30,
+                                       retro_min=colour.DEEP_RETRO_MIN)
+check("the shared walk gives the same depth as cloud_panorama",
+      np.allclose(_d1, _d2, atol=1e-12), np.abs(_d1 - _d2).max())
+check("and the same filled mask", np.array_equal(_f1, _f2))
+_v1, _m1 = colour.field_panorama(_pts, _rf, camera=_cam, lon_bins=90,
+                                 lat_bins=30)
+check("and the same reflectivity as field_panorama",
+      np.allclose(_v1, _v2, atol=1e-12), np.abs(_v1 - _v2).max())
+check("and it counts retroreflective returns PER POINT, not per averaged cell "
+      "-- one hot return among twenty averages to nothing",
+      int(_r2.sum()) == int((_rf >= colour.DEEP_RETRO_MIN).sum()),
+      (int(_r2.sum()), int((_rf >= colour.DEEP_RETRO_MIN).sum())))
+
+
+class _Counting(colour.PoseScorer):
+    """A scorer that says how often it rebuilt the view from the tripod."""
+
+    def __init__(self, *a, **k):
+        self.builds = 0
+        colour.PoseScorer.__init__(self, *a, **k)
+
+    def _at(self, camera_z=None):
+        z = self.camera[2] if camera_z is None else float(camera_z)
+        if z not in self._cache:
+            self.builds += 1
+        return colour.PoseScorer._at(self, camera_z)
+
+
+_lum = (_rng.random((120, 240)) * 255)
+_cs = _Counting(_pts, _lum, refl=_rf, lon_bins=90, lat_bins=30)
+for _z in (0.0, 0.02, -0.02, 0.0, 0.02):
+    _cs.score(10.0, 0.0, 0.0, _z)
+# ⛔⛔ THE CACHE OF ONE WAS A REAL FAULT, NOT A MISSED OPTIMISATION. A pattern
+# search asks about z+step, then z-step, then goes back to z if neither won --
+# three full rebuilds of the cloud to answer two questions, and the third of
+# something that was in hand moments earlier.
+check("going back to a height already visited does not rebuild the cloud",
+      _cs.builds == 3, _cs.builds)
+check("and only a few heights are kept, so a long search cannot grow "
+      "without bound", colour.CACHE_HEIGHTS <= 8)
+
+# --- the retroreflector term -----------------------------------------------
+#
+# ⛔ WHAT COUNTS AS A STRONG RETURN IS THE INSTRUMENT'S OWN LINE. The VLP-16
+# reports 0-100 for a diffuse reflector and 101-255 for a retroreflector; "the
+# top two per cent" instead picked out the palest wall in a room that has no
+# retroreflectors, and pointed 176 degrees from a confirmed answer.
+check("the retro line is the instrument's, not a percentile",
+      colour.DEEP_RETRO_MIN == 101.0)
+_dim = (_rng.random(40000) * 90).astype(np.float32)   # nothing retroreflective
+_sc2 = colour.PoseScorer(_pts, _lum, refl=_dim, lon_bins=90, lat_bins=30)
+check("a room with no retroreflectors leaves the term with nothing to say",
+      _sc2.beacon(0.0, 0.0, 0.0, 0.0) is None)
+check("and a cloud with no reflectivity at all leaves both terms silent",
+      colour.PoseScorer(_pts, _lum, lon_bins=90,
+                        lat_bins=30).mutual(0.0) is None)
+# ⛔ AND THE POLES ARE THROWN OUT BEFORE THE STRONGEST ARE PICKED, or the
+# strongest ARE the poles: measured on the confirmed pair, the top 2% by
+# reflectivity had a median latitude of +88 degrees -- ceiling directly above
+# the tripod, which looks the same whichever way the camera points.
+_up = np.zeros((4000, 3), dtype=np.float32)
+_up[:, 2] = 2.0                       # everything straight up
+_up[:, 0] = (_rng.random(4000) - 0.5) * 0.02
+_hot = np.full(4000, 200.0, dtype=np.float32)
+_pole = colour.PoseScorer(np.vstack([_pts, _up]), _lum,
+                          refl=np.concatenate([_dim, _hot]),
+                          lon_bins=90, lat_bins=30)
+check("retroreflectors directly overhead are not counted as landmarks",
+      _pole.beacon(0.0, 0.0, 0.0, 0.0) is None)
+
+# --- the graphics card -----------------------------------------------------
+#
+# ⭐ THE CARD GETS THE PASSES THAT TOUCH EVERY POINT AND THE PROCESSOR KEEPS
+# THE ONES THAT TOUCH EVERY CELL. Measured on this machine: the panorama pass
+# 142 ms to 26, colouring three million points 0.74 s to 0.11 s -- and the pose
+# evaluation, 32,400 cells, unchanged at 3.3 ms because a dozen kernel launches
+# cost about what the work does.
+from tlsconvert import gpu                                  # noqa: E402
+print("\nthe graphics card, when there is one")
+check("the backend answers even when there is no card", isinstance(gpu.on(),
+                                                                   bool))
+check("and says why not, rather than only that not", len(gpu.name()) > 3,
+      gpu.name())
+print("  (%s)" % gpu.name())
+if gpu.on():
+    # ⛔⛔ THE CARD IS NOT ALLOWED TO CHANGE AN ANSWER. Every confidence, bin
+    # count and threshold on record was measured through the NumPy path.
+    _gd, _gf, _gv, _gr = colour._panoramas(_pts, _rf, _cam, 90, 30,
+                                           retro_min=colour.DEEP_RETRO_MIN)
+    os.environ["TLSPIE_CUDA"] = "0"
+    gpu.reset()
+    try:
+        _cd, _cf, _cv, _cr = colour._panoramas(_pts, _rf, _cam, 90, 30,
+                                               retro_min=colour.DEEP_RETRO_MIN)
+        _img = (_rng.random((90, 180, 3)) * 255).astype(np.uint8)
+        _cpu_col = colour.sample(_pts, _img, 33.0, _cam, 1.5, -0.5)
+    finally:
+        os.environ.pop("TLSPIE_CUDA", None)
+        gpu.reset()
+    _gpu_col = colour.sample(_pts, _img, 33.0, _cam, 1.5, -0.5)
+    check("the card and the processor build the same panorama",
+          np.allclose(_gd, _cd, atol=1e-9), np.abs(_gd - _cd).max())
+    check("and the same masks and counts exactly",
+          np.array_equal(_gf, _cf) and np.array_equal(_gr, _cr))
+    check("and colour every point identically -- not nearly, identically, "
+          "because a colour is a byte and there is no nearly",
+          np.array_equal(_gpu_col, _cpu_col))
+else:
+    print("  (no card here: the parity checks did not run)")
+check("the card can be refused, so what it is worth can be measured",
+      "TLSPIE_CUDA" in io.open(
+          os.path.join(os.path.dirname(colour.__file__), "gpu.py"),
+          encoding="utf-8").read())
+
+# --- the bar across the top and the trays down the side --------------------
+print("\nthe workflow bar and its trays")
+_TRAY_RE = re.compile(r"\['([a-z]+)','([A-Za-z]+)',", re.S)
+_js = _ALIGN_SRC[_ALIGN_SRC.index("const TRAYS = ["):
+                 _ALIGN_SRC.index("const MENUS = [")]
+_trays = _TRAY_RE.findall(_js)
+check("the bar lists some trays", len(_trays) >= 15, len(_trays))
+# ⛔⛔ A TRAY NAMED IN THE MENU WITH NO PANEL BEHIND IT IS A MENU ENTRY THAT
+# DOES NOTHING, and the panel is generated separately from the table -- so the
+# two are checked against each other rather than trusted to agree.
+_missing = [t for t, _m in _trays if ('id="ty_%s"' % t) not in _ALIGN_SRC]
+check("every tray in the menus has a panel behind it", not _missing, _missing)
+_menus = _ALIGN_SRC[_ALIGN_SRC.index("const MENUS = ["):]
+_menus = _menus[:_menus.index("]")]
+_stray = sorted({m for _t, m in _trays if ("'%s'" % m) not in _menus})
+check("and every tray is filed under a menu that exists", not _stray, _stray)
+_ids = re.findall(r'id="ty_([a-z]+)"', _ALIGN_SRC)
+check("and no panel is orphaned from the menus",
+      sorted(_ids) == sorted(t for t, _m in _trays),
+      sorted(set(_ids) ^ {t for t, _m in _trays}))
+# ⛔ A SHUT TRAY IS HIDDEN, NEVER REMOVED. Every id on this page is bound by
+# hand elsewhere and read whether it is on screen or not -- `$('clnv').value`
+# does not care that the cleaning tray is closed.
+check("shutting a tray hides it rather than emptying the page",
+      "style.display = st.open ? '' : 'none'" in _ALIGN_SRC)
+check("folding and shutting are different things",
+      "function foldTray" in _ALIGN_SRC and "function closeTray" in _ALIGN_SRC)
+# ⛔ SHUTTING THE LAST TRAY MUST NOT LOOK LIKE A CRASH.
+check("an empty panel says why it is empty",
+      "No tools open" in _ALIGN_SRC)
+check("and a shut tray says where it went, because it is off screen but not "
+      "gone", "still under" in _ALIGN_SRC)
+check("the arrangement survives a reload", "localStorage" in _ALIGN_SRC
+      and "tlspie.trays" in _ALIGN_SRC)
+# ⛔ THE MENUS ARE BUILT BEFORE THE CLOUDS LOAD. Loading can end in fail(), and
+# that error tells the operator to drop the preview detail and try again --
+# which needs a menu.
+check("the bar is built before anything that can fail",
+      _ALIGN_SRC.index("buildTopbar(); showTrays();")
+      < _ALIGN_SRC.index("Could not load the clouds"))
+check("arming a tool with the keyboard opens the tray that explains it",
+      "function trayForTool" in _ALIGN_SRC and "TOOLTRAY" in _ALIGN_SRC)
+
+# --- the photograph gizmo --------------------------------------------------
+print("\nthe photograph's rings")
+# ⛔ THE RING WAS 13% OF THE FLOOR SPAN -- three metres across in a restaurant,
+# so the tripod sat inside a hoop bigger than the furniture. A gizmo is a
+# handle, and how big a handle should be is a question about the screen.
+check("the rings are sized in pixels, not as a fraction of the room",
+      "const TILT_PX" in _ALIGN_SRC
+      and "0.13*Math.max(span(0)" not in _ALIGN_SRC)
+check("and the size is measured off the projection, so it holds in "
+      "orthographic too", "const perM=Math.hypot(e[0]-c[0], e[1]-c[1]);"
+      in _ALIGN_SRC)
+# ⛔ THREE RINGS OF ONE RADIUS IN THREE PLANES CROSS AT THE POLES, and there
+# the grab is a coin toss.
+check("the three rings are nested rather than stacked",
+      _ALIGN_SRC.count("f:0.76") == 1 and _ALIGN_SRC.count("f:0.54") == 1)
+check("they are still centred on the tripod, which is what they turn",
+      "const o=put(affine(s), 0, 0, 0);" in _ALIGN_SRC)
+
+# --- the deep button and what it reports -----------------------------------
+check("the page can ask for a deep search", "'photo/deep'" in _ALIGN_SRC)
+check("and the server answers it", '"/photo/deep"' in _ALIGN_SRC)
+# ⛔⛔ THE FIELD-DROPPING TRAP, WHICH HAS HAPPENED ONCE. A field added to
+# _rebuild and not to loadScan reaches the page and is dropped on the floor,
+# and nothing reports a fault.
+check("what the search found survives the trip to the page",
+      '"deep": info.get("deep")' in _ALIGN_SRC
+      and "deep:m.deep||null" in _ALIGN_SRC)
+# ⛔ A LONG MOVE IS A DIFFERENT ANSWER, NOT A BETTER ONE. On a shoot sorted by
+# the clock, a pose a hundred degrees out is a MIS-PAIRED photograph.
+check("a long move is reported as a different answer rather than a refinement",
+      "DIFFERENT answer" in _ALIGN_SRC and "DEEP_FAR_DEG" in _ALIGN_SRC)
+check("and the search does not touch the grade, because fitting a pose better "
+      "is not evidence the photograph belongs to the scan",
+      "_repaint" in _ALIGN_SRC.split("def deep(")[1].split("def set_tilt")[0])
+check("the photograph's controls are in one tray, not repeated in every row",
+      "function photoBrief" in _ALIGN_SRC
+      and "photoBrief(s)+'</div>')" in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

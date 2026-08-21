@@ -9,3 +9,26 @@ small_gicp           # GICP alignment: 0.24 s on the real pair where the grid
                      # 0.0401 m). ~110 MB installed, which is most of why
                      # TLS-Pie-Studio.exe is the large one. Optional at run
                      # time -- registration.solve_best falls back to the grid.
+
+# --- optional, and deliberately NOT bundled --------------------------------
+#
+# cupy-cuda13x[ctk]   the NVIDIA card, for the two passes that touch every
+#                     point of a capture. Measured on an RTX 3050 Ti Laptop:
+#                     building the panorama the solver sees 142 ms -> 26 ms,
+#                     colouring three million points 0.74 s -> 0.11 s. The
+#                     deep photograph search went 180 s -> 14 s overall, though
+#                     most of that was algorithmic rather than the card.
+#
+# ⛔ IT IS 1,485 MB INSTALLED AND IT IS EXCLUDED FROM EVERY .spec. PyInstaller
+# bundles whatever is in the environment, so leaving it to be picked up would
+# turn a 38 MB program into a gigabyte and a half. The .exe therefore runs on
+# the processor, which is correct rather than broken -- `tlsconvert/gpu.py`
+# asks whether there is a card and the answer is simply no. The workbench says
+# which one it is using, in the bar along the top, so this is never a guess.
+#
+# ⛔ AND THE VERSION HAS TO MATCH THE DRIVER'S CUDA. 13x here for CUDA 13.1;
+# on a machine with a CUDA 12 driver it is cupy-cuda12x. The [ctk] part is not
+# optional -- without the toolkit headers CuPy imports, reports the card, and
+# then raises on the first piece of arithmetic it is asked to do.
+#
+#     pip install "cupy-cuda13x[ctk]"

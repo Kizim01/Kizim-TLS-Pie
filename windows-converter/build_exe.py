@@ -105,6 +105,20 @@ def main(argv=None):
                "--exclude-module", "pandas",
                "--exclude-module", "scipy",
                "--exclude-module", "pytest"]
+        # ⛔⛔ THE GRAPHICS CARD IS A RUN-TIME OPTION AND MUST NEVER BE BUNDLED.
+        # `tlsconvert/gpu.py` imports cupy inside a function, which PyInstaller
+        # follows perfectly happily -- and cupy drags in the NVIDIA CUDA
+        # runtime wheels, 1,485 MB of them. Measured: without these lines the
+        # three executables built successfully at 1,032 MB apiece, against
+        # 35 MB with them.
+        #
+        # ⭐ AND THE PROGRAM IS CORRECT WITHOUT IT. `gpu.on()` simply answers
+        # no, every path falls back to NumPy, and the workbench says so in the
+        # bar along the top. An operator who wants the card runs from the
+        # environment, where it is one pip install away.
+        cmd += [x for name in ("cupy", "cupyx", "cupy_backends", "fastrlock",
+                               "nvidia", "cuda", "cuda_pathfinder")
+                for x in ("--exclude-module", name)]
         if os.path.exists(ICON):
             cmd += ["--icon", ICON]
         else:

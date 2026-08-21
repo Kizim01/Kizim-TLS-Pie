@@ -49,6 +49,7 @@ import webbrowser
 import numpy as np
 
 from . import export
+from . import gpu as gpu_mod
 from . import library, pipeline, registration, viewer
 
 # A clip box is for seeing INTO a room, so it starts wide open. Anything else
@@ -617,6 +618,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/photo/refine":
                 return self._json(srv.refine(body.get("index"),
                                              body.get("rung")))
+            if path == "/photo/deep":
+                return self._json(srv.deep(body.get("index"),
+                                           body.get("seconds")))
             if path == "/photo/tilt":
                 return self._json(srv.set_tilt(body.get("index"),
                                                body.get("pitch"),
@@ -732,6 +736,14 @@ class AlignServer(object):
                      .replace("__META__", json.dumps(meta))
                      .replace("__CHUNK__", str(viewer.CHUNK_POINTS))
                      .replace("__OUT__", json.dumps(out_path or ""))
+                     # ⭐ WHICH PROCESSOR IS DOING THE WORK, ON SCREEN.
+                     # "Is it using the graphics card?" is not a question an
+                     # operator should have to answer by timing things, and a
+                     # card that has quietly stopped being used -- a driver
+                     # update, a moved virtual environment -- looks exactly
+                     # like a card that is being used, only slower.
+                     .replace("__DEVICE__", json.dumps(gpu_mod.name()))
+                     .replace("__CUDA__", "true" if gpu_mod.on() else "false")
                      .replace("__ICON__", _favicon())
                      .encode("utf-8"))
         handler = type("_H", (_Handler,), {"server_ref": self})
@@ -793,6 +805,10 @@ class AlignServer(object):
                          "roll": info.get("roll_deg") or 0.0,
                          "rung": int(info.get("rung") or 0),
                          "refined": info.get("refined"),
+                         # What the deep search found, and -- the part that
+                         # matters -- what each of its three measures said
+                         # ALONE, and which of them was left out of the vote.
+                         "deep": info.get("deep"),
                          # The cleaning rule in force, so the panel can show it
                          # and an undo can put the previous one back.
                          # ⭐ THE NUMBERED FOLDER THIS CAPTURE CAME OUT OF.
@@ -1785,6 +1801,136 @@ class AlignServer(object):
                          if want < len(colour_mod.RUNGS) else None),
                 "scans": self._rebuild()}
 
+    def deep(self, index, seconds=None):
+        """
+        Search the whole circle for this photograph's pose, hard.
+
+        ⭐⭐ IT ANSWERS A DIFFERENT QUESTION FROM Auto-align, AND THAT IS WHY
+        IT IS A SEPARATE BUTTON RATHER THAN A FOURTH RUNG. Auto-align improves
+        a pose that is already right and is railed so that it cannot quietly
+        re-solve; this asks whether the pose is right at all, sweeping every
+        heading with three unrelated measures and then following up each
+        distinct bump. See `colour.deep_align`.
+
+        ⛔ SO IT CAN MOVE A LONG WAY, AND IT SAYS SO WHEN IT DOES. A move past
+        `colour.DEEP_FAR_DEG` is reported as a different answer rather than as
+        a refinement -- on a shoot sorted by the clock, the pose being a
+        hundred degrees out is the shape a MIS-PAIRED PHOTOGRAPH takes, not
+        the shape an imprecise one takes, and the operator wants to hear that
+        in those words.
+
+        ⛔ IT STILL CANNOT MAKE THE ALIGNMENT WORSE. The pose it was handed is
+        one of the candidates, every candidate is judged by the same objective,
+        and the best of them wins.
+
+        ⚠ AND IT STILL DOES NOT TOUCH THE GRADE. `_repaint` keeps whatever
+        judged the pairing; a search that fits a pose better cannot be evidence
+        that the photograph belongs to the scan, and a deeply-fitted wrong
+        photograph is merely a wrong photograph fitted deeply.
+        """
+        from . import colour as colour_mod
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        info = dict(scan.colour_info or {})
+        if info.get("yaw_deg") is None:
+            return {"ok": False,
+                    "error": "there is no pose to search from yet -- give "
+                             "this photograph a heading first, even a rough "
+                             "one"}
+        sample = (scan.sample if scan.sample is not None and len(scan.sample)
+                  else scan.xyz)
+        # ⛔ THE SOLVER'S OWN DECIMATED REFLECTIVITY, NOT THE ONE ON SCREEN.
+        # `view_refl` lines up with the displayed points and `sample_refl` with
+        # `sample`; handing over the wrong one gives arrays of different
+        # lengths, and `PoseScorer` would quietly drop both measures that need
+        # reflectivity rather than fail -- leaving a "deep" search that was
+        # only the edge term with a longer wait attached.
+        refl = getattr(scan, "sample_refl", None)
+        if refl is not None and len(refl) != len(sample):
+            refl = None
+
+        def report(stage, n, total):
+            self._progress = {"stage": "%s: %s" % (scan.name, stage),
+                              "n": int(n), "total": int(total), "busy": True}
+
+        report("starting", 0, 5)
+        try:
+            rgb_img, lum = colour_mod.load_panorama(photo)
+            got = colour_mod.deep_align(
+                sample, lum, refl=refl,
+                camera=(0.0, 0.0, float(info.get("camera_z") or 0.0)),
+                yaw_deg=float(info["yaw_deg"]),
+                pitch_deg=float(info.get("pitch_deg") or 0.0),
+                roll_deg=float(info.get("roll_deg") or 0.0),
+                seconds=(float(seconds) if seconds
+                         else colour_mod.DEEP_SECONDS),
+                progress=report)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": "could not search (%s)" % exc}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not got.get("ok"):
+            return {"ok": False, "error": got.get("reason") or "cannot search"}
+
+        scan.camera_z = float(got["camera_z"])
+        fresh = self._repaint(scan, photo, got, info)
+        if not fresh.get("ok"):
+            return {"ok": False, "error": fresh.get("reason")
+                    or "could not repaint"}
+        # Every axis the ladder climbs has now been fitted, and fitted further
+        # than the ladder goes, so the ladder says so rather than offering a
+        # rung that would find nothing.
+        fresh["rung"] = len(colour_mod.RUNGS)
+        fresh["refined"] = {k: got.get(k) for k in
+                            ("improved", "gain", "score", "was", "turned_deg",
+                             "tilted_deg", "raised_m", "evaluations",
+                             "railed", "exhausted")}
+        fresh["deep"] = {k: got.get(k) for k in
+                         ("solo", "stood_down", "used", "far", "turned_deg",
+                          "seconds", "evaluations", "candidates", "improved")}
+        scan.colour_info = fresh
+
+        names = {"edge": "silhouettes", "mi": "reflectivity",
+                 "beacon": "retroreflectors"}
+        solo = got.get("solo") or {}
+        voted = ", ".join("%s %.1f" % (names.get(k, k), solo[k])
+                          for k in ("edge", "mi", "beacon") if k in solo
+                          and k not in (got.get("stood_down") or []))
+        note = ("searched all 360° with %d evaluations in %.0f s. "
+                % (got.get("evaluations") or 0, got.get("seconds") or 0.0))
+        if voted:
+            note += "Voting: %s. " % voted
+        for term in (got.get("stood_down") or []):
+            note += ("%s stood down — its own sweep did not stand out on this "
+                     "cloud, so it was noise rather than evidence. "
+                     % names.get(term, term).capitalize())
+        if got.get("far"):
+            # ⛔⛔ A LONG MOVE IS REPORTED AS A DIFFERENT ANSWER, NOT AS A
+            # BETTER ONE. This is the exact shape of a photograph paired to the
+            # wrong scan, and folding it in quietly would hide the one thing
+            # worth knowing.
+            note += ("⚠ it moved %.1f° — that is not a refinement, it is a "
+                     "DIFFERENT answer. Look at the result: a pose this far "
+                     "out is usually a photograph that belongs to another "
+                     "scan. Ctrl-Z puts it back."
+                     % got.get("turned_deg", 0.0))
+        elif got.get("improved"):
+            note += ("the heading moved %.3f°, the lean %.3f°, the camera "
+                     "%.0f mm" % (got.get("turned_deg") or 0.0,
+                                  got.get("tilted_deg") or 0.0,
+                                  1000.0 * (got.get("raised_m") or 0.0)))
+        else:
+            note += ("and it could not better the pose you already had, which "
+                     "is the strongest thing this button can say about it")
+        if got.get("railed"):
+            note += (". ⚠ it wanted to go further in %s and stopped at the "
+                     "bound" % ", ".join(got["railed"]))
+        return {"ok": True, "info": fresh, "note": note,
+                "far": bool(got.get("far")),
+                "scans": self._rebuild()}
+
     def set_tilt(self, index, pitch=None, roll=None, by=False):
         """
         Lean the photograph, absolutely or by a nudge.
@@ -2366,7 +2512,8 @@ PAGE = r"""<!doctype html>
   canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab}
   canvas.drag{cursor:grabbing}
   canvas.move{cursor:move}
-  #hud{position:fixed;top:0;left:0;padding:14px 18px;pointer-events:none}
+  #hud{position:fixed;top:0;left:0;padding:54px 18px 0;
+    pointer-events:none}
   #hud b{color:var(--text);font-size:17px;font-weight:600;
     letter-spacing:-.01em}
   #hud #stat{color:var(--dim);font-size:12px;margin-top:2px}
@@ -2376,7 +2523,8 @@ PAGE = r"""<!doctype html>
     border:.5px solid var(--edge);border-radius:24px;padding:16px 16px 18px;
     box-shadow:0 12px 40px rgba(0,0,0,.42),
                inset 0 .5px 0 rgba(255,255,255,.16)}
-  #panel{top:14px;right:14px;width:262px;max-height:93vh;overflow:auto}
+  #panel{top:56px;right:14px;width:274px;
+    max-height:calc(100vh - 74px);overflow:auto;padding:10px 12px 14px}
   #panel::-webkit-scrollbar{width:8px}
   #panel::-webkit-scrollbar-thumb{background:var(--edge);border-radius:99px}
   label{display:block;margin:11px 0 4px;color:var(--dim);font-size:11px;
@@ -2467,6 +2615,69 @@ PAGE = r"""<!doctype html>
     text-align:center;color:var(--red);font-size:15px;background:#05060a}
   .num{font-variant-numeric:tabular-nums}
 </style>
+<div id="topbar"></div>
+
+<style>
+/* ⭐ THE WORKFLOW LIVES ACROSS THE TOP NOW, LEFT TO RIGHT IN THE ORDER THE JOB
+   IS DONE, and the right-hand side holds only the tools actually in use. */
+#topbar{position:fixed;top:0;left:0;right:0;height:44px;z-index:5;
+  display:flex;align-items:center;gap:1px;padding:0 12px;
+  background:rgba(16,18,26,.86);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  backdrop-filter:blur(30px) saturate(180%);
+  border-bottom:.5px solid var(--edge)}
+#topbar .mt{font:inherit;font-size:12.5px;color:var(--dim);cursor:pointer;
+  background:none;border:0;border-radius:9px;padding:7px 11px;
+  letter-spacing:.01em;white-space:nowrap}
+#topbar .mt:hover{background:rgba(255,255,255,.08);color:var(--text)}
+#topbar .mt.on{background:rgba(255,255,255,.14);color:var(--text)}
+/* The step number, so the bar reads as an order and not as a list. */
+#topbar .mt i{font-style:normal;color:#7ee0c0;font-size:10.5px;
+  margin-right:5px;font-variant-numeric:tabular-nums}
+#topbar .sep{flex:1}
+#topbar .hint{color:var(--faint);font-size:11px;padding-right:4px}
+#topbar .dev{font-size:10.5px;color:var(--faint);border:.5px solid var(--edge);
+  border-radius:8px;padding:3px 8px;margin-left:8px;white-space:nowrap}
+#topbar .dev.cuda{color:#7ee0c0;border-color:rgba(126,224,192,.4);
+  background:rgba(126,224,192,.10)}
+.drop{position:fixed;top:44px;z-index:6;min-width:212px;padding:6px;
+  background:rgba(24,26,34,.96);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  backdrop-filter:blur(30px) saturate(180%);
+  border:.5px solid var(--edge);border-radius:14px;
+  box-shadow:0 16px 44px rgba(0,0,0,.5);display:none}
+.drop.on{display:block}
+.drop button{display:flex;width:100%;text-align:left;background:none;
+  border:0;border-radius:9px;padding:7px 9px;font-size:12px;
+  color:var(--dim);align-items:center;gap:8px}
+.drop button:hover{background:rgba(255,255,255,.09);color:var(--text)}
+/* ⭐ A TICK, NOT A HIGHLIGHT. The menu says which trays are OPEN, so picking
+   the same entry twice reads as the toggle it is rather than as a dead click. */
+.drop button .tick{width:11px;color:#7ee0c0;font-size:11px}
+.drop .head{color:var(--faint);font-size:10px;text-transform:uppercase;
+  letter-spacing:.06em;padding:5px 9px 3px}
+
+.tray{border:.5px solid var(--edge);border-radius:14px;margin:7px 0;
+  background:rgba(255,255,255,.03);overflow:hidden}
+.trayhead{display:flex;align-items:center;gap:6px;cursor:pointer;
+  padding:7px 8px 7px 9px;background:rgba(255,255,255,.05);
+  font-size:11.5px;letter-spacing:.02em;user-select:none}
+.trayhead:hover{background:rgba(255,255,255,.09)}
+.trayhead b{font-weight:600;color:var(--text)}
+.trayhead .fold{color:var(--faint);font-size:10px;width:10px;
+  transition:transform .14s ease;display:inline-block}
+.tray.shut .trayhead .fold{transform:rotate(-90deg)}
+.tray.shut .traybody{display:none}
+.trayhead .x{background:none;border:0;color:var(--faint);font-size:11px;
+  padding:2px 4px;border-radius:6px;line-height:1}
+.trayhead .x:hover{background:rgba(255,69,58,.22);color:#ff8b83}
+.traybody{padding:2px 9px 10px}
+.traybody>label:first-child{margin-top:7px}
+#traysay{color:var(--faint);font-size:11px;padding:4px 2px 0;display:none}
+@media (prefers-reduced-motion:reduce){
+  .trayhead .fold{transition:none}
+}
+</style>
 <canvas id="cv"></canvas>
 <div id="hud"><b>Align scans</b><div id="stat">loading…</div></div>
 <style>
@@ -2502,23 +2713,30 @@ PAGE = r"""<!doctype html>
 }
 </style>
 <div class="pnl" id="panel">
+<div id="traysay"></div>
+<div class="tray" id="ty_scans"><div class="trayhead" onclick="foldTray('scans')"><span class="fold">▾</span><b class="grow">Scans in this job</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('scans')">✕</button></div><div class="traybody">
   <div id="legend"></div>
   <div id="hidsay" style="font-size:10.5px;margin:3px 0 4px"></div>
   <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
+  </div></div>
+<div class="tray" id="ty_project"><div class="trayhead" onclick="foldTray('project')"><span class="fold">▾</span><b class="grow">Project</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('project')">✕</button></div><div class="traybody">
   <label>Project</label>
   <div class="row"><button id="psave">Save project</button>
     <button id="psaveas">Save as…</button>
     <button id="popen">Open…</button></div>
   <div id="pname" style="font-size:10.5px;color:var(--faint);margin-top:4px">
   </div>
-  <hr><details class="stage" open><summary><b>1</b> Load the scans</summary><div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
+  </div></div>
+<div class="tray" id="ty_sort"><div class="trayhead" onclick="foldTray('sort')"><span class="fold">▾</span><b class="grow">Sort a shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('sort')">✕</button></div><div class="traybody">
+  <div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
     Pairs a day of captures with a folder of 360 photographs by time and puts
     each into its own numbered folder. The two clocks are never synchronised,
     so the offset between them is <b>measured from the shoot itself</b> and
     reported with a confidence — if the gaps do not cluster it says so
     rather than sorting around a guess.</div>
-
+  </div></div>
+<div class="tray" id="ty_add"><div class="trayhead" onclick="foldTray('add')"><span class="fold">▾</span><b class="grow">Add a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('add')">✕</button></div><div class="traybody">
   <label>Add another scan</label>
   <label><input type="checkbox" id="impphoto" checked> Take the photograph
     from the same folder</label>
@@ -2533,14 +2751,17 @@ PAGE = r"""<!doctype html>
   <input type="text" id="addpath" placeholder="…or paste a .pcap path"
          style="margin-top:7px">
   <div class="row"><button id="add">Add pasted path</button></div>
-  
+  </div></div>
+<div class="tray" id="ty_detail"><div class="trayhead" onclick="foldTray('detail')"><span class="fold">▾</span><b class="grow">Preview detail</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('detail')">✕</button></div><div class="traybody">
   <label>Preview detail <span class="num" id="detv">Full</span></label>
   <input type="range" id="det" min="0" max="5" step="1" value="0">
   <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
   </div>
   <div class="row"><button id="applydet" class="go">Re-read at this detail
     </button></div>
-  </details><hr><details class="stage" open><summary><b>2</b> Place them together</summary><div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour; press it again and it refines.</div>
+  </div></div>
+<div class="tray" id="ty_move"><div class="trayhead" onclick="foldTray('move')"><span class="fold">▾</span><b class="grow">Move a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('move')">✕</button></div><div class="traybody">
+  <div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour; press it again and it refines.</div>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
@@ -2556,6 +2777,8 @@ PAGE = r"""<!doctype html>
   <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
   <label>Turn <span class="num" id="rv">0.0</span>&deg;</label>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
+  </div></div>
+<div class="tray" id="ty_autoalign"><div class="trayhead" onclick="foldTray('autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
   <button class="go" id="auto">Auto-align</button>
   <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
     Drag it roughly into place first — it starts from where you put it, which
@@ -2569,6 +2792,8 @@ PAGE = r"""<!doctype html>
     nothing with the one at the far end, so fitting everything to the first
     scan stops working a few positions in. Leave this on <b>nearest</b> and
     the chain builds itself; set it when you know better.</div>
+  </div></div>
+<div class="tray" id="ty_pairs"><div class="trayhead" onclick="foldTray('pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
     <button id="pairgo" class="go">Align from pairs</button></div>
   <div class="row"><button id="pairundo">Undo pair</button>
@@ -2580,7 +2805,9 @@ PAGE = r"""<!doctype html>
     the moving cloud. Spread them across the floor: picks stacked one above
     the other cannot say which way the scan is facing.</div>
   <div id="pairlist" style="font-size:10.5px;color:var(--faint)"></div>
-  </details><hr><details class="stage" open><summary><b>3</b> Straighten the room</summary><div class="blurb">Level to a surface, then say which way is north. Both act on the whole survey at once.</div>
+  </div></div>
+<div class="tray" id="ty_level"><div class="trayhead" onclick="foldTray('level')"><span class="fold">▾</span><b class="grow">Level to a surface</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('level')">✕</button></div><div class="traybody">
+  <div class="blurb">Level to a surface, then say which way is north. Both act on the whole survey at once.</div>
   <label>Level to a surface</label>
   <div class="row"><button id="level">Pick level points</button>
     <button id="lvlgo" class="go">Level to these</button></div>
@@ -2595,18 +2822,8 @@ PAGE = r"""<!doctype html>
     cutting: edits already made stay put while the cloud straightens under
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
-  
-  <label>Solve every photograph together</label>
-  <div class="row"><button id="shootsolve" class="go">Solve the whole
-    shoot</button></div>
-  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
-    The camera is remounted by hand, so its heading is <b>one unknown seen
-    many times</b> — not one per scan. Solving them together turns a ragged
-    single-scan peak into a sharp shared one, and can carry a scan that has
-    almost no evidence of its own (a rig against a wall scores 2.01 and cannot
-    be rescued by any threshold). Scans that are <b>confident and disagree</b>
-    are named rather than overruled: that is how you find out the camera was
-    seated differently that time.</div>
+  </div></div>
+<div class="tray" id="ty_north"><div class="trayhead" onclick="foldTray('north')"><span class="fold">▾</span><b class="grow">Which way is north</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('north')">✕</button></div><div class="traybody">
   <label>Which way is north</label>
   <div class="row"><button id="north">Sight a line</button>
     <button id="northclear">Clear</button></div>
@@ -2621,7 +2838,8 @@ PAGE = r"""<!doctype html>
     compass. <b>Level the room first:</b> a bearing is a horizontal thing, and
     in a leaning frame it is not the one you sighted.</div>
   <div id="nthlist" style="font-size:10.5px;color:var(--faint)"></div>
-  
+  </div></div>
+<div class="tray" id="ty_plumb"><div class="trayhead" onclick="foldTray('plumb')"><span class="fold">▾</span><b class="grow">Plumb and level check</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('plumb')">✕</button></div><div class="traybody">
   <label>Plumb &amp; level reference</label>
   <div class="row"><button id="ref">Reference lines</button>
     <button id="plumb">Place / measure</button></div>
@@ -2635,7 +2853,26 @@ PAGE = r"""<!doctype html>
     it. And use <b>O</b> then <b>Front</b>/<b>Side</b> — in perspective a world
     vertical does not draw as a vertical on screen.</div>
   <div id="reflist" style="font-size:10.5px;color:var(--faint)"></div>
-  </details><hr><details class="stage" open><summary><b>4</b> Colour from the photographs</summary><div class="blurb">Each scan's own row in the list above carries its photograph: Find… to pick one, Auto-align to fit it, and the rings to turn and lean it.</div></details><hr><details class="stage" open><summary><b>5</b> Clean the clouds</summary><div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
+  </div></div>
+<div class="tray" id="ty_photo"><div class="trayhead" onclick="foldTray('photo')"><span class="fold">▾</span><b class="grow">This scan&#39;s photograph</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('photo')">✕</button></div><div class="traybody">
+  <div class="blurb">The photograph belonging to whichever scan is picked. Double-click a scan in <b>Scans in this job</b> to work on it.</div>
+  <div id="photopane"></div>
+  </div></div>
+<div class="tray" id="ty_shoot"><div class="trayhead" onclick="foldTray('shoot')"><span class="fold">▾</span><b class="grow">Solve the whole shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('shoot')">✕</button></div><div class="traybody">
+  <label>Solve every photograph together</label>
+  <div class="row"><button id="shootsolve" class="go">Solve the whole
+    shoot</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
+    The camera is remounted by hand, so its heading is <b>one unknown seen
+    many times</b> — not one per scan. Solving them together turns a ragged
+    single-scan peak into a sharp shared one, and can carry a scan that has
+    almost no evidence of its own (a rig against a wall scores 2.01 and cannot
+    be rescued by any threshold). Scans that are <b>confident and disagree</b>
+    are named rather than overruled: that is how you find out the camera was
+    seated differently that time.</div>
+  </div></div>
+<div class="tray" id="ty_clean"><div class="trayhead" onclick="foldTray('clean')"><span class="fold">▾</span><b class="grow">Strays and weak returns</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clean')">✕</button></div><div class="traybody">
+  <div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
   <div class="row"><button id="clnstray" class="go">Remove strays</button>
     <button id="clnoff">Put them back</button></div>
   <label>Cell <span class="num" id="clnvv">10 cm</span></label>
@@ -2656,7 +2893,9 @@ PAGE = r"""<!doctype html>
     A share of THIS cloud's returns, not a number off the instrument's scale
     — a dark restaurant and a white office do not share a threshold.</div>
   <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
-</details><hr><details class="stage" open><summary><b>6</b> Cut what you do not want</summary><div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud.</div>
+  </div></div>
+<div class="tray" id="ty_clip"><div class="trayhead" onclick="foldTray('clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
+  <div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud.</div>
   <label>Clip box</label>
   <div class="row"><button id="clipon">Off</button>
     <button id="clipfit">Fit to view</button>
@@ -2686,7 +2925,8 @@ PAGE = r"""<!doctype html>
   <input type="range" id="broll" min="-45" max="45" step="0.5" value="0">
   <div class="row"><button id="bfit">Square to view</button>
     <button id="bzero">Square to world</button></div>
-  
+  </div></div>
+<div class="tray" id="ty_cut"><div class="trayhead" onclick="foldTray('cut')"><span class="fold">▾</span><b class="grow">Delete points</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('cut')">✕</button></div><div class="traybody">
   <label>Delete points</label>
   <select id="editwho"></select>
   <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
@@ -2709,12 +2949,14 @@ PAGE = r"""<!doctype html>
       outline away</div>
   </div>
   <div id="editlist"></div>
-  </details><hr><details class="stage" open><summary><b>7</b> Write the cloud out</summary>
+  </div></div>
+<div class="tray" id="ty_export"><div class="trayhead" onclick="foldTray('export')"><span class="fold">▾</span><b class="grow">Write the cloud out</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('export')">✕</button></div><div class="traybody">
   <label>Export detail <span class="num" id="exv">as previewed</span></label>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
   <div class="row"><button id="save" class="go">Save merged</button>
     <button id="saveclip">Save clip box only</button></div>
-  </details><hr><details class="stage"><summary><b>◦</b> How it looks</summary>
+  </div></div>
+<div class="tray" id="ty_view"><div class="trayhead" onclick="foldTray('view')"><span class="fold">▾</span><b class="grow">View</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('view')">✕</button></div><div class="traybody">
   <label>View</label>
   <div class="row"><button id="nav" class="go">Camera</button>
     <button id="ortho">Perspective</button></div>
@@ -2724,7 +2966,8 @@ PAGE = r"""<!doctype html>
   <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
     <b>Camera</b> (C) gives the whole window to the view — no grips, no
     tools, nothing to catch a drag. Picking any tool leaves it again.</div>
-  
+  </div></div>
+<div class="tray" id="ty_colour"><div class="trayhead" onclick="foldTray('colour')"><span class="fold">▾</span><b class="grow">Colour and point size</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('colour')">✕</button></div><div class="traybody">
   <label>Colour</label>
   <div class="row"><button id="mode" class="on">By scan</button>
     <button id="showb" title="Cycle through showing one cloud at a time. The
@@ -2734,7 +2977,8 @@ PAGE = r"""<!doctype html>
       </button></div>
   <label>Point size <span class="num" id="psv">1.0</span></label>
   <input type="range" id="ps" min="0.2" max="8" step="0.05" value="1.2">
-</details></div>
+  </div></div>
+</div>
 <canvas id="ov"></canvas>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; wheel button pans, shift-wheel-button orbits
@@ -2748,6 +2992,7 @@ PAGE = r"""<!doctype html>
   &middot; Ctrl-S save project &middot; Ctrl-O open</div>
 <div id="err"></div>
 <script>
+const DEVICE = __DEVICE__, CUDA = __CUDA__;
 const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__,
       PENDING = __PENDING__, OPEN = __OPEN__;
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
@@ -2757,7 +3002,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
-           ref:false, plumb:{a:null,b:null}, nth:[],
+           ref:false, plumb:{a:null,b:null}, nth:[], trays:{},
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
@@ -3352,22 +3597,49 @@ function tiltRingsOf(){
   const s=V.scans.find(x=>x.index===V.tiltRing);
   if(!s || !s.photo || s.yaw==null || V.nav) return null;
   const o=put(affine(s), 0, 0, 0);
-  const R=Math.max(1.0, 0.13*Math.max(span(0), span(1)));
-  return {s:s, o:o, R:R};
+  /* ⭐⭐ A FIXED SIZE ON SCREEN, NOT A FRACTION OF THE ROOM. It was 13% of the
+     wider floor span, which in a restaurant is a ring three metres across --
+     so the tripod sat in the middle of a hoop bigger than most of the
+     furniture, and the thing it is attached to was the one thing it did not
+     point at. A gizmo is a HANDLE. Its job is to be grabbable and to say where
+     its centre is, and both of those are screen-space jobs: it should look the
+     same size whether you are standing back from the whole floor or nose-first
+     against one table.
+
+     Measured off the projection rather than assumed, so it holds in
+     orthographic as well as perspective: project the tripod, project a point
+     one metre to its right, and the distance between them is how many pixels a
+     metre is worth just here. */
+  const c=project(o, V.vp); if(!c) return null;
+  const b=basis();
+  const e=project([o[0]+b.right[0], o[1]+b.right[1], o[2]+b.right[2]], V.vp);
+  if(!e) return null;
+  const perM=Math.hypot(e[0]-c[0], e[1]-c[1]);
+  if(!(perM>1e-6)) return null;
+  const R=Math.max(0.02, Math.min(6.0, TILT_PX/perM));
+  return {s:s, o:o, R:R, c:c};
 }
 /* Each ring lies in its own plane through the tripod: the heading ring flat,
    the tip ring in the fore-and-aft vertical, the bank ring across it. */
+/* How many pixels across the outermost ring is drawn. */
+const TILT_PX=58;
+/* ⭐ AND THE THREE SIT AT DIFFERENT RADII. They used to share one, which is
+   fine on a hoop three metres wide and hopeless on a small one: three circles
+   of the same size in three planes cross each other at the poles, so half the
+   gizmo is a place where the grab is a coin toss. Nested, each ring has its
+   own band of screen to be grabbed in. */
 const TILT_AXES=[
-  {key:'yaw',   c:'rgba(255,214,10',  u:[1,0,0], v:[0,1,0], lab:'turn'},
-  {key:'pitch', c:'rgba(120,230,150', u:[0,1,0], v:[0,0,1], lab:'tip'},
-  {key:'roll',  c:'rgba(255,130,190', u:[1,0,0], v:[0,0,1], lab:'bank'}];
+  {key:'yaw',   c:'rgba(255,214,10',  u:[1,0,0], v:[0,1,0], lab:'turn', f:1.0},
+  {key:'pitch', c:'rgba(120,230,150', u:[0,1,0], v:[0,0,1], lab:'tip', f:0.76},
+  {key:'roll',  c:'rgba(255,130,190', u:[1,0,0], v:[0,0,1], lab:'bank',
+   f:0.54}];
 function tiltRingPath(r, ax){
-  const pts=[];
+  const pts=[], R=r.R*(ax.f||1);
   for(let i=0;i<=72;i++){
     const a=i/72*Math.PI*2, ca=Math.cos(a), sa=Math.sin(a);
-    pts.push(project([r.o[0]+r.R*(ax.u[0]*ca+ax.v[0]*sa),
-                      r.o[1]+r.R*(ax.u[1]*ca+ax.v[1]*sa),
-                      r.o[2]+r.R*(ax.u[2]*ca+ax.v[2]*sa)], V.vp));
+    pts.push(project([r.o[0]+R*(ax.u[0]*ca+ax.v[0]*sa),
+                      r.o[1]+R*(ax.u[1]*ca+ax.v[1]*sa),
+                      r.o[2]+R*(ax.u[2]*ca+ax.v[2]*sa)], V.vp));
   }
   return pts;
 }
@@ -3382,12 +3654,17 @@ function tiltGrip(mx,my){
       if(!best || d<best.d) best={d:d, axis:ax.key};
     }
   }
-  return (best && best.d<=14) ? best : null;
+  /* Tighter than it was, because the rings are now nested rather than
+     stacked: a wide catch on a small gizmo grabs the neighbour. */
+  return (best && best.d<=9) ? best : null;
 }
 function drawTiltRings(){
   const r=tiltRingsOf(); if(!r) return;
   const now={yaw:+r.s.yaw||0, pitch:+r.s.pitch||0, roll:+r.s.roll||0};
   oc.save(); oc.setLineDash([]);
+  /* The tripod itself, so a small gizmo still says what it is attached to. */
+  oc.beginPath(); oc.arc(r.c[0], r.c[1], 3, 0, 6.2832);
+  oc.fillStyle='rgba(255,255,255,.85)'; oc.fill();
   for(const ax of TILT_AXES){
     const hot = V.tiltAxis===ax.key;
     const pts=tiltRingPath(r, ax);
@@ -3404,17 +3681,23 @@ function drawTiltRings(){
     /* A needle at the angle this axis currently holds, so each ring reads as
        an instrument rather than as decoration. */
     const a=(now[ax.key]||0)*Math.PI/180;
-    const ca=Math.cos(a), sa=Math.sin(a);
-    const h=project([r.o[0]+r.R*(ax.u[0]*ca+ax.v[0]*sa),
-                     r.o[1]+r.R*(ax.u[1]*ca+ax.v[1]*sa),
-                     r.o[2]+r.R*(ax.u[2]*ca+ax.v[2]*sa)], V.vp);
+    const ca=Math.cos(a), sa=Math.sin(a), RR=r.R*(ax.f||1);
+    const h=project([r.o[0]+RR*(ax.u[0]*ca+ax.v[0]*sa),
+                     r.o[1]+RR*(ax.u[1]*ca+ax.v[1]*sa),
+                     r.o[2]+RR*(ax.u[2]*ca+ax.v[2]*sa)], V.vp);
     if(h){
-      oc.beginPath(); oc.arc(h[0],h[1], hot?7:5, 0, 6.2832);
+      oc.beginPath(); oc.arc(h[0],h[1], hot?6:4, 0, 6.2832);
       oc.fillStyle=ax.c+',.95)'; oc.fill();
-      oc.font='11px ui-sans-serif,system-ui';
-      oc.fillStyle='rgba(255,255,255,.92)';
-      oc.fillText(ax.lab+' '+(now[ax.key]||0).toFixed(1)+'\u00b0',
-                  h[0]+9, h[1]-7);
+      /* ⛔ ONLY THE RING BEING HELD IS LABELLED. Three readings on a gizmo
+         this size overlap each other and the cloud behind it, which is how a
+         legible instrument turns back into decoration. The numbers all live in
+         the panel anyway, where they can be typed as well as read. */
+      if(hot){
+        oc.font='11px ui-sans-serif,system-ui';
+        oc.fillStyle='rgba(255,255,255,.92)';
+        oc.fillText(ax.lab+' '+(now[ax.key]||0).toFixed(1)+'\u00b0',
+                    h[0]+9, h[1]-7);
+      }
     }
   }
   oc.restore();
@@ -3679,6 +3962,7 @@ async function loadScan(m){
        these is what the check above is for, and it caught them being dropped
        the first time they were added. */
     pitch:m.pitch||0, roll:m.roll||0, rung:m.rung||0, refined:m.refined,
+    deep:m.deep||null,
     clean:m.clean||null, hidden:m.hidden||0,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
@@ -3694,6 +3978,13 @@ function link(vs,fs){
 }
 
 async function boot(){
+  /* ⛔ THE BAR IS BUILT BEFORE ANYTHING ELSE CAN FAIL. Loading the clouds can
+     end in `fail()`, and an operator staring at an error with no menus has no
+     way to drop the preview detail and try again -- which is exactly what that
+     error tells them to do. */
+  V.trays = trayState();
+  buildTopbar(); showTrays();
+  addEventListener('click', closeMenus);
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
   if(!gl) return fail('This browser has no WebGL.');
@@ -3840,6 +4131,12 @@ function pickScan(index){
   V.picked=index;
   V.editWho=index;
   if(index>0) V.active=index;
+  /* ⭐ AND THE PHOTOGRAPH TRAY COMES WITH IT. Picking a scan is how you say
+     "work on this one", and its photograph's controls now live in one tray
+     rather than being repeated in every row -- so picking has to bring that
+     tray with it or the controls are somewhere the operator has to go and
+     find. */
+  openTray('photo', false);
   refreshLists(); syncSliders(); invalidate();
   say('Working on '+s.name+'. Cuts now take from this scan only'+
       (index>0 ? ', and the movement controls and the rotation ring turn it.'
@@ -4326,6 +4623,10 @@ function setNav(on){
 }
 function setTool(t){
   if(t) V.nav=false;
+  /* ⭐ ARMING A TOOL OPENS ITS TRAY. The shortcuts (M, L, P, G, T) arm a tool
+     without going near the panel, and a tool whose controls are shut is a tool
+     whose Cancel button cannot be found. */
+  if(t) trayForTool(t);
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
   [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs'],
@@ -5174,6 +5475,10 @@ function photoRow(s){
     '<button class="mini step" title="turn the photograph '+
     (d>0?'+':'')+d+' degrees" onclick="nudgeHeading('+s.index+','+d+
     ')">'+label+'</button>';
+  const stepBy = (sign, label) =>
+    '<button class="mini step" title="turn the photograph by whatever is in '+
+    'the \u2018move by\u2019 box below" onclick="nudgeHeadingBy('+s.index+
+    ','+sign+')">'+label+'</button>';
   /* ⛔ THE RUNNERS-UP EXIST BECAUSE A LOW CONFIDENCE MEANS THE PEAK DID NOT
      STAND OUT -- so there were others, and when the photograph is known to be
      right the answer is usually one of them. They are TRIES, not decisions:
@@ -5216,6 +5521,23 @@ function photoRow(s){
       'pose that beat the one it held. Next it fits '+rn[rung]+'." '+
       'onclick="autoAlignPhoto('+s.index+',this)">Auto-align'+
       (rung ? ' again ('+(rung+1)+'/'+RUNGS+')' : '')+'</button>';
+  /* ⭐⭐ A SECOND BUTTON, BECAUSE IT ANSWERS A SECOND QUESTION. Auto-align
+     improves a pose that is already right and is deliberately railed so it
+     cannot wander off and re-solve. That rail is exactly why it cannot rescue
+     a photograph sitting in the wrong basin -- and a shoot sorted by the clock
+     produces precisely that, a picture a hundred degrees round from where it
+     belongs. This one sweeps the whole circle with three unrelated measures
+     and follows up every distinct bump it finds. It costs minutes rather than
+     seconds, which is why it is not simply what the first button does. */
+  const deep = '<button class="mini" title="Search the WHOLE circle for this '+
+    'photograph\u2019s pose, using every measure at once: depth silhouettes, '+
+    'mutual information between laser reflectivity and image brightness, and '+
+    'where the hardest returns land in the picture. Each measure has to earn '+
+    'its vote on this cloud before it gets one. Minutes, not seconds \u2014 '+
+    'and it can move the picture a long way, which is the point: that is what '+
+    'a photograph paired with the wrong scan looks like. It cannot leave you '+
+    'worse off than you started, and Ctrl-Z undoes it." '+
+    'onclick="deepAlignPhoto('+s.index+',this)">Deep align</button>';
   const gain = !s.refined ? '' :
     '<span class="num" title="How much the last press bought. The fit is a '+
     'cosine between two edge fields, so it means the same at every pose \u2014 '+
@@ -5228,17 +5550,38 @@ function photoRow(s){
      angle to the horizon in the cloud -- and no heading can take that out,
      because turning the picture only slides the mismatch from one wall to the
      next. Measured 2.44 degrees on the operator's own confirmed pair. */
-  const lean = (a,d,lab,t) =>
-    '<button class="mini step" title="'+t+'" onclick="nudgeTilt('+s.index+
-    ',\''+a+'\','+d+')">'+lab+'</button>';
+  /* ⭐⭐ TYPED DEGREES, BECAUSE A NUDGE CANNOT SAY "2.44". The lean had six
+     buttons and no way to enter a number, so a camera measured at 2.44 degrees
+     could only be reached by pressing half-a-degree five times and living with
+     2.50. Every angle here now has a box: type it, press Enter.
+
+     ⛔ AND THE STEP IS TYPED TOO, WHICH IS THE OTHER HALF OF THE SAME
+     COMPLAINT. The arrows used to be worth a fixed half a degree; now they are
+     worth whatever is in the "move by" box, so the same four buttons do the
+     coarse pass and the fine one. */
+  const lean = (a,sign,lab,t) =>
+    '<button class="mini step" title="'+t+'" onclick="nudgeTiltBy('+s.index+
+    ',\''+a+'\','+sign+')">'+lab+'</button>';
   const tiltrow =
-    '<div class="photo"><span class="grow">lean '+
-    '<span class="num">'+(+s.pitch||0).toFixed(2)+'\u00b0 / '+
-    (+s.roll||0).toFixed(2)+'\u00b0</span></span>'+
-    lean('pitch',-0.5,'\u2335\u2212','tip the picture down half a degree')+
-    lean('pitch',0.5,'\u2335+','tip the picture up half a degree')+
-    lean('roll',-0.5,'\u21ba','drop the right-hand side half a degree')+
-    lean('roll',0.5,'\u21bb','lift the right-hand side half a degree')+
+    '<div class="photo"><span class="grow">tip</span>'+
+    '<input class="deg" id="tp'+s.index+'" type="number" step="0.05" '+
+    'min="-15" max="15" value="'+(+s.pitch||0).toFixed(2)+'" '+
+    'onkeydown="if(event.key===\'Enter\') setLean('+s.index+')">'+
+    '<span class="grow" style="text-align:right">bank</span>'+
+    '<input class="deg" id="bk'+s.index+'" type="number" step="0.05" '+
+    'min="-15" max="15" value="'+(+s.roll||0).toFixed(2)+'" '+
+    'onkeydown="if(event.key===\'Enter\') setLean('+s.index+')">'+
+    '<button class="mini" title="Use the two numbers above." '+
+    'onclick="setLean('+s.index+')">Set</button></div>'+
+    '<div class="photo"><span class="grow">move by</span>'+
+    '<input class="deg" id="st'+s.index+'" type="number" step="0.05" '+
+    'min="0.001" max="180" value="0.50" title="How far one press of an arrow '+
+    'moves the picture \u2014 on the heading as well as the lean.">'+
+    '<span style="color:var(--faint)">\u00b0</span>'+
+    lean('pitch',-1,'\u2335\u2212','tip the picture down by that much')+
+    lean('pitch',1,'\u2335+','tip the picture up by that much')+
+    lean('roll',-1,'\u21ba','drop the right-hand side by that much')+
+    lean('roll',1,'\u21bb','lift the right-hand side by that much')+
     '<button class="mini" title="Put the picture back upright \u2014 no lean at '+
     'all." onclick="setTilt('+s.index+',0,0)">flat</button>'+
     '<button class="mini'+(V.tiltRing===s.index?' on':'')+'" title="Show '+
@@ -5247,14 +5590,35 @@ function photoRow(s){
     'and a shift and nothing else \u2014 a photograph\u2019s pose really does store '+
     'all three, so here all three are real.)" onclick="tiltRing('+s.index+
     ')">rings</button></div>';
+  /* ⭐ WHAT THE THREE MEASURES SAID, WHEN THE DEEP SEARCH HAS RUN. Three
+     methods sharing only the cloud is the strongest evidence this program can
+     produce; a single combined number would throw away the part that is
+     actually diagnostic -- which of them knew anything. */
+  const D = s.deep;
+  const NAMES = {edge:'silhouettes', mi:'reflectivity',
+                 beacon:'retroreflectors'};
+  const deepsay = !D ? '' :
+    '<div class="fits"><span style="color:var(--faint);font-size:10px;'+
+    'align-self:center">searched</span>'+
+    Object.keys(D.solo||{}).map(k =>
+      '<span class="num" style="font-size:10px;color:'+
+      ((D.stood_down||[]).indexOf(k)>=0 ? 'var(--faint)' : 'var(--dim)')+
+      '" title="'+NAMES[k]+', sweeping alone: how far its own best heading '+
+      'stood out from the other 359.'+
+      ((D.stood_down||[]).indexOf(k)>=0
+        ? ' It did not stand out on this cloud, so it was left out of the '+
+          'vote rather than allowed to add noise to it.' : '')+'">'+
+      NAMES[k]+' '+(+D.solo[k]).toFixed(1)+
+      ((D.stood_down||[]).indexOf(k)>=0 ? ' (stood down)' : '')+'</span>')
+      .join('')+'</div>';
   return '<div class="photo">'+head+btn+'</div>'+
          '<div class="photo"><span class="grow">'+auto+gain+'</span>'+
-         '</div>'+ tiltrow +
+         deep+'</div>'+ deepsay + tiltrow +
          '<div class="photo"><span class="grow">heading</span>'+
-         step(-10,'‹‹')+step(-1,'‹')+
+         step(-10,'‹‹')+stepBy(-1,'‹')+
          '<input class="deg" id="hd'+s.index+'" type="number" step="0.1" '+
          'min="-180" max="180" value="'+start+'">'+
-         step(1,'›')+step(10,'››')+
+         stepBy(1,'›')+step(10,'››')+
          '<button class="mini" onclick="setHeading('+s.index+')">Use</button>'+
          '</div>'+ fitrow +
          '<div class="photo"><span class="grow">camera height</span>'+
@@ -5271,6 +5635,216 @@ function photoRow(s){
          '<button class="mini" title="Solve this photograph again from '+
          'scratch, forgetting any heading set by hand." onclick="resolve('+
          s.index+')">Re-solve</button>'+bbtn+'</div>';
+}
+
+
+/* ============================ the bar and the trays ======================= */
+/* ⭐⭐ THE WORKFLOW READS ACROSS THE TOP AND THE TOOLS IN USE SIT ON THE
+   RIGHT. Eight stages all open at once had turned the panel into every control
+   in the program stacked in one column, most of them for a job finished an
+   hour ago. The order below IS the order the job is done in, and it is the
+   only place that order is written down -- the panel now takes its order from
+   here too, so the two cannot drift apart. */
+const TRAYS = [
+  ['scans','Scans','Scans in this job'],
+  ['project','Scans','Project'],
+  ['sort','Scans','Sort a shoot'],
+  ['add','Scans','Add a scan'],
+  ['detail','Scans','Preview detail'],
+  ['move','Place','Move a scan'],
+  ['autoalign','Place','Auto-align'],
+  ['pairs','Place','Align from pairs'],
+  ['level','Straighten','Level to a surface'],
+  ['north','Straighten','Which way is north'],
+  ['plumb','Straighten','Plumb and level check'],
+  ['photo','Photographs',"This scan's photograph"],
+  ['shoot','Photographs','Solve the whole shoot'],
+  ['clean','Clean','Strays and weak returns'],
+  ['clip','Cut','Clip box'],
+  ['cut','Cut','Delete points'],
+  ['export','Export','Write the cloud out'],
+  ['view','View','View'],
+  ['colour','View','Colour and point size']];
+const MENUS = ['Scans','Place','Straighten','Photographs','Clean','Cut',
+               'Export','View'];
+/* What each menu is FOR, in one line, because a title alone does not say
+   whether "Place" means where a scan sits or where the file goes. */
+const MENUWHY = {
+  Scans:'Open the captures, and say how much of them to draw',
+  Place:'Put each cloud where its tripod was standing',
+  Straighten:'Level the room and give it a bearing',
+  Photographs:'Fit each photograph onto the cloud it belongs to',
+  Clean:'Take out strays and weak returns',
+  Cut:'Clip and delete what you do not want',
+  Export:'Write the merged cloud out',
+  View:'How the job is drawn. Changes nothing that is saved'};
+/* Which tray owns which pick-tool, so a keyboard shortcut opens the controls
+   that go with it instead of arming a tool whose panel is shut. */
+const TOOLTRAY = {rect:'cut', lasso:'cut', pair:'pairs', level:'level',
+                  north:'north', plumb:'plumb'};
+const TRAYKEY = 'tlspie.trays.v1';
+
+/* Open, and folded, per tray. ⛔ KEPT ACROSS RELOADS. A tray arrangement is a
+   working habit, and a page that forgets it every time teaches the operator
+   not to bother arranging anything. */
+function trayState(){
+  let st = null;
+  try{ st = JSON.parse(localStorage.getItem(TRAYKEY)||'null'); }catch(e){}
+  if(!st || typeof st!=='object'){
+    st = {};
+    for(const [id] of TRAYS) st[id] = {open:false, shut:false};
+    for(const id of ['scans','add','autoalign','photo']) st[id].open = true;
+  }
+  for(const [id] of TRAYS) if(!st[id]) st[id] = {open:false, shut:false};
+  return st;
+}
+function saveTrays(){
+  try{ localStorage.setItem(TRAYKEY, JSON.stringify(V.trays)); }catch(e){}
+}
+
+function buildTopbar(){
+  const bar = $('topbar'); if(!bar) return;
+  bar.innerHTML = MENUS.map((m,i) =>
+    '<button class="mt" id="mt_'+i+'" title="'+MENUWHY[m]+'" '+
+    'onclick="event.stopPropagation();toggleMenu('+i+')"><i>'+(i+1)+
+    '</i>'+m+'</button>').join('')+
+    '<span class="sep"></span>'+
+    '<span class="hint">a tool opens its tray on the right \u00b7 '+
+    '\u2715 shuts it</span>'+
+    '<span class="dev'+(CUDA?' cuda':'')+'" title="'+
+    (CUDA
+      ? 'The heavy per-point passes \u2014 building the panorama the solver '+
+        'sees, and colouring every point from the photograph \u2014 run on '+
+        'this card. Everything else stays on the processor deliberately: a '+
+        'pose is 32,400 cells, and launching a kernel for that costs more '+
+        'than the work. Measured here: the panorama pass 142 ms to 26, '+
+        'colouring 0.74 s to 0.11 s for three million points.'
+      : 'No CUDA card in use, so everything runs on the processor \u2014 '+
+        'which is correct, not broken. '+DEVICE.replace(/"/g,"&quot;")+
+        ' Installing cupy-cuda13x in the same environment turns it on.')+
+    '">'+(CUDA ? '\u26a1 ' : '')+
+    (CUDA ? DEVICE.replace(/^NVIDIA /,'') : 'CPU')+'</span>';
+  /* The menus are siblings of the bar rather than children of the buttons:
+     a dropdown inside a fixed flex row inherits its clipping. */
+  for(const old of Array.from(document.querySelectorAll('.drop'))) old.remove();
+  MENUS.forEach((m,i) => {
+    const d = document.createElement('div');
+    d.className = 'drop'; d.id = 'dr_'+i;
+    d.onclick = e => e.stopPropagation();
+    document.body.appendChild(d);
+  });
+  paintMenus();
+}
+function paintMenus(){
+  MENUS.forEach((m,i) => {
+    const d = $('dr_'+i); if(!d) return;
+    d.innerHTML = '<div class="head">'+MENUWHY[m]+'</div>'+
+      TRAYS.filter(t=>t[1]===m).map(([id,,name]) =>
+        '<button onclick="pickTray(\''+id+'\')"><span class="tick">'+
+        (V.trays[id] && V.trays[id].open ? '\u2713' : '')+'</span>'+
+        name+'</button>').join('');
+  });
+}
+function toggleMenu(i){
+  const was = $('dr_'+i).classList.contains('on');
+  closeMenus();
+  if(was) return;
+  const btn = $('mt_'+i), d = $('dr_'+i);
+  const r = btn.getBoundingClientRect();
+  /* Kept on screen: the right-hand menus would otherwise open off the edge. */
+  d.style.left = Math.min(r.left, innerWidth-240)+'px';
+  d.classList.add('on'); btn.classList.add('on');
+}
+function closeMenus(){
+  MENUS.forEach((m,i)=>{
+    const d=$('dr_'+i), b=$('mt_'+i);
+    if(d) d.classList.remove('on');
+    if(b) b.classList.remove('on');
+  });
+}
+/* Picking a tray from a menu opens it if it is shut and shuts it if it is
+   open -- and either way the menu goes away, because a menu that stays put
+   after a choice is a menu you have to dismiss. */
+function pickTray(id){
+  closeMenus();
+  if(V.trays[id] && V.trays[id].open) closeTray(id);
+  else openTray(id, true);
+}
+function openTray(id, scroll){
+  if(!V.trays[id]) V.trays[id] = {open:false, shut:false};
+  V.trays[id].open = true;
+  V.trays[id].shut = false;          /* opening an unfolded tray unfolds it */
+  showTrays(); saveTrays();
+  if(scroll){
+    const el = $('ty_'+id);
+    if(el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+  }
+}
+function closeTray(id){
+  if(!V.trays[id]) return;
+  V.trays[id].open = false;
+  showTrays(); saveTrays();
+  const name = (TRAYS.find(t=>t[0]===id)||[])[2] || id;
+  const menu = (TRAYS.find(t=>t[0]===id)||[])[1] || '';
+  say(name+' shut \u2014 it is still under '+menu+' in the bar at the top.');
+}
+/* ⛔ FOLDING IS NOT SHUTTING, AND BOTH EXIST ON PURPOSE. Folded keeps the tray
+   where it is with its title showing, which is how you keep your place in a
+   long panel; shut takes it off the right-hand side altogether. Conflating
+   them would mean the only way to reduce clutter was to lose your place. */
+function foldTray(id){
+  if(!V.trays[id]) return;
+  V.trays[id].shut = !V.trays[id].shut;
+  showTrays(); saveTrays();
+}
+function showTrays(){
+  let open = 0;
+  for(const [id] of TRAYS){
+    const el = $('ty_'+id); if(!el) continue;
+    const st = V.trays[id] || {};
+    el.style.display = st.open ? '' : 'none';
+    el.classList.toggle('shut', !!st.shut);
+    if(st.open) open++;
+  }
+  const say0 = $('traysay');
+  if(say0){
+    /* ⛔ AN EMPTY PANEL HAS TO SAY WHY IT IS EMPTY. Shutting the last tray
+       otherwise leaves a blank rectangle that reads as a program that has
+       broken rather than one doing exactly what it was told. */
+    say0.style.display = open ? 'none' : 'block';
+    say0.textContent = open ? ''
+      : 'No tools open. Pick one from the bar along the top \u2014 it runs '+
+        'left to right in the order the job is done.';
+  }
+  paintMenus();
+}
+/* Arming a tool opens the tray that explains it. */
+function trayForTool(name){
+  const id = TOOLTRAY[name];
+  if(id && (!V.trays[id] || !V.trays[id].open)) openTray(id, true);
+}
+
+/* One line per scan saying where its photograph stands, with the controls
+   themselves in the Photographs tray. ⛔ IT STILL HAS TO SAY WHEN SOMETHING IS
+   WRONG: a scan whose photograph was found and NOT applied is the case the
+   operator most needs to see, and a summary that only reported success would
+   hide exactly that. */
+function photoBrief(s){
+  if(!s.photo)
+    return '<div class="photo"><span class="grow" style="color:var(--faint)">'+
+           'no photograph</span></div>';
+  const ok = s.yaw!=null && s.photoOk!==false;
+  const at = (s.yaw==null) ? '' :
+    ' <span class="num">'+(+s.yaw).toFixed(1)+'\u00b0</span>';
+  return '<div class="photo"><span class="grow'+(ok?'':' bad')+
+    '" title="'+(ok ? 'Double-click this scan to work on its photograph in '+
+                      'the Photographs tray.'
+                    : (s.photoWhy||'not applied').replace(/"/g,'&quot;'))+'">'+
+    s.photo+at+(ok?'':' \u00b7 not applied')+'</span>'+
+    (s.index===V.picked ? '' :
+      '<button class="mini" title="Work on this scan, and show its '+
+      'photograph in the Photographs tray." onclick="pickScan('+s.index+
+      ')">edit</button>')+'</div>';
 }
 
 function refreshLists(){
@@ -5311,8 +5885,25 @@ function refreshLists(){
     '" title="Take this cloud out of the session. The capture on disk is not '+
     'touched." onclick="askRemove('+s.index+')">'+
     (KILL[0]===s.index?'Remove?':'Remove')+'</button>'+
-    '</div>'+photoRow(s)+'</div>')
+    '</div>'+photoBrief(s)+'</div>')
     .join('');
+  /* ⭐⭐ THE PHOTOGRAPH CONTROLS BELONG TO ONE SCAN, SO THEY LIVE IN ONE
+     PLACE. They used to be repeated inside every row of the list: on this
+     shoot that is fifty-nine copies of a heading box, a lean, a camera height
+     and two search buttons, which is most of what made the right-hand side
+     unusable. The list now carries a line saying what each scan's photograph
+     is and how it is doing, and the controls follow whichever scan is picked. */
+  const pane = $('photopane');
+  if(pane){
+    const who = V.scans.find(x=>x.index===V.picked);
+    pane.innerHTML = !who
+      ? '<div style="color:var(--faint);font-size:11px">No scan picked. '+
+        'Double-click one in <b>Scans in this job</b>.</div>'
+      : '<div style="font-size:11px;color:var(--dim);margin-bottom:4px">'+
+        '<span class="sw" style="background:rgb('+who.tint.join(',')+
+        ');color:rgb('+who.tint.join(',')+')"></span>'+who.name+'</div>'+
+        photoRow(who);
+  }
   $('which').innerHTML = V.scans.slice(1).map(s=>
     '<option value="'+s.index+'"'+(s.index===V.active?' selected':'')+'>'+
     s.name+'</option>').join('');
@@ -5583,6 +6174,26 @@ async function autoAlignPhoto(index, btn){
   finally{ busy(btn, false); }
 }
 
+/* ⭐⭐ THE DEEP SEARCH. Minutes rather than seconds, so it says so before it
+   starts -- a control that goes quiet for three minutes reads as a hang.
+
+   ⛔ AND IT IS REMEMBERED BEFORE IT RUNS, like every other pose change. This
+   one can move the picture a long way on purpose, which makes Ctrl-Z the
+   difference between a search worth trying and a search nobody dares press. */
+async function deepAlignPhoto(index, btn){
+  remember('searching for the photograph\u2019s pose', undoPose(index));
+  say('searching the whole circle with every measure \u2014 this takes a few '+
+      'minutes\u2026');
+  watch(true); busy(btn, true);
+  try{
+    const j=await post('photo/deep', {index});
+    if(!j.ok) throw new Error(j.error||'could not search');
+    await afterColour(j);
+    say(j.note, j.far ? 'warn' : null);
+  }catch(e){ watch(false); say('Could not search: '+e.message, 'bad'); }
+  finally{ busy(btn, false); }
+}
+
 /* The photograph's lean, absolute or nudged. */
 async function sendTilt(index, body, what){
   coalesce('pose'+index, 'leaning the photograph', ()=>undoPose(index));
@@ -5601,6 +6212,30 @@ async function sendTilt(index, body, what){
 function nudgeTilt(index, axis, by){
   const b={by:true}; b[axis]=by;
   return sendTilt(index, b, 'Leaned by '+by+'\u00b0');
+}
+/* ⭐ HOW FAR ONE PRESS IS WORTH, TAKEN FROM THE BOX. Defaulted rather than
+   refused when the box is empty or nonsense: an arrow that silently does
+   nothing is worse than an arrow that moves half a degree. */
+function stepOf(index){
+  const box=$('st'+index);
+  const v = box ? parseFloat(box.value) : NaN;
+  return (isFinite(v) && v>0) ? Math.min(180, v) : 0.5;
+}
+function nudgeTiltBy(index, axis, sign){
+  return nudgeTilt(index, axis, sign*stepOf(index));
+}
+function nudgeHeadingBy(index, sign){
+  return nudgeHeading(index, sign*stepOf(index));
+}
+/* The two lean boxes, applied together -- they are one attitude, and setting
+   half of it would swing the picture through a pose nobody asked for. */
+function setLean(index){
+  const tp=$('tp'+index), bk=$('bk'+index);
+  const pitch = tp ? parseFloat(tp.value) : NaN;
+  const roll = bk ? parseFloat(bk.value) : NaN;
+  if(!isFinite(pitch) || !isFinite(roll))
+    return say('Type a tip and a bank in degrees.', 'warn');
+  return setTilt(index, pitch, roll);
 }
 function setTilt(index, pitch, roll){
   return sendTilt(index, {pitch, roll}, 'Lean set');
