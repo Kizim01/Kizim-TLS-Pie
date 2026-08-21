@@ -127,6 +127,17 @@ def pick_files(title="Add a scan"):
     return list(chosen or [])
 
 
+def pick_folder(title="Choose a folder"):
+    """One folder from the running window. '' if cancelled."""
+    win = WINDOW[0]
+    if win is None:
+        return ""
+    import webview
+    chosen = win.create_file_dialog(webview.FOLDER_DIALOG)
+    got = list(chosen or [])
+    return got[0] if got else ""
+
+
 def pick_image(title="Add a 360 photo"):
     """One equirectangular image from the running window. [] if cancelled."""
     win = WINDOW[0]

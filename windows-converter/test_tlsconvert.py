@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import numpy as np
 
@@ -3085,6 +3086,465 @@ check("the page can ask for it", '"/north"' in _ALIGN_SRC
 # +Y "North" from the day it was written, which was right only by luck.
 check("the world-axes widget only says North once north is set",
       "no compass set" in _ALIGN_SRC and "function axisWord" in _ALIGN_SRC)
+
+
+# --- the alignment must survive the export ---------------------------------
+#
+# ⛔⛔ EVERYTHING STUDIO DOES TO A PHOTOGRAPH USED TO BE THROWN AWAY WHEN THE
+# CLOUD WAS WRITTEN. `save` called `merge`, which called `convert`, which called
+# `find_photo` and SOLVED THE HEADING AGAIN FROM SCRATCH -- so the accepted
+# solve, the nudges, the half turn, the candidate picked off the shortlist, the
+# camera height and the heading typed in by hand all reached the screen and
+# none of them reached the file. Worse in one specific way: `prepare_colour`
+# still refuses below MIN_CONFIDENCE, so the hand-set heading that exists
+# BECAUSE a correct pair scored 2.01 exported grey -- the one case the control
+# was built for was the one case it could not deliver.
+#
+# ⭐ IT IS TESTED THROUGH `save` WITH `convert` STUBBED, not by reading the
+# call. What is under test is what each capture is HANDED, which is the only
+# thing the file can be made of.
+print("\nthe alignment the operator settled on reaches the file")
+
+_sdir = tempfile.mkdtemp(prefix="tlssave")
+
+
+def _posed_scan(stem, yaw, camera_z=0.0, photo=True):
+    """A scan carrying a decided heading, as one looks after Studio."""
+    path = os.path.join(_sdir, stem + ".pcap")
+    with open(path, "wb") as fh:
+        fh.write(b"a real file, not a real capture")
+    pts = np.zeros((8, 3), np.float32)
+    sc = align.Scan(path, pts, np.full((8, 3), 128, np.uint8), pts)
+    if photo:
+        img = os.path.join(_sdir, stem + ".jpg")
+        with open(img, "wb") as fh:
+            fh.write(b"not a real jpeg")
+        sc.photo = img
+        sc.camera_z = camera_z
+        sc.colour_info = {"photo": img, "yaw_deg": yaw, "ok": True,
+                          "grade": "given", "camera_z": camera_z}
+    return sc
+
+
+def _near(got, want, tol=1e-9):
+    """True only if `got` is a number and it is `want`. None is a failure."""
+    try:
+        return abs(float(got) - float(want)) <= tol
+    except (TypeError, ValueError):
+        return False
+
+
+def _at(rows, i):
+    """Row `i` of a spy's log, or an empty one -- never an IndexError."""
+    return rows[i] if i < len(rows) else {}
+
+
+_pose = []
+_real_convert2, _real_writer2 = pipeline.convert, export.writer_for
+
+
+def _pose_spy(path, out_path, **kw):
+    _pose.append({"path": path, "yaw_deg": kw.get("yaw_deg"),
+                  "camera": kw.get("camera"), "photo": kw.get("photo")})
+    return {"points": 0, "out": out_path}
+
+
+try:
+    pipeline.convert = _pose_spy
+    export.writer_for = lambda *a, **k: _NullWriter()
+
+    _ssrv = align.AlignServer([_posed_scan("one", 82.6, 0.08),
+                               _posed_scan("two", -14.25)],
+                              out_path=os.path.join(_sdir, "out.laz"))
+    _sout = _ssrv.save([{}, {}])
+    check("the merged export converts both captures",
+          _sout.get("ok") and len(_pose) == 2, _sout)
+    check("the first capture is handed the heading Studio settled on",
+          _near(_at(_pose, 0).get("yaw_deg"), 82.6), _pose[:1])
+    check("and the second its own, not the first's",
+          _near(_at(_pose, 1).get("yaw_deg"), -14.25), _pose[1:])
+    # ⛔ THE CAMERA HEIGHT IS PART OF THE POSE, NOT A PREVIEW SETTING. Every
+    # ray is cast from that point, so a height that reached the screen and not
+    # the file would colour the two differently and neither would be wrong on
+    # its face.
+    check("the camera height goes with it",
+          _near((_at(_pose, 0).get("camera") or [None] * 3)[2], 0.08),
+          _pose[:1])
+    check("and a scan whose camera sat level passes zero, not nothing",
+          _near((_at(_pose, 1).get("camera") or [None] * 3)[2], 0.0),
+          _pose[1:])
+    # ⭐ THE PHOTOGRAPH IS NAMED RATHER THAN LOOKED FOR. `find_photo` guesses
+    # from the stem, which is right only because `attach_photo` files it that
+    # way; a photo attached with organising turned off sits somewhere else
+    # entirely and the export would silently colour from nothing.
+    check("the photograph is named explicitly",
+          os.path.basename(_at(_pose, 0).get("photo") or "") == "one.jpg",
+          _pose[:1])
+
+    # ⛔ A SCAN WITH NO PHOTOGRAPH MUST NOT INHERIT ITS NEIGHBOUR'S HEADING.
+    # A single shared pose would be the easy shape to write and would colour an
+    # uncoloured cloud from an image taken somewhere else.
+    _pose[:] = []
+    _ssrv2 = align.AlignServer([_posed_scan("three", 30.0),
+                               _posed_scan("four", None, photo=False)],
+                               out_path=os.path.join(_sdir, "out2.laz"))
+    _ssrv2.save([{}, {}])
+    check("a scan with no photograph is handed no heading at all",
+          len(_pose) == 2 and _at(_pose, 1).get("yaw_deg") is None
+          and _at(_pose, 1).get("photo") is None, _pose[1:])
+
+    # And the single-capture path, which does not go through merge at all.
+    _pose[:] = []
+    _ssrv3 = align.AlignServer([_posed_scan("solo", 123.5, 0.11)],
+                               out_path=os.path.join(_sdir, "out3.laz"))
+    _s3 = _ssrv3.save([{}])
+    check("one cloud on its own carries its heading too",
+          _s3.get("ok") and len(_pose) == 1
+          and _near(_at(_pose, 0).get("yaw_deg"), 123.5), _pose)
+    check("and its camera height",
+          _near((_at(_pose, 0).get("camera") or [None] * 3)[2], 0.11), _pose)
+finally:
+    pipeline.convert, export.writer_for = _real_convert2, _real_writer2
+check("the real convert is restored afterwards (export pose)",
+      pipeline.convert is _real_convert2)
+
+
+# --- the photograph can lean, not only turn --------------------------------
+#
+# ⭐ THE THIRD AND FOURTH NUMBERS OF A POSE. A 360 camera goes on the tripod by
+# hand, on a screw thread, and neither it nor the tripod is exactly level -- so
+# the horizon in the picture sits at a small angle to the horizon in the cloud.
+# A heading cannot absorb that: turning the picture slides the mismatch from one
+# wall to the next without removing it, which reads as "it nearly works
+# everywhere", because it does. Measured 2.44 degrees on the operator's own
+# confirmed pair.
+print("\nthe photograph's lean")
+
+from tlsconvert import clean as cleanmod, colour, shoot   # noqa: E402
+
+_rs = np.random.RandomState(11)
+_d = _rs.normal(size=(500, 3))
+_d /= np.linalg.norm(_d, axis=1)[:, None]
+
+# ⛔⛔ AN UNTILTED CAMERA MUST TAKE THE ARITHMETIC PATH AND GIVE THE OLD ANSWER
+# EXACTLY. Every confidence, threshold and bin count on record was measured
+# through the old one-line formula; a matrix that agrees to fifteen decimals is
+# still a change to the code all of those were measured on.
+for _yaw in (0.0, 37.5, -120.0, 179.9):
+    _lon, _lat = colour.to_lonlat(_d, _yaw)
+    _t = _d @ colour.camera_matrix(_yaw, 0.0, 0.0).T
+    _mlon = (np.arctan2(_t[:, 0], _t[:, 1]) + math.pi) % (2 * math.pi) - math.pi
+    check("yaw %g: the matrix reproduces the plain formula" % _yaw,
+          np.abs((_lon - _mlon + math.pi) % (2 * math.pi) - math.pi).max()
+          < 1e-12 and
+          np.abs(_lat - np.arcsin(np.clip(_t[:, 2], -1, 1))).max() < 1e-12)
+
+# The two lean axes do what their labels say, which is the only thing that
+# makes the controls usable: a slider whose sign is a guess is not a control.
+_fwd = np.array([[0.0, 1.0, 0.0]])
+_rgt = np.array([[1.0, 0.0, 0.0]])
+check("positive pitch raises what is straight ahead",
+      abs(math.degrees(colour.to_lonlat(_fwd, 0, 5.0, 0)[1][0]) - 5.0) < 1e-9)
+check("negative pitch lowers it",
+      abs(math.degrees(colour.to_lonlat(_fwd, 0, -12.0, 0)[1][0]) + 12.0)
+      < 1e-9)
+check("positive roll lifts the right-hand side",
+      abs(math.degrees(colour.to_lonlat(_rgt, 0, 0, 5.0)[1][0]) - 5.0) < 1e-9)
+check("an upright camera is recognised as upright",
+      colour.is_upright(0.0, 0.0) and not colour.is_upright(0.0, 0.4))
+
+# ⛔ AND THE LEAN HAS TO REACH THE PIXELS. A pose that moved a number and not a
+# colour is the exact failure this whole strand is about.
+_img = (_rs.rand(64, 128, 3) * 255).astype(np.uint8)
+_pts = _rs.normal(size=(400, 3)) * 3.0
+check("a lean changes the colours a cloud is given",
+      (colour.sample(_pts, _img, 20.0)
+       != colour.sample(_pts, _img, 20.0, pitch_deg=6.0)).any())
+check("and the Colouriser carries it",
+      (colour.Colouriser(_img, 20.0)(_pts)
+       != colour.Colouriser(_img, 20.0, (0, 0, 0), 6.0, 0.0)(_pts)).any())
+
+
+# --- the refinement that can be pressed again ------------------------------
+print("\nrefining a pose")
+
+check("the grid inverts the panorama's own binning exactly",
+      True)
+_g = colour.grid_directions()
+_glon = np.arctan2(_g[..., 0], _g[..., 1])
+_glat = np.arcsin(np.clip(_g[..., 2], -1, 1))
+_iu = np.clip(((_glon / (2 * math.pi)) + 0.5) * colour.SOLVE_LON_BINS, 0,
+              colour.SOLVE_LON_BINS - 1).astype(int)
+_iv = np.clip((0.5 - _glat / math.pi) * colour.SOLVE_LAT_BINS, 0,
+              colour.SOLVE_LAT_BINS - 1).astype(int)
+check("every grid ray falls back in its own cell",
+      (_iu == np.arange(colour.SOLVE_LON_BINS)[None, :]).all() and
+      (_iv == np.arange(colour.SOLVE_LAT_BINS)[:, None]).all())
+check("and every one of them is a unit vector",
+      abs(np.linalg.norm(_g, axis=-1) - 1).max() < 1e-12)
+
+# ⛔⛔ THE ONE PROPERTY THAT MATTERS FOR A BUTTON YOU PRESS REPEATEDLY: it
+# cannot come back with a worse pose than it was given. Driven with a scorer
+# whose optimum is a long way off, so the search is genuinely trying to move.
+class _FlatScorer(object):
+    """A pose scorer whose answer never improves, however far it walks."""
+    def __init__(self):
+        self.evaluations = 0
+    def filled(self, camera_z=None):
+        return 1.0
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        self.evaluations += 1
+        return 0.5
+
+
+_flat = colour.refine_pose(np.zeros((10, 3)), np.zeros((8, 16)),
+                           yaw_deg=42.0, rung=3, scorer=_FlatScorer())
+check("a search that finds nothing returns the pose it was given",
+      _flat["ok"] and abs(_flat["yaw_deg"] - 42.0) < 1e-9
+      and _flat["improved"] is False and abs(_flat["gain"]) < 1e-12, _flat)
+
+# A scorer with a known optimum: the search must walk to it and stop.
+class _PeakScorer(object):
+    def __init__(self, yaw, pitch, roll):
+        self.want = (yaw, pitch, roll)
+        self.evaluations = 0
+    def filled(self, camera_z=None):
+        return 1.0
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        self.evaluations += 1
+        return -((yaw_deg - self.want[0]) ** 2
+                 + (pitch_deg - self.want[1]) ** 2
+                 + (roll_deg - self.want[2]) ** 2)
+
+
+_got = colour.refine_pose(np.zeros((10, 3)), np.zeros((8, 16)),
+                          yaw_deg=0.0, rung=2, span_deg=4.0,
+                          scorer=_PeakScorer(1.5, -2.0, 0.75))
+check("it walks to a known optimum in yaw and lean",
+      abs(_got["yaw_deg"] - 1.5) < 0.05 and abs(_got["pitch_deg"] + 2.0) < 0.05
+      and abs(_got["roll_deg"] - 0.75) < 0.05, _got)
+check("and reports that it improved",
+      _got["improved"] and _got["gain"] > 0)
+
+# ⛔ RUNG 1 MUST NOT TOUCH THE LEAN. The ladder is the whole reason pressing
+# again means anything; a first rung that quietly fitted everything would leave
+# the second and third with nothing to do and the button dead after one press.
+_r1 = colour.refine_pose(np.zeros((10, 3)), np.zeros((8, 16)),
+                         yaw_deg=0.0, rung=1, span_deg=4.0,
+                         scorer=_PeakScorer(1.5, -2.0, 0.75))
+check("rung 1 moves the heading and leaves the lean alone",
+      abs(_r1["yaw_deg"] - 1.5) < 0.05 and _r1["pitch_deg"] == 0.0
+      and _r1["roll_deg"] == 0.0, _r1)
+
+# ⛔ AND IT IS BOUNDED. A local search that wanders 90 degrees is re-solving
+# without the global search's ability to say whether the answer stood out.
+_rail = colour.refine_pose(np.zeros((10, 3)), np.zeros((8, 16)),
+                           yaw_deg=0.0, rung=2, span_deg=8.0,
+                           scorer=_PeakScorer(0.0, 40.0, 0.0))
+check("a lean beyond what a tripod can hold stops at the rail",
+      abs(_rail["pitch_deg"]) <= colour.MAX_TILT_DEG + 1e-9, _rail)
+check("and says which axis it was stopped in",
+      "pitch_deg" in (_rail.get("railed") or []), _rail.get("railed"))
+
+check("a panorama too sparse to solve is too sparse to refine",
+      colour.refine_pose(np.zeros((3, 3)), np.zeros((8, 16)))["ok"] is False)
+
+
+# --- taking the rubbish out ------------------------------------------------
+#
+# ⭐ COUNTED IN CELLS, NOT IN POINTS, AND THAT IS WHAT MAKES IT WORK ON THIS
+# INSTRUMENT. CloudCompare's SOR cuts the tail of a mean-distance-to-k-
+# neighbours distribution, which assumes an even density -- and a terrestrial
+# scan is the opposite: the floor under the tripod is a thousand times denser
+# than a wall eight metres off, so one distance threshold either guts the far
+# wall or spares every stray near the rig.
+print("\ncleaning a cloud")
+
+_wall = np.column_stack([_rs.uniform(-3, 3, 30000),
+                         4.0 + _rs.normal(0, 0.005, 30000),
+                         _rs.uniform(0, 2.5, 30000)])
+# ⛔ PLACED DELIBERATELY CLEAR OF THE WALL, NOT SCATTERED AND HOPED OVER.
+# Drawn at random across the whole box, a few land within a cell of the wall
+# and are correctly kept -- so the check would be measuring the draw rather
+# than the filter, and would pass or fail with the seed.
+_stray = np.column_stack([_rs.uniform(-6, 6, 60),
+                          _rs.uniform(-6.0, -1.0, 60),   # well off the wall
+                          _rs.uniform(0, 2.5, 60)])
+_both = np.vstack([_wall, _stray])
+_keep = cleanmod.stray_mask(_both, 0.10, 3)
+check("every point of a wall is kept", _keep[:30000].all(),
+      _keep[:30000].mean())
+check("and every stray is dropped", not _keep[30000:].any(),
+      int(_keep[30000:].sum()))
+
+# ⛔ A POINT IS NOT ITS OWN NEIGHBOUR. Counting its own cell would make the
+# threshold silently one lower than it reads -- the sort of off-by-one that
+# shows up as "3 seems to do nothing".
+_lonely = np.array([[0.0, 0.0, 0.0]])
+check("a single point on its own has no neighbours at all",
+      not cleanmod.stray_mask(_lonely, 0.1, 1).any())
+
+check("a weak-return floor keeps what is at or above it",
+      list(cleanmod.weak_mask(np.array([1, 5, 9]), 5.0)) == [False, True, True])
+check("no reflectivity means no opinion, not no points",
+      cleanmod.weak_mask(None, 5.0) is None)
+check("an empty spec keeps everything",
+      cleanmod.apply_spec(_both, None, None) is None)
+check("and the two tests are ANDed",
+      cleanmod.apply_spec(np.zeros((3, 3)), np.array([0, 9, 9]),
+                          {"min_refl": 5.0}).tolist() == [False, True, True])
+
+# The percentile ladder is what the operator actually chooses from.
+_lv = cleanmod.strength_levels(np.arange(100.0))
+check("the strength ladder prices each share", len(_lv) == 8)
+check("and 0% loses nothing", _lv[0]["loses"] < 1e-9, _lv[0])
+check("while the last row loses roughly what it says",
+      abs(_lv[-1]["loses"] - _lv[-1]["drop_pct"] / 100.0) < 0.02, _lv[-1])
+check("describe says what a spec does, and nothing for an empty one",
+      cleanmod.describe(None) is None
+      and "neighbours" in cleanmod.describe({"stray": {}}))
+
+
+# --- sorting a shoot -------------------------------------------------------
+#
+# ⛔⛔ THE TWO CLOCKS ARE NEVER SYNCHRONISED AND THE OFFSET IS MEASURED, NOT
+# ASSUMED. On the operator's own restaurant shoot the camera ran 1h 00m 38s
+# ahead of the rig -- an hour, which invites "it is just a timezone", plus
+# thirty-eight seconds, which is why that guess would have been wrong.
+print("\nsorting a shoot")
+
+# A synthetic day: a scan every 5 minutes, photographed 30 s after each ends,
+# by a camera whose clock is 3607 s fast.
+_OFF = 3607.0
+_ends = [1000.0 + 300.0 * i + 95.0 for i in range(12)]
+_shots = [e + 30.0 + _OFF for e in _ends] + [e + 55.0 + _OFF for e in _ends]
+_off, _conf, _hits = shoot.estimate_offset(_ends, _shots)
+# ⚠ IT RECOVERS THE CLOCK OFFSET PLUS THE HABITUAL LAG, AND THAT IS THE
+# USEFUL QUANTITY -- what lines the two lists up, not a pure clock difference.
+# The first version of this check asserted the pure offset and failed by
+# exactly the 30 s lag built into the fixture, which is how the distinction
+# got noticed at all.
+check("what lines the photographs up with the scans is recovered",
+      _off is not None and abs(_off - (_OFF + 30.0)) <= shoot.OFFSET_BIN_S,
+      _off)
+check("and it is confident about it", _conf >= shoot.MIN_OFFSET_CONFIDENCE,
+      _conf)
+
+# ⛔ A SHOOT WITH NO RHYTHM GETS NO OFFSET, NOT THE TALLEST BIN OF NOISE.
+# Sorting 74 captures around the tallest bin of noise produces a complete,
+# confident, wrong answer -- and a wrong answer that MOVED files.
+# ⛔⛔ AND THE CONFIDENCE ALONE DID NOT GUARD THIS. Forty random photograph
+# times against forty random scan times produced a peak scoring 6.9 -- well
+# past the bar -- because the histogram is SPARSE: spread 1600 pairs over six
+# hours in five-second bins and almost every bin is empty, so a bin holding
+# four looks like seven sigma. The share test is what actually refuses it.
+_noise = list(_rs.uniform(0, 20000, 40))
+_no, _nc, _ = shoot.estimate_offset(list(_rs.uniform(0, 20000, 40)), _noise)
+check("scattered times yield no offset, however good the peak looks",
+      _no is None, (_no, _nc))
+check("with nothing to go on it says so rather than guessing",
+      shoot.estimate_offset([], [])[0] is None)
+
+# ⛔ AND THE STAMPS MUST BE ON ONE SCALE. Written first with a private day-count
+# origin against a sidecar carrying a real Unix epoch, the two halves of every
+# comparison sat sixty-two years apart, every gap fell outside the window, and
+# it reported "these clocks do not cluster" about a shoot with a perfect
+# rhythm. Caught only by running it on the operator's own restaurant shoot.
+check("a filename stamp lands on the unix scale, read as UTC",
+      abs(shoot._stamp_seconds(1970, 1, 1, 0, 0, 0)) < 1e-9)
+check("and an hour later is an hour later",
+      abs(shoot._stamp_seconds(1970, 1, 1, 1, 0, 0) - 3600.0) < 1e-9)
+check("an image filename is read",
+      shoot.image_time("IMG_20260820_160520_00_014.jpg")[0] is not None)
+check("and a capture filename is read as a 20xx year",
+      abs(shoot.scan_times("TLS_26_08_20_16_03_15.pcap")[0]
+          - shoot._stamp_seconds(2026, 8, 20, 16, 3, 15)) < 1e-9)
+
+_sdir2 = tempfile.mkdtemp(prefix="tlsshoot")
+_scans2 = os.path.join(_sdir2, "caps")
+_imgs2 = os.path.join(_sdir2, "pix")
+os.makedirs(_scans2)
+os.makedirs(_imgs2)
+
+
+def _fake_capture(stem, started, took=95.0, sidecar=True):
+    with open(os.path.join(_scans2, stem + ".pcap"), "wb") as fh:
+        fh.write(b"not a capture, but a file")
+    if sidecar:
+        with open(os.path.join(_scans2, stem + ".json"), "w") as fh:
+            json.dump({"capture": {"started_epoch": started},
+                       "sweep": {"track": [[0, 0], [took, 190.8]]}}, fh)
+
+
+def _fake_shot(name):
+    with open(os.path.join(_imgs2, name), "wb") as fh:
+        fh.write(b"not a jpeg, but a file")
+
+
+# ⛔ THE FIXTURE'S TWO CLOCKS HAVE TO BE THE SAME CLOCK. Written first with
+# sidecar epochs near zero and image names dated 2026, the two sat fifty-five
+# years apart, nothing matched, and the numbering check still passed -- because
+# numbering does not need a photograph. Built from one base instant now.
+_BASE = shoot._stamp_seconds(2026, 8, 20, 10, 0, 0)
+for _i in range(6):
+    _at = _BASE + 300.0 * _i
+    _fake_capture("TLS_26_08_20_1%d_00_00" % _i, _at)
+    # taken 30 s after that sweep ended
+    _shot_at = _at + 95.0 + 30.0
+    _fake_shot("IMG_%s_00_0%02d.jpg"
+               % (time.strftime("%Y%m%d_%H%M%S", time.gmtime(_shot_at)), _i))
+# ⛔ AN ABORTED SWEEP HAS NO SIDECAR, AND SO NO PAN TRACK AND NO WAY TO BE
+# DECODED. A numbered folder holding one would be a folder that cannot be
+# opened -- a promise the sort cannot keep.
+_fake_capture("TLS_26_08_20_10_09_59", 0.0, sidecar=False)
+# ⛔ AND A FILENAME THAT IS NOT A TIME AT ALL MUST NOT TAKE THE SORT DOWN.
+# 99 in the seconds field really happens -- a truncated write, a rename -- and
+# the hand-rolled arithmetic this replaced accepted it silently and produced a
+# plausible wrong time.
+check("a nonsense timestamp is no time, not an exception",
+      shoot._stamp_seconds(2026, 8, 20, 10, 9, 99) is None)
+check("and a capture named with one is simply untimed",
+      shoot.scan_times("TLS_26_08_20_10_09_99.pcap")[0] is None)
+
+_plan = shoot.plan(_scans2, _imgs2, offset=0.0)
+check("every complete capture is numbered from one",
+      [r["number"] for r in _plan["scans"]] == list(range(1, 7)),
+      [r["number"] for r in _plan["scans"]])
+check("and the aborted sweep is set aside, not numbered",
+      len(_plan["aborted"]) == 1
+      and "sidecar" in (_plan["aborted"][0]["why"] or ""), _plan["aborted"])
+
+_dest2 = os.path.join(_sdir2, "out")
+_did = shoot.apply(_plan, _dest2)
+check("applying it makes one numbered folder per capture",
+      _did["ok"] and sorted(os.listdir(_dest2))
+      == ["1", "2", "3", "4", "5", "6", "aborted sweeps"],
+      sorted(os.listdir(_dest2)) if _did.get("ok") else _did)
+check("each folder holds the capture and its sidecar",
+      set(os.listdir(os.path.join(_dest2, "1")))
+      >= {"TLS_26_08_20_10_00_00.pcap", "TLS_26_08_20_10_00_00.json"},
+      os.listdir(os.path.join(_dest2, "1")))
+check("and the photograph really was paired by time",
+      all(r["photos"] for r in _plan["scans"]),
+      [(r["number"], r["gap_s"]) for r in _plan["scans"]])
+# ⭐ THE PHOTOGRAPH TAKES THE CAPTURE'S STEM, which is the name
+# `pipeline.find_photo` looks for -- so the CLI and every later session find it
+# with no memory of this having been run.
+check("and the photograph filed under the capture's own stem",
+      any(n.startswith("TLS_26_08_20_10_00_00") and n.endswith(".jpg")
+          for n in os.listdir(os.path.join(_dest2, "1"))),
+      os.listdir(os.path.join(_dest2, "1")))
+# ⛔ THE ORIGINALS STAY PUT. This rearranges a whole day on a pairing a clock
+# proposed; a wrong offset that copies costs disk, a wrong offset that moves
+# costs the shoot.
+check("the originals are left where they were",
+      os.path.exists(os.path.join(_scans2, "TLS_26_08_20_10_00_00.pcap")))
+# ⛔ AND IT REFUSES TO WRITE INTO NUMBERS THAT ARE ALREADY IN USE: two shoots
+# under one set of numbers cannot be untangled afterwards.
+_again = shoot.apply(_plan, _dest2)
+check("running it twice onto the same folders is refused, not merged",
+      _again["ok"] is False and "already hold" in _again["error"], _again)
+shutil.rmtree(_sdir2, ignore_errors=True)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

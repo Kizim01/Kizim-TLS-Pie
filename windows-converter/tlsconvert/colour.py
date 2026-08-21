@@ -256,25 +256,83 @@ def directions(xyz, camera=(0.0, 0.0, 0.0)):
     return d, r
 
 
-def to_lonlat(d, yaw_deg=0.0):
+def camera_matrix(yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    """
+    World ray -> the ray as the CAMERA saw it, as a 3x3.
+
+    ⭐ WHY THE PHOTOGRAPH NEEDS MORE THAN A HEADING. Remounting loses which way
+    the camera pointed, and for a while that was described as one unknown
+    angle. It is three. The 360 camera goes on the tripod by hand, on a screw
+    thread, and neither it nor the tripod is exactly level -- so the horizon in
+    the picture sits at a small angle to the horizon in the cloud. A yaw cannot
+    absorb that: turning the picture round slides the mismatch from one wall to
+    the next without ever removing it, which reads as "the alignment nearly
+    works everywhere", because it does.
+
+    The three turns, in order, each about a fixed axis of the yawed frame:
+
+        yaw    about +Z    -- which way the camera faced. lon 0 is +y.
+        roll   about +Y    -- banks the horizon. POSITIVE LIFTS THE RIGHT.
+        pitch  about +X    -- tips it. POSITIVE RAISES WHAT IS STRAIGHT AHEAD.
+
+    ⛔ THIS IS NOT `pipeline.box_rotation`, AND SHARING IT WOULD SWAP TWO OF
+    THE OPERATOR'S CONTROLS. A box's forward is +x; a panorama's is +y, because
+    longitude is measured from +y. The same three words therefore name
+    different axes in the two places, and a single shared function would have
+    read as tidy while quietly turning "tilt" into "bank".
+
+    ⛔ AND THE ORDER IS PART OF THE STORED FORMAT, for the reason
+    `box_rotation` already gives: three angles do not name an orientation on
+    their own, so a pose composed one way here and another way on screen puts
+    the preview and the exported file in different rooms with nothing to
+    complain.
+    """
+    cz, sz = math.cos(math.radians(-yaw_deg)), math.sin(math.radians(-yaw_deg))
+    cy, sy = math.cos(math.radians(-roll_deg)), math.sin(math.radians(-roll_deg))
+    cx, sx = math.cos(math.radians(pitch_deg)), math.sin(math.radians(pitch_deg))
+    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    return rx @ ry @ rz
+
+
+def is_upright(pitch_deg=0.0, roll_deg=0.0):
+    """True when the camera needs no tilt, so the cheap path can be taken."""
+    return abs(float(pitch_deg or 0.0)) < 1e-12 and \
+        abs(float(roll_deg or 0.0)) < 1e-12
+
+
+def to_lonlat(d, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
     """
     Ray -> equirectangular longitude/latitude in radians.
 
     Longitude follows the rig's own azimuth convention, measured from +y toward
     +x, so a yaw of zero means the camera faced the scan's pan zero. Any
     disagreement with the real camera is exactly what yaw absorbs.
+
+    ⛔ AN UNTILTED CAMERA TAKES THE ARITHMETIC PATH, NOT THE MATRIX, AND THAT
+    IS DELIBERATE. Every measurement on record -- the confidences, the bin
+    counts, the corroboration threshold -- was taken through the line below.
+    Routing them through a matrix that is the same thing to fifteen decimals
+    would still be a change to the code every one of those numbers was measured
+    on, for no gain on the overwhelmingly common case of a level camera.
     """
-    lon = np.arctan2(d[:, 0], d[:, 1]) + math.radians(yaw_deg)
+    if is_upright(pitch_deg, roll_deg):
+        lon = np.arctan2(d[:, 0], d[:, 1]) + math.radians(yaw_deg)
+        lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
+        return lon, np.arcsin(np.clip(d[:, 2], -1.0, 1.0))
+    t = d @ camera_matrix(yaw_deg, pitch_deg, roll_deg).T
+    lon = np.arctan2(t[:, 0], t[:, 1])
     lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
-    lat = np.arcsin(np.clip(d[:, 2], -1.0, 1.0))
-    return lon, lat
+    return lon, np.arcsin(np.clip(t[:, 2], -1.0, 1.0))
 
 
-def sample(xyz, rgb, yaw_deg=0.0, camera=(0.0, 0.0, 0.0)):
+def sample(xyz, rgb, yaw_deg=0.0, camera=(0.0, 0.0, 0.0),
+           pitch_deg=0.0, roll_deg=0.0):
     """Colour per point, sampled from the panorama. Nearest pixel."""
     h, w = rgb.shape[:2]
     d, _ = directions(xyz, camera)
-    lon, lat = to_lonlat(d, yaw_deg)
+    lon, lat = to_lonlat(d, yaw_deg, pitch_deg, roll_deg)
     u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * w, 0, w - 1).astype(np.int32)
     v = np.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(np.int32)
     return rgb[v, u]
@@ -597,6 +655,367 @@ def solve_yaw(xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
     return _yaw_from_bin(profile, best), confidence, profile
 
 
+# --- the whole shoot at once -----------------------------------------------
+#
+# ⭐⭐ THE STRONGEST IDEA IN THE LITERATURE, AND IT FITS THIS RIG EXACTLY.
+# Pandey, McBride, Savarese and Eustice (AAAI 2012) hit the same wall this
+# program hit: a mutual-information cost built from ONE scan and ONE image is
+# noisy and has local maxima, and earlier work using MI or a chi-squared test
+# "reported problems of existence of local maxima in the cost-function". Their
+# answer was not a cleverer threshold or a better optimiser. It was to stop
+# solving one pair at a time:
+#
+#     "we solve this problem by incorporating scans from different scenes in a
+#      single optimization framework, thereby, obtaining a smooth and concave
+#      cost function, easy to solve by any gradient ascent algorithm"
+#
+# and their Figure 6 shows the cost surface for a single scan beside the same
+# surface aggregated over ten -- ragged against convex.
+#
+# ⭐ IT APPLIES HERE BECAUSE THE UNKNOWN IS SHARED. The heading is unknown only
+# because the camera is remounted by hand; an operator who seats it the same way
+# each time is not producing twenty-five unknowns, they are producing ONE, seen
+# twenty-five times. `library.recall_heading` already relies on precisely that,
+# and already carries the arithmetic that ties a cloud's own zero to the rig's:
+# a cloud's azimuth zero is wherever the head was standing when its sweep began,
+# so yaw_i = C - anchor_i for one rig-frame constant C. This finds C from every
+# photographed scan at once, which is why the stairs scan -- 2.01 on its own,
+# a peak 190 degrees wide, unfindable by any threshold -- can be carried by the
+# twenty scans around it.
+#
+# ⛔ AND IT IS A CLAIM ABOUT THE OPERATOR'S HABIT, NOT A LAW. If the camera
+# was seated differently for one scan, the consensus will drag that scan to the
+# wrong answer -- confidently, because twenty other scans agree. So every scan's
+# OWN best answer is reported beside the joint one, and the ones that disagree
+# are named. Those disagreements are not noise to be smoothed away; they are the
+# only way to find out the habit was broken.
+
+
+def standardise(profile):
+    """A profile as "how far above its own spread", so scans can be summed.
+
+    ⛔ RAW PROFILES MUST NOT BE ADDED. Their scale depends on the point count
+    and on how much edge the room has, so a single large, busy scan would
+    outvote a dozen small ones and the aggregate would be that one scan's
+    answer wearing a better confidence.
+    """
+    p = np.asarray(profile, dtype=np.float64)
+    sd = p.std()
+    return (p - p.mean()) / sd if sd > 1e-12 else np.zeros_like(p)
+
+
+def joint_yaw(profiles, anchors):
+    """
+    (rig_yaw, confidence, joint) -- one camera heading from many scans.
+
+    `anchors` is each scan's `anchor_deg`: the head's own angle when that
+    sweep began. Returns the heading in the RIG's frame; a scan's own heading
+    is `rig_yaw - anchor`, which is the same relation `library.recall_heading`
+    uses, deliberately, so there are not two of it.
+    """
+    rows = [(p, a) for p, a in zip(profiles, anchors)
+            if p is not None and len(p) == SOLVE_LON_BINS and a is not None]
+    if not rows:
+        return None, 0.0, None
+    step = 360.0 / SOLVE_LON_BINS
+    idx = np.arange(SOLVE_LON_BINS)
+    joint = np.zeros(SOLVE_LON_BINS)
+    for prof, anchor in rows:
+        # bin b of this scan's profile stands for yaw = -b*step, and
+        # yaw_i = C - anchor_i, so C = c*step maps to b = (anchor_i/step - c).
+        shift = int(round(float(anchor) / step))
+        joint += standardise(prof)[(shift - idx) % SOLVE_LON_BINS]
+    best = int(np.argmax(joint))
+    mean, spread = _shoulder(joint, best)
+    conf = float((joint[best] - mean) / spread) if spread else 0.0
+    # ⛔ THE SIGN IS THE OTHER WAY ROUND FROM `_yaw_from_bin`, AND ON PURPOSE.
+    # That function reads a CORRELATION LAG, which has to be negated; this index
+    # is already a heading in the rig's frame, built above from headings.
+    y0 = joint[(best - 1) % SOLVE_LON_BINS]
+    y2 = joint[(best + 1) % SOLVE_LON_BINS]
+    denom = y0 - 2 * joint[best] + y2
+    at = best + (0.5 * (y0 - y2) / denom if denom else 0.0)
+    return float((at * step + 180.0) % 360.0 - 180.0), conf, joint
+
+
+def scan_yaw_from_rig(rig_yaw, anchor):
+    """One scan's own heading from the rig-frame constant."""
+    if rig_yaw is None or anchor is None:
+        return None
+    return float((float(rig_yaw) - float(anchor) + 180.0) % 360.0 - 180.0)
+
+
+# --- refinement ------------------------------------------------------------
+#
+# ⭐⭐ WHY A SECOND KIND OF SEARCH EXISTS AT ALL, AND WHAT IT IS NOT FOR.
+# `solve_yaw` is a GLOBAL search: it asks "of the 360 whole-degree headings,
+# which one, and does it stand out". That question is the one worth asking
+# first and it is the only one that can catch a photograph belonging to another
+# room. What it cannot do is any of the following, and all three are real:
+#
+#   * land between its bins on anything but a parabola through three of them;
+#   * move the camera's TILT, because a circular correlation over longitude has
+#     no way to express one;
+#   * use a starting point -- a heading the operator nudged into place by eye,
+#     or one carried over from the scan before.
+#
+# So this is a LOCAL search, started from a pose that is already close, over
+# more degrees of freedom than the global one can express. The two answer
+# different questions and neither replaces the other.
+#
+# ⛔⛔ AND THE GRADE STAYS WITH THE GLOBAL SEARCH. This is the trap that would
+# be easiest to fall into and hardest to notice: refinement raises the score BY
+# CONSTRUCTION -- that is what it is -- so a confidence recomputed after it
+# always looks better, whether or not the photograph belongs to the scan. A
+# refined WRONG photograph is a more confidently wrong photograph. The number
+# that says "does this image belong here" therefore continues to come from the
+# global sweep and from the reflectivity witness, and what refinement reports
+# is only how much sharper the fit got.
+
+# The tilt a camera on a tripod can plausibly have. ⛔ NOT A TIDINESS BOUND:
+# a refinement that wants 30 degrees of pitch has not found the camera's
+# attitude, it has found a spurious optimum -- most likely a ceiling matched to
+# a floor -- and the honest reply is to stop at the rail and say so rather than
+# to hand back a pose no tripod ever held.
+MAX_TILT_DEG = 15.0
+
+# How far the local search may move the heading before it is refusing to be a
+# LOCAL search. Beyond this the answer belongs to the global sweep.
+MAX_REFINE_YAW_DEG = 30.0
+
+# The camera's height above the lidar's optical centre, in metres, either way.
+# The workflow puts both on the same tripod, so this is a slack for the
+# difference between two instruments' optical centres, not a free parameter.
+MAX_CAMERA_Z_M = 0.5
+
+# ⛔ THE PHOTOGRAPH IS PRE-FILTERED BEFORE IT IS EVER SAMPLED AT A POSE, AND
+# SKIPPING THAT MAKES THE REFINEMENT OPTIMISE ITS OWN ALIASING. A 5888x2944
+# panorama carries about 16x32 pixels per cell of the 360x90 solving grid.
+# Point-sampling one pixel out of each of those blocks gives a panorama whose
+# gradients are the sampling pattern rather than the room -- the same failure
+# the 2-degree latitude bound was introduced to prevent, arriving from the
+# image side instead of the cloud side. The photo is therefore box-filtered
+# ONCE onto a grid this many times finer than the solving grid, and every pose
+# then bilinearly samples that.
+PREFILTER_SCALE = 4
+
+
+def _prefiltered(lum, scale=PREFILTER_SCALE):
+    """The photograph box-filtered onto a grid `scale` times the solving one."""
+    return image_panorama(lum, lon_bins=SOLVE_LON_BINS * scale,
+                          lat_bins=SOLVE_LAT_BINS * scale)
+
+
+def grid_directions(lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
+    """
+    A unit world ray through the centre of every cell of the solving grid.
+
+    The exact inverse of what `cloud_panorama` does to put a point in a cell,
+    so a pose that maps the cloud onto the photograph correctly here maps it
+    correctly when the points themselves are coloured.
+    """
+    lat_c = (0.5 - (np.arange(lat_bins) + 0.5) / lat_bins) * math.pi
+    lon_c = ((np.arange(lon_bins) + 0.5) / lon_bins - 0.5) * 2.0 * math.pi
+    cl = np.cos(lat_c)[:, None]
+    return np.stack([np.sin(lon_c)[None, :] * cl,
+                     np.cos(lon_c)[None, :] * cl,
+                     (np.sin(lat_c)[:, None] * np.ones((1, lon_bins)))],
+                    axis=-1)
+
+
+def image_at_pose(pre, dirs, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    """
+    The photograph resampled onto the cloud's own grid, at one pose.
+
+    ⛔ LONGITUDE WRAPS AND LATITUDE CLAMPS, AND GETTING THAT ROUND THE WRONG WAY
+    WOULD PLANT AN EDGE. A panorama is continuous across its left and right
+    borders, so clamping there invents a seam -- a full-height straight line,
+    which is the single strongest feature an edge correlation can find, and it
+    would be found at whatever pose put it against a wall.
+    """
+    h, w = pre.shape
+    t = dirs.reshape(-1, 3) @ camera_matrix(yaw_deg, pitch_deg, roll_deg).T
+    lon = np.arctan2(t[:, 0], t[:, 1])
+    lat = np.arcsin(np.clip(t[:, 2], -1.0, 1.0))
+    u = ((lon / (2.0 * math.pi)) + 0.5) * w - 0.5
+    v = (0.5 - lat / math.pi) * h - 0.5
+    u0 = np.floor(u).astype(np.int64)
+    v0 = np.clip(np.floor(v).astype(np.int64), 0, h - 1)
+    fu, fv = u - u0, np.clip(v, 0, h - 1) - v0
+    u0 %= w
+    u1 = (u0 + 1) % w
+    v1 = np.minimum(v0 + 1, h - 1)
+    top = pre[v0, u0] * (1.0 - fu) + pre[v0, u1] * fu
+    bot = pre[v1, u0] * (1.0 - fu) + pre[v1, u1] * fu
+    return (top * (1.0 - fv) + bot * fv).reshape(dirs.shape[:2])
+
+
+class PoseScorer(object):
+    """
+    How well one photograph sits on one cloud, at any pose, as one number.
+
+    The score is a COSINE: both edge fields are mean-removed and scaled to unit
+    length, so it runs in [-1, 1] and means the same thing at every pose. That
+    is what lets a refinement say "this got better" and lets a second press
+    know whether the first one bought anything.
+
+    ⛔ IT IS NOT THE CONFIDENCE AND MUST NEVER BE PRINTED AS ONE. The
+    confidence asks whether one heading stood out from the other 359; this asks
+    how well the pair matches at a single pose, which a photograph of the wrong
+    room can also do well. See the note above the constants.
+    """
+
+    def __init__(self, xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
+        self.xyz = xyz
+        self.refl = refl
+        self.camera = tuple(float(v) for v in camera)
+        self.pre = _prefiltered(lum)
+        self.dirs = grid_directions()
+        self.evaluations = 0
+        self._for_z = None
+        self._cloud = None
+
+    def cloud_edges(self, camera_z=None):
+        """
+        The cloud's own edge panorama, rebuilt only when the camera moves.
+
+        ⭐ CACHED ON THE HEIGHT BECAUSE THE HEIGHT IS THE ONLY THING THAT
+        CHANGES IT. Turning or tilting the camera moves the PHOTOGRAPH over the
+        cloud; it does not change what the cloud looks like from the tripod.
+        Rebuilding it per trial pose would make the refinement about forty
+        times slower for an identical answer.
+        """
+        z = self.camera[2] if camera_z is None else float(camera_z)
+        if self._cloud is None or self._for_z != z:
+            depth, filled = cloud_panorama(
+                self.xyz, camera=(self.camera[0], self.camera[1], z))
+            self._cloud = (_edges(fill_holes(depth, filled)), filled)
+            self._for_z = z
+        return self._cloud
+
+    def filled(self, camera_z=None):
+        return self.cloud_edges(camera_z)[1].mean()
+
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+        self.evaluations += 1
+        a = self.cloud_edges(camera_z)[0]
+        b = _edges(image_at_pose(self.pre, self.dirs,
+                                 yaw_deg, pitch_deg, roll_deg))
+        return float((a * b).sum())
+
+
+#: The rungs, in the order a repeated press climbs them. Each keeps everything
+#: the ones below it found and adds one thing the previous could not express.
+#:
+#: ⭐⭐ THIS IS WHAT MAKES "PRESS IT AGAIN" MEAN SOMETHING. A refinement run
+#: twice with the same freedom finds nothing the second time -- it stopped
+#: because it was at an optimum, and starting it again from that optimum
+#: returns it unchanged. Pressing would then appear to do nothing, which reads
+#: as a broken button rather than as convergence. So a press does not repeat
+#: the last search, it widens it: first where the camera pointed, then how it
+#: leaned, then how high it stood. When there is nothing left to add the
+#: program says so instead of churning.
+RUNGS = [
+    ("yaw", "the heading, between the whole degrees the sweep could see"),
+    ("tilt", "how the camera leaned -- pitch and roll, which a heading "
+             "cannot absorb"),
+    ("height", "how far the camera's centre sat above the lidar's"),
+]
+
+
+def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
+                roll_deg=0.0, rung=0, span_deg=2.0, floor_deg=0.01,
+                budget=600, scorer=None):
+    """
+    Improve a pose that is already close. Returns a dict; never raises.
+
+    `rung` is how many entries of RUNGS are in play, so 1 moves the heading
+    only and 3 moves everything. The caller raises it by one each press.
+
+    ⛔⛔ IT CANNOT RETURN A WORSE POSE THAN IT WAS GIVEN, AND THAT IS
+    STRUCTURAL RATHER THAN CHECKED. A pattern search only ever adopts a trial
+    that beat the incumbent, so the pose it hands back is the best it saw,
+    which includes the one it started from. For a control the operator is
+    invited to press repeatedly that is the whole ballgame: a refinement that
+    can drift is one that punishes the operator for trusting it. (The same
+    guard, arrived at from the other direction, is what CalibRefine states
+    explicitly: a new estimate that does not improve the error is discarded.)
+
+    ⛔ AND IT IS BOUNDED IN EVERY AXIS. A local search that wanders 90 degrees
+    is not refining, it is re-solving without the global search's ability to
+    tell whether the answer stands out -- so it stops at the rail and says
+    which one it hit.
+    """
+    start = {"yaw_deg": float(yaw_deg), "pitch_deg": float(pitch_deg or 0.0),
+             "roll_deg": float(roll_deg or 0.0),
+             "camera_z": float(camera[2] if len(camera) > 2 else 0.0)}
+    rung = max(1, min(int(rung or 1), len(RUNGS)))
+    sc = scorer or PoseScorer(xyz, lum, camera=camera)
+
+    if sc.filled() < MIN_FILLED_FRACTION:
+        return dict(start, ok=False, improved=False, rung=rung,
+                    reason="this cloud's panorama is too sparse to refine "
+                           "against -- the same bar the solve itself sets")
+
+    # (name, half-range about the STARTING value, whether this rung uses it)
+    axes = [("yaw_deg", MAX_REFINE_YAW_DEG, True),
+            ("pitch_deg", MAX_TILT_DEG, rung >= 2),
+            ("roll_deg", MAX_TILT_DEG, rung >= 2),
+            ("camera_z", MAX_CAMERA_Z_M, rung >= 3)]
+    live = [(n, lim) for n, lim, on in axes if on]
+
+    best = dict(start)
+    best_score = sc.score(best["yaw_deg"], best["pitch_deg"],
+                          best["roll_deg"], best["camera_z"])
+    first = best_score
+    railed = []
+    step = float(span_deg)
+    while step >= floor_deg and sc.evaluations < budget:
+        moved = False
+        for name, lim in live:
+            # The height is in metres; the same step in degrees would ask for
+            # a metre of travel per degree of heading, which is not a scale.
+            size = step * (0.02 if name == "camera_z" else 1.0)
+            for sign in (1.0, -1.0):
+                trial = dict(best)
+                trial[name] = best[name] + sign * size
+                if name == "yaw_deg":
+                    off = (trial[name] - start[name] + 180.0) % 360.0 - 180.0
+                    if abs(off) > lim:
+                        if name not in railed:
+                            railed.append(name)
+                        continue
+                elif abs(trial[name]) > lim:
+                    if name not in railed:
+                        railed.append(name)
+                    continue
+                got = sc.score(trial["yaw_deg"], trial["pitch_deg"],
+                               trial["roll_deg"], trial["camera_z"])
+                if got > best_score:
+                    best, best_score, moved = trial, got, True
+                    break
+                if sc.evaluations >= budget:
+                    break
+        if not moved:
+            step *= 0.5
+    best["yaw_deg"] = (best["yaw_deg"] + 180.0) % 360.0 - 180.0
+    turned = abs((best["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0 - 180.0)
+    return dict(best, ok=True, rung=rung,
+                improved=bool(best_score > first),
+                score=float(best_score), was=float(first),
+                gain=float(best_score - first),
+                turned_deg=float(turned),
+                tilted_deg=float(math.hypot(best["pitch_deg"] - start["pitch_deg"],
+                                            best["roll_deg"] - start["roll_deg"])),
+                raised_m=float(best["camera_z"] - start["camera_z"]),
+                evaluations=int(sc.evaluations),
+                # ⛔ A RAIL IS REPORTED, NOT SWALLOWED. A pose sitting exactly on
+                # a bound is the solver saying it wanted to go further, which is
+                # evidence about the pair rather than a tidy answer.
+                railed=list(railed),
+                exhausted=bool(sc.evaluations >= budget))
+
+
 class Colouriser:
     """
     Callable turning positions into colours, for pipeline.convert.
@@ -606,10 +1025,14 @@ class Colouriser:
     the converter.
     """
 
-    def __init__(self, rgb, yaw_deg, camera=(0.0, 0.0, 0.0)):
+    def __init__(self, rgb, yaw_deg, camera=(0.0, 0.0, 0.0),
+                 pitch_deg=0.0, roll_deg=0.0):
         self.rgb = rgb
         self.yaw_deg = float(yaw_deg)
+        self.pitch_deg = float(pitch_deg or 0.0)
+        self.roll_deg = float(roll_deg or 0.0)
         self.camera = tuple(float(v) for v in camera)
 
     def __call__(self, xyz):
-        return sample(xyz, self.rgb, self.yaw_deg, self.camera)
+        return sample(xyz, self.rgb, self.yaw_deg, self.camera,
+                      self.pitch_deg, self.roll_deg)

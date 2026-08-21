@@ -142,13 +142,32 @@ class Scan(object):
         # `colour.solve_yaw_mi` cannot run and the heading rests on one method.
         self.sample_refl = None
         self.rung = None               # how far down the GICP ladder it has got
+        # ⭐ THE CLEAN IS A RULE, NOT A DELETION. Held as a spec plus the mask
+        # it currently produces, so it can be turned off again, so the project
+        # can carry it, and above all so the EXPORT can apply the same rule at
+        # full density -- the preview is a decimated tenth of the capture, and
+        # a clean that only ever ran on the preview would be a control that
+        # visibly worked and changed nothing in the file.
+        # Reflectivity for the points ON SCREEN, which is not `sample_refl`.
+        self.view_refl = None
+        self.clean = None              # the spec, or None
+        self.keep = None               # bool mask over xyz, or None for all
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
         self.total = int(total or len(xyz))
 
     def buffer(self, max_points=viewer.DEFAULT_VIEW_MAX):
         buf = viewer.ViewerBuffer(max_points=max_points)
-        buf.add(self.xyz, self.rgb)
+        # ⛔ THE POINTS THEMSELVES ARE NEVER THROWN AWAY, ONLY HIDDEN. The
+        # colour solve, the registration and every later clean all need the
+        # whole cloud; filtering `xyz` in place would quietly change what the
+        # NEXT operation sees, so a stricter clean could never be relaxed and
+        # a photograph solved after cleaning would be solved against a
+        # different room from the one before it.
+        if self.keep is not None and len(self.keep) == len(self.xyz):
+            buf.add(self.xyz[self.keep], self.rgb[self.keep])
+        else:
+            buf.add(self.xyz, self.rgb)
         return buf
 
 
@@ -217,7 +236,8 @@ def grade_solve(info, sample, refl, lum, camera):
     return info
 
 
-def colour_scan(scan, photo, camera_z=0.0, yaw=None):
+def colour_scan(scan, photo, camera_z=0.0, yaw=None,
+                pitch=None, roll=None):
     """
     Solve the camera's heading against `scan` and repaint it. Never raises.
 
@@ -235,6 +255,16 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
     info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
             "yaw_deg": None, "confidence": None, "reason": None,
             "given": False, "ok": False, "camera_z": float(camera_z or 0.0),
+            # ⭐ HOW THE CAMERA LEANED, WHICH A HEADING CANNOT ABSORB. Measured
+            # on the operator's own confirmed pair (TLS_26_08_20_16_03_15 with
+            # IMG_20260820_160520_00_014) on 2026-08-21: the camera was pitched
+            # 2.44 degrees, and taking that out raised the fit from 0.281 to
+            # 0.314 -- and moved the heading CLOSER to the independent
+            # reflectivity witness, 0.12 degrees apart down to 0.02. The tilt
+            # was real, not a number the search invented to feed on.
+            "pitch_deg": float(pitch or 0.0), "roll_deg": float(roll or 0.0),
+            # How many rungs of colour.RUNGS the refinement has climbed.
+            "rung": 0, "refined": None,
             # "given" | "sure" | "unsure" | "doubtful" -- how much the number
             # is worth, said in words rather than decided by a threshold the
             # operator cannot see. See colour.MIN_CONFIDENCE.
@@ -319,7 +349,10 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None):
         grade_solve(info, sample, getattr(scan, "sample_refl", None), lum,
                     camera)
 
-    scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw, camera=camera)
+    scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw,
+                                 camera=camera,
+                                 pitch_deg=info["pitch_deg"],
+                                 roll_deg=info["roll_deg"])
     scan.photo = photo
     info["ok"] = True
     scan.colour_info = info
@@ -413,7 +446,7 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
                 acc.add(xyz, refl)
             else:
                 buf.add(xyz, (colouriser(xyz) if colouriser is not None
-                              else export.intensity_to_grey(refl)))
+                              else export.intensity_to_grey(refl)), refl)
             done += xyz.shape[0]
             report("reading %s" % name, done)
         seen[0] += budget or done
@@ -421,8 +454,10 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             xyz, refl = acc.result()
             rgb = (colouriser(xyz) if colouriser is not None
                    else export.intensity_to_grey(refl))
+            view_refl = refl
         else:
             xyz, rgb = buf.arrays()
+            view_refl = buf.intensity()
 
         report("preparing %s for alignment" % name)
         sample, sample_refl = pipeline.sample_for_solve(
@@ -430,6 +465,14 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             with_refl=True)
         scan = Scan(path, xyz, rgb, sample, total=done)
         scan.sample_refl = sample_refl
+        # ⛔ NOT THE SAME ARRAY AS `sample_refl`, AND THE DIFFERENCE MATTERS.
+        # `sample_refl` belongs to the solver's own decimated pass; this one
+        # lines up with the points ON SCREEN. Cleaning by return strength used
+        # the solver's array, found the lengths did not match, quietly applied
+        # nothing to the preview -- and still wrote the threshold into the spec
+        # the exporter reads. The preview kept every point and the file lost a
+        # fifth of them, and neither picture looked wrong on its own.
+        scan.view_refl = view_refl
         scan.anchor_deg = (meta.get("zero") or {}).get("head_deg")
         scan.zero_origin = (meta.get("zero") or {}).get("provenance")
         # The photo was applied while streaming, above; record WHICH one, so the
@@ -525,12 +568,42 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         try:
             if path == "/solve":
                 return self._json(srv.solve(int(body.get("index", 1)),
-                                            body.get("start")))
+                                            body.get("start"),
+                                            body.get("target")))
             if path == "/pairs":
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
                                                   body.get("pairs") or []))
             if path == "/level":
                 return self._json(srv.level(body.get("points") or []))
+            if path == "/folder":
+                return self._json(srv.pick_folder())
+            if path == "/shoot/plan":
+                return self._json(srv.shoot_plan(body.get("scans"),
+                                                 body.get("images"),
+                                                 body.get("offset")))
+            if path == "/shoot/apply":
+                return self._json(srv.shoot_apply(
+                    body.get("scans"), body.get("images"), body.get("dest"),
+                    body.get("move"), body.get("offset"),
+                    body.get("photos") or 1))
+            if path == "/clean":
+                return self._json(srv.clean_scan(
+                    body.get("index"), body.get("stray"),
+                    body.get("drop_weakest"), body.get("voxel_m"),
+                    body.get("neighbours")))
+            if path == "/clean/levels":
+                return self._json(srv.strength_of(body.get("index")))
+            if path == "/photo/shoot":
+                return self._json(srv.solve_shoot(
+                    body.get("apply", True)))
+            if path == "/photo/refine":
+                return self._json(srv.refine(body.get("index"),
+                                             body.get("rung")))
+            if path == "/photo/tilt":
+                return self._json(srv.set_tilt(body.get("index"),
+                                               body.get("pitch"),
+                                               body.get("roll"),
+                                               bool(body.get("by"))))
             if path == "/north":
                 return self._json(srv.set_north(body.get("points") or [],
                                                 body.get("direction"),
@@ -662,6 +735,20 @@ class AlignServer(object):
                          "agree": info.get("agree_deg"),
                          "corroborated": bool(info.get("corroborated")),
                          "cameraZ": getattr(scan, "camera_z", 0.0),
+                         # ⭐ THE LEAN, AND HOW FAR THE REFINEMENT HAS CLIMBED.
+                         # Without the rung the page cannot tell "press it
+                         # again" from "there is nothing left", and those two
+                         # look identical from the outside -- one is progress
+                         # and the other is a button that appears broken.
+                         "pitch": info.get("pitch_deg") or 0.0,
+                         "roll": info.get("roll_deg") or 0.0,
+                         "rung": int(info.get("rung") or 0),
+                         "refined": info.get("refined"),
+                         # The cleaning rule in force, so the panel can show it
+                         # and an undo can put the previous one back.
+                         "clean": getattr(scan, "clean", None),
+                         "hidden": (0 if getattr(scan, "keep", None) is None
+                                    else int((~scan.keep).sum())),
                          "anchor": scan.anchor_deg,
                          "baseline": library.recall_heading(
                              scan.anchor_deg,
@@ -684,10 +771,70 @@ class AlignServer(object):
         self._progress = {"stage": stage, "n": n, "total": total,
                           "busy": self._progress.get("busy", False)}
 
-    def solve(self, index, start=None):
+    def nearest_to(self, index):
+        """
+        The open scan whose tripod stands closest to this one's, or None.
+
+        ⭐⭐ WHY THIS IS NOT A CONVENIENCE. A survey is a WALK: twenty-five
+        tripod positions down a restaurant, each overlapping the one before it
+        and sharing nothing at all with the one at the far end. Registration
+        against a fixed first scan therefore stops working a few positions in
+        -- not because the solver is weak but because there is no common
+        surface left to fit. Every terrestrial package registers a walk
+        SEQUENTIALLY for that reason, and this program could only ever fit to
+        scan 1.
+        """
+        here = self.scans[index].setup
+        best, gap = None, None
+        for j, other in enumerate(self.scans):
+            if j == index:
+                continue
+            d = float(np.hypot(other.setup.dx - here.dx,
+                               other.setup.dy - here.dy))
+            # An unmoved scan sits at the origin like every other unmoved scan,
+            # so distance cannot separate them; the reference wins the tie
+            # because it is the one thing known to be in the right place.
+            if gap is None or d < gap - 1e-9 or (abs(d - (gap or 0)) < 1e-9
+                                                 and j == 0):
+                best, gap = j, d
+        return best
+
+    def solve(self, index, start=None, target=None):
+        """
+        Fit one scan onto another. `target` defaults to the nearest scan.
+
+        ⛔ THE TARGET IS FITTED WHERE IT NOW STANDS, NOT IN ITS OWN FRAME.
+        The points handed to the solver as the fixed side are the target's
+        AFTER its own placement, so the answer comes back already in the merged
+        frame and there is no transform to compose afterwards -- which is the
+        step that would silently accumulate error down a chain of twenty-five.
+
+        ⚠ AND A CHAIN IS ONLY AS GOOD AS ITS LINKS. Fitting to a neighbour
+        that has not itself been placed moves the problem rather than solving
+        it, so that case is named rather than quietly attempted.
+        """
         if not 0 < index < len(self.scans):
-            return {"ok": False, "error": "scan %d cannot be solved against "
-                                          "itself" % index}
+            return {"ok": False,
+                    "error": "scan 1 is the reference: every other scan's "
+                             "position is measured against it, so moving it "
+                             "would move the whole survey rather than place "
+                             "anything. Align the others to it, or to each "
+                             "other."}
+        if target is None:
+            target = self.nearest_to(index)
+        try:
+            target = int(target)
+            fixed = self.scans[target]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan to align to"}
+        if target == index:
+            return {"ok": False,
+                    "error": "a scan cannot be aligned to itself"}
+        warn = None
+        if target != 0 and fixed.setup.is_identity():
+            warn = ("scan %d has not been placed itself, so this fits one "
+                    "unplaced cloud to another -- place it first, or align to "
+                    "the reference." % (target + 1))
         hint = registration.Setup.from_dict(start) if start else None
         # ⛔ EACH PRESS STEPS DOWN A RUNG. GICP converges, so pressing again at
         # the same voxel re-derives the same answer and the button looks dead --
@@ -701,8 +848,8 @@ class AlignServer(object):
         if scan.rung is None:
             return {"ok": True, "index": index, "setup": scan.setup.as_dict(),
                     "residual": None, "floor": None, "baseline": None,
-                    "improvement": None, "trustworthy": True,
-                    "ambiguous": False, "exhausted": True,
+                    "improvement": None, "trustworthy": True, "target": target,
+                    "ambiguous": False, "exhausted": True, "warning": warn,
                     "text": "Already refined as far as this instrument "
                             "supports: below 1 cm the VLP-16's own +/-30 mm "
                             "range noise is what would be fitted. Nudge it by "
@@ -710,7 +857,9 @@ class AlignServer(object):
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
-            sol = registration.solve_best(self.scans[0].sample,
+            base = (fixed.sample if fixed.setup.is_identity()
+                    else fixed.setup.apply(fixed.sample))
+            sol = registration.solve_best(base,
                                           self.scans[index].sample,
                                           progress=self._note, start=hint,
                                           voxel=scan.rung)
@@ -722,9 +871,10 @@ class AlignServer(object):
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
-                "voxel": sol.voxel, "exhausted": False,
-                "text": "at a %.0f cm voxel — %s"
-                        % ((sol.voxel or 0) * 100, sol.describe())}
+                "voxel": sol.voxel, "exhausted": False, "target": target,
+                "warning": warn,
+                "text": "onto %s at a %.0f cm voxel — %s"
+                        % (fixed.name, (sol.voxel or 0) * 100, sol.describe())}
 
     def align_pairs(self, index, pairs):
         """
@@ -1118,6 +1268,489 @@ class AlignServer(object):
                 "attached": os.path.basename(photo) if photo else None,
                 "results": good[:8], "has_second": refl is not None}
 
+    def _repaint(self, scan, photo, pose, keep):
+        """
+        Repaint a scan at a new pose WITHOUT throwing away what judged it.
+
+        ⛔⛔ REFINING MUST NOT PROMOTE A PHOTOGRAPH. `colour_scan` with a
+        heading handed to it marks the result "given", which is right when a
+        person typed one -- it says a human took responsibility. A refinement
+        is not a person: it moved a pose that something else had already
+        judged, and letting it overwrite the grade would quietly turn every
+        doubtful pair into an asserted one by pressing a button twice.
+
+        ⛔ AND THE WITNESS IS RE-ASKED, NOT RE-RUN. The reflectivity solve is a
+        global sweep over the cloud, so its answer does not depend on where the
+        edge method currently sits; what changes is how far apart the two now
+        are. On the operator's confirmed pair that distance FELL from 0.12
+        degrees to 0.02 when the tilt came out -- two methods sharing nothing
+        but the cloud agreeing more closely, which is the only evidence here
+        that a refinement moved toward the truth rather than toward a bigger
+        number.
+        """
+        from . import colour as colour_mod
+        info = colour_scan(scan, photo, camera_z=pose.get("camera_z") or 0.0,
+                           yaw=pose.get("yaw_deg"),
+                           pitch=pose.get("pitch_deg"),
+                           roll=pose.get("roll_deg"))
+        if not info.get("ok"):
+            return info
+        for key in ("confidence", "candidates", "second", "warning"):
+            if keep.get(key) is not None:
+                info[key] = keep[key]
+        info["grade"] = keep.get("grade") or info.get("grade")
+        info["given"] = bool(keep.get("given"))
+        info["caution"] = keep.get("caution")
+        second = info.get("second") or {}
+        if second.get("yaw_deg") is not None:
+            agreed, apart = colour_mod.corroborates(
+                info.get("yaw_deg"), info.get("confidence"),
+                second.get("yaw_deg"), second.get("confidence"))
+            info["agree_deg"], info["corroborated"] = apart, agreed
+            if agreed:
+                info["grade"] = "confirmed"
+        return info
+
+    def pick_folder(self):
+        from . import desktop
+        if desktop.WINDOW[0] is None:
+            return {"ok": False,
+                    "error": "no native window, so no system file dialog"}
+        return {"ok": True, "path": desktop.pick_folder()}
+
+    def shoot_plan(self, scans, images=None, offset=None):
+        """
+        Which photograph belongs to which capture, across a whole day.
+
+        ⛔ IT PLANS AND STOPS. Nothing is moved or copied here: the plan is a
+        proposal built from two clocks that were never synchronised, and a day
+        of captures rearranged on a wrong proposal is a day lost. `shoot_apply`
+        is the separate, deliberate second press.
+        """
+        from . import shoot
+        if not scans or not os.path.isdir(scans):
+            return {"ok": False, "error": "choose the folder the captures "
+                                          "are in"}
+        self._progress = {"stage": "reading the shoot", "n": 0, "total": 1,
+                          "busy": True}
+        try:
+            return shoot.plan(scans, images or None, offset=offset)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": "could not read that shoot (%s)"
+                                          % exc}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+
+    def shoot_apply(self, scans, images=None, dest=None, move=False,
+                    offset=None, photos=1):
+        """Carry out a plan. Copies unless `move` is asked for explicitly."""
+        from . import shoot
+        made = self.shoot_plan(scans, images, offset=offset)
+        if not made.get("ok"):
+            return made
+        if not dest:
+            return {"ok": False, "error": "choose where the numbered folders "
+                                          "should go"}
+        self._progress = {"stage": "sorting the shoot", "n": 0,
+                          "total": len(made["scans"]), "busy": True}
+        try:
+            return shoot.apply(made, dest, move=bool(move), photos=int(photos))
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": "could not sort that shoot (%s)"
+                                          % exc}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+
+    def clean_scan(self, index, stray=None, drop_weakest=None,
+                   voxel_m=None, neighbours=None):
+        """
+        Take the rubbish out of one cloud: strays, weak returns, or both.
+
+        ⭐⭐ SCOPED TO ONE CLOUD ON PURPOSE. What counts as a stray depends on
+        where the tripod stood -- the floor under it is a thousand times denser
+        than the far wall -- so one rule across a merged survey is either too
+        harsh near one rig or too soft near another. It is also the operator's
+        own request: clean the cloud that has the mess in it.
+
+        ⛔ AND IT IS REVERSIBLE, BECAUSE A DELETE OF EIGHT HUNDRED THOUSAND
+        POINTS THAT CANNOT BE UNDONE IS NOT A BUTTON, IT IS A TRAP. Passing
+        neither test clears the rule and every point comes back.
+        """
+        from . import clean as clean_mod
+        try:
+            index = int(index)
+            scan = self.scans[index]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan"}
+
+        spec = {}
+        if stray:
+            spec["stray"] = {
+                "voxel_m": float(voxel_m or clean_mod.DEFAULT_VOXEL_M),
+                "neighbours": int(neighbours
+                                  or clean_mod.DEFAULT_NEIGHBOURS)}
+        # ⛔⛔ THE PREVIEW'S OWN REFLECTIVITY, NOT THE SOLVER'S. They are two
+        # different decimated passes over the capture and they do not line up;
+        # using the solver's meant the mask silently came back "no opinion"
+        # while the threshold was still written into the spec the EXPORTER
+        # reads. The preview kept every point, the file dropped a fifth of
+        # them, and neither picture looked wrong on its own.
+        refl = getattr(scan, "view_refl", None)
+        if refl is not None and len(refl) != len(scan.xyz):
+            refl = None
+        if drop_weakest:
+            # ⛔ THE FLOOR IS A PERCENTILE OF THIS CLOUD, NOT A NUMBER OFF THE
+            # INSTRUMENT'S SCALE. Nobody knows what 12 means on a VLP-16, and
+            # a dark restaurant and a white office do not share a threshold --
+            # but "drop the weakest 10%" means the same thing in both rooms.
+            # ⛔ REFUSED RATHER THAN STORED-BUT-INVISIBLE. A rule this cannot
+            # show is a rule the operator cannot check, and the export would
+            # apply it anyway.
+            if refl is None or not len(refl):
+                return {"ok": False,
+                        "error": "this cloud carries no reflectivity for the "
+                                 "points on screen, so the weakest returns "
+                                 "cannot be shown -- and a rule you cannot "
+                                 "see is one the export would apply behind "
+                                 "your back. An exported .cloud has none; "
+                                 "re-open the capture instead."}
+            pct = max(0.0, min(90.0, float(drop_weakest)))
+            spec["min_refl"] = float(np.percentile(np.asarray(refl), pct))
+
+        if not spec:
+            scan.clean, scan.keep = None, None
+            return {"ok": True, "cleared": True, "clean": None,
+                    "kept": len(scan.xyz), "dropped": 0,
+                    "text": "cleaning turned off -- every point is back",
+                    "scans": self._rebuild()}
+
+        # ⚠ THE PREVIEW IS DECIMATED AND THE COUNT SAYS SO. This mask is
+        # measured on the points on screen, which are a fraction of the
+        # capture; the export re-reads at full density and applies the same
+        # RULE, so the proportion carries over but the count does not.
+        self._progress = {"stage": "cleaning %s" % scan.name, "n": 0,
+                          "total": 1, "busy": True}
+        try:
+            mask = clean_mod.apply_spec(scan.xyz, refl, spec)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if mask is None:
+            scan.clean, scan.keep = None, None
+            return {"ok": True, "cleared": True, "clean": None,
+                    "kept": len(scan.xyz), "dropped": 0,
+                    "scans": self._rebuild(),
+                    "text": "nothing to clean by"}
+        # ⛔ A RULE THAT WOULD EMPTY THE CLOUD IS REFUSED RATHER THAN OBEYED.
+        # An empty preview looks exactly like a crash, and the operator's next
+        # move would be to reload rather than to relax the setting.
+        if not mask.any():
+            return {"ok": False,
+                    "error": "that would remove every point in %s. Loosen it: "
+                             "fewer neighbours needed, a larger cell, or a "
+                             "smaller share of weak returns." % scan.name}
+        scan.clean, scan.keep = spec, mask
+        gone = int((~mask).sum())
+        return {"ok": True, "clean": spec, "kept": int(mask.sum()),
+                "dropped": gone, "shown": len(scan.xyz),
+                "text": "%s: %d of %d preview points hidden (%.2f%%). The "
+                        "export applies the same rule to every point in the "
+                        "capture."
+                        % (scan.name, gone, len(scan.xyz),
+                           100.0 * gone / max(len(scan.xyz), 1)),
+                "describe": clean_mod.describe(spec),
+                "scans": self._rebuild()}
+
+    def strength_of(self, index):
+        """What each share of weak returns would cost, for this cloud."""
+        from . import clean as clean_mod
+        try:
+            scan = self.scans[int(index)]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan"}
+        refl = getattr(scan, "view_refl", None)
+        if refl is None or not len(refl):
+            return {"ok": False, "error": "this cloud carries no reflectivity"}
+        return {"ok": True, "levels": clean_mod.strength_levels(refl)}
+
+    def solve_shoot(self, apply=True):
+        """
+        One camera heading for every photographed scan, solved together.
+
+        ⭐⭐ THE UNKNOWN IS SHARED, SO IT SHOULD BE SOLVED SHARED. The heading
+        is unknown only because the camera is remounted by hand; an operator who
+        seats it the same way each time is not producing twenty-five unknowns,
+        they are producing ONE seen twenty-five times. Pandey et al. found the
+        same thing for lidar-camera calibration and gave the reason: a cost
+        built from one pair is ragged and has local maxima, and "incorporating
+        scans from different scenes in a single optimization framework" makes it
+        smooth. This is that, on the one axis this rig leaves free.
+
+        ⭐ IT IS THE ONLY THING THAT CAN RESCUE A SCAN LIKE THE STAIRS ONE. That
+        capture -- rig hard against a wall, correlation peak 190 degrees wide,
+        confidence 2.01 -- cannot be solved by any threshold on its own
+        evidence, because it has almost none. It can be CARRIED by the twenty
+        scans around it, which share the answer.
+
+        ⛔ AND IT IS A CLAIM ABOUT A HABIT, NOT A LAW. If the camera was
+        seated differently for one scan, the consensus drags that scan to the
+        wrong answer -- confidently, because everything else agrees. So each
+        scan's own best answer is reported beside the joint one and the ones
+        that disagree are NAMED. Those disagreements are not noise to smooth
+        away; they are the only way to discover the habit was broken.
+        """
+        from . import colour as colour_mod
+        rows, profiles, anchors = [], [], []
+        joinable = [(i, sc) for i, sc in enumerate(self.scans)
+                    if (sc.photo or (sc.colour_info or {}).get("photo"))
+                    and sc.anchor_deg is not None]
+        if len(joinable) < 2:
+            return {"ok": False,
+                    "error": "this needs at least two scans that each have a "
+                             "photograph AND a recorded head angle. An "
+                             "exported cloud has no head angle, and nor does a "
+                             "capture whose sidecar was written before "
+                             "2026-08-20."}
+        self._progress = {"stage": "reading every photograph", "n": 0,
+                          "total": len(joinable), "busy": True}
+        try:
+            for at, (i, sc) in enumerate(joinable):
+                self._progress = {"stage": "scoring %s" % sc.name, "n": at,
+                                  "total": len(joinable), "busy": True}
+                photo = sc.photo or (sc.colour_info or {}).get("photo")
+                sample = (sc.sample if sc.sample is not None and len(sc.sample)
+                          else sc.xyz)
+                camera = (0.0, 0.0, float(getattr(sc, "camera_z", 0.0) or 0.0))
+                try:
+                    _rgb, lum = colour_mod.load_panorama(photo)
+                    yaw, conf, prof = colour_mod.solve_yaw(sample, lum,
+                                                           camera=camera)
+                except Exception as exc:                  # noqa: BLE001
+                    rows.append({"index": i, "name": sc.name,
+                                 "error": str(exc)})
+                    continue
+                profiles.append(prof)
+                anchors.append(sc.anchor_deg)
+                rows.append({"index": i, "name": sc.name, "alone_yaw": yaw,
+                             "alone_confidence": conf,
+                             "anchor": sc.anchor_deg})
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+
+        rig_yaw, conf, _joint = colour_mod.joint_yaw(profiles, anchors)
+        if rig_yaw is None:
+            return {"ok": False,
+                    "error": "none of the open scans could be scored together"}
+
+        odd = []
+        for r in rows:
+            if r.get("error") or r.get("alone_yaw") is None:
+                continue
+            r["joint_yaw"] = colour_mod.scan_yaw_from_rig(rig_yaw, r["anchor"])
+            r["apart_deg"] = abs((r["joint_yaw"] - r["alone_yaw"] + 180.0)
+                                 % 360.0 - 180.0)
+            # ⛔ A SCAN THAT DISAGREES WHILE BEING SURE OF ITSELF IS THE
+            # INTERESTING ONE. A weak scan disagreeing is expected -- that is
+            # what "weak" means, and being carried is the point. A CONFIDENT
+            # scan disagreeing says the camera was seated differently that
+            # time, and applying the consensus to it would be wrong.
+            if (r["apart_deg"] > colour_mod.AGREE_DEG
+                    and r["alone_confidence"] >= colour_mod.SURE_CONFIDENCE):
+                odd.append(r)
+
+        applied = []
+        if apply:
+            for r in rows:
+                if r.get("error") or r.get("joint_yaw") is None:
+                    continue
+                if r in odd:
+                    continue          # named instead, never quietly overruled
+                sc = self.scans[r["index"]]
+                photo = sc.photo or (sc.colour_info or {}).get("photo")
+                keep = dict(sc.colour_info or {})
+                fresh = self._repaint(
+                    sc, photo,
+                    {"yaw_deg": r["joint_yaw"],
+                     "pitch_deg": keep.get("pitch_deg"),
+                     "roll_deg": keep.get("roll_deg"),
+                     "camera_z": keep.get("camera_z")}, keep)
+                if fresh.get("ok"):
+                    fresh["rung"] = 0     # a new pose: the ladder starts over
+                    sc.colour_info = fresh
+                    applied.append(r["name"])
+
+        return {"ok": True, "rig_yaw_deg": rig_yaw, "confidence": conf,
+                "scans": self._rebuild(), "rows": rows,
+                "used": len(profiles), "applied": applied,
+                "odd": [{"name": r["name"], "apart_deg": r["apart_deg"],
+                         "alone_confidence": r["alone_confidence"]}
+                        for r in odd],
+                "text": "%d scans solved together: the camera sits %.2f\u00b0 from "
+                        "the head's own zero (confidence %.1f). %d repainted."
+                        % (len(profiles), rig_yaw, conf, len(applied))}
+
+    def refine(self, index, rung=None):
+        """
+        Auto-align again, one rung further than last time.
+
+        ⭐⭐ WHAT "PRESS IT AGAIN" HAS TO MEAN TO BE HONEST. Running the same
+        search a second time from its own answer returns that answer: it
+        stopped because it was at an optimum. A button that does that reads as
+        broken. So each press does not repeat the last search, it WIDENS it --
+        the heading first, then the lean the heading cannot absorb, then the
+        camera's height -- and when there is nothing left to widen it says so
+        rather than churning. See `colour.RUNGS`.
+
+        ⛔ IT CANNOT MAKE THE ALIGNMENT WORSE. `colour.refine_pose` is a
+        pattern search, which only ever adopts a trial that beat the one it
+        held, so the pose it returns is the best it saw INCLUDING the one it
+        started from. For a control invited to be pressed repeatedly that is
+        the whole point.
+
+        ⚠ AND WHAT IT MEASURES IS THE FIT, NOT THE PAIRING. Refinement raises
+        the score by construction -- a refined wrong photograph is a more
+        confidently wrong photograph -- so the grade stays with the global
+        sweep and the witness. See the note above `colour.MAX_TILT_DEG`.
+        """
+        from . import colour as colour_mod
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        info = dict(scan.colour_info or {})
+        if info.get("yaw_deg") is None:
+            return {"ok": False,
+                    "error": "there is no heading to refine yet -- align this "
+                             "photograph first"}
+        at = int(info.get("rung") or 0)
+        want = (at + 1) if rung is None else int(rung)
+        if want > len(colour_mod.RUNGS):
+            return {"ok": True, "done": True, "info": info,
+                    "message": "this is as close as the two methods here can "
+                               "put it: the heading, the camera's lean and "
+                               "its height have all been fitted and none of "
+                               "them moves any further. What is left is a "
+                               "judgement by eye."}
+        sample = (scan.sample if scan.sample is not None and len(scan.sample)
+                  else scan.xyz)
+        self._progress = {"stage": "refining %s (%s)"
+                                   % (scan.name, colour_mod.RUNGS[want - 1][0]),
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            rgb_img, lum = colour_mod.load_panorama(photo)
+            got = colour_mod.refine_pose(
+                sample, lum,
+                camera=(0.0, 0.0, float(info.get("camera_z") or 0.0)),
+                yaw_deg=float(info["yaw_deg"]),
+                pitch_deg=float(info.get("pitch_deg") or 0.0),
+                roll_deg=float(info.get("roll_deg") or 0.0),
+                rung=want)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": "could not refine (%s)" % exc}
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not got.get("ok"):
+            return {"ok": False, "error": got.get("reason") or "cannot refine"}
+
+        scan.camera_z = float(got["camera_z"])
+        fresh = self._repaint(scan, photo, got, info)
+        if not fresh.get("ok"):
+            return {"ok": False, "error": fresh.get("reason")
+                    or "could not repaint"}
+        fresh["rung"] = want
+        fresh["refined"] = {k: got[k] for k in
+                            ("improved", "gain", "score", "was", "turned_deg",
+                             "tilted_deg", "raised_m", "evaluations",
+                             "railed", "exhausted")}
+        scan.colour_info = fresh
+        name, what = colour_mod.RUNGS[want - 1]
+        if got["improved"]:
+            note = ("fitted %s. The match strengthened by %.1f%%, the heading "
+                    "moved %.2f°" % (what, 100.0 * got["gain"]
+                                       / max(abs(got["was"]), 1e-9),
+                                       got["turned_deg"]))
+            if want >= 2:
+                note += ", the lean by %.2f°" % got["tilted_deg"]
+            if want >= 3:
+                note += ", the camera by %.0f mm" % (1000.0 * got["raised_m"])
+        else:
+            # ⛔ "IT FOUND NOTHING" IS A RESULT AND IS SAID AS ONE. A press that
+            # reports success while changing nothing teaches the operator to
+            # press it again forever.
+            note = ("fitted %s and it was already there -- nothing moved, so "
+                    "this rung had nothing to give" % name)
+        if got.get("railed"):
+            note += (". ⚠ it wanted to go further in %s and was stopped at "
+                     "the bound -- that is usually the sign of a pose that is "
+                     "wrong rather than merely imprecise"
+                     % ", ".join(got["railed"]))
+        return {"ok": True, "info": fresh, "rung": want,
+                "rungs": len(colour_mod.RUNGS), "note": note,
+                "next": (colour_mod.RUNGS[want][1]
+                         if want < len(colour_mod.RUNGS) else None),
+                "scans": self._rebuild()}
+
+    def set_tilt(self, index, pitch=None, roll=None, by=False):
+        """
+        Lean the photograph, absolutely or by a nudge.
+
+        ⭐ THE THIRD AND FOURTH NUMBERS OF A POSE. A camera goes on the tripod
+        by hand and neither it nor the tripod is exactly level, so the horizon
+        in the picture sits at a small angle to the horizon in the cloud. Only
+        a heading could be set until now, and a heading cannot absorb that:
+        turning the picture slides the mismatch from one wall to the next
+        without ever removing it -- which reads as "it nearly works
+        everywhere", because it does. Measured 2.44° of pitch on the
+        operator's own confirmed pair.
+        """
+        from . import colour as colour_mod
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        info = dict(scan.colour_info or {})
+        if info.get("yaw_deg") is None:
+            return {"ok": False, "error": "align this photograph first"}
+        try:
+            p = float(info.get("pitch_deg") or 0.0)
+            r = float(info.get("roll_deg") or 0.0)
+            p = (p + float(pitch)) if by else (p if pitch is None
+                                               else float(pitch))
+            r = (r + float(roll)) if by else (r if roll is None
+                                              else float(roll))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "a lean in degrees is needed"}
+        lim = colour_mod.MAX_TILT_DEG
+        # ⛔ CLAMPED, NOT REFUSED. A drag that runs off the end of a ring
+        # should stop at the end of the ring, not throw the whole gesture away.
+        p, r = max(-lim, min(lim, p)), max(-lim, min(lim, r))
+        self._progress = {"stage": "leaning the photo on %s" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            fresh = self._repaint(scan, photo,
+                                  {"yaw_deg": info["yaw_deg"], "pitch_deg": p,
+                                   "roll_deg": r,
+                                   "camera_z": info.get("camera_z")}, info)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not fresh.get("ok"):
+            return {"ok": False, "error": fresh.get("reason")
+                    or "could not repaint"}
+        # ⛔ A HAND-MOVED POSE DROPS BACK DOWN THE LADDER. The rung records
+        # how much freedom the refinement has already used up; after the
+        # operator moves the pose themselves there is a new optimum nearby and
+        # the fine search has something to do again. Leaving it where it was
+        # would make the next press report "nothing to give" about a pose it
+        # had never seen.
+        fresh["rung"] = min(int(info.get("rung") or 0), 1)
+        scan.colour_info = fresh
+        return {"ok": True, "info": fresh, "pitch_deg": p, "roll_deg": r,
+                "at_limit": abs(p) >= lim - 1e-9 or abs(r) >= lim - 1e-9,
+                "scans": self._rebuild()}
+
     def resolve(self, index, camera_z=None):
         """
         Solve this scan's photo again, from scratch.
@@ -1332,8 +1965,21 @@ class AlignServer(object):
                 rel = None
             setup = (setups[i] if i < len(setups)
                      else scan.setup.as_dict())
-            scans.append({"path": full, "rel": rel, "name": scan.name,
-                          "setup": setup})
+            entry = {"path": full, "rel": rel, "name": scan.name,
+                     "setup": setup}
+            if getattr(scan, "clean", None):
+                entry["clean"] = scan.clean
+            # ⛔⛔ AND THE PHOTOGRAPH'S POSE, WHICH THE SECOND DOOR ON THE SAME
+            # BUG USED TO LOSE. `open_project` restored the SETUP and nothing
+            # else, so a reopened session re-solved every heading from the
+            # sibling image -- and a session is reopened precisely because the
+            # aligning took a while. Written only when there is one, so a
+            # project with no photographs reads back byte for byte as before.
+            pose = self.colour_pose(scan)
+            if pose:
+                entry["colour"] = {k: v for k, v in pose.items()
+                                   if k != "camera" and v}
+            scans.append(entry)
         body = {"format": "TLS-Pie project", "version": PROJECT_VERSION,
                 "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "scans": scans,
@@ -1417,12 +2063,40 @@ class AlignServer(object):
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
+        lost = []
         for scan, entry in zip(fresh, body.get("scans") or []):
             scan.setup = registration.Setup.from_dict(entry.get("setup"))
+            if entry.get("clean"):
+                self.clean_scan(
+                    fresh.index(scan),
+                    stray=bool((entry["clean"] or {}).get("stray")),
+                    voxel_m=((entry["clean"].get("stray") or {})
+                             .get("voxel_m")),
+                    neighbours=((entry["clean"].get("stray") or {})
+                                .get("neighbours")))
+            pose = entry.get("colour")
+            if not pose:
+                continue
+            # ⛔ A PHOTOGRAPH THAT HAS MOVED IS NAMED, NOT SKIPPED. Silently
+            # falling back to a fresh solve is how the project came back
+            # wearing a different alignment from the one that was saved, with
+            # nothing on screen to say so.
+            if not os.path.exists(pose.get("photo") or ""):
+                lost.append(os.path.basename(pose.get("photo") or "?"))
+                continue
+            scan.camera_z = float(pose.get("camera_z") or 0.0)
+            colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
+                        yaw=pose.get("yaw_deg"),
+                        pitch=pose.get("pitch_deg"),
+                        roll=pose.get("roll_deg"))
+            if scan.colour_info is not None:
+                scan.colour_info["grade"] = pose.get("grade") or "given"
+                scan.colour_info["rung"] = int(pose.get("rung") or 0)
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
         return {"ok": True, "scans": self._rebuild(), "path": path,
+                "lost_photos": lost,
                 "edits": body.get("edits") or [], "box": body.get("box"),
                 "pairs": body.get("pairs") or [],
                 "level": body.get("level"),
@@ -1436,6 +2110,40 @@ class AlignServer(object):
             return {"ok": False,
                     "error": "no native window, so no system file dialog"}
         return {"ok": True, "path": desktop.pick_project(save=save)}
+
+    def colour_pose(self, scan):
+        """
+        The photograph and heading this scan is actually wearing, or None.
+
+        ⛔⛔ THE FILE GETS WHAT THE SCREEN SHOWS, AND THAT IS THE WHOLE RULE.
+        Until this existed the export re-solved every heading from scratch, so
+        a cloud the operator had aligned by hand, nudged into place or coloured
+        from the third candidate on the shortlist came out of the exporter
+        wearing whatever a fresh solve produced -- or grey, since
+        `prepare_colour` refuses a low confidence and a hand-set heading exists
+        because the confidence was low.
+
+        ⛔ A REFUSED COLOUR RETURNS None RATHER THAN THE HEADING IT DID NOT
+        USE. `colour_scan` sets `ok` only when the points were actually
+        repainted; passing the yaw from a refusal would colour the file from a
+        photograph the screen is not showing.
+        """
+        # ⛔ READ DEFENSIVELY, BECAUSE THE COST OF NOT DOING SO IS THE
+        # PROJECT. This is called from `save_project`, so anything that raises
+        # here loses the session the operator was trying to preserve -- and
+        # "this object has no colour" is a perfectly ordinary thing for a
+        # scan-like object to be, not an error worth destroying a save over.
+        info = getattr(scan, "colour_info", None) or {}
+        photo = getattr(scan, "photo", None) or info.get("photo")
+        if not photo or not info.get("ok") or info.get("yaw_deg") is None:
+            return None
+        return {"photo": photo, "yaw_deg": float(info["yaw_deg"]),
+                "pitch_deg": float(info.get("pitch_deg") or 0.0),
+                "roll_deg": float(info.get("roll_deg") or 0.0),
+                "camera_z": float(getattr(scan, "camera_z", 0.0) or 0.0),
+                "grade": info.get("grade"),
+                "camera": (0.0, 0.0,
+                           float(getattr(scan, "camera_z", 0.0) or 0.0))}
 
     def save(self, setups, voxel=None, edit=None, level=None):
         if not self.out_path:
@@ -1475,8 +2183,14 @@ class AlignServer(object):
                 # operator did. The single-capture path already exists.
                 only = self.scans[0]
                 mine = None if keep is None else keep.for_scan(0)
+                pose = self.colour_pose(only) or {}
                 info = pipeline.convert(
                     only.path, self.out_path,
+                    clean_spec=getattr(only, "clean", None),
+                    photo=pose.get("photo"), yaw_deg=pose.get("yaw_deg"),
+                    pitch_deg=pose.get("pitch_deg") or 0.0,
+                    roll_deg=pose.get("roll_deg") or 0.0,
+                    camera=tuple(pose.get("camera") or (0.0, 0.0, 0.0)),
                     setup=(None if only.setup.is_identity() else only.setup),
                     edit=None if (mine is None or mine.is_empty()) else mine,
                     level=None if lvl.is_identity() else lvl,
@@ -1489,6 +2203,10 @@ class AlignServer(object):
                         else lvl.describe(), "single": True}
             info = pipeline.merge([s.path for s in self.scans], self.out_path,
                                   setups=[s.setup for s in self.scans],
+                                  colours=[self.colour_pose(s)
+                                           for s in self.scans],
+                                  cleans=[getattr(s, "clean", None)
+                                          for s in self.scans],
                                   edit=keep,
                                   level=None if lvl.is_identity() else lvl,
                                   voxel_m=(self.merge_voxel if voxel is None
@@ -1659,6 +2377,35 @@ PAGE = r"""<!doctype html>
 </style>
 <canvas id="cv"></canvas>
 <div id="hud"><b>Align scans</b><div id="stat">loading…</div></div>
+<style>
+/* The bar that appears under whichever button is working. */
+.bbar{height:3px;margin:3px 0 1px;border-radius:2px;
+      background:rgba(255,255,255,.10);overflow:hidden;flex:0 0 100%}
+.bbar i{display:block;height:100%;width:0;border-radius:2px;
+        background:linear-gradient(90deg,#3fb6ff,#7ee0c0);
+        transition:width .18s linear}
+.bbar.sweep i{width:38%;animation:bsweep 1.05s ease-in-out infinite}
+@keyframes bsweep{0%{margin-left:-40%}100%{margin-left:102%}}
+@media (prefers-reduced-motion:reduce){
+  .bbar.sweep i{animation:none;width:100%;opacity:.55}
+}
+</style>
+<style>
+/* The panel reads as the job reads: one folding step after another. */
+.stage>summary{cursor:pointer;list-style:none;padding:5px 2px 5px 16px;
+  margin:2px 0;font-size:11.5px;letter-spacing:.02em;color:var(--fg);
+  position:relative;border-radius:4px;user-select:none}
+.stage>summary:hover{background:rgba(255,255,255,.05)}
+.stage>summary b{display:inline-block;min-width:1.1em;color:#7ee0c0;
+  font-weight:600}
+.stage>summary::before{content:'\25b8';position:absolute;left:3px;
+  color:var(--faint);transition:transform .15s ease}
+.stage[open]>summary::before{transform:rotate(90deg)}
+.stage>.blurb{font-size:10.5px;color:var(--faint);margin:0 0 6px 2px}
+@media (prefers-reduced-motion:reduce){
+  .stage>summary::before{transition:none}
+}
+</style>
 <div class="pnl" id="panel">
   <div id="legend"></div>
   <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
@@ -1668,13 +2415,27 @@ PAGE = r"""<!doctype html>
     <button id="popen">Open…</button></div>
   <div id="pname" style="font-size:10.5px;color:var(--faint);margin-top:4px">
   </div>
-  <hr>
+  <hr><details class="stage" open><summary><b>1</b> Load the scans</summary><div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    Pairs a day of captures with a folder of 360 photographs by time and puts
+    each into its own numbered folder. The two clocks are never synchronised,
+    so the offset between them is <b>measured from the shoot itself</b> and
+    reported with a confidence — if the gaps do not cluster it says so
+    rather than sorting around a guess.</div>
+
   <label>Add another scan</label>
   <div class="row"><button id="browse" class="go">Browse…</button></div>
   <input type="text" id="addpath" placeholder="…or paste a .pcap path"
          style="margin-top:7px">
   <div class="row"><button id="add">Add pasted path</button></div>
-  <hr>
+  
+  <label>Preview detail <span class="num" id="detv">2 cm</span></label>
+  <input type="range" id="det" min="0" max="5" step="1" value="2">
+  <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
+  </div>
+  <div class="row"><button id="applydet" class="go">Re-read at this detail
+    </button></div>
+  </details><hr><details class="stage" open><summary><b>2</b> Place them together</summary><div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour; press it again and it refines.</div>
   <label>Moving scan</label>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
@@ -1696,6 +2457,13 @@ PAGE = r"""<!doctype html>
     is far quicker and settles which answer is meant.</div>
   <div id="bar"><i id="barfill"></i></div>
   <div id="msg"></div>
+  <label>Align to <span class="num" id="tgtv">the nearest scan</span></label>
+  <div class="row"><select id="target" style="flex:1"></select></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    A survey is a walk: each tripod overlaps the one before it and shares
+    nothing with the one at the far end, so fitting everything to the first
+    scan stops working a few positions in. Leave this on <b>nearest</b> and
+    the chain builds itself; set it when you know better.</div>
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
     <button id="pairgo" class="go">Align from pairs</button></div>
   <div class="row"><button id="pairundo">Undo pair</button>
@@ -1707,7 +2475,7 @@ PAGE = r"""<!doctype html>
     the moving cloud. Spread them across the floor: picks stacked one above
     the other cannot say which way the scan is facing.</div>
   <div id="pairlist" style="font-size:10.5px;color:var(--faint)"></div>
-  <hr>
+  </details><hr><details class="stage" open><summary><b>3</b> Straighten the room</summary><div class="blurb">Level to a surface, then say which way is north. Both act on the whole survey at once.</div>
   <label>Level to a surface</label>
   <div class="row"><button id="level">Pick level points</button>
     <button id="lvlgo" class="go">Level to these</button></div>
@@ -1722,7 +2490,18 @@ PAGE = r"""<!doctype html>
     cutting: edits already made stay put while the cloud straightens under
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
-  <hr>
+  
+  <label>Solve every photograph together</label>
+  <div class="row"><button id="shootsolve" class="go">Solve the whole
+    shoot</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
+    The camera is remounted by hand, so its heading is <b>one unknown seen
+    many times</b> — not one per scan. Solving them together turns a ragged
+    single-scan peak into a sharp shared one, and can carry a scan that has
+    almost no evidence of its own (a rig against a wall scores 2.01 and cannot
+    be rescued by any threshold). Scans that are <b>confident and disagree</b>
+    are named rather than overruled: that is how you find out the camera was
+    seated differently that time.</div>
   <label>Which way is north</label>
   <div class="row"><button id="north">Sight a line</button>
     <button id="northclear">Clear</button></div>
@@ -1737,7 +2516,7 @@ PAGE = r"""<!doctype html>
     compass. <b>Level the room first:</b> a bearing is a horizontal thing, and
     in a leaning frame it is not the one you sighted.</div>
   <div id="nthlist" style="font-size:10.5px;color:var(--faint)"></div>
-  <hr>
+  
   <label>Plumb &amp; level reference</label>
   <div class="row"><button id="ref">Reference lines</button>
     <button id="plumb">Place / measure</button></div>
@@ -1751,24 +2530,28 @@ PAGE = r"""<!doctype html>
     it. And use <b>O</b> then <b>Front</b>/<b>Side</b> — in perspective a world
     vertical does not draw as a vertical on screen.</div>
   <div id="reflist" style="font-size:10.5px;color:var(--faint)"></div>
-  <hr>
-  <label>View</label>
-  <div class="row"><button id="nav" class="go">Camera</button>
-    <button id="ortho">Perspective</button></div>
-  <div class="row"><button id="plan">Top</button>
-    <button id="front">Front</button>
-    <button id="side">Side</button></div>
-  <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
-    <b>Camera</b> (C) gives the whole window to the view — no grips, no
-    tools, nothing to catch a drag. Picking any tool leaves it again.</div>
-  <hr>
-  <label>Preview detail <span class="num" id="detv">2 cm</span></label>
-  <input type="range" id="det" min="0" max="5" step="1" value="2">
-  <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
-  </div>
-  <div class="row"><button id="applydet" class="go">Re-read at this detail
-    </button></div>
-  <hr>
+  </details><hr><details class="stage" open><summary><b>4</b> Colour from the photographs</summary><div class="blurb">Each scan's own row in the list above carries its photograph: Find… to pick one, Auto-align to fit it, and the rings to turn and lean it.</div></details><hr><details class="stage" open><summary><b>5</b> Clean the clouds</summary><div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
+  <div class="row"><button id="clnstray" class="go">Remove strays</button>
+    <button id="clnoff">Put them back</button></div>
+  <label>Cell <span class="num" id="clnvv">10 cm</span></label>
+  <input id="clnv" type="range" min="2" max="50" step="1" value="10">
+  <label>Neighbours needed <span class="num" id="clnnv">3</span></label>
+  <input id="clnn" type="range" min="1" max="12" step="1" value="3">
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    A point on a surface has company in the cells around it; a stray — a
+    mixed pixel off an edge, dust, someone walking through — has none.
+    <b>Counted in cells, not in points</b>, because the floor under the tripod
+    is a thousand times denser than the far wall and one distance threshold
+    cannot suit both.</div>
+  <label>Drop the weakest returns
+    <span class="num" id="clnwv">off</span></label>
+  <input id="clnw" type="range" min="0" max="60" step="1" value="0">
+  <div class="row"><button id="clnweak">Keep the strongest</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    A share of THIS cloud's returns, not a number off the instrument's scale
+    — a dark restaurant and a white office do not share a threshold.</div>
+  <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
+</details><hr><details class="stage" open><summary><b>6</b> Cut what you do not want</summary><div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud.</div>
   <label>Clip box</label>
   <div class="row"><button id="clipon">Off</button>
     <button id="clipfit">Fit to view</button>
@@ -1798,7 +2581,7 @@ PAGE = r"""<!doctype html>
   <input type="range" id="broll" min="-45" max="45" step="0.5" value="0">
   <div class="row"><button id="bfit">Square to view</button>
     <button id="bzero">Square to world</button></div>
-  <hr>
+  
   <label>Delete points</label>
   <select id="editwho"></select>
   <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
@@ -1816,20 +2599,33 @@ PAGE = r"""<!doctype html>
     <div class="row"><button id="lin" class="go">Delete inside</button>
       <button id="lout" class="go">Delete outside</button></div>
     <div class="row"><button id="lcancel">Cancel</button></div>
+    <div style="font-size:10px;color:var(--faint)">Enter deletes what is
+      inside &middot; Shift-Enter keeps only that &middot; Esc throws the
+      outline away</div>
   </div>
   <div id="editlist"></div>
-  <hr>
+  </details><hr><details class="stage" open><summary><b>7</b> Write the cloud out</summary>
   <label>Export detail <span class="num" id="exv">as previewed</span></label>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
   <div class="row"><button id="save" class="go">Save merged</button>
     <button id="saveclip">Save clip box only</button></div>
-  <hr>
+  </details><hr><details class="stage"><summary><b>◦</b> How it looks</summary>
+  <label>View</label>
+  <div class="row"><button id="nav" class="go">Camera</button>
+    <button id="ortho">Perspective</button></div>
+  <div class="row"><button id="plan">Top</button>
+    <button id="front">Front</button>
+    <button id="side">Side</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin-top:5px">
+    <b>Camera</b> (C) gives the whole window to the view — no grips, no
+    tools, nothing to catch a drag. Picking any tool leaves it again.</div>
+  
   <label>Colour</label>
   <div class="row"><button id="mode" class="on">By scan</button>
     <button id="showb">Both</button></div>
   <label>Point size <span class="num" id="psv">1.0</span></label>
   <input type="range" id="ps" min="0.2" max="8" step="0.05" value="1.2">
-</div>
+</details></div>
 <canvas id="ov"></canvas>
 <div id="keys">drag orbit &middot; wheel zoom (flies through) &middot;
   shift-drag pan &middot; wheel button pans, shift-wheel-button orbits
@@ -1853,6 +2649,10 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null}, nth:[],
+           /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
+              the three is being dragged. Separate from the scan's own ring:
+              one turns the cloud, these turn the picture on it. */
+           tiltRing:null, tiltAxis:null,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            /* Which cloud the next cut belongs to: -1 for all of them. */
            editWho:-1,
@@ -2419,6 +3219,120 @@ function drawNorth(){
   }
   oc.restore();
 }
+/* The photograph's own pose, as three rings about the tripod it was shot
+   from.
+
+   ⭐⭐ THREE HERE, ONE FOR THE SCAN, AND THE DIFFERENCE IS NOT COSMETIC. A
+   scan's placement is a `registration.Setup`, which stores a turn about the
+   vertical and a shift -- so pitch and roll rings on a SCAN would be controls
+   the exporter has nowhere to put, and a control that appears to work and
+   silently does nothing is the worst thing in this program. A photograph's
+   pose really does store all three now, and is written into the project and
+   into the exported cloud, so all three rings are real.
+
+   ⛔ CENTRED ON THE TRIPOD, NOT ON THE SCENE. The camera stood at the scan's
+   own origin; a ring about the middle of the merged room would suggest the
+   picture swings through space, which is precisely what it does not do. */
+function tiltRingsOf(){
+  if(V.tiltRing==null) return null;
+  const s=V.scans.find(x=>x.index===V.tiltRing);
+  if(!s || !s.photo || s.yaw==null || V.nav) return null;
+  const o=put(affine(s), 0, 0, 0);
+  const R=Math.max(1.0, 0.13*Math.max(span(0), span(1)));
+  return {s:s, o:o, R:R};
+}
+/* Each ring lies in its own plane through the tripod: the heading ring flat,
+   the tip ring in the fore-and-aft vertical, the bank ring across it. */
+const TILT_AXES=[
+  {key:'yaw',   c:'rgba(255,214,10',  u:[1,0,0], v:[0,1,0], lab:'turn'},
+  {key:'pitch', c:'rgba(120,230,150', u:[0,1,0], v:[0,0,1], lab:'tip'},
+  {key:'roll',  c:'rgba(255,130,190', u:[1,0,0], v:[0,0,1], lab:'bank'}];
+function tiltRingPath(r, ax){
+  const pts=[];
+  for(let i=0;i<=72;i++){
+    const a=i/72*Math.PI*2, ca=Math.cos(a), sa=Math.sin(a);
+    pts.push(project([r.o[0]+r.R*(ax.u[0]*ca+ax.v[0]*sa),
+                      r.o[1]+r.R*(ax.u[1]*ca+ax.v[1]*sa),
+                      r.o[2]+r.R*(ax.u[2]*ca+ax.v[2]*sa)], V.vp));
+  }
+  return pts;
+}
+/* Which of the three the pointer is nearest, and how far off it is. */
+function tiltGrip(mx,my){
+  const r=tiltRingsOf(); if(!r) return null;
+  let best=null;
+  for(const ax of TILT_AXES){
+    for(const q of tiltRingPath(r, ax)){
+      if(!q) continue;
+      const d=Math.hypot(q[0]-mx, q[1]-my);
+      if(!best || d<best.d) best={d:d, axis:ax.key};
+    }
+  }
+  return (best && best.d<=14) ? best : null;
+}
+function drawTiltRings(){
+  const r=tiltRingsOf(); if(!r) return;
+  const now={yaw:+r.s.yaw||0, pitch:+r.s.pitch||0, roll:+r.s.roll||0};
+  oc.save(); oc.setLineDash([]);
+  for(const ax of TILT_AXES){
+    const hot = V.tiltAxis===ax.key;
+    const pts=tiltRingPath(r, ax);
+    for(const [w,c] of [[5,'rgba(10,16,26,.5)'],
+                        [hot?2.6:1.5, ax.c+(hot?',.99)':',.72)')]]){
+      oc.beginPath();
+      let up=false;
+      for(const q of pts){
+        if(!q){ up=false; continue; }
+        if(up) oc.lineTo(q[0],q[1]); else { oc.moveTo(q[0],q[1]); up=true; }
+      }
+      oc.lineWidth=w; oc.strokeStyle=c; oc.stroke();
+    }
+    /* A needle at the angle this axis currently holds, so each ring reads as
+       an instrument rather than as decoration. */
+    const a=(now[ax.key]||0)*Math.PI/180;
+    const ca=Math.cos(a), sa=Math.sin(a);
+    const h=project([r.o[0]+r.R*(ax.u[0]*ca+ax.v[0]*sa),
+                     r.o[1]+r.R*(ax.u[1]*ca+ax.v[1]*sa),
+                     r.o[2]+r.R*(ax.u[2]*ca+ax.v[2]*sa)], V.vp);
+    if(h){
+      oc.beginPath(); oc.arc(h[0],h[1], hot?7:5, 0, 6.2832);
+      oc.fillStyle=ax.c+',.95)'; oc.fill();
+      oc.font='11px ui-sans-serif,system-ui';
+      oc.fillStyle='rgba(255,255,255,.92)';
+      oc.fillText(ax.lab+' '+(now[ax.key]||0).toFixed(1)+'\u00b0',
+                  h[0]+9, h[1]-7);
+    }
+  }
+  oc.restore();
+}
+/* ⛔ THE DRAG IS SENT ON RELEASE, NOT DURING. Every change to the pose
+   re-colours the whole cloud on the server, which takes long enough that
+   firing one per pointermove would queue dozens of them and finish somewhere
+   the hand never was. The needle follows the pointer locally; the picture
+   catches up once. */
+function tiltDrag(mx,my,fromAngle){
+  const r=tiltRingsOf(); if(!r) return fromAngle;
+  const c=project(r.o, V.vp); if(!c) return fromAngle;
+  const now=Math.atan2(my-c[1], mx-c[0]);
+  if(fromAngle===null) return now;
+  let d=(now-fromAngle)*180/Math.PI;
+  while(d>180) d-=360;
+  while(d<-180) d+=360;
+  const sign = basis().dir[2] >= 0 ? -1 : 1;
+  const key=V.tiltAxis;
+  const s=r.s;
+  if(key==='yaw') s.yaw = ((+s.yaw + sign*d + 180)%360+360)%360-180;
+  else s[key] = Math.max(-15, Math.min(15, (+s[key]||0) + sign*d*0.25));
+  invalidate();
+  return now;
+}
+async function tiltRelease(){
+  const r=tiltRingsOf(); if(!r) return;
+  const s=r.s;
+  if(V.tiltAxis==='yaw') return setHeading(s.index, +s.yaw, false);
+  return setTilt(s.index, +s.pitch||0, +s.roll||0);
+}
+
 function drawRing(){
   const r=ringOf(); if(!r) return;
   const pts=ringPath(r);
@@ -2497,6 +3411,7 @@ function drawDraft(){
   oc.setTransform(dpr,0,0,dpr,0,0);
   oc.clearRect(0,0,innerWidth,innerHeight);
   drawRing();
+  drawTiltRings();
   drawNorth();
   drawGizmo();
   labelPairs();
@@ -2645,6 +3560,11 @@ async function loadScan(m){
        the photo row was born broken once already. */
     grade:m.grade, caution:m.caution, fits:m.fits||[], cameraZ:m.cameraZ||0,
     second:m.second, agree:m.agree, corroborated:!!m.corroborated,
+    /* The photograph's lean and how far the refinement has climbed. Dropping
+       these is what the check above is for, and it caught them being dropped
+       the first time they were added. */
+    pitch:m.pitch||0, roll:m.roll||0, rung:m.rung||0, refined:m.refined,
+    clean:m.clean||null, hidden:m.hidden||0,
           reach:(reach[Math.floor(reach.length*0.9)]||10)};
 }
 
@@ -2785,7 +3705,87 @@ function syncSliders(){
   $('zv2').textContent=(+s.setup.z_m).toFixed(2);
   $('rv').textContent=(+s.setup.yaw_deg).toFixed(1);
 }
+/* ⭐⭐ ONE UNDO FOR EVERY TOOL, NOT ONE PER TOOL. Ctrl-Z used to reach the
+   cut list alone, so an accidental level, a mis-dragged scan, a lean sent by a
+   slipped ring or a heading typed into the wrong box could each only be
+   reversed by remembering what it had been -- and the whole point of an undo
+   is that you did not.
+
+   ⛔ AND THE ENTRY SAYS WHAT IT WILL UNDO BEFORE IT DOES IT. A stack that
+   silently SKIPS an action it cannot reverse is worse than no stack at all:
+   the operator presses Ctrl-Z expecting the last thing to go and something
+   older goes instead. So every action pushes an entry -- including ones that
+   can only refuse -- and a refusal is announced rather than passed over.
+
+   ⛔ A SERVER-SIDE CHANGE IS UNDONE BY SENDING THE OLD VALUE BACK, not by
+   editing the page. The picture is coloured on the server; putting the number
+   back on screen without re-colouring would show one pose and export another. */
+const HIST=[], HIST_MAX=60;
+function remember(label, undo){ HIST.push({label:label, undo:undo});
+                                if(HIST.length>HIST_MAX) HIST.shift(); }
+function poseOf(i){
+  const s=V.scans.find(x=>x.index===i)||{};
+  return {yaw:s.yaw, pitch:+s.pitch||0, roll:+s.roll||0};
+}
+/* Snapshot helpers: each returns a closure that puts one thing back. */
+function undoSetup(i){
+  const s=V.scans.find(x=>x.index===i); if(!s) return null;
+  const was=Object.assign({}, s.setup);
+  return ()=>{ const t=V.scans.find(x=>x.index===i); if(!t) return;
+               t.setup=Object.assign({}, was);
+               syncSliders(); invalidate(); editsFollow(); dirty(); };
+}
+function undoPose(i){
+  const was=poseOf(i);
+  return async()=>{
+    if(was.yaw==null) return say('That photograph had no heading to go back '+
+                                 'to.', 'warn');
+    await post('photo/tilt', {index:i, pitch:was.pitch, roll:was.roll});
+    const j=await post('photo/heading', {index:i, yaw:was.yaw,
+                                         remember:false});
+    if(j && j.ok) await afterColour(j);
+  };
+}
+function undoLevel(){
+  const was=V.level, pts=V.nth.slice(), lp=V.lvl.slice();
+  return ()=>{ V.level=was; V.nth=pts; V.lvl=lp;
+               showLevel(); showNorth(); invalidate(); editsFollow(); dirty(); };
+}
+function undoBox(){
+  const was=JSON.parse(JSON.stringify(V.box)), set=V.boxSet;
+  return ()=>{ V.box=JSON.parse(JSON.stringify(was)); V.boxSet=set;
+               syncClipSliders(); clipLabels(); invalidate(); };
+}
+async function undoAny(){
+  /* The cut list is still the commonest thing to undo, and it has its own
+     stack already -- so it stays first while there is anything in it. */
+  if(V.edits.length) return undoEdit();
+  const step=HIST.pop();
+  if(!step) return say('Nothing left to undo.');
+  try{
+    if(!step.undo) return say('The last thing done — '+step.label+
+      ' — cannot be undone, so nothing was changed. Undo again to reach '+
+      'what came before it.', 'warn');
+    await step.undo();
+    say('Undone: '+step.label+'.');
+  }catch(e){ say('Could not undo '+step.label+': '+e.message, 'bad'); }
+}
+
+function coalesce(key, label, make){
+  const last=HIST[HIST.length-1];
+  if(last && last.key===key && (Date.now()-last.at) < 2000){
+    last.at=Date.now();
+    return;                       /* the same gesture, still going on */
+  }
+  const undo=make();
+  if(undo){ remember(label, undo);
+            const e=HIST[HIST.length-1]; e.key=key; e.at=Date.now(); }
+}
+
 function nudge(dx,dy,dyaw,dz){
+  { const s=active();
+    if(s) coalesce('move'+s.index, 'moving '+s.name,
+                   ()=>undoSetup(s.index)); }
   const s=active(); if(!s) return;
   s.setup.x_m=+s.setup.x_m+dx; s.setup.y_m=+s.setup.y_m+dy;
   s.setup.z_m=+s.setup.z_m+(dz||0);
@@ -2833,8 +3833,39 @@ function say(text, kind){
 /* The count is real: the server knows how many evaluations the search grid
    holds before it starts, so the bar never has to invent the last stretch. */
 let poller=null;
+/* ⭐⭐ THE PROGRESS BAR GOES UNDER THE BUTTON THAT CAUSED IT, AND IT IS
+   HOOKED CENTRALLY RATHER THAN AT EVERY CALL SITE. There is one bar at the top
+   of the window, and with a panel this tall it is routinely off screen -- so a
+   press of something near the bottom looked like a press that did nothing,
+   which is the exact complaint. Every action in this program already brackets
+   its work with `watch(true)`/`watch(false)`, so remembering which button was
+   last pressed and putting a bar under THAT gives the feature to all of them
+   at once, including ones written later. A shortcut key or an automatic action
+   leaves no button, and then there is simply no local bar -- which is honest,
+   rather than a bar under something unrelated.
+
+   ⛔ IT TRACKS THE REAL FRACTION WHEN THERE IS ONE. A bar that sweeps
+   regardless says only "still alive"; the server reports n of total for the
+   work that can count itself, and the two are told apart by a class rather
+   than by inventing a percentage for the work that cannot. */
+let BUSY=null;
+addEventListener('pointerdown', e=>{
+  const b = e.target && e.target.closest && e.target.closest('button');
+  if(b) LASTBTN[0]=b;
+}, true);
+const LASTBTN=[null];
+function busy(btn, on){
+  if(BUSY){ if(BUSY.bar.parentNode) BUSY.bar.remove(); BUSY=null; }
+  if(!on || !btn || !btn.parentNode) return;
+  const bar=document.createElement('div');
+  bar.className='bbar sweep';
+  bar.innerHTML='<i></i>';
+  btn.parentNode.insertBefore(bar, btn.nextSibling);
+  BUSY={btn:btn, bar:bar, fill:bar.firstChild};
+}
 function watch(on){
   $('bar').classList.toggle('on', on);
+  busy(on ? LASTBTN[0] : null, on);
   if(poller){ clearInterval(poller); poller=null; }
   if(!on){ $('barfill').style.width='0'; return; }
   poller=setInterval(async()=>{
@@ -2842,6 +3873,11 @@ function watch(on){
       const p=await (await fetch('progress')).json();
       const frac=p.total ? Math.min(1, p.n/p.total) : 0;
       $('barfill').style.width=(frac*100).toFixed(1)+'%';
+      if(BUSY && BUSY.bar.parentNode){
+        BUSY.bar.classList.toggle('sweep', !p.total);
+        if(p.total) BUSY.fill.style.width=(frac*100).toFixed(1)+'%';
+        BUSY.bar.title=p.stage||'working…';
+      }
       if(p.stage) say(p.stage+' — '+Math.round(frac*100)+'%');
       $('stat').textContent=p.stage||'working…';
     }catch(e){ /* a poll that misses is not worth reporting */ }
@@ -2857,17 +3893,21 @@ function moved(s){
    settle for itself. Drag it roughly right first and this is far quicker. */
 async function autoAlign(){
   const s=active(); if(!s) return;
+  remember('auto-aligning '+s.name, undoSetup(s.index));
   const hint = moved(s) ? s.setup : null;
+  const tsel=$('target');
+  const tgt = (tsel && tsel.value!=='') ? parseInt(tsel.value,10) : null;
   say(hint ? 'tidying up your alignment…' : 'searching from scratch…');
   watch(true); $('auto').disabled=true;
   try{
     const r=await fetch('solve',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index:s.index, start:hint})});
+      body:JSON.stringify({index:s.index, start:hint, target:tgt})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
     s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
     watch(false);
+    if(j.warning) say(j.warning, 'warn');
     if(j.exhausted) say(j.text, 'warn');
     else say((j.trustworthy ? ''
         : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. '))+j.text+
@@ -3430,6 +4470,8 @@ function clearPairs(){
   showPairs(); invalidate(); dirty(); say('Pairs cleared.');
 }
 async function alignPairs(){
+  { const s=active(); if(s) remember('aligning '+s.name+' from pairs',
+                                     undoSetup(s.index)); }
   if(V.pairs.length<2) return say(
     'Two pairs at least — one pair can only slide the scan across, it cannot '+
     'say which way it is facing. Three is what lets the residual check itself.',
@@ -3500,6 +4542,7 @@ function showNorth(){
   box.innerHTML = bits.join('<br>') || '';
 }
 async function applyNorth(dir){
+  remember('setting north', undoLevel());
   if(V.nth.length<2) return say(
     'Sight a line first: press Sight a line, then click each end of '+
     'something whose bearing you know.', 'warn');
@@ -3540,6 +4583,7 @@ function showLevel(){
   box.innerHTML = bits.join('<br>') || '';
 }
 async function applyLevel(){
+  remember('levelling the room', undoLevel());
   if(V.lvl.length<3) return say(
     'Three points at least, on one surface you know is horizontal — two can '+
     'only give a line, and a line lies on infinitely many planes.', 'warn');
@@ -3988,7 +5032,58 @@ function photoRow(s){
      centimetres above the lidar's smears colour across near edges in a way no
      heading can fix. In centimetres here and metres on the wire. */
   const cz = ((+s.cameraZ||0)*100).toFixed(1);
+  /* ⭐⭐ ONE BUTTON THAT CAN BE PRESSED AGAIN, AND MEANS SOMETHING DIFFERENT
+     EACH TIME. Running the same search twice returns the same answer -- it
+     stopped because it was at an optimum -- so a button that repeated itself
+     would read as broken. Each press instead WIDENS the search by one degree
+     of freedom: the heading, then the lean a heading cannot absorb, then the
+     camera's height. The label says which rung is next, and when there is
+     none it says that rather than pretending. */
+  const rung = +(s.rung||0), RUNGS = 3;
+  const rn = ['the heading, finely','the camera\u2019s lean','the camera\u2019s height'];
+  const auto = (rung>=RUNGS)
+    ? '<button class="mini" disabled title="The heading, the lean and the '+
+      'height have all been fitted and none of them moves further. What is '+
+      'left is a judgement by eye.">fully fitted</button>'
+    : '<button class="mini go" title="Improve the alignment from where it '+
+      'stands, without letting it get worse \u2014 the search only ever keeps a '+
+      'pose that beat the one it held. Next it fits '+rn[rung]+'." '+
+      'onclick="autoAlignPhoto('+s.index+',this)">Auto-align'+
+      (rung ? ' again ('+(rung+1)+'/'+RUNGS+')' : '')+'</button>';
+  const gain = !s.refined ? '' :
+    '<span class="num" title="How much the last press bought. The fit is a '+
+    'cosine between two edge fields, so it means the same at every pose \u2014 '+
+    'but it is NOT the confidence: refining raises it by construction, and a '+
+    'refined wrong photograph is a more confidently wrong photograph.">'+
+    (s.refined.improved ? '+'+(100*s.refined.gain/Math.max(Math.abs(
+      s.refined.was),1e-9)).toFixed(1)+'%' : 'nothing left')+'</span>';
+  /* ⭐ THE LEAN. A camera goes on a tripod by hand and neither it nor the
+     tripod is exactly level, so the horizon in the picture sits at a small
+     angle to the horizon in the cloud -- and no heading can take that out,
+     because turning the picture only slides the mismatch from one wall to the
+     next. Measured 2.44 degrees on the operator's own confirmed pair. */
+  const lean = (a,d,lab,t) =>
+    '<button class="mini step" title="'+t+'" onclick="nudgeTilt('+s.index+
+    ',\''+a+'\','+d+')">'+lab+'</button>';
+  const tiltrow =
+    '<div class="photo"><span class="grow">lean '+
+    '<span class="num">'+(+s.pitch||0).toFixed(2)+'\u00b0 / '+
+    (+s.roll||0).toFixed(2)+'\u00b0</span></span>'+
+    lean('pitch',-0.5,'\u2335\u2212','tip the picture down half a degree')+
+    lean('pitch',0.5,'\u2335+','tip the picture up half a degree')+
+    lean('roll',-0.5,'\u21ba','drop the right-hand side half a degree')+
+    lean('roll',0.5,'\u21bb','lift the right-hand side half a degree')+
+    '<button class="mini" title="Put the picture back upright \u2014 no lean at '+
+    'all." onclick="setTilt('+s.index+',0,0)">flat</button>'+
+    '<button class="mini'+(V.tiltRing===s.index?' on':'')+'" title="Show '+
+    'three rings round this tripod and drag them: heading, tip and bank. '+
+    '(A scan\u2019s own placement gets ONE ring, because a Setup stores a turn '+
+    'and a shift and nothing else \u2014 a photograph\u2019s pose really does store '+
+    'all three, so here all three are real.)" onclick="tiltRing('+s.index+
+    ')">rings</button></div>';
   return '<div class="photo">'+head+btn+'</div>'+
+         '<div class="photo"><span class="grow">'+auto+gain+'</span>'+
+         '</div>'+ tiltrow +
          '<div class="photo"><span class="grow">heading</span>'+
          step(-10,'‹‹')+step(-1,'‹')+
          '<input class="deg" id="hd'+s.index+'" type="number" step="0.1" '+
@@ -4034,6 +5129,20 @@ function refreshLists(){
   $('which').innerHTML = V.scans.slice(1).map(s=>
     '<option value="'+s.index+'"'+(s.index===V.active?' selected':'')+'>'+
     s.name+'</option>').join('');
+  /* ⛔ THE TARGET LIST EXCLUDES THE SCAN BEING MOVED, because "align this
+     to itself" is the one entry that cannot mean anything, and an entry that
+     cannot mean anything is an entry someone will pick. */
+  const tsel=$('target');
+  if(tsel){
+    const was=tsel.value;
+    tsel.innerHTML='<option value="">the nearest scan</option>'+
+      V.scans.filter(s=>s.index!==V.active).map(s=>
+        '<option value="'+s.index+'">'+s.name+
+        (s.index===0?' (the reference)':'')+'</option>').join('');
+    tsel.value = Array.from(tsel.options).some(o=>o.value===was) ? was : '';
+    $('tgtv').textContent = tsel.value==='' ? 'the nearest scan'
+      : (V.scans.find(x=>x.index===+tsel.value)||{}).name || '?';
+  }
   $('editwho').innerHTML =
     '<option value="-1"'+(V.editWho<0?' selected':'')+'>every cloud</option>'+
     V.scans.map(s=>'<option value="'+s.index+'"'+
@@ -4098,6 +5207,8 @@ function forgetScan(gone){
 }
 
 async function removeScan(index){
+  { const s=V.scans.find(x=>x.index===index);
+    remember('taking '+(s?s.name:'a cloud')+' out of the session', null); }
   const going=V.scans.find(s=>s.index===index);
   const name=going?going.name:('cloud '+(index+1));
   watch(true);
@@ -4230,6 +5341,197 @@ async function addPhoto(index){
    the panorama and re-uploads the cloud, so a slider dragged across 360
    degrees would queue a hundred of them. A press is one answer, and the eye
    only ever needs a handful. */
+/* Press it again and it climbs one rung further.
+
+   ⛔ IT CANNOT MAKE THE ALIGNMENT WORSE, and that is structural rather than
+   promised: the search on the other end only ever adopts a trial that beat the
+   pose it was holding, so what comes back is the best it saw INCLUDING the one
+   it started from. */
+/* ⛔ IT REPAINTS EVERY PHOTOGRAPHED SCAN, so it says what it will do first.
+   A consensus applied across a whole survey is a lot to undo one scan at a
+   time. */
+async function solveShoot(){
+  say('scoring every photograph\u2026'); watch(true);
+  try{
+    const j=await post('photo/shoot', {apply:true});
+    if(!j.ok) throw new Error(j.error||'could not solve the shoot');
+    await afterColour(j);
+    let msg=j.text;
+    if(j.odd && j.odd.length)
+      msg += '  \u26a0 '+j.odd.length+' scan(s) were sure of a DIFFERENT '+
+             'answer and were left alone: '+
+             j.odd.map(o=>o.name+' ('+o.apart_deg.toFixed(0)+'\u00b0 apart, '+
+                       'confidence '+o.alone_confidence.toFixed(1)+')')
+                  .join(', ')+
+             '. Check those by eye \u2014 the camera may have gone on the tripod '+
+             'a different way round.';
+    say(msg, (j.odd && j.odd.length) ? 'warn' : null);
+  }catch(e){ watch(false); say('Could not solve the shoot: '+e.message,
+                               'bad'); }
+}
+
+async function autoAlignPhoto(index, btn){
+  remember('refining the photograph', undoPose(index));
+  say('refining\u2026'); watch(true); busy(btn, true);
+  try{
+    const j=await post('photo/refine', {index});
+    if(!j.ok) throw new Error(j.error||'could not refine');
+    if(j.done){ say(j.message); watch(false); return; }
+    await afterColour(j);
+    say('Rung '+j.rung+' of '+j.rungs+': '+j.note+
+        (j.next ? '. Press again to fit '+j.next+'.'
+                : '. That is every degree of freedom this can fit.'));
+  }catch(e){ watch(false); say('Could not refine: '+e.message, 'bad'); }
+  finally{ busy(btn, false); }
+}
+
+/* The photograph's lean, absolute or nudged. */
+async function sendTilt(index, body, what){
+  coalesce('pose'+index, 'leaning the photograph', ()=>undoPose(index));
+  say('re-colouring\u2026'); watch(true);
+  try{
+    const j=await post('photo/tilt', Object.assign({index}, body));
+    if(!j.ok) throw new Error(j.error||'could not lean the photograph');
+    await afterColour(j);
+    say(what+' \u2014 lean now '+(+j.pitch_deg).toFixed(2)+'\u00b0 tip, '+
+        (+j.roll_deg).toFixed(2)+'\u00b0 bank.'+
+        (j.at_limit ? ' \u26a0 that is the limit: a tripod-mounted camera does '+
+         'not lean this far, so a pose that wants to is usually the wrong '+
+         'pose rather than an imprecise one.' : ''));
+  }catch(e){ watch(false); say('Could not lean it: '+e.message, 'bad'); }
+}
+function nudgeTilt(index, axis, by){
+  const b={by:true}; b[axis]=by;
+  return sendTilt(index, b, 'Leaned by '+by+'\u00b0');
+}
+function setTilt(index, pitch, roll){
+  return sendTilt(index, {pitch, roll}, 'Lean set');
+}
+function tiltRing(index){
+  V.tiltRing = (V.tiltRing===index) ? null : index;
+  if(V.tiltRing!=null) V.picked = index;
+  refreshLists(); invalidate();
+  say(V.tiltRing==null ? 'Rings hidden.'
+      : 'Drag the rings to turn, tip and bank the photograph. Shift snaps to '+
+        'half a degree.');
+}
+
+/* Re-encode the clouds after a change that is NOT about colour.
+
+   ⛔ DELIBERATELY NOT `afterColour`. That one also switches the view to
+   photo colour, which is right after colouring and wrong after cleaning -- it
+   would make "remove strays" look as though it had repainted the survey. */
+async function refreshScans(j){
+  if(!j || !j.scans) return;
+  await rebuildFrom(j.scans);
+  measure(); refreshLists(); invalidate(); dirty();
+}
+
+/* ---- cleaning one cloud ------------------------------------------- */
+
+function cleanWho(){
+  const s=V.scans.find(x=>x.index===V.picked) || active();
+  return s || null;
+}
+function showClean(){
+  const s=cleanWho();
+  $('clnwho').textContent = s ? s.name : '\u2014 pick a scan first';
+  $('clnvv').textContent = $('clnv').value+' cm';
+  $('clnnv').textContent = $('clnn').value;
+  const w=+$('clnw').value;
+  $('clnwv').textContent = w ? ('weakest '+w+'%') : 'off';
+}
+async function sendClean(body, what){
+  const s=cleanWho();
+  if(!s) return say('Double-click a scan\u2019s name to choose which cloud to '+
+                    'clean.', 'warn');
+  say(what+'\u2026'); watch(true);
+  try{
+    const j=await post('clean', Object.assign({index:s.index}, body));
+    if(!j.ok) throw new Error(j.error||'could not clean that cloud');
+    await refreshScans(j);
+    $('clnsay').textContent = j.text||'';
+    say(j.text||'Done.');
+  }catch(e){ say('Could not clean it: '+e.message, 'bad'); }
+  finally{ watch(false); }
+}
+function cleanStray(){
+  const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
+  return sendClean({stray:true, voxel_m:(+$('clnv').value)/100,
+                    neighbours:+$('clnn').value,
+                    drop_weakest:(+$('clnw').value)||null},
+                   'looking for strays');
+}
+function cleanWeak(){
+  const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
+  return sendClean({drop_weakest:(+$('clnw').value)||null},
+                   'sorting by return strength');
+}
+function cleanOff(){
+  const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
+  return sendClean({}, 'putting the points back');
+}
+/* ⛔ UNDOING A CLEAN MEANS RE-SENDING THE RULE THAT WAS THERE, not putting
+   points back on screen: the mask lives on the server and the export reads it
+   from there, so a page-side restore would show one cloud and write another. */
+function undoClean(i){
+  const s=V.scans.find(x=>x.index===i);
+  const was = s ? s.clean : null;
+  return async()=>{
+    const body = was ? {stray:!!was.stray,
+                        voxel_m:(was.stray||{}).voxel_m,
+                        neighbours:(was.stray||{}).neighbours,
+                        drop_weakest:null} : {};
+    const j=await post('clean', Object.assign({index:i}, body));
+    if(j && j.ok) await refreshScans(j);
+  };
+}
+
+/* ---- sorting a whole shoot ----------------------------------------- */
+
+async function askFolder(what){
+  const j=await post('folder', {});
+  if(!j.ok) throw new Error(j.error||'no picker available');
+  if(!j.path) return null;                 /* cancelled is not a failure */
+  say('chose '+j.path+' as '+what);
+  return j.path;
+}
+/* ⭐⭐ THE PLAN IS SHOWN BEFORE ANYTHING MOVES. This rearranges a whole day
+   in one press on a pairing that a clock proposed, so the proposal is read
+   first -- including the measured offset between the two devices' clocks and
+   how confident it is. */
+async function sortShoot(){
+  try{
+    const scans=await askFolder('the captures folder'); if(!scans) return;
+    const images=await askFolder('the photographs folder'); if(!images) return;
+    say('reading the shoot\u2026'); watch(true);
+    const plan=await post('shoot/plan', {scans, images});
+    watch(false);
+    if(!plan.ok) return say(plan.error||'could not read that shoot', 'bad');
+    const got=plan.scans.filter(r=>r.photos.length).length;
+    const lines=plan.scans.slice(0,8).map(r=>
+      '  '+r.number+'. '+r.name+' \u2192 '+
+      (r.photos.length ? r.photos[0].name+' ('+
+       (r.photos[0].gap_s>=0?'+':'')+Math.round(r.photos[0].gap_s)+'s)'
+       : 'no photograph')).join('\n');
+    const ok=confirm(plan.note+'\n\n'+lines+
+      (plan.scans.length>8 ? '\n  \u2026and '+(plan.scans.length-8)+' more'
+                           : '')+
+      '\n\nSort '+plan.scans.length+' captures into numbered folders? '+
+      'Files are COPIED, never moved \u2014 the originals stay where they are.');
+    if(!ok) return say('Nothing was sorted.');
+    const dest=await askFolder('where the numbered folders should go');
+    if(!dest) return;
+    say('sorting\u2026'); watch(true);
+    const done=await post('shoot/apply', {scans, images, dest, move:false});
+    watch(false);
+    if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
+    say('Sorted '+done.folders.length+' captures into numbered folders under '+
+        done.dest+(done.aborted ? ', and set '+done.aborted+' aborted '+
+        'sweep(s) aside.' : '.'));
+  }catch(e){ watch(false); say('Could not sort: '+e.message, 'bad'); }
+}
+
 function nudgeHeading(index, by){
   const box=$('hd'+index);
   const now = box && isFinite(parseFloat(box.value)) ? parseFloat(box.value) : 0;
@@ -4255,6 +5557,7 @@ function tryFit(index, yaw){
    -- which is why the server refuses anything past 2 m outright rather than
    quietly colouring from a point above the ceiling. */
 async function setCamera(index){
+  remember('setting the camera height', undoPose(index));
   const box=$('cz'+index);
   const cm = box ? parseFloat(box.value) : NaN;
   if(!isFinite(cm)) return say('Type a camera height in centimetres.', 'warn');
@@ -4378,6 +5681,7 @@ function post(where, body){
 }
 
 async function setHeading(index, deg, remember){
+  coalesce('pose'+index, 'turning the photograph', ()=>undoPose(index));
   const box=$('hd'+index);
   const yaw = (deg==null) ? (box ? parseFloat(box.value) : NaN) : deg;
   if(!isFinite(yaw)){ say('Type a heading in degrees first.', 'warn'); return; }
@@ -4587,6 +5891,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
+  let tilting=null;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
     /* the world widget is a control, and it is drawn over the canvas */
@@ -4621,6 +5926,14 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       if(i>=0){
         grip=handles()[i];
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
+      } else if(tiltGrip(e.clientX,e.clientY)){
+        /* ⛔ THE PHOTOGRAPH'S RINGS COME BEFORE THE SCAN'S. They are only on
+           screen while the operator has deliberately asked for them, on one
+           named scan, so while they are showing they are what a click near a
+           ring is for -- and the scan's own ring shares the same tripod
+           centre, so without an order the two would fight over every pixel. */
+        V.tiltAxis=tiltGrip(e.clientX,e.clientY).axis;
+        tilting=tiltDrag(e.clientX,e.clientY,null);
       } else if(ringGap(e.clientX,e.clientY)<=10){
         /* ⛔ AFTER the clip-box grips, never before. The grips are small
            targets that often sit inside the ring, and a ring that swallowed
@@ -4629,7 +5942,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       }
     }
     moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
-             ring===null;
+             ring===null && tilting===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -4646,6 +5959,8 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
     drift+=Math.abs(dx)+Math.abs(dy);
     if(lassoing) extendDraft(e.clientX,e.clientY);
+    else if(tilting!==null)
+      tilting=tiltDrag(e.clientX,e.clientY,tilting);
     else if(ring!==null) ring=turnScan(e.clientX,e.clientY,ring,e.shiftKey);
     else if(grip && grip.turn) spin=turnBox(e.clientX,e.clientY,spin);
     else if(grip) slideFace(grip.axis,grip.side,dx,dy);
@@ -4664,6 +5979,10 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(lassoing) finishDraft();
     if(moving && V.edits.length) recomputeLive();   /* the cut follows the
                                                        scan it was made on */
+    /* ⛔ SENT ONCE, ON RELEASE. Each pose change re-colours the whole cloud on
+       the server; one request per pointermove would queue dozens and land
+       somewhere the hand never was. */
+    if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
     down=false; moving=false; grip=null; lassoing=false;
     cv.classList.remove('drag'); });
   addEventListener('wheel', e=>{
@@ -4676,7 +5995,17 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     const k=e.key;
     if((e.ctrlKey||e.metaKey) && (k==='s'||k==='S')) saveProject(e.shiftKey);
     else if((e.ctrlKey||e.metaKey) && (k==='o'||k==='O')) openProject(null);
-    else if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoEdit();
+    else if((e.ctrlKey||e.metaKey) && (k==='z'||k==='Z')) undoAny();
+    /* ⭐ ENTER COMMITS THE SELECTION. Escape has always thrown one away,
+       and the opposite key did not exist -- so the one gesture the operator
+       repeats all afternoon, draw-then-delete, needed the mouse to travel back
+       to the panel every single time. Enter deletes what is inside the
+       outline, which is the answer nine times out of ten; Shift-Enter keeps it
+       instead, so the rarer choice is still on the keyboard. */
+    else if(k==='Enter'){
+      if(!V.pending) return;                    /* nothing drawn: not ours */
+      commitLasso(e.shiftKey ? 'keep' : 'cut');
+    }
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
                            V.half=null; showPairs();
                            setTool(''); invalidate(); }
@@ -4743,6 +6072,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
     showPlumb(); invalidate(); };
   $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
   $('refclear').onclick=clearPlumb;
+  $('sortshoot').onclick=sortShoot;
+  $('shootsolve').onclick=solveShoot;
+  $('clnstray').onclick=cleanStray;
+  $('clnweak').onclick=cleanWeak;
+  $('clnoff').onclick=cleanOff;
+  ['clnv','clnn','clnw'].forEach(id=>{ $(id).oninput=showClean; });
+  showClean();
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
   $('north').onclick=()=>setTool(V.tool==='north'?'':'north');
   $('northclear').onclick=()=>{

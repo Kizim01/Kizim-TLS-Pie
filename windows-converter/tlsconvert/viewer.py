@@ -80,16 +80,31 @@ class ViewerBuffer:
         self.max_points = int(max_points)
         self._xyz = []
         self._col = []
+        # ⭐ REFLECTIVITY, KEPT BESIDE THE COLOUR AND THINNED WITH IT. The
+        # instrument reports how strong each return was and this buffer was
+        # throwing it away, so "hide the weakest returns" could be applied to
+        # the exported file and never SHOWN -- the preview would keep every
+        # point while the export dropped a fifth of them, and neither picture
+        # would look wrong on its own. Thinned here rather than in a parallel
+        # array kept by the caller, because the thinning rule is subtle (halve
+        # in place, double the intake stride) and two copies of it would drift.
+        self._ref = []
         self._n = 0
         self._stride = 1
         self._encoded = None
         self.rgb = False
 
-    def add(self, xyz, rgb):
+    def add(self, xyz, rgb, refl=None):
         if xyz.shape[0] == 0:
             return
         take = xyz[::self._stride]
         col = rgb[::self._stride]
+        if refl is not None and len(refl) == xyz.shape[0]:
+            self._ref.append(np.ascontiguousarray(refl[::self._stride]))
+        elif self._ref:
+            # ⛔ ONE CHUNK WITHOUT IT MEANS THE WHOLE CLOUD LOSES IT, rather
+            # than an array that silently stops lining up with the points.
+            self._ref = None
         # Grey is the overwhelmingly common case (no photo yet), and grey needs
         # one byte, not three. Detect it once per chunk rather than storing
         # three copies of the same number for every point.
@@ -101,12 +116,21 @@ class ViewerBuffer:
         while self._n > self.max_points:
             self._xyz = [a[::2] for a in self._xyz]
             self._col = [a[::2] for a in self._col]
+            if self._ref:
+                self._ref = [a[::2] for a in self._ref]
             self._n = sum(a.shape[0] for a in self._xyz)
             self._stride *= 2
 
     @property
     def count(self):
         return self._n
+
+    def intensity(self):
+        """Reflectivity per kept point, or None if any chunk arrived without."""
+        if not self._ref:
+            return None
+        got = np.concatenate(self._ref)
+        return got if len(got) == self._n else None
 
     @property
     def subsampled(self):

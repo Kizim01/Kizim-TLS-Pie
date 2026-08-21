@@ -2256,6 +2256,182 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ## Restart pointer — do these in order
 
+#### ⛔⛔ THE BIGGEST FIND OF 2026-08-21: EVERY ALIGNMENT DECISION WAS THROWN AWAY AT EXPORT
+
+Looking for somewhere to hang a refinement, the export path turned out to discard the whole thing.
+`AlignServer.save()` called `pipeline.merge(...)` with setups, an edit and a level — **and no colour
+pose at all**. `merge` passed that to `convert`, which called `find_photo()` and **solved the heading
+again from scratch**. So the accepted solve, every nudge, the half-turn, the candidate picked off the
+shortlist, the camera height and the heading typed in by hand all reached the screen and **none of
+them reached the file**.
+
+⛔ **AND THE HAND-SET HEADING WAS THE WORST CASE.** `prepare_colour` still refuses below
+`MIN_CONFIDENCE`, so the control that exists *precisely because* a correct pair scored 2.01 exported
+**grey**. The one case it was built for was the one case it could not deliver.
+
+⛔ **THE SAME BUG HAD A SECOND DOOR: `open_project` restored the SETUP AND NOTHING ELSE.** A reopened
+session re-solved every heading from the sibling image — and a session is reopened precisely because
+the aligning took a while. Both doors are shut: the pose now travels save → merge → convert, and it is
+written into and restored from the project file.
+
+⭐ **THE RULE THAT REPLACES IT, IN ONE LINE: THE FILE GETS WHAT THE SCREEN SHOWS.** `colour_pose()`
+returns a pose only when `colour_scan` actually repainted; a refusal returns None and the export
+colours nothing, which is what the screen shows too. `convert(photo=...)` gained a `LOOK_BESIDE`
+sentinel so **None can mean "there is no photograph"** rather than "go and find one".
+
+⚠ The test that establishes it drives `save()` with `convert` stubbed and asserts what each capture is
+HANDED — the only thing the file can be made of. Before the fix every field arrived `None`. Two of its
+checks *crashed* on that `None` rather than failing; fixed, because **"it crashed" is not "it failed"**
+and a raise ends the block with every later check unreported.
+
+#### ⭐⭐ A PHOTOGRAPH HAS THREE ANGLES, NOT ONE — AND THE CAMERA REALLY WAS LEANING
+
+The operator asked for "a gizmo to also tilt the image for correct projection". Measured on their own
+confirmed pair (`TLS_26_08_20_16_03_15` + `IMG_20260820_160520_00_014`): the camera was pitched
+**2.44°**. Taking it out raised the fit from **0.281 to 0.314** and changed **98.3%** of point colours.
+
+⛔ **A HEADING CANNOT ABSORB A LEAN.** Turning the picture slides the mismatch from one wall to the
+next without removing it — which reads as "it nearly works everywhere", because it does.
+
+⛔ **`camera_matrix` IS NOT `pipeline.box_rotation`, AND SHARING IT WOULD SWAP TWO CONTROLS.** A box's
+forward is +x; a panorama's is +y, because longitude is measured from +y. The same three words name
+different axes in the two places.
+
+⛔ **AN UNTILTED CAMERA STILL TAKES THE ARITHMETIC PATH.** Every confidence, bin count and threshold on
+record was measured through the old one-line formula; a matrix agreeing to 1.8e-15 is still a change to
+the code all of those were measured on. Pinned by a test.
+
+#### ⭐⭐ "PRESS AUTO-ALIGN AGAIN AND IT IMPROVES" — WHAT THAT HAS TO MEAN TO BE HONEST
+
+Running the same search twice returns the same answer: it stopped because it was at an optimum. A
+button that does that reads as broken. So a press does not repeat the search, it **widens** it —
+`colour.RUNGS`: the heading finely, then the lean, then the camera's height — and when there is nothing
+left it **says so** instead of churning.
+
+⛔ **IT CANNOT RETURN A WORSE POSE, AND THAT IS STRUCTURAL.** A pattern search only adopts a trial that
+beat the incumbent, so what comes back is the best it saw *including the pose it started from*.
+(CalibRefine states the same guard explicitly: an estimate that does not improve the error is
+discarded.)
+
+⭐ **THE EVIDENCE THAT IT MOVES TOWARD TRUTH, NOT JUST TOWARD A BIGGER NUMBER.** Across the three
+presses the gap to the **independent reflectivity witness** fell **0.12° → 0.045° → 0.017°**. The
+witness shares nothing with the edge objective but the cloud, so it cannot be flattered by refining.
+
+⚠ **REFINEMENT MUST NOT TOUCH THE GRADE.** It raises the score *by construction* — a refined wrong
+photograph is a more confidently wrong photograph — so the grade stays with the global sweep and the
+witness, and `_repaint` restores it rather than letting `colour_scan` mark everything "given".
+
+⚠ Measured limits: recovery is reliable to about ±5° of push; a deliberate +8°/+5°/−5° lands outside
+the basin. The rung ladder is what keeps each step inside it. The **height** rung bought only +0.2% and
+5 mm — consistent with Pandey's note that translation is barely observable without near points.
+
+#### ⭐⭐ AND THE WHOLE SHOOT CAN BE SOLVED AT ONCE — THE ONE REAL IDEA FROM THE LITERATURE
+
+Pandey, McBride, Savarese & Eustice (AAAI 2012) hit this exact wall for lidar-camera calibration:
+earlier MI / chi-squared work "reported problems of existence of local maxima". Their fix was not a
+better threshold or optimiser — quoting the paper: *"we solve this problem by incorporating scans from
+different scenes in a single optimization framework, thereby, obtaining a smooth and concave cost
+function"*. Their Fig. 6 shows one scan's ragged surface beside ten scans' convex one.
+
+⭐ **IT TRANSFERS BECAUSE THE UNKNOWN IS SHARED.** The heading is unknown only because the camera is
+remounted by hand; an operator with a habit produces **one** unknown seen twenty-five times.
+`library.recall_heading` already carries the relation (`yaw_i = C − anchor_i`), so `colour.joint_yaw`
+reuses it rather than inventing a second. Verified on synthetic profiles whose individual confidences
+were 3.89 and 2.67: the joint answer lands within 0.1°.
+
+⛔ **RAW PROFILES MUST NOT BE SUMMED** — their scale follows the point count and how much edge the room
+has, so one large busy scan would outvote a dozen small ones and the aggregate would be that scan's
+answer wearing a better confidence. Each is standardised first; a test drives it with a deliberately
+loud wrong scan.
+
+⛔ **AND IT IS A CLAIM ABOUT A HABIT, NOT A LAW.** A scan that is CONFIDENT and disagrees is **named,
+never overruled** — that is the only way to discover the camera went on the tripod a different way that
+time. A weak scan disagreeing is expected; being carried is the point.
+
+#### ✅ SORTING A DAY'S SHOOT — AND THE TIME-SCALE BUG IT CAUGHT
+
+`tlsconvert/shoot.py` pairs captures with photographs and files each into a numbered folder.
+**Time proposes, geometry disposes**: timestamps cover 74×57 in a second, the solver would need 74
+decodes of a 98 MB file.
+
+⛔ **THE TWO CLOCKS ARE NEVER SYNCHRONISED, SO THE OFFSET IS MEASURED.** A Pi 4 has no RTC; the camera
+has its own clock. On the operator's restaurant shoot the measured offset is **1h 00m 38s** — an hour,
+which invites "it's just a timezone", **plus 38 seconds, which is why that guess would have been
+wrong**. Estimated the same way a heading is: histogram every gap, take the peak, report how far it
+stands above the rest — and a **flat histogram yields no offset** rather than the tallest bin of noise.
+
+⛔⛔ **THE BUG THIS CAUGHT IN MY OWN CODE.** `_stamp_seconds` was first written with a private
+day-count origin and the argument *"only DIFFERENCES are ever used, so the origin does not matter"*.
+The property was true and the premise was false: the sidecar supplies a real `started_epoch`, so the
+two halves of every comparison sat **sixty-two years apart**, every gap fell outside the window, and it
+reported "these clocks do not cluster" about a shoot with a perfect rhythm. **Caught only by running it
+on the operator's real data.**
+
+⭐ **WHAT THE REAL SHOOT REVEALED ABOUT THE WORKFLOW.** 59 of 60 captures matched, 0 photographs left
+over, 13 aborted sweeps set aside. The gaps **alternate** — about 0 s, then +130–175 s — because the
+rig sweeps 190.8°, so **a tripod position takes TWO captures** and the camera is fired twice. Both
+photographs belong to both captures; hence two are filed per folder by default. This also explains why
+`TLS_26_08_20_16_07_12` "had no photograph either method believed": its real photograph was shot after
+the *next* capture finished.
+
+⛔ Aborted sweeps (no `.json`) are **set aside, never numbered** — a numbered folder that cannot be
+opened is a promise the sort cannot keep. It **copies** by default and **refuses onto numbers already
+in use**: two shoots under one numbering cannot be untangled afterwards.
+
+#### ✅ CLEANING, AND A PREVIEW/EXPORT DIVERGENCE IT EXPOSED
+
+`tlsconvert/clean.py`. Two different wrong points need two different tests: **weak returns** (the
+instrument already knows) and **strays** (nothing is near them).
+
+⭐ **THE STRAY TEST COUNTS OCCUPIED CELLS, NOT POINTS, AND THAT IS WHAT MAKES IT WORK HERE.**
+CloudCompare's SOR cuts the tail of a mean-distance-to-k-neighbours distribution, which assumes even
+density — and a terrestrial scan is the opposite: the floor under the tripod is a thousand times denser
+than a wall eight metres off, so one distance threshold either guts the far wall or spares every stray
+near the rig. Also needs no KD-tree, and there is no scipy here. Measured: 100% of a wall kept, 60 of
+60 strays dropped; on the real capture the defaults drop **0.33%**.
+
+⛔⛔ **AND IT CAUGHT A PREVIEW/EXPORT DIVERGENCE.** The weak-return filter used `scan.sample_refl` —
+the SOLVER's decimated pass, which does not line up with the points on screen. The mask silently came
+back "no opinion" **while the threshold was still written into the spec the exporter reads**: the
+preview kept every point, the file would have dropped a fifth, and neither picture looks wrong on its
+own. `ViewerBuffer` now carries reflectivity through its own thinning (one home for that rule), the
+Scan gained `view_refl`, and a filter that cannot be SHOWN is now **refused rather than stored**.
+
+⛔ A clean **hides, never deletes** — the colour solve, the registration and every later clean need the
+whole cloud — and a rule that would empty a cloud is refused, because an empty preview looks exactly
+like a crash.
+
+#### ✅ THE REST OF THE 2026-08-21 BATCH
+
+- **A scan aligns to its NEAREST neighbour, or to one you name.** `solve()` hard-coded the target to
+  scan 0. ⛔ **A survey is a WALK**: each tripod overlaps the one before it and shares nothing with the
+  one at the far end, so fitting everything to the first scan stops working a few positions in — not
+  because the solver is weak but because there is no common surface left. The target is fitted **where
+  it now stands**, so the answer arrives already in the merged frame with no transform to compose.
+- **Three rings for the photograph's pose** (turn / tip / bank), dragged on the canvas, sent **on
+  release** — each change re-colours the cloud server-side, so one request per pointermove would queue
+  dozens and land where the hand never was. ⛔ Three here but **ONE for a scan**, and the difference is
+  real: a `Setup` stores a turn and a shift, so pitch/roll rings on a scan would be controls the
+  exporter cannot honour.
+- **Enter deletes the selection**, Shift-Enter keeps it. Escape has always thrown one away and the
+  opposite key did not exist — so the gesture repeated all afternoon needed the mouse each time.
+- **Ctrl-Z now reaches every tool**, not just the cut list. ⛔ An entry is pushed for actions that
+  **cannot** be undone too (removing a cloud), because a stack that silently SKIPS one reverses
+  something older than the last thing done — the exact failure an undo exists to prevent. A drag
+  coalesces into one entry.
+- **A progress bar under whichever button is working**, hooked centrally: every action already brackets
+  its work with `watch(true/false)`, so remembering the last-pressed button gives it to all of them at
+  once, including ones written later. The single bar at the top of a tall panel was routinely off
+  screen, which made a press look like a press that did nothing.
+- **The panel is now the job, in order**: seven numbered folding stages plus a "how it looks" group.
+  Reordered **programmatically with the multiset of element ids asserted identical** before and after —
+  100 controls kept, 12 added, none lost.
+
+⚠ **A test caught me re-committing a known mistake.** `loadScan` builds its scan object field by
+field, with a comment saying every new server field must be copied there "which is exactly how the photo
+row was born broken once already" — and I added four fields without copying them. The check that
+compares the two lists is what caught it.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

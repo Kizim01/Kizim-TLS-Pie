@@ -29,6 +29,7 @@ import time
 
 import numpy as np
 
+from . import clean as clean_mod
 from . import decode, export, rig
 
 VOXEL_BITS = 21                     # per axis, packed into one int64
@@ -522,7 +523,8 @@ def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
 
 
 def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
-                   camera=(0.0, 0.0, 0.0), per_laser_azimuth=False):
+                   camera=(0.0, 0.0, 0.0), per_laser_azimuth=False,
+                   pitch_deg=0.0, roll_deg=0.0):
     """
     (colouriser or None, info). Never raises -- a colour problem is not a
     reason to lose the scan, so it degrades to grey and says why.
@@ -545,8 +547,11 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
 
     if yaw_deg is not None:
         info["yaw_deg"] = float(yaw_deg)
+        info["pitch_deg"] = float(pitch_deg or 0.0)
+        info["roll_deg"] = float(roll_deg or 0.0)
         info["confidence"] = float("inf")
-        return colour_mod.Colouriser(rgb, yaw_deg, camera), info
+        return colour_mod.Colouriser(rgb, yaw_deg, camera,
+                                     pitch_deg, roll_deg), info
 
     pts = sample_for_solve(pcap_path, meta, frame,
                            per_laser_azimuth=per_laser_azimuth)
@@ -573,11 +578,24 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     return colour_mod.Colouriser(rgb, yaw, camera), info
 
 
+#: `photo` was not given, so look for one beside the capture -- the CLI's
+#: behaviour, and distinct from being told there is no photograph at all.
+#:
+#: ⛔ None HAD TO STOP MEANING "GO AND LOOK". Studio knows exactly which
+#: image the operator attached, including the case where they attached none;
+#: without a way to say "none", an uncoloured cloud would be coloured on export
+#: from whatever file happened to share the capture's stem -- a picture the
+#: operator never chose and never saw.
+LOOK_BESIDE = "look beside the capture"
+
+
 def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None,
-            setup=None, writer=None, edit=None, level=None):
+            setup=None, writer=None, edit=None, level=None,
+            photo=LOOK_BESIDE, pitch_deg=0.0, roll_deg=0.0,
+            clean_spec=None):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -600,13 +618,15 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     stride = choose_stride(pcap_path, budget)
     voxels = VoxelAccumulator(voxel_m) if voxel_m and voxel_m > 0 else None
 
-    photo = find_photo(pcap_path)
+    if photo is LOOK_BESIDE:
+        photo = find_photo(pcap_path)
     colour_info = {"photo": photo, "yaw_deg": None, "confidence": None,
                    "reason": "colour not requested", "warning": None}
     if colouriser is None and colour:
         colouriser, colour_info = prepare_colour(
             pcap_path, meta, frame, photo=photo, yaw_deg=yaw_deg,
-            camera=camera, per_laser_azimuth=per_laser_azimuth)
+            camera=camera, per_laser_azimuth=per_laser_azimuth,
+            pitch_deg=pitch_deg, roll_deg=roll_deg)
 
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
     own_writer = writer is None
@@ -616,13 +636,34 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
 
     started = time.time()
     decoded = 0
+    dropped = 0
+    # The cell set the stray test is measured against. ⛔ IT HAS TO COVER THE
+    # WHOLE CLOUD, NOT THE CHUNK IN HAND: a point at the edge of one chunk has
+    # its neighbours in the next, and testing chunk by chunk would carve a
+    # lattice of thin gaps through every surface at the chunk boundaries.
+    occupied = [None]
     lo = np.array([np.inf] * 3)
     hi = np.array([-np.inf] * 3)
 
     def emit(xyz, refl):
-        nonlocal lo, hi
+        nonlocal lo, hi, dropped
         if xyz.shape[0] == 0:
             return
+        # ⛔⛔ THE CLEAN COMES FIRST, BEFORE COLOUR AND BEFORE THE TRANSFORM.
+        # Before colour because colouring a point that is about to be thrown
+        # away is wasted work on tens of millions of points; before the
+        # transform because the neighbourhood test is about how the points sit
+        # relative to each other, which no rigid motion changes -- and doing it
+        # after would mean the occupancy grid had to be rebuilt in the merged
+        # frame for every capture.
+        if clean_spec:
+            keep = clean_mod.apply_spec(xyz, refl, clean_spec,
+                                        occupied=occupied[0])
+            if keep is not None:
+                dropped += int((~keep).sum())
+                xyz, refl = xyz[keep], refl[keep]
+                if xyz.shape[0] == 0:
+                    return
         rgb = (colouriser(xyz) if colouriser is not None
                else export.intensity_to_grey(refl))
         # ⛔ COLOUR FIRST, THEN MOVE. The colouriser samples a panorama shot
@@ -658,6 +699,25 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         hi = np.maximum(hi, xyz.max(axis=0))
 
     try:
+        # ⭐ A VOXELISED EXPORT GETS ITS OCCUPANCY FOR NOTHING. When
+        # `voxel_m` is set the accumulator holds the entire cloud and emits it
+        # in ONE call, so the grid can be built from that call itself -- exact,
+        # and no second read of the capture. Only an un-voxelised export
+        # streams, and there the capture genuinely has to be walked twice; that
+        # costs another decode and is worth saying rather than hiding.
+        if clean_spec and "stray" in clean_spec and voxels is None:
+            if progress:
+                progress(0, 0)
+            cells = []
+            for xyz, _r in decode.stream_world_points(
+                    pcap_path, meta, frame, stride=stride,
+                    per_laser_azimuth=per_laser_azimuth,
+                    min_range=min_range, max_range=max_range):
+                cells.append(clean_mod.occupancy(
+                    xyz, float((clean_spec["stray"] or {})
+                               .get("voxel_m", clean_mod.DEFAULT_VOXEL_M))))
+            occupied[0] = (np.unique(np.concatenate(cells)) if cells
+                           else np.zeros(0, dtype=np.int64))
         for xyz, refl in decode.stream_world_points(
                 pcap_path, meta, frame, stride=stride,
                 per_laser_azimuth=per_laser_azimuth,
@@ -687,6 +747,8 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         "pitch_deg": frame.pitch_deg,
         "pitch_was_legacy": getattr(frame, "pitch_is_legacy", False),
         "photo": photo,
+        "cleaned": clean_mod.describe(clean_spec),
+        "cleaned_points": dropped,
         "coloured": colouriser is not None,
         "colour": colour_info,
         "over_budget": over,
@@ -729,8 +791,29 @@ def solve_setups(captures, per_laser_azimuth=False, progress=None):
     return results
 
 
+def _pose_kwargs(colours, i):
+    """
+    The colour arguments for one capture of a merge.
+
+    `colours` is None for a caller that never had a pose -- the CLI -- and each
+    capture then looks beside itself as it always did. Given a list, entry `i`
+    is either the pose Studio settled on or None for "this cloud has no
+    photograph", and the second of those is a statement, not a gap.
+    """
+    if colours is None:
+        return {}
+    pose = colours[i] if i < len(colours) else None
+    if not pose:
+        return {"photo": None}
+    return {"photo": pose.get("photo"),
+            "yaw_deg": pose.get("yaw_deg"),
+            "pitch_deg": float(pose.get("pitch_deg") or 0.0),
+            "roll_deg": float(pose.get("roll_deg") or 0.0),
+            "camera": tuple(pose.get("camera") or (0.0, 0.0, 0.0))}
+
+
 def merge(captures, out_path, setups=None, progress=None, edit=None,
-          level=None, **kwargs):
+          level=None, colours=None, cleans=None, **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -761,6 +844,12 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
         level = registration.Level.from_dict(level)
 
     comment = "merged: %s" % ", ".join(os.path.basename(c) for c in captures)
+    if colours is not None and len(colours) != len(captures):
+        # ⛔ A SHORT LIST WOULD SILENTLY LEAVE THE LAST CAPTURES RE-SOLVING.
+        # That is the failure this whole argument exists to remove, arriving by
+        # a different door and looking like a partial success.
+        raise ValueError("colours must name every capture: %d given for %d"
+                         % (len(colours), len(captures)))
     writer = export.writer_for(out_path, comment=comment)
     parts = []
     try:
@@ -771,11 +860,22 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
             # that name nobody. Handing the whole edit to every capture is
             # what made a cut a cut across the job; see `Edit.for_scan`.
             mine = None if edit is None else edit.for_scan(i)
+            # ⛔⛔ AND THE COLOUR POSE THAT WAS DECIDED FOR IT, WHICH USED TO
+            # BE THROWN AWAY HERE. Without this every capture re-solved its own
+            # heading from scratch during the export, so the accepted solve,
+            # the nudges, the candidate picked off the shortlist, the camera
+            # height and the heading typed in by hand all reached the screen
+            # and none of them reached the file. The hand-set heading was the
+            # worst case: `prepare_colour` refuses below MIN_CONFIDENCE, and
+            # that control exists precisely BECAUSE a correct pair scored 2.01,
+            # so the one case it was built for exported grey.
             parts.append(convert(path, out_path, setup=setup, writer=writer,
                                  progress=None, level=level,
                                  edit=None if (mine is None or mine.is_empty())
                                  else mine,
-                                 **kwargs))
+                                 clean_spec=(cleans[i] if cleans
+                                             and i < len(cleans) else None),
+                                 **dict(kwargs, **_pose_kwargs(colours, i))))
     finally:
         writer.close()
 
