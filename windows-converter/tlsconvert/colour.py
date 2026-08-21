@@ -976,6 +976,29 @@ MAX_REFINE_YAW_DEG = 30.0
 # difference between two instruments' optical centres, not a free parameter.
 MAX_CAMERA_Z_M = 0.5
 
+# ⭐⭐ AND HOW FAR ITS CENTRE MAY SIT SIDEWAYS OF THE LIDAR'S -- THE SEAT.
+# The camera is remounted on this rig by hand, so its optical centre does not
+# sit on the lidar's vertical axis, it sits wherever the clamp put it. That
+# offset is PARALLAX: near furniture is painted from a point the rays never
+# left, smearing colour sideways by an angle that grows as things get close --
+# atan(offset/range), so 3 cm is a third of a degree at five metres and a
+# full degree and a half at one -- and NO rotation can take it out, because
+# rotating the photograph moves the error around the room instead of removing
+# it. "The colours are close but never quite on" is this offset, seen from
+# the outside. Bounded at 15 cm because both instruments share one tripod
+# head: a seat further out than that is not a mounting tolerance, it is the
+# search feeding on something.
+MAX_SEAT_M = 0.15
+
+# The grid the deep polish judges on. ⛔ FINER THAN THE SOLVE GRID BY DESIGN:
+# at 360x90 one cell is a degree of longitude -- nine centimetres at five
+# metres -- so a pose can be a third of a degree wrong and score identically.
+# 720x180 quarters the cell. Not finer still, because the photograph's
+# prefilter multiplies this by PREFILTER_SCALE and a 5888-pixel panorama has
+# nothing left to say past 2880 columns.
+FINE_POLISH_LON = 720
+FINE_POLISH_LAT = 180
+
 # ⛔ THE PHOTOGRAPH IS PRE-FILTERED BEFORE IT IS EVER SAMPLED AT A POSE, AND
 # SKIPPING THAT MAKES THE REFINEMENT OPTIMISE ITS OWN ALIASING. A 5888x2944
 # panorama carries about 16x32 pixels per cell of the 360x90 solving grid.
@@ -1090,49 +1113,53 @@ class PoseScorer(object):
         self._cache = {}
         self._order = []
 
-    def _at(self, camera_z=None):
+    def _at(self, camera_z=None, camera_x=None, camera_y=None):
         """
-        Everything the tripod sees from one height, built once and kept.
+        Everything the tripod sees from one camera position, built once, kept.
 
-        ⭐ CACHED ON THE HEIGHT BECAUSE THE HEIGHT IS THE ONLY THING THAT
-        CHANGES IT. Turning or tilting the camera moves the PHOTOGRAPH over the
-        cloud; it does not change what the cloud looks like from the tripod, or
-        what it reflects, or where its retroreflectors are. Rebuilding per trial
-        pose would make the search two orders of magnitude slower for an
-        identical answer.
+        ⭐ CACHED ON WHERE THE CAMERA STANDS -- all three coordinates now,
+        because the seat moves the viewpoint exactly as the height does.
+        Turning or tilting the camera moves the PHOTOGRAPH over the cloud; it
+        does not change what the cloud looks like from the camera's own
+        centre, or what it reflects, or where its retroreflectors are.
+        Rebuilding per trial pose would make the search two orders of
+        magnitude slower for an identical answer.
         """
+        x = self.camera[0] if camera_x is None else float(camera_x)
+        y = self.camera[1] if camera_y is None else float(camera_y)
         z = self.camera[2] if camera_z is None else float(camera_z)
-        got = self._cache.get(z)
+        key = (x, y, z)
+        got = self._cache.get(key)
         if got is None:
             depth, filled, field, retro = _panoramas(
-                self.xyz, self.refl,
-                (self.camera[0], self.camera[1], z),
+                self.xyz, self.refl, (x, y, z),
                 self.lon_bins, self.lat_bins,
                 retro_min=(None if self.refl is None else DEEP_RETRO_MIN))
             got = {"edges": _edges(fill_holes(depth, filled)),
                    "filled": filled,
                    "cell": self._cells(field, retro, filled)}
-            self._cache[z] = got
-            self._order.append(z)
+            self._cache[key] = got
+            self._order.append(key)
             while len(self._order) > CACHE_HEIGHTS:
                 self._cache.pop(self._order.pop(0), None)
         return got
 
-    def cloud_edges(self, camera_z=None):
-        got = self._at(camera_z)
+    def cloud_edges(self, camera_z=None, camera_x=None, camera_y=None):
+        got = self._at(camera_z, camera_x, camera_y)
         return got["edges"], got["filled"]
 
     def filled(self, camera_z=None):
         return self._at(camera_z)["filled"].mean()
 
-    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+              camera_x=None, camera_y=None):
         self.evaluations += 1
-        a = self.cloud_edges(camera_z)[0]
+        a = self.cloud_edges(camera_z, camera_x, camera_y)[0]
         b = _edges(image_at_pose(self.pre, self.dirs,
                                  yaw_deg, pitch_deg, roll_deg))
         return float((a * b).sum())
 
-    def refl_cells(self, camera_z=None):
+    def refl_cells(self, camera_z=None, camera_x=None, camera_y=None):
         """
         The reflectivity panorama, ready to compare against a photograph.
 
@@ -1140,7 +1167,7 @@ class PoseScorer(object):
         cloud does not, so the two measures that need it simply stand down
         rather than quietly scoring zero and dragging the sum toward nothing.
         """
-        return self._at(camera_z)["cell"]
+        return self._at(camera_z, camera_x, camera_y)["cell"]
 
     def _cells(self, field, retro, mask):
         """Build that, once, for one height. See `refl_cells`."""
@@ -1167,7 +1194,7 @@ class PoseScorer(object):
                 "bright": order, "bw": self.weight[rows, cols][order]}
 
     def mutual(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
-               camera_z=None):
+               camera_z=None, camera_x=None, camera_y=None):
         """
         Mutual information between reflectivity and brightness, AT A POSE.
 
@@ -1190,7 +1217,7 @@ class PoseScorer(object):
         # reflectivity side was built with, and the result would be a histogram
         # indexed off the end of its own marginal.
         bins = MI_BINS
-        cell = self.refl_cells(camera_z)
+        cell = self.refl_cells(camera_z, camera_x, camera_y)
         if cell is None:
             return None
         self.evaluations += 1
@@ -1207,7 +1234,8 @@ class PoseScorer(object):
         return float(np.sum(joint[nz] * np.log(
             joint[nz] / (pa[:, None] * pb[None, :])[nz])))
 
-    def beacon(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def beacon(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+               camera_x=None, camera_y=None):
         """
         How bright the photograph is where the laser came back hardest.
 
@@ -1222,7 +1250,7 @@ class PoseScorer(object):
         that survives that is comparative: are the retroreflectors brighter
         THAN THE REST OF WHAT THIS POSE IS LOOKING AT.
         """
-        cell = self.refl_cells(camera_z)
+        cell = self.refl_cells(camera_z, camera_x, camera_y)
         if cell is None or not cell["bright"].size:
             return None
         self.evaluations += 1
@@ -1252,6 +1280,13 @@ RUNGS = [
     ("tilt", "how the camera leaned -- pitch and roll, which a heading "
              "cannot absorb"),
     ("height", "how far the camera's centre sat above the lidar's"),
+    # ⭐⭐ THE SEAT IS THE RUNG THE OTHERS COULD NEVER REACH. The camera is
+    # remounted by hand, so its centre sits off the lidar's axis by however
+    # the clamp landed -- and that offset is parallax on everything near,
+    # which NO rotation and NO height can express. It is the last rung
+    # because, like the height, every probe of it rebuilds the panorama.
+    ("seat", "where the camera's centre sits SIDEWAYS of the lidar's -- "
+             "the parallax on near things that no turn can absorb"),
 ]
 
 
@@ -1280,7 +1315,9 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
     """
     start = {"yaw_deg": float(yaw_deg), "pitch_deg": float(pitch_deg or 0.0),
              "roll_deg": float(roll_deg or 0.0),
-             "camera_z": float(camera[2] if len(camera) > 2 else 0.0)}
+             "camera_z": float(camera[2] if len(camera) > 2 else 0.0),
+             "camera_x": float(camera[0] if len(camera) > 0 else 0.0),
+             "camera_y": float(camera[1] if len(camera) > 1 else 0.0)}
     rung = max(1, min(int(rung or 1), len(RUNGS)))
     sc = scorer or PoseScorer(xyz, lum, camera=camera)
 
@@ -1293,12 +1330,15 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
     axes = [("yaw_deg", MAX_REFINE_YAW_DEG, True),
             ("pitch_deg", MAX_TILT_DEG, rung >= 2),
             ("roll_deg", MAX_TILT_DEG, rung >= 2),
-            ("camera_z", MAX_CAMERA_Z_M, rung >= 3)]
+            ("camera_z", MAX_CAMERA_Z_M, rung >= 3),
+            ("camera_x", MAX_SEAT_M, rung >= 4),
+            ("camera_y", MAX_SEAT_M, rung >= 4)]
     live = [(n, lim) for n, lim, on in axes if on]
 
     best = dict(start)
     best_score = sc.score(best["yaw_deg"], best["pitch_deg"],
-                          best["roll_deg"], best["camera_z"])
+                          best["roll_deg"], best["camera_z"],
+                          best["camera_x"], best["camera_y"])
     first = best_score
     railed = []
     step = float(span_deg)
@@ -1307,7 +1347,7 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
         for name, lim in live:
             # The height is in metres; the same step in degrees would ask for
             # a metre of travel per degree of heading, which is not a scale.
-            size = step * (0.02 if name == "camera_z" else 1.0)
+            size = step * (0.02 if name.startswith("camera_") else 1.0)
             for sign in (1.0, -1.0):
                 trial = dict(best)
                 trial[name] = best[name] + sign * size
@@ -1322,7 +1362,8 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                         railed.append(name)
                     continue
                 got = sc.score(trial["yaw_deg"], trial["pitch_deg"],
-                               trial["roll_deg"], trial["camera_z"])
+                               trial["roll_deg"], trial["camera_z"],
+                               trial["camera_x"], trial["camera_y"])
                 if got > best_score:
                     best, best_score, moved = trial, got, True
                     break
@@ -1340,6 +1381,9 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 tilted_deg=float(math.hypot(best["pitch_deg"] - start["pitch_deg"],
                                             best["roll_deg"] - start["roll_deg"])),
                 raised_m=float(best["camera_z"] - start["camera_z"]),
+                seated_m=float(math.hypot(
+                    best["camera_x"] - start["camera_x"],
+                    best["camera_y"] - start["camera_y"])),
                 evaluations=int(sc.evaluations),
                 # ⛔ A RAIL IS REPORTED, NOT SWALLOWED. A pose sitting exactly on
                 # a bound is the solver saying it wanted to go further, which is
@@ -1567,12 +1611,15 @@ class DeepObjective(object):
         self.have = {}
         self.calls = 0
 
-    def raw(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def raw(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+            camera_x=None, camera_y=None):
         """Each term in its own natural units. None where it cannot be had."""
-        return {"edge": self.sc.score(yaw_deg, pitch_deg, roll_deg, camera_z),
-                "mi": self.sc.mutual(yaw_deg, pitch_deg, roll_deg, camera_z),
+        return {"edge": self.sc.score(yaw_deg, pitch_deg, roll_deg, camera_z,
+                                      camera_x, camera_y),
+                "mi": self.sc.mutual(yaw_deg, pitch_deg, roll_deg, camera_z,
+                                     camera_x, camera_y),
                 "beacon": self.sc.beacon(yaw_deg, pitch_deg, roll_deg,
-                                         camera_z)}
+                                         camera_z, camera_x, camera_y)}
 
     def sweep(self, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
               bins=SOLVE_LON_BINS, deadline=None):
@@ -1627,9 +1674,11 @@ class DeepObjective(object):
                 if t in self.stats and self.stats[t][1] > 0
                 and self.weights.get(t, 0.0)]
 
-    def __call__(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def __call__(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+                 camera_x=None, camera_y=None):
         self.calls += 1
-        got = self.raw(yaw_deg, pitch_deg, roll_deg, camera_z)
+        got = self.raw(yaw_deg, pitch_deg, roll_deg, camera_z,
+                       camera_x, camera_y)
         total = 0.0
         for t in self.TERMS:
             if t not in self.stats or got[t] is None:
@@ -1650,8 +1699,11 @@ def _pattern(obj, start, live, step, floor, budget, deadline, score=None):
     makes about not making things worse is this loop's promise, inherited.
     """
     best = dict(start)
+    best.setdefault("camera_x", 0.0)
+    best.setdefault("camera_y", 0.0)
     best_score = (obj(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
-                      best["camera_z"]) if score is None else float(score))
+                      best["camera_z"], best["camera_x"], best["camera_y"])
+                  if score is None else float(score))
     railed = []
     step = float(step)
     while step >= floor and obj.calls < budget:
@@ -1669,7 +1721,8 @@ def _pattern(obj, start, live, step, floor, budget, deadline, score=None):
                         railed.append(name)
                     continue
                 got = obj(trial["yaw_deg"], trial["pitch_deg"],
-                          trial["roll_deg"], trial["camera_z"])
+                          trial["roll_deg"], trial["camera_z"],
+                          trial["camera_x"], trial["camera_y"])
                 if got > best_score:
                     best, best_score, moved = trial, got, True
                     break
@@ -1683,7 +1736,7 @@ def _pattern(obj, start, live, step, floor, budget, deadline, score=None):
     return best, float(best_score), railed
 
 
-def _live_axes(free_yaw=True, height=True):
+def _live_axes(free_yaw=True, height=True, seat=False):
     """
     (name, low, high, step scale) for the things a pose has.
 
@@ -1706,7 +1759,128 @@ def _live_axes(free_yaw=True, height=True):
         # for a metre of travel per degree of heading, which is not a scale,
         # it is a different search.
         got.append(("camera_z", -MAX_CAMERA_Z_M, MAX_CAMERA_Z_M, 0.02))
+    if seat:
+        # The seat costs what the height costs -- every probe rebuilds the
+        # cloud's panorama -- so it joins the search at the same late stage.
+        got.append(("camera_x", -MAX_SEAT_M, MAX_SEAT_M, 0.02))
+        got.append(("camera_y", -MAX_SEAT_M, MAX_SEAT_M, 0.02))
     return got
+
+
+def deep_refine(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
+                pitch_deg=0.0, roll_deg=0.0, weights=None, budget=1500,
+                deadline=None, progress=None):
+    """
+    The accuracy end of the deep search: one pose, polished on a fine grid.
+
+    ⭐⭐ WHAT MAKES THIS THE ACCURATE ONE, IN THREE PARTS. It judges on a
+    720x180 grid -- a quarter of the solve grid's cell, because at 360x90 a
+    pose can be a third of a degree wrong and score identically. It judges
+    with all three measures, evidence-gated exactly as the deep search gates
+    them, not with edges alone. And it is the only search that moves the
+    camera's SEAT -- where its centre sits sideways of the lidar's, which is
+    parallax on everything near and which no rotation, however finely
+    fitted, can express. The heading is railed to a few degrees: this is a
+    polish, and a polish that can wander is a re-solve without a judge.
+
+    ⛔ NEVER WORSE, ON THE FINEST JUDGE: the pose handed in is scored by the
+    same objective last, and wins any tie.
+    """
+    start = {"yaw_deg": float(yaw_deg), "pitch_deg": float(pitch_deg or 0.0),
+             "roll_deg": float(roll_deg or 0.0),
+             "camera_z": float(camera[2] if len(camera) > 2 else 0.0),
+             "camera_x": float(camera[0] if len(camera) > 0 else 0.0),
+             "camera_y": float(camera[1] if len(camera) > 1 else 0.0)}
+
+    def tell(stage, n=0, total=3):
+        if progress:
+            try:
+                progress(stage, n, total)
+            except Exception:                             # noqa: BLE001
+                pass
+
+    if weights is None:
+        # Standalone: decide which measures have anything to say on THIS
+        # cloud, the same way the deep search decides it -- a coarse sweep,
+        # each term alone, gated at the same bar.
+        tell("weighing the three measures", 0)
+        coarse = PoseScorer(xyz, lum, camera=camera, refl=refl,
+                            lon_bins=DEEP_LON_BINS, lat_bins=DEEP_LAT_BINS)
+        if coarse.filled(start["camera_z"]) < MIN_FILLED_FRACTION:
+            return dict(start, ok=False, improved=False,
+                        reason="this cloud's panorama is too sparse to "
+                               "refine against")
+        obj_c = DeepObjective(coarse)
+        _y, prof_c, per_c = obj_c.sweep(start["pitch_deg"],
+                                        start["roll_deg"],
+                                        start["camera_z"], deadline=deadline)
+        if prof_c is not None:
+            solo = {}
+            for term in obj_c.TERMS:
+                if not obj_c.have.get(term):
+                    continue
+                got = _profile_peaks(per_c[term], 1)
+                solo[term] = float(got[0]["confidence"]) if got else 0.0
+            quiet = [t for t, v in solo.items()
+                     if v < DEEP_TERM_MIN_CONFIDENCE]
+            if quiet and len(quiet) < len(solo):
+                weights = dict(DEEP_WEIGHTS)
+                for term in quiet:
+                    weights[term] = 0.0
+
+    # ⛔ THE FINE JUDGE'S SCALE IS SET BY ITS OWN REFERENCE SWEEP, exactly
+    # as the deep search sets its full-grid scale -- standardised once, so
+    # "this pose beats that one" cannot depend on the order they were tried.
+    tell("building the fine grid", 1)
+    fine = PoseScorer(xyz, lum, camera=camera, refl=refl,
+                      lon_bins=FINE_POLISH_LON, lat_bins=FINE_POLISH_LAT)
+    obj = DeepObjective(fine, weights)
+    _y, prof, _per = obj.sweep(start["pitch_deg"], start["roll_deg"],
+                               start["camera_z"], bins=72, deadline=deadline)
+    if prof is None:
+        return dict(start, ok=False, improved=False,
+                    reason="ran out of time setting the fine grid's scale")
+
+    tell("polishing on the fine grid", 2)
+    was = obj(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
+              start["camera_z"], start["camera_x"], start["camera_y"])
+    live = [("yaw_deg", start["yaw_deg"] - 3.0, start["yaw_deg"] + 3.0, 1.0),
+            ("pitch_deg", -MAX_TILT_DEG, MAX_TILT_DEG, 1.0),
+            ("roll_deg", -MAX_TILT_DEG, MAX_TILT_DEG, 1.0),
+            ("camera_z", -MAX_CAMERA_Z_M, MAX_CAMERA_Z_M, 0.02),
+            ("camera_x", -MAX_SEAT_M, MAX_SEAT_M, 0.02),
+            ("camera_y", -MAX_SEAT_M, MAX_SEAT_M, 0.02)]
+    best, best_score, railed = _pattern(obj, start, live, 0.5, 0.004,
+                                        obj.calls + int(budget), deadline,
+                                        score=float(was))
+    if best_score < was:                     # cannot happen; belt and braces
+        best, best_score, railed = dict(start), float(was), []
+
+    r0 = obj.raw(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
+                 start["camera_z"], start["camera_x"], start["camera_y"])
+    r1 = obj.raw(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
+                 best["camera_z"], best["camera_x"], best["camera_y"])
+    tell("done", 3)
+    return dict(best, ok=True,
+                improved=bool(best_score > was + 1e-9),
+                score=float(best_score), was=float(was),
+                gain=float(best_score - was),
+                terms_was=dict((k, None if v is None else float(v))
+                               for k, v in r0.items()),
+                terms_now=dict((k, None if v is None else float(v))
+                               for k, v in r1.items()),
+                used=obj.used(),
+                turned_deg=abs((best["yaw_deg"] - start["yaw_deg"] + 180.0)
+                               % 360.0 - 180.0),
+                tilted_deg=float(math.hypot(
+                    best["pitch_deg"] - start["pitch_deg"],
+                    best["roll_deg"] - start["roll_deg"])),
+                raised_m=float(best["camera_z"] - start["camera_z"]),
+                seated_m=float(math.hypot(
+                    best["camera_x"] - start["camera_x"],
+                    best["camera_y"] - start["camera_y"])),
+                railed=list(railed),
+                evaluations=int(obj.calls))
 
 
 def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
@@ -1830,7 +2004,7 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                           "sweep_confidence": None}]
 
     tell("polishing", 4)
-    live = _live_axes(free_yaw=True, height=True)
+    live = _live_axes(free_yaw=True, height=True, seat=True)
     best, best_score, railed = None, None, []
     for t in short:
         pose, sc, rail = _pattern(obj_f, t["pose"], live, 0.5, 0.004,
@@ -1850,12 +2024,34 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     if best is None or was > best_score:
         best, best_score, railed = dict(start), float(was), []
 
+    # ⭐⭐ AND THE LAST WORD BELONGS TO THE FINE GRID. Everything above
+    # settled WHICH basin the pose belongs in; this settles where in the
+    # basin it sits, on a grid with a quarter of the cell and the camera's
+    # seat free to move. Its own guard judges the basin winner and keeps it
+    # on any tie, so the promise composes.
+    if time.time() < deadline:
+        tell("polishing on the fine grid", 5, 6)
+        fined = deep_refine(xyz, lum, refl=refl,
+                            camera=(best.get("camera_x", 0.0),
+                                    best.get("camera_y", 0.0),
+                                    best["camera_z"]),
+                            yaw_deg=best["yaw_deg"],
+                            pitch_deg=best["pitch_deg"],
+                            roll_deg=best["roll_deg"],
+                            weights=obj_f.weights, budget=budget,
+                            deadline=deadline)
+        if fined.get("ok"):
+            best = {k: fined[k] for k in ("yaw_deg", "pitch_deg", "roll_deg",
+                                          "camera_z", "camera_x", "camera_y")}
+            best_score = float(fined["score"])
+
     moved = abs((best["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0 - 180.0)
     r0 = obj_f.raw(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
                    start["camera_z"])
     r1 = obj_f.raw(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
-                   best["camera_z"])
-    tell("done", 5)
+                   best["camera_z"], best.get("camera_x"),
+                   best.get("camera_y"))
+    tell("done", 6, 6)
     return dict(best, ok=True,
                 improved=bool(best_score > was + 1e-9),
                 score=float(best_score), was=float(was),
@@ -1877,6 +2073,8 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                     best["pitch_deg"] - start["pitch_deg"],
                     best["roll_deg"] - start["roll_deg"])),
                 raised_m=float(best["camera_z"] - start["camera_z"]),
+                seated_m=float(math.hypot(best.get("camera_x", 0.0),
+                                          best.get("camera_y", 0.0))),
                 candidates=[{"yaw_deg": float(t["pose"]["yaw_deg"]),
                              "from_deg": float(t["from_deg"]),
                              "seed": t.get("seed"),

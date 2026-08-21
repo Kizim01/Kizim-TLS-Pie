@@ -3089,6 +3089,48 @@ project's standing reason to patch through Write/Edit, met again.
 
 Converter suite **816 → 830**.
 
+#### ⭐⭐ THE PHOTOGRAPH'S POSE GAINED ITS SIXTH NUMBER — THE CAMERA'S SEAT — AND A FINE JUDGE TO FIND IT WITH
+
+Reported as *“the current solution is not accurate enough”* for colouring. Three ceilings were
+holding the accuracy down, and the biggest was a **missing degree of freedom**.
+
+⛔⛔ **THE POSE MODEL HAD FIVE OF THE CAMERA'S SIX NUMBERS.** Heading, tip, bank, height — and
+nothing for where the optical centre sits **sideways of the lidar's axis**, on a camera that is
+remounted by hand. That offset is **parallax**: near furniture is painted from a point the rays never
+left, smearing colour by atan(offset/range) — a third of a degree at five metres, a degree and a
+half at one — and **no rotation can express it**, because turning the photograph moves the error
+round the room instead of removing it. “The colours are close but never quite on” is that offset
+seen from the outside. It is now `camera_x`/`camera_y` on the scan — stored, saved in the project,
+carried to the exporter — bounded at ±15 cm because both instruments share one tripod head.
+
+**Measured on the operator's own restaurant scan 1: the camera sits 1.4 cm off-axis and 1.75°
+tipped, and letting the polish move it raised the fit 31% in 24 s — with BOTH independent measures
+rising together (edges +15%, mutual information +7.6%), which is the evidence the gain is real
+rather than the optimiser feeding on itself. The heading moved 0.258°: a polish, not a re-solve.**
+
+⭐⭐ **`deep_refine` IS THE ACCURACY END OF THE DEEP SEARCH**, three parts:
+| part | why |
+|---|---|
+| a **720×180 grid** — a quarter of the solve grid's cell | at 360×90 a pose can be a third of a degree wrong and score identically; not finer still, because the prefilter multiplies by 4 and a 5888-pixel panorama has nothing left past 2880 columns |
+| **all three measures, evidence-gated** | the polish used to judge with edges alone; now the same gated sum as the deep search, standardised once against its own reference sweep |
+| the **seat axes**, railed heading (±3°) | the one search allowed to move the camera sideways; a polish that can wander is a re-solve without a judge |
+
+**Deep align now ends with it** — stages 0–4 settle WHICH basin, the fine polish settles where in
+the basin — and the quick Auto-align ladder gained **rung 4: the seat** (`RUNGS` is four long, the
+page offers all four, and the “fully fitted” text names all of them). The seat survives everything
+it must: a height change re-paints WITH it (the exact bug the height itself once suffered — a pose
+rebuilt with fewer numbers than it had), attach/re-solve/set-heading keep it, a reopened project
+restores it.
+
+⛔ `PoseScorer`'s cache is keyed on the full camera position now — the seat moves the viewpoint
+exactly as the height does, so each (x, y, z) is one panorama build, kept.
+
+⚠ **Three stub scorers in the suite broke the same way in one session** — the scoring protocol
+grew two arguments and every hand-written copy of its signature fell over. The deep stub now takes
+`*seat`: a stub should absorb what it does not model, not re-state a signature it will be broken by.
+
+Converter suite **830 → 846**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

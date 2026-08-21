@@ -139,6 +139,13 @@ def _take_placement(scan, data):
     scan.lean = registration.Lean.from_dict(data)
 
 
+def _seat_of(scan):
+    """Where this scan's camera stands, as the tuple every solver takes."""
+    return (float(getattr(scan, "camera_x", 0.0) or 0.0),
+            float(getattr(scan, "camera_y", 0.0) or 0.0),
+            float(getattr(scan, "camera_z", 0.0) or 0.0))
+
+
 def _tint(n):
     """Distinguishable at a glance, and still distinguishable when overlaid."""
     return [(255, 176, 64), (96, 190, 255), (150, 255, 150),
@@ -177,6 +184,13 @@ class Scan(object):
         # across near edges in a way no heading can fix, and it changes the
         # depth panorama the solve itself runs on.
         self.camera_z = 0.0
+        # ⭐ AND WHERE IT SITS SIDEWAYS OF THE LIDAR'S AXIS -- THE SEAT. A
+        # camera remounted by hand sits wherever the clamp put it, and that
+        # offset is parallax on everything near: colour smeared sideways by
+        # an angle that grows as things get close, which no heading and no
+        # lean can express. Found by the deep polish, not typed.
+        self.camera_x = 0.0
+        self.camera_y = 0.0
         self.colour_info = None        # {yaw, confidence, reason} from the solve
         # Where the HEAD was standing when this sweep began, from the
         # sidecar. ⭐ It is the only thing that ties two clouds' azimuth
@@ -287,7 +301,7 @@ def grade_solve(info, sample, refl, lum, camera):
 
 
 def colour_scan(scan, photo, camera_z=0.0, yaw=None,
-                pitch=None, roll=None):
+                pitch=None, roll=None, camera_x=0.0, camera_y=0.0):
     """
     Solve the camera's heading against `scan` and repaint it. Never raises.
 
@@ -305,6 +319,8 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
             "yaw_deg": None, "confidence": None, "reason": None,
             "given": False, "ok": False, "camera_z": float(camera_z or 0.0),
+            "camera_x": float(camera_x or 0.0),
+            "camera_y": float(camera_y or 0.0),
             # ⭐ HOW THE CAMERA LEANED, WHICH A HEADING CANNOT ABSORB. Measured
             # on the operator's own confirmed pair (TLS_26_08_20_16_03_15 with
             # IMG_20260820_160520_00_014) on 2026-08-21: the camera was pitched
@@ -340,7 +356,8 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         return info
     info["warning"] = colour_mod.aspect_warning(rgb_img)
 
-    camera = (0.0, 0.0, float(camera_z or 0.0))
+    camera = (float(camera_x or 0.0), float(camera_y or 0.0),
+              float(camera_z or 0.0))
     # ⭐ A HEADING THE OPERATOR SUPPLIES IS NOT SOLVED, AND NOT JUDGED.
     # The confidence exists to answer "did the solve find anything"; there is
     # no solve here, so reporting a number would invite it to be read as a
@@ -1312,7 +1329,9 @@ class AlignServer(object):
                           "n": 0, "total": 1, "busy": True}
         try:
             info = colour_scan(scan, filed["photo"],
-                               camera_z=getattr(scan, "camera_z", 0.0))
+                               camera_z=getattr(scan, "camera_z", 0.0),
+                               camera_x=getattr(scan, "camera_x", 0.0),
+                               camera_y=getattr(scan, "camera_y", 0.0))
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -1397,7 +1416,7 @@ class AlignServer(object):
         refl = getattr(scan, "sample_refl", None)
         if refl is not None and len(refl) != len(sample):
             refl = None
-        camera = (0.0, 0.0, float(getattr(scan, "camera_z", 0.0) or 0.0))
+        camera = _seat_of(scan)
 
         rows = []
         for at, name in enumerate(names):
@@ -1461,6 +1480,8 @@ class AlignServer(object):
         """
         from . import colour as colour_mod
         info = colour_scan(scan, photo, camera_z=pose.get("camera_z") or 0.0,
+                           camera_x=pose.get("camera_x") or 0.0,
+                           camera_y=pose.get("camera_y") or 0.0,
                            yaw=pose.get("yaw_deg"),
                            pitch=pose.get("pitch_deg"),
                            roll=pose.get("roll_deg"))
@@ -1705,7 +1726,7 @@ class AlignServer(object):
                 photo = sc.photo or (sc.colour_info or {}).get("photo")
                 sample = (sc.sample if sc.sample is not None and len(sc.sample)
                           else sc.xyz)
-                camera = (0.0, 0.0, float(getattr(sc, "camera_z", 0.0) or 0.0))
+                camera = _seat_of(sc)
                 try:
                     _rgb, lum = colour_mod.load_panorama(photo)
                     yaw, conf, prof = colour_mod.solve_yaw(sample, lum,
@@ -1812,10 +1833,11 @@ class AlignServer(object):
         if want > len(colour_mod.RUNGS):
             return {"ok": True, "done": True, "info": info,
                     "message": "this is as close as the two methods here can "
-                               "put it: the heading, the camera's lean and "
-                               "its height have all been fitted and none of "
-                               "them moves any further. What is left is a "
-                               "judgement by eye."}
+                               "put it: the heading, the camera's lean, its "
+                               "height and its seat on the mount have all "
+                               "been fitted and none of them moves any "
+                               "further. What is left is a judgement by "
+                               "eye."}
         sample = (scan.sample if scan.sample is not None and len(scan.sample)
                   else scan.xyz)
         self._progress = {"stage": "refining %s (%s)"
@@ -1825,7 +1847,9 @@ class AlignServer(object):
             rgb_img, lum = colour_mod.load_panorama(photo)
             got = colour_mod.refine_pose(
                 sample, lum,
-                camera=(0.0, 0.0, float(info.get("camera_z") or 0.0)),
+                camera=(float(info.get("camera_x") or 0.0),
+                        float(info.get("camera_y") or 0.0),
+                        float(info.get("camera_z") or 0.0)),
                 yaw_deg=float(info["yaw_deg"]),
                 pitch_deg=float(info.get("pitch_deg") or 0.0),
                 roll_deg=float(info.get("roll_deg") or 0.0),
@@ -1839,6 +1863,8 @@ class AlignServer(object):
             return {"ok": False, "error": got.get("reason") or "cannot refine"}
 
         scan.camera_z = float(got["camera_z"])
+        scan.camera_x = float(got.get("camera_x") or 0.0)
+        scan.camera_y = float(got.get("camera_y") or 0.0)
         fresh = self._repaint(scan, photo, got, info)
         if not fresh.get("ok"):
             return {"ok": False, "error": fresh.get("reason")
@@ -1934,7 +1960,9 @@ class AlignServer(object):
             rgb_img, lum = colour_mod.load_panorama(photo)
             got = colour_mod.deep_align(
                 sample, lum, refl=refl,
-                camera=(0.0, 0.0, float(info.get("camera_z") or 0.0)),
+                camera=(float(info.get("camera_x") or 0.0),
+                        float(info.get("camera_y") or 0.0),
+                        float(info.get("camera_z") or 0.0)),
                 yaw_deg=float(info["yaw_deg"]),
                 pitch_deg=float(info.get("pitch_deg") or 0.0),
                 roll_deg=float(info.get("roll_deg") or 0.0),
@@ -1950,6 +1978,8 @@ class AlignServer(object):
             return {"ok": False, "error": got.get("reason") or "cannot search"}
 
         scan.camera_z = float(got["camera_z"])
+        scan.camera_x = float(got.get("camera_x") or 0.0)
+        scan.camera_y = float(got.get("camera_y") or 0.0)
         fresh = self._repaint(scan, photo, got, info)
         if not fresh.get("ok"):
             return {"ok": False, "error": fresh.get("reason")
@@ -2087,7 +2117,9 @@ class AlignServer(object):
         self._progress = {"stage": "solving %s" % scan.name,
                           "n": 0, "total": 1, "busy": True}
         try:
-            info = colour_scan(scan, photo, camera_z=scan.camera_z)
+            info = colour_scan(scan, photo, camera_z=scan.camera_z,
+                               camera_x=scan.camera_x,
+                               camera_y=scan.camera_y)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -2134,7 +2166,13 @@ class AlignServer(object):
         self._progress = {"stage": "colouring %s" % scan.name,
                           "n": 0, "total": 1, "busy": True}
         try:
-            info = colour_scan(scan, photo, camera_z=z, yaw=keep)
+            # ⛔ THE SEAT SURVIVES A HEIGHT CHANGE. This route sets z alone;
+            # rebuilding the pose without x and y would silently throw away a
+            # seat the deep polish had measured -- the exact bug the height
+            # itself suffered from before it was stored.
+            info = colour_scan(scan, photo, camera_z=z, yaw=keep,
+                               camera_x=scan.camera_x,
+                               camera_y=scan.camera_y)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
@@ -2197,6 +2235,8 @@ class AlignServer(object):
                           "n": 0, "total": 1, "busy": True}
         try:
             info = colour_scan(scan, photo, yaw=yaw,
+                               camera_x=scan.camera_x,
+                               camera_y=scan.camera_y,
                                camera_z=getattr(scan, "camera_z", 0.0))
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
@@ -2400,7 +2440,10 @@ class AlignServer(object):
                 lost.append(os.path.basename(pose.get("photo") or "?"))
                 continue
             scan.camera_z = float(pose.get("camera_z") or 0.0)
+            scan.camera_x = float(pose.get("camera_x") or 0.0)
+            scan.camera_y = float(pose.get("camera_y") or 0.0)
             colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
+                        camera_x=scan.camera_x, camera_y=scan.camera_y,
                         yaw=pose.get("yaw_deg"),
                         pitch=pose.get("pitch_deg"),
                         roll=pose.get("roll_deg"))
@@ -6119,8 +6162,11 @@ function photoRow(s){
      of freedom: the heading, then the lean a heading cannot absorb, then the
      camera's height. The label says which rung is next, and when there is
      none it says that rather than pretending. */
-  const rung = +(s.rung||0), RUNGS = 3;
-  const rn = ['the heading, finely','the camera\u2019s lean','the camera\u2019s height'];
+  const rung = +(s.rung||0), RUNGS = 4;
+  const rn = ['the heading, finely','the camera\u2019s lean',
+              'the camera\u2019s height',
+              'the camera\u2019s seat \u2014 the sideways offset that smears '+
+              'colour on everything near'];
   const auto = (rung>=RUNGS)
     ? '<button class="mini" disabled title="The heading, the lean and the '+
       'height have all been fitted and none of them moves further. What is '+

@@ -3362,7 +3362,8 @@ class _FlatScorer(object):
         self.evaluations = 0
     def filled(self, camera_z=None):
         return 1.0
-    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+              camera_x=None, camera_y=None):
         self.evaluations += 1
         return 0.5
 
@@ -3380,7 +3381,8 @@ class _PeakScorer(object):
         self.evaluations = 0
     def filled(self, camera_z=None):
         return 1.0
-    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None):
+    def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+              camera_x=None, camera_y=None):
         self.evaluations += 1
         return -((yaw_deg - self.want[0]) ** 2
                  + (pitch_deg - self.want[1]) ** 2
@@ -3977,16 +3979,16 @@ class _Deep(object):
         return (math.exp(-(off / width) ** 2)
                 - 0.01 * (abs(pitch) + abs(roll) + abs(z or 0.0)))
 
-    def score(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+    def score(self, yaw=0.0, pitch=0.0, roll=0.0, z=None, *seat):
         self.evaluations += 1
         return self._bump(yaw, pitch, roll, z, 25.0)
 
-    def mutual(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+    def mutual(self, yaw=0.0, pitch=0.0, roll=0.0, z=None, *seat):
         if not self.want_mi:
             return None
         return 0.5 if self.mi_flat else self._bump(yaw, pitch, roll, z, 18.0)
 
-    def beacon(self, yaw=0.0, pitch=0.0, roll=0.0, z=None):
+    def beacon(self, yaw=0.0, pitch=0.0, roll=0.0, z=None, *seat):
         if not self.want_beacon:
             return None
         # deliberately wrong: peaks half a turn from the truth
@@ -4091,11 +4093,14 @@ class _Counting(colour.PoseScorer):
         self.builds = 0
         colour.PoseScorer.__init__(self, *a, **k)
 
-    def _at(self, camera_z=None):
-        z = self.camera[2] if camera_z is None else float(camera_z)
-        if z not in self._cache:
+    def _at(self, camera_z=None, camera_x=None, camera_y=None):
+        # The cache is keyed on the full camera position now, seat included.
+        key = (self.camera[0] if camera_x is None else float(camera_x),
+               self.camera[1] if camera_y is None else float(camera_y),
+               self.camera[2] if camera_z is None else float(camera_z))
+        if key not in self._cache:
             self.builds += 1
-        return colour.PoseScorer._at(self, camera_z)
+        return colour.PoseScorer._at(self, camera_z, camera_x, camera_y)
 
 
 _lum = (_rng.random((120, 240)) * 255)
@@ -5167,6 +5172,73 @@ check("the fan is never handed a thinned cloud to judge with",
 check("the page says what one press means now",
       "One press runs the whole search, coarse to fine" in _ALIGN_SRC
       and "Press again to refine further" not in _ALIGN_SRC)
+
+
+# --- the camera's seat, and the fine polish --------------------------------
+#
+# ⛔⛔ THE POSE MODEL HAD FIVE OF THE CAMERA'S SIX NUMBERS. Heading, tip,
+# bank, height -- and nothing for where the centre sits SIDEWAYS of the
+# lidar's axis, on a camera that is remounted by hand. That offset is
+# parallax on everything near: colour smeared by atan(offset/range), which
+# grows as things get close and which NO rotation can express. "The colours
+# are close but never quite on" was that, from the outside. Measured on the
+# operator's own restaurant scan: the camera sits 1.4 cm off-axis, and
+# letting the polish move it raised the fit 31% with BOTH independent
+# measures rising together -- edges +15%, mutual information +7.6%.
+print("\nthe camera's seat")
+
+_rs9 = np.random.RandomState(9)
+_d9 = _rs9.normal(size=(60000, 3))
+_d9 /= np.linalg.norm(_d9, axis=1)[:, None]
+_shell = _d9 * _rs9.uniform(2, 6, 60000)[:, None]
+_img9 = _rs9.randint(0, 255, (256, 512)).astype(np.float64)
+_sc9 = colour.PoseScorer(_shell, _img9)
+check("moving the seat changes what the cloud looks like from the camera",
+      _sc9.score(10.0) != _sc9.score(10.0, camera_x=0.05, camera_y=-0.03))
+check("and each seat is cached like each height, not rebuilt per pose",
+      len(_sc9._cache) == 2)
+check("the seat is bounded at a mounting tolerance, not left free",
+      0.05 <= colour.MAX_SEAT_M <= 0.3, colour.MAX_SEAT_M)
+
+check("the ladder has a fourth rung and it is the seat",
+      len(colour.RUNGS) == 4 and colour.RUNGS[3][0] == "seat")
+_g9 = colour.refine_pose(_shell, _img9, yaw_deg=10.0, rung=4, budget=60)
+check("rung four actually moves it, and reports how far",
+      _g9["ok"] and "seated_m" in _g9 and "camera_x" in _g9, _g9.get("reason"))
+_g3 = colour.refine_pose(_shell, _img9, yaw_deg=10.0, rung=3, budget=40)
+check("...and rung three still does not touch it",
+      _g3["ok"] and _g3["camera_x"] == 0.0 and _g3["camera_y"] == 0.0)
+
+# ⭐⭐ THE FINE POLISH IS THE ACCURATE END OF THE DEEP SEARCH: a grid with a
+# quarter of the solve grid's cell, all three gated measures, and the seat.
+check("there is a fine polish, and it judges on a finer grid than the solve",
+      colour.FINE_POLISH_LON == 2 * colour.SOLVE_LON_BINS
+      and colour.FINE_POLISH_LAT == 2 * colour.SOLVE_LAT_BINS)
+check("...but not finer than the photograph can support",
+      colour.FINE_POLISH_LON * colour.PREFILTER_SCALE <= 5888 // 2)
+_CLR = open(colour.__file__, encoding="utf-8").read()
+check("the deep search now ends with it",
+      "fined = deep_refine(" in _CLR)
+check("and its guard judges the incumbent on the SAME fine objective, last",
+      "score=float(was)" in _CLR)
+
+# --- the wiring ------------------------------------------------------------
+check("the seat is stored on the scan like the height is",
+      "self.camera_x = 0.0" in _ALIGN_SRC
+      and "self.camera_y = 0.0" in _ALIGN_SRC)
+check("one helper builds the camera tuple, not four hand-rolled copies",
+      "def _seat_of(scan)" in _ALIGN_SRC
+      and "(0.0, 0.0, float(getattr(scan" not in _ALIGN_SRC)
+# ⛔ A HEIGHT CHANGE MUST NOT WIPE THE SEAT -- the exact bug the height
+# itself once suffered: a pose rebuilt with fewer numbers than it had.
+check("setting the height alone keeps the seat the polish measured",
+      "THE SEAT SURVIVES A HEIGHT CHANGE" in _ALIGN_SRC)
+check("a reopened project gets its seat back",
+      'scan.camera_x = float(pose.get("camera_x") or 0.0)' in _ALIGN_SRC)
+check("the repaint passes the whole seat through",
+      'camera_x=pose.get("camera_x") or 0.0' in _ALIGN_SRC)
+check("the page offers all four rungs",
+      "RUNGS = 4;" in _ALIGN_SRC and "seat" in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
