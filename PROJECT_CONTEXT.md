@@ -2507,6 +2507,63 @@ the operator. **A behaviour change has to be chased into the sentences that desc
 the made-up paths, was caught by `dedupe`'s `except OSError`, and every size came back unknown. The check
 failed while reporting that nothing was a duplicate.
 
+#### ⛔⛔ HIDING A CLOUD — AND THE BUG THAT WAS ALREADY THERE
+
+The operator asked for *"a toggle to hide a scan so i can edit points on a different scan"*. A show-one
+control **already existed** — and it changed the picture and **nothing else**. `recomputeLive` never
+consulted it, so **a lasso drawn while one scan was isolated still cut through every cloud**.
+
+⛔⛔ So the single gesture an operator makes when clouds overlap — hide the front one, cut the back one —
+**silently deleted points from the cloud they had just taken off the screen**, in a program whose entire
+safety story is that you look at what you are about to remove. The request was for a feature; what it
+uncovered was a data-loss path.
+
+Each scan now has its own **Hide**. A hidden cloud is **not drawn, not pickable, and not taken from by
+new cuts** — and a **standing line** says what is hidden, because *"where has my cloud gone"* is the
+failure mode of every hide and a status message that scrolled away twenty minutes ago cannot answer it.
+
+⛔ **HIDING DOES NOT CHANGE WHAT IS EXPORTED.** That is **Remove**, a different button meaning a
+different thing, and the tooltip says so — because everyone will assume one of the two and half of them
+will assume wrong.
+
+⭐ **THAT NEEDED A CUT TO NAME SEVERAL CLOUDS**, since "the visible ones" is rarely exactly one. A scope
+is now `None`, one index, or a set (`pipeline._scope` / `_in_scope`, mirrored on the page by `planFor` —
+and **they have to stay mirrored**, or the preview shows one thing and the file holds another). One index
+still reads and writes as **one index**, so projects written before this load unchanged.
+
+⛔ **AND AN EMPTY SCOPE MEANS NO CLOUD, NEVER EVERY CLOUD.** It is what a cut made with everything hidden
+means; turning it into `None` would send that cut through the whole job — the exact inversion the
+operator is protecting against.
+
+#### ⛔⛔ LOADING KEPT NINE PER CENT AND REPORTED FULL DETAIL
+
+*"when you load the scan in load them at full resolution"*. Measured on their capture before changing
+anything: **23,464,814 returns decoded, 2,111,114 held — nine per cent** — and the page was told
+**`subsampled: false`**.
+
+⭐ **THE VOXEL WAS NEVER WHAT BOUNDED THE PICTURE.** The default was a 2 cm voxel, justified by a
+live-transformed workbench needing to stay responsive. But what actually bounds what is held is the
+**viewer buffer's own cap**, and at `voxel_m=0` the points stream straight into it — so the voxel was
+only ever discarding detail that would have fitted. `DEFAULT_ALIGN_VOXEL` is **0.0** now. Verified on the
+real capture: **23,464,814 of 23,464,814 in 14.3 s**, against 2,111,114 in 10.0 s. Eleven times the
+detail for 43% more time.
+
+⛔ **THE FLAG UNDER-REPORTED BY A FACTOR OF ELEVEN BECAUSE IT ANSWERED A NARROWER QUESTION.**
+`ViewerBuffer.subsampled` means "did **this buffer** thin what it was given" — and with a voxel
+accumulator upstream the buffer is handed an already-reduced cloud, thins nothing, and honestly answers
+no. `kept(total)` asks the question the panel actually needs: **is this everything the capture had.**
+
+⛔⛔ **AND THE CONSEQUENCE THAT ALMOST SHIPPED.** `load` divides its allowance by the paths **in the
+call**, so adding scans **one at a time** gave each one the whole budget. Invisible while a voxel bounded
+every capture to two million points; **sixteen gigabytes** the moment the default became full detail.
+`add()` now divides by the scans already open as well — verified live: two real captures held
+46,501,002 points against a 60,000,000 budget.
+
+⚠ **AND A DIAGNOSTIC THAT REPORTED NOTHING.** A node failure in the tests printed `stderr[-400:]`, which
+is always node's own module loader — the same four lines whatever went wrong. **The message is at the
+TOP of a stack**, and the failure had to be reproduced by hand before it could be read. Now `[:400]`.
+*Third time this project has found a diagnostic that worked except in the case it existed for.*
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi
