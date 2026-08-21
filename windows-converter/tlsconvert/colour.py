@@ -395,8 +395,20 @@ def sample(xyz, rgb, yaw_deg=0.0, camera=(0.0, 0.0, 0.0),
         return rgb[v, u]
 
     upright = is_upright(pitch_deg, roll_deg)
-    rot = None if upright else xp.asarray(
-        camera_matrix(yaw_deg, pitch_deg, roll_deg).T)
+    # ⛔⛔ NINE PLAIN NUMBERS, NOT A MATRIX, AND THIS IS NOT MICRO-OPTIMISATION.
+    # Written as `d @ rot` this is a matrix multiply, and CuPy answers a matrix
+    # multiply by calling cuBLAS -- which on Windows means cublas64 and
+    # cublasLt, 516 MB of libraries that the packaged CUDA engine then has to
+    # carry, for an inner dimension of THREE. Measured by taking cublasLt out
+    # of the engine: everything else still ran, and this line alone failed. The
+    # engine is 697 MB with it and 181 MB without.
+    #
+    # ⭐ AND IT IS BETTER ARITHMETIC ANYWAY. The old form built an (N, 3)
+    # result to read two columns and a third out of it; this writes the three
+    # columns it actually wants and never allocates the array in between.
+    rot = (None if upright
+           else [float(v) for v in
+                 camera_matrix(yaw_deg, pitch_deg, roll_deg).T.ravel()])
     cam = xp.asarray(np.asarray(camera, dtype=np.float64))
     gimg = _resident(rgb)
     out = np.empty((len(xyz), rgb.shape[2]) if rgb.ndim == 3 else len(xyz),
@@ -410,9 +422,11 @@ def sample(xyz, rgb, yaw_deg=0.0, camera=(0.0, 0.0, 0.0),
             lon = xp.arctan2(d[:, 0], d[:, 1]) + math.radians(yaw_deg)
             z = d[:, 2]
         else:
-            t = d @ rot
-            lon = xp.arctan2(t[:, 0], t[:, 1])
-            z = t[:, 2]
+            dx, dy, dz = d[:, 0], d[:, 1], d[:, 2]
+            tx = dx * rot[0] + dy * rot[3] + dz * rot[6]
+            ty = dx * rot[1] + dy * rot[4] + dz * rot[7]
+            lon = xp.arctan2(tx, ty)
+            z = dx * rot[2] + dy * rot[5] + dz * rot[8]
         lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
         lat = xp.arcsin(xp.clip(z, -1.0, 1.0))
         u = xp.clip(((lon / (2.0 * math.pi)) + 0.5) * w, 0,

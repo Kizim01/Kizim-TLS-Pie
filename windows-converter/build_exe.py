@@ -56,6 +56,35 @@ APPS = ((NAME, "tlsconvert_gui.py", True),
         (CLI_NAME, "tlsconvert_cli.py", False))
 
 
+# ⛔⛔ THE STANDARD-LIBRARY MODULES THE CUDA ENGINE WILL ASK FOR, AND WHY THEY
+# HAVE TO BE NAMED HERE. PyInstaller decides what to bundle by reading the
+# program's imports -- and the engine is deliberately NOT part of the program.
+# It is a folder found beside the .exe at run time, so nothing static analysis
+# can see refers to it, and every module CuPy needs that this program does not
+# happen to use itself is simply absent. The failure is late and misleading:
+# the folder is there, the operator has done everything right, and the card
+# reports as unavailable because of a missing `graphlib`.
+#
+# ⭐ MEASURED BY IMPORTING CuPy AND TAKING THE DIFFERENCE IN sys.modules. Two
+# cheaper methods were tried first and BOTH were wrong: an AST walk over the
+# engine's .py files cannot see what its compiled half imports, and a byte
+# search of the .pyd files for module names turned up `this`, `pdb` and `tty`
+# while missing `graphlib` -- the only one that actually mattered. The import
+# system is the one witness that cannot be mistaken about this.
+ENGINE_STDLIB = [
+    "annotationlib", "ast", "atexit", "binascii", "bisect", "bz2", "codeop",
+    "collections", "compression", "contextlib", "contextvars", "copy",
+    "copyreg", "ctypes", "dataclasses", "datetime", "dis", "email", "enum",
+    "fnmatch", "functools", "gc", "glob", "graphlib", "hashlib", "importlib",
+    "inspect", "io", "itertools", "json", "keyword", "linecache", "locale",
+    "lzma", "math", "msvcrt", "numbers", "opcode", "operator", "pathlib",
+    "pickle", "platform", "posixpath", "random", "re", "reprlib", "shutil",
+    "signal", "socket", "string", "struct", "subprocess", "sysconfig",
+    "tempfile", "textwrap", "threading", "token", "tokenize", "traceback",
+    "types", "typing", "warnings", "weakref", "zipfile", "zlib",
+]
+
+
 def main(argv=None):
     """
     Build every app, or just the ones named on the command line.
@@ -119,6 +148,12 @@ def main(argv=None):
         cmd += [x for name in ("cupy", "cupyx", "cupy_backends", "fastrlock",
                                "nvidia", "cuda", "cuda_pathfinder")
                 for x in ("--exclude-module", name)]
+        # ...but the standard library it will want has to be here, because by
+        # the time it is asked for there is nothing left to add it to. See
+        # ENGINE_STDLIB: roughly a megabyte, against a card worth six times the
+        # processor on the passes that touch every point.
+        cmd += [x for name in ENGINE_STDLIB
+                for x in ("--hidden-import", name)]
         if os.path.exists(ICON):
             cmd += ["--icon", ICON]
         else:

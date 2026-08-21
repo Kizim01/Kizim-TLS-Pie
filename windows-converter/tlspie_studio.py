@@ -55,6 +55,13 @@ def main(argv=None):
     if "--selftest" in argv:
         ok = desktop.have_native()
         print("native window backend available: %s" % ok)
+        # ⭐ REPORTED, NOT REQUIRED. A build with no engine beside it is a
+        # correct build -- everything falls back to the processor -- so this
+        # says what it found and does not change the exit code. The console
+        # build's --gpu is what actually exercises the card.
+        from tlsconvert import gpu
+        print("graphics card: %s" % gpu.name())
+        print("cuda engine  : %s" % (gpu.engine()[0] or "none"))
         return 0 if ok else 3
 
     if "--associate" in argv:

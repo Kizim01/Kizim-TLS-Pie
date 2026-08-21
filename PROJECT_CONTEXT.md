@@ -2931,6 +2931,89 @@ that here. It names the six axes instead.
 
 Converter suite **749 → 796**.
 
+#### ⭐⭐ THE CUDA ENGINE: 180 MB BESIDE THE .exe, NINE TIMES THE PROCESSOR, VERIFIED THROUGH THE PACKAGED BUILD
+
+The double-clickable programs were CPU-only by design and said so in the bar. They are not any more.
+`build_cuda_engine.py` writes a **`cuda-engine` folder** that sits next to the executables; `gpu.py`
+finds it, opens its libraries and puts it on the path before anything asks for CuPy. No engine
+folder, or no card, and everything behaves exactly as before — which is to say correctly, on the
+processor.
+
+⭐⭐ **A FOLDER, NOT PART OF THE PROGRAM, AND THE REASON IS `--onefile`.** Bundling CuPy was
+measured once and gave three executables of **1,032 MB apiece** — and a one-file build unpacks
+itself into a temporary directory *at every launch*, so the operator would wait through a gigabyte of
+copying to open a capture, on a laptop that may have no NVIDIA card at all. Beside the program, the
+executables stay at 35 MB, start instantly, and the engine can be copied in or deleted without
+rebuilding anything.
+
+⛔⛔ **WHAT GOES IN IT WAS MEASURED TWICE, AND THE TWO MEASUREMENTS ANSWER DIFFERENT QUESTIONS.**
+The NVIDIA wheels are 1,477 MB of libraries. The first pass read the *loader* — `K32EnumProcessModules`
+during a real panorama and a real colouring — which says what is **loaded**. That is not the same as
+what is **needed**: a library can be mapped in and never asked a question. So every large one was then
+**moved aside and the packaged build re-run**, and that is how cuBLAS left.
+
+⭐⭐ **ONE MATRIX MULTIPLY OF INNER DIMENSION THREE WAS WORTH 516 MB.** `colour.sample` rotated its
+direction vectors with `d @ rot` — an (N,3) by (3,3) — and CuPy answers `@` by calling cuBLAS, which
+on Windows means `cublas64` **plus `cublasLt` at 464 MB**. Written out as nine multiplications, the
+engine went **697 MB → 180 MB** and the card got **faster**: 6.3× the processor to **9.0×**. A
+3-wide GEMM was never going to be worth the dispatch, and it was also allocating an (N,3) result to
+read three columns out of.
+
+Left behind: cuFFT (256 MB), cuSPARSE (166 MB), cuSOLVER (277 MB), cuRAND (59 MB), nvJitLink (93 MB),
+cuBLAS (516 MB). Kept: NVRTC and its builtins, and the CUDA runtime — **108 MB**, plus 63 MB of CuPy
+and **8 MB of CUDA headers**.
+
+⛔ **THE HEADERS ARE NOT OPTIONAL AND ARE THE EASIEST THING TO MISS.** CuPy ships no compiled
+kernels: it writes CUDA C for each operation the first time that operation is asked for and builds it
+with NVRTC, which needs `cuda_fp16.h` and its neighbours like any other compiler. Without them the
+engine imports, names the card, passes the probe — and dies on the first real subtraction.
+
+#### ⛔⛔ THREE FAILURES THAT ONLY EXIST IN THE PACKAGED BUILD
+
+Each of these worked perfectly in the development environment and only appeared in the .exe, which is
+why the builder verifies against the frozen program and never against itself.
+
+| what happened | why |
+|---|---|
+| `No module named 'graphlib'` | PyInstaller decides what to bundle by reading **the program's** imports — and the engine is deliberately *not* part of the program. Every standard-library module CuPy needs that this program does not happen to use itself was simply absent. The failure is late and misleading: the folder is there, the operator has done everything right, and the card reports unavailable. |
+| `unrecognized arguments: -m` | `cuda.pathfinder` ends its library search in a **canary probe**: it runs `sys.executable -m ...` as a child process to ask the OS where a library lives. In a frozen program **`sys.executable` is the application**, so the child was this very program started again with a flag it does not understand — and the import died on an argparse error printed by its own second copy. |
+| The same probe, again, for headers | The header search has the same cascade. `CUDA_PATH` is consulted *before* the canary, so setting it at the engine and shipping `include/` closes that door too. |
+
+⭐ **THE FIX FOR THE CANARY IS AN EARLIER DOOR, NOT A BETTER SEARCH.** Pathfinder asks "is this
+already loaded?" *before* it searches. Opening the engine's libraries here by absolute path with
+`ctypes.WinDLL` is both simpler and stronger than teaching it where to look: it does not depend on the
+shape of somebody else's search order, only on the files being where this program put them.
+
+⛔⛔ **AND ENUMERATING WHAT THE ENGINE NEEDS COULD NOT BE DONE BY READING IT.** Two cheaper methods
+were tried and **both were wrong in both directions**: an AST walk over the engine's `.py` files
+cannot see what its compiled half imports, and a byte search of the `.pyd` files for module names
+turned up `this`, `pdb` and `tty` while **missing `graphlib`** — the only one that mattered. The
+answer came from the import system: import CuPy, do real work, and take the difference in
+`sys.modules`. 65 modules, and they are named in `build_exe.py`.
+
+#### ⭐ `--gpu`: THE ONLY WAY TO ASK A DEPLOYED BUILD WHETHER THE CARD IS REALLY WORKING
+
+`dist\tlsconvert.exe --gpu` reports the engine, the device, and then **re-runs the same work on the
+processor and compares**. "The card is present" is not the question; every number this project has on
+record was measured through the NumPy path, and a backend that quietly disagreed would re-price all of
+them while reporting success. Studio is `--windowed` and has nowhere to print, so the console build is
+the witness — the same argument as `--selftest`.
+
+⛔⛔ **AND IT HAD TO BE TOLD THAT A FIRST RUN TIMES THE COMPILER.** Cold, the report measured the
+card at **0.7× the processor** — slower — because CuPy was building every kernel it needed with
+NVRTC inside the timed section. Warm, the same work was **6.1×**. "0.7×" is a number an operator would
+act on, by concluding the card is not worth having and deleting a folder that was about to be six
+times faster. Both sides are warmed now, and if the ratio still comes out poor the report says why.
+
+⚠ **A check of mine was defeated by the comment explaining the thing it forbids.** The new test
+asserts no matrix multiply remains on the card — by searching the file for `@ rot`, which is exactly
+what the comment that *replaced* it says: *"Written as `d @ rot` this is a matrix multiply"*. It read
+the prose about the code as though it were the code. (It was also slicing with `find("\ndef ")`
+inside a raw string, where the backslash-n is two characters and matches nothing, so it had never
+been looking where it claimed.)
+
+Converter suite **796 → 816**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

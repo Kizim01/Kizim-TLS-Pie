@@ -4903,5 +4903,134 @@ check("...and that guard sits AFTER the three combinations this program does "
       < _kd.find("e.ctrlKey || e.metaKey || e.altKey) return"))
 
 
+# --- the CUDA engine -------------------------------------------------------
+#
+# ⭐⭐ A FOLDER BESIDE THE .exe, NOT PART OF IT. Bundled into a --onefile build
+# CuPy measured 1,032 MB per executable, and a one-file build unpacks itself to
+# a temporary directory at every launch -- so the operator would wait through a
+# gigabyte of copying to open a capture, on a laptop that may have no card.
+print("\nthe cuda engine")
+
+_bce = os.path.join(os.path.dirname(os.path.abspath(align.__file__)),
+                    "..", "build_cuda_engine.py")
+check("there is a builder for it", os.path.exists(_bce))
+_BCE = open(_bce, encoding="utf-8").read()
+_BEX = open(os.path.join(os.path.dirname(_bce), "build_exe.py"),
+            encoding="utf-8").read()
+_CLI = open(os.path.join(os.path.dirname(_bce), "tlsconvert_cli.py"),
+            encoding="utf-8").read()
+_GPU = open(gpu.__file__, encoding="utf-8").read()
+
+# ⛔ THE EXECUTABLES MUST NOT CARRY IT. This is the check that stops the
+# 1,032 MB build coming back by accident.
+check("the executables still exclude CuPy outright",
+      _BEX.count('"--exclude-module", name') >= 1
+      and '"cupy", "cupyx", "cupy_backends"' in _BEX)
+# ⛔⛔ ...BUT THEY MUST CARRY THE STANDARD LIBRARY IT WILL ASK FOR. PyInstaller
+# decides what to bundle from the program's imports, and the engine is
+# deliberately not part of the program -- so `graphlib` was absent and the card
+# reported unavailable with the folder sitting right there.
+check("and they DO carry the standard library the engine will want",
+      "ENGINE_STDLIB" in _BEX and '"graphlib"' in _BEX
+      and '"--hidden-import", name' in _BEX)
+
+# ⛔ FOUND BESIDE THE EXECUTABLE, NOT BESIDE __file__. A frozen one-file program
+# runs from a temporary directory that is deleted on exit; the operator has
+# never seen it and cannot put anything in it.
+check("the engine is looked for beside the program the operator double-clicks",
+      "sys.executable" in _GPU and "getattr(sys, \"frozen\", False)" in _GPU)
+check("and an engine can be pointed at from elsewhere",
+      "TLSPIE_CUDA_ENGINE" in _GPU)
+_where, _why = gpu.engine()
+check("asking where the engine is always answers something",
+      isinstance(_why, str) and _why != "")
+
+# ⛔⛔ THE LIBRARIES ARE OPENED HERE, BY ABSOLUTE PATH, BEFORE CuPy ASKS.
+# `cuda.pathfinder` ends its search in a "canary probe" that runs
+# `sys.executable -m ...` as a child process -- and in a frozen program
+# sys.executable is the APPLICATION. The child was this very program started
+# again with a flag it does not understand, and the import died on an argparse
+# error printed by its own second copy. Pathfinder checks "already loaded"
+# before it searches, so loading them ourselves never reaches that door.
+check("the engine's libraries are opened by this program, not hunted for by "
+      "a child process",
+      "def _preload" in _GPU and "ctypes.WinDLL" in _GPU)
+check("and CUDA_PATH is set, because the headers are found through it",
+      'os.environ.setdefault("CUDA_PATH"' in _GPU)
+# ⛔ HEADERS ARE NOT OPTIONAL: CuPy compiles every kernel on first use.
+check("the engine ships CUDA's headers, or no kernel would compile",
+      "HEADER_REL" in _BCE and "include" in _BCE)
+
+# ⛔⛔ ONE MATRIX MULTIPLY OF INNER DIMENSION THREE WAS WORTH 516 MB. CuPy
+# answers `@` by calling cuBLAS, which on Windows is cublas64 plus cublasLt.
+# Written out as nine multiplications the engine went 697 MB -> 181 MB, and
+# got FASTER: 6.3x the processor to 9.0x.
+_COLOUR_SRC = open(colour.__file__, encoding="utf-8").read()
+# ⚠ CODE ONLY. Searching the file text for the construct found it in the
+# COMMENT that explains why it was removed -- "Written as `d @ rot` this is a
+# matrix multiply" -- so the check reported the fault it had just been written
+# to confirm was fixed. A test that forbids a construct has to read the code
+# and not the prose about the code.
+_CODE = [ln for ln in _COLOUR_SRC.splitlines()
+         if ln.strip() and not ln.strip().startswith("#")]
+check("nothing on the card asks for a matrix multiply",
+      not [ln for ln in _CODE if "@ rot" in ln],
+      [ln.strip() for ln in _CODE if "@ rot" in ln][:1])
+check("...and the rotation it replaced it with is there",
+      any("xp.arctan2(tx, ty)" in ln for ln in _CODE))
+check("and cuBLAS is not in the engine because of it",
+      "cublas" not in _BCE.split("KEEP_DLLS = [")[1].split("]")[0].lower())
+check("the engine leaves out what this program never asks for",
+      all(x not in _BCE.split("KEEP_DLLS = [")[1].split("]")[0]
+          for x in ("cufft", "cusolver", "cusparse", "curand")))
+
+# ⛔⛔ AND THE BUILDER PROVES ITSELF AGAINST THE PACKAGED BUILD, NOT AGAINST
+# ITSELF. The environment it runs in has CuPy on its path already, so every
+# check made there would pass whether the folder were complete or empty.
+check("the builder verifies with the frozen executable, which has no CuPy of "
+      "its own",
+      "tlsconvert.exe" in _BCE and "--gpu" in _BCE)
+check("and a packaged build can be asked, without being given a capture to "
+      "convert",
+      '"--gpu" in argv_now' in _CLI and "def gpu_report" in _CLI)
+# ⛔ "THE CARD IS PRESENT" IS NOT THE QUESTION; "THE CARD AGREES" IS.
+check("the report re-runs the same work on the processor and compares",
+      "THE CARD DISAGREES WITH THE PROCESSOR" in _CLI)
+check("and it warns that a first run times the compiler, not the card",
+      "That is slower than it will be" in _CLI)
+
+# ⛔⛔ AN ENGINE THAT IS PRESENT AND WILL NOT LOAD MUST SAY WHY, AND NOT BY
+# TAKING THE FIRST LINE: CuPy wraps its import failure in a banner of equals
+# signs, so "the first line" is a row of punctuation. Fourth time in this
+# project that the earliest thing in a path was not the informative thing.
+class _Banner(Exception):
+    pass
+
+
+_msg = _Banner("=" * 40 + "\nFailed to import CuPy.\n\nOriginal error:\n"
+               "  ModuleNotFoundError: No module named 'graphlib'\n"
+               + "=" * 40)
+_said = gpu._detail(_msg)
+check("a failed engine names the missing thing, not the decoration",
+      "graphlib" in _said and not _said.startswith("="), _said[:60])
+check("and the whole complaint is kept for the console",
+      "def why" in _GPU and "_full" in _GPU)
+
+# ⛔ REFUSING THE CARD STILL WORKS, which is what makes every measurement above
+# possible in the first place.
+_was = os.environ.get("TLSPIE_CUDA")
+os.environ["TLSPIE_CUDA"] = "0"
+gpu.reset()
+try:
+    check("the card can still be refused outright, and says that is why",
+          not gpu.on() and "TLSPIE_CUDA" in gpu.name())
+finally:
+    if _was is None:
+        os.environ.pop("TLSPIE_CUDA", None)
+    else:
+        os.environ["TLSPIE_CUDA"] = _was
+    gpu.reset()
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

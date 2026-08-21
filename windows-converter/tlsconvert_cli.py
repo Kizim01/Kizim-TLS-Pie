@@ -103,6 +103,9 @@ def build_parser():
     p.add_argument("--min-range", type=float, default=0.4)
     p.add_argument("--max-range", type=float, default=120.0)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--gpu", action="store_true",
+                   help="report the graphics card and check it against the "
+                        "processor, then exit")
     return p
 
 
@@ -145,7 +148,117 @@ def run_align(args, paths):
     return 0
 
 
+def gpu_report():
+    """
+    What the graphics card is doing, and whether it is telling the truth.
+
+    ⛔⛔ THE ONLY WAY TO CHECK A DEPLOYED ENGINE, AND IT HAS TO BE THE CONSOLE
+    BUILD. Studio is a --windowed executable with nowhere to print, and the
+    failure to fear is quiet by nature: an engine folder that is missing, half
+    copied, or built against another CUDA version makes `gpu.on()` answer no
+    and everything still WORKS, only fourteen times slower, with nothing on
+    screen that an operator would read as a fault.
+
+    ⛔ AND IT RE-RUNS THE SAME WORK ON THE PROCESSOR AND COMPARES. "The card is
+    present" is not the question; "the card gives the same answer" is. Every
+    number this project has on record -- the confidences, the corroboration
+    threshold, the confirmed heading of 92.314 degrees -- was measured through
+    the NumPy path, and a backend that quietly disagreed would re-price all of
+    them while reporting success.
+    """
+    import numpy as np
+
+    from tlsconvert import colour, gpu
+
+    where, why = gpu.engine()
+    print("engine   : %s" % (where or "none -- running on the processor"))
+    print("found    : %s" % why)
+    print("device   : %s" % gpu.name())
+    if not gpu.on():
+        print("\nNo card in use. That is correct, not broken: every path "
+              "falls back\nto the processor. To use one, put a %s folder "
+              "beside this program\n(build_cuda_engine.py writes it)."
+              % gpu.ENGINE_DIR)
+        return 3
+
+    rs = np.random.RandomState(11)
+    xyz = rs.uniform(-25, 25, (500000, 3))
+    refl = rs.uniform(0, 255, 500000)
+    img = rs.randint(0, 255, (90, 180, 3)).astype(np.uint8)
+
+    def both():
+        pan = colour._panoramas(xyz, refl, (0.0, 0.0, 0.0), 180, 45, 101.0)
+        lit = colour.sample(xyz, img, yaw_deg=30.0, pitch_deg=2.0,
+                            roll_deg=-1.0)
+        return pan, lit
+
+    # ⛔⛔ THE FIRST CALL ON THE CARD TIMES THE COMPILER, NOT THE CARD. CuPy
+    # builds each kernel with NVRTC the first time it is asked for; measured
+    # cold, this reported the card as 0.7x the processor -- the opposite of the
+    # truth, and a number somebody would act on.
+    both()
+    start = time.time()
+    card_pan, card_lit = both()
+    card_s = time.time() - start
+
+    was = os.environ.get(gpu._ENV)
+    os.environ[gpu._ENV] = "0"
+    gpu.reset()
+    colour._ON_CARD["key"] = None
+    try:
+        both()
+        start = time.time()
+        cpu_pan, cpu_lit = both()
+        cpu_s = time.time() - start
+    finally:
+        if was is None:
+            os.environ.pop(gpu._ENV, None)
+        else:
+            os.environ[gpu._ENV] = was
+        gpu.reset()
+        colour._ON_CARD["key"] = None
+
+    worst = 0.0
+    for a, b in zip(card_pan, cpu_pan):
+        a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+        good = np.isfinite(a) & np.isfinite(b)
+        if not good.any():
+            continue
+        worst = max(worst, float(np.max(np.abs(a[good] - b[good]))))
+    same_colour = bool(np.array_equal(card_lit, cpu_lit))
+
+    print("\n500,000 points through the panorama and the colouriser:")
+    print("  card     : %6.3f s" % card_s)
+    print("  processor: %6.3f s   (%.1fx)"
+          % (cpu_s, cpu_s / max(card_s, 1e-9)))
+    print("  worst disagreement in the panorama: %.3e" % worst)
+    print("  colour identical to the processor : %s" % same_colour)
+    if worst > 1e-9 or not same_colour:
+        print("\nTHE CARD DISAGREES WITH THE PROCESSOR. Not usable.",
+              file=sys.stderr)
+        return 4
+    # ⛔⛔ THE FIRST RUN AFTER THE ENGINE IS INSTALLED IS SLOW, AND SAYING SO
+    # IS THE WHOLE POINT. CuPy ships no compiled kernels: it writes CUDA C for
+    # each operation the first time it is asked for and builds it with NVRTC,
+    # caching the result on disk. Measured here, cold, the card came out at
+    # 1.1x the processor and warm at 6.3x -- and "1.1x" is a number an operator
+    # would act on, by concluding the card is not worth having and deleting a
+    # folder that was about to be six times faster.
+    if cpu_s < card_s * 2.0:
+        print("\nThat is slower than it will be. Nothing here ships compiled "
+              "kernels:\nthe first run of each one is built on the spot and "
+              "cached on disk. Run this\nagain and the same work should come "
+              "out several times faster.")
+    print("\nCard in use and agreeing with the processor.")
+    return 0
+
+
 def main(argv=None):
+    # ⛔ BEFORE argparse, because `pcap` is a required positional and asking a
+    # program about itself should not require naming a capture to convert.
+    argv_now = list(sys.argv[1:] if argv is None else argv)
+    if "--gpu" in argv_now:
+        return gpu_report()
     args = build_parser().parse_args(argv)
 
     paths = []
