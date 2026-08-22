@@ -3183,6 +3183,19 @@ sequence of picks, rebuilds and removals — not by matching source strings. The
 
 ### ▶ NEXT SESSION STARTS HERE
 
+**✅ 2026-08-22 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
+35.2 MB, Studio 38.8 MB, `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the
+native window backend, the RTX 3050 Ti and the CUDA engine mounted from `dist\cuda-engine`. Rebuilt
+because the fix above is a **page** fix, and the page only reaches the operator through the exe —
+a suite that passes against `align.py` says nothing about what is on their desktop.
+
+> ⚠ **ONE THING TO TELL THE OPERATOR, AND IT IS OLDER THAN TODAY'S BUG.** Removing a cloud from the
+> session had **always** slid the pick onto its neighbour in silence — `forgetScan` re-keyed the
+> edits, the pairs, the cut scope and the hidden set, but never `V.picked`, and `V.active` survived
+> only because `measure` happened to overwrite it. Fixed now. But **any placement made just after
+> removing a cloud, in any earlier session, is worth looking at**: it may have been applied to a
+> different cloud than the panel named, and it would look entirely deliberate on screen.
+
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi
 itself on 2026-08-20: hashes match, `py_compile` clean, its own suites run there (38 + 54), service
 restarted and came up `active` with the panel ready. Deploy is `scp` to `~/TLS-Pie`, not `git pull`.
