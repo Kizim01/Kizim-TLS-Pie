@@ -5241,5 +5241,119 @@ check("the page offers all four rungs",
       "RUNGS = 4;" in _ALIGN_SRC and "seat" in _ALIGN_SRC)
 
 
+# --- the clean that moved the scans ----------------------------------------
+#
+# ⛔⛔ MEASURE REPORTED THE EXTENTS AND ALSO CHOSE WHICH CLOUD MOVES. It ran
+# `V.active = <the last scan>` unconditionally, and it runs after EVERY
+# rebuild -- so pressing "Remove strays" re-aimed the movement controls at a
+# cloud the operator had not picked, while the panel went on naming the one
+# they had. The sliders and the typed boxes hold ABSOLUTE metres, so the first
+# touch of one committed the previous scan's position onto the new target and
+# the cloud jumped; Auto-align, which reads `active()` too, re-solved a cloud
+# that had already been placed by hand. Reported from the field as "auto clean
+# up points moves all the scans out of registration" -- and the clean never
+# touched a placement at all. It moved the AIM.
+print("\nthe clean that moved the scans")
+
+_M = _js_func("measure")
+check("measure no longer picks the moving scan on its own",
+      "if(!V.chose || !V.scans.some(x=>x.index===V.active))" in _M)
+check("...and it holds exactly one assignment to it, the guarded one",
+      _M.count("V.active =") == 1 and "V.active=" not in _M,
+      _M.count("V.active ="))
+check("the choice is a flag on V, not inferred from an index",
+      "chose:false," in _ALIGN_SRC)
+check("picking a scan by hand records that a person chose it",
+      "if(index>0){ V.active=index; V.chose=true; }" in _ALIGN_SRC)
+# ⛔ AND THE REFERENCE IS NOT A CHOICE OF MOVING SCAN -- it cannot be moved,
+# so recording it as one would freeze `V.active` on a cloud nobody picked.
+check("...but picking the reference does not, because it cannot be moved",
+      "V.chose=true" in _js_func("pickScan").split("if(index>0)")[1])
+
+# ⛔ A REBUILD HANDS BACK EVERY DELETED POINT. `loadScan` fills the live flag
+# with 1, so without `recomputeLive` the cuts come back -- on the one button
+# whose whole job is taking points away.
+for _fn in ("refreshScans", "afterColour"):
+    _b = _js_func(_fn)
+    check("%s re-syncs the controls to the scan they will move" % _fn,
+          "syncSliders()" in _b, _b)
+    check("%s puts the cuts back on after re-uploading the clouds" % _fn,
+          "recomputeLive()" in _b, _b)
+
+if not _node:
+    print("  ---- node is not installed; the pick's own rules were NOT run")
+else:
+    _pick = """
+%s
+const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
+         hidden:{},boxSet:false,
+         box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
+         ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:1,picked:0,chose:false};
+const $=()=>({textContent:'',innerHTML:'',value:0});
+const say=()=>{}, showDensity=()=>{}, invalidate=()=>{}, openTray=()=>{},
+      refreshLists=()=>{}, syncSliders=()=>{};
+function cloud(i){ return {index:i, points:10, reach:5,
+                           lo:[-5,-5,-5], hi:[5,5,5]}; }
+const out={};
+V.scans=[cloud(0),cloud(1),cloud(2)];
+
+/* Nobody has picked yet: the newest cloud is the one the controls move. */
+measure(); out.unchosen=V.active;
+
+/* The operator picks the middle cloud -- then a clean rebuilds everything. */
+pickScan(1); out.picked=V.active;
+measure(); out.afterRebuild=V.active;
+measure(); measure(); out.afterThree=V.active;
+
+/* And a cloud ARRIVING does not move the target either, which is what the
+   rule beside it has always said and only half done. */
+V.scans.push(cloud(3)); measure(); out.afterAdd=V.active;
+
+/* A choice that no longer names a cloud is not kept. */
+V.scans=[cloud(0),cloud(1)]; V.active=7; measure(); out.dangling=V.active;
+
+/* Removing a cloud renumbers the choice like every other index. */
+V.scans=[cloud(0),cloud(1),cloud(2)];
+V.active=2; V.picked=2; V.chose=true; V.editWho=2; V.only=-1;
+V.edits=[]; V.pairs=[];
+forgetScan(1);
+out.shifted=[V.active, V.picked, V.chose];
+
+/* And removing the chosen cloud itself gives the choice up rather than
+   handing it to whichever cloud inherits the number. */
+V.active=1; V.picked=1; V.chose=true; V.editWho=-1; V.only=-1;
+V.edits=[]; V.pairs=[];
+forgetScan(1);
+out.removedChoice=[V.active, V.picked, V.chose];
+console.log(JSON.stringify(out));
+""" % "\n".join(_js_func(f) for f in
+                ("measure", "resetBox", "span", "boxSize", "shown",
+                 "cutScope", "showHidden", "forgetScan", "pickScan"))
+    _pp = os.path.join(_rdir, "pick.js")
+    with io.open(_pp, "w", encoding="utf-8") as _fh:
+        _fh.write(_pick)
+    _pr = subprocess.run([_node, _pp], capture_output=True, text=True)
+    check("the pick's rules run at all", _pr.returncode == 0,
+          (_pr.stderr or "")[:400])
+    if _pr.returncode == 0:
+        _o = json.loads(_pr.stdout.strip().splitlines()[-1])
+        check("with nobody having picked, the newest cloud is the one moved",
+              _o["unchosen"] == 2, _o)
+        check("picking one aims the movement controls at it",
+              _o["picked"] == 1, _o)
+        # ⭐⭐ THE WHOLE REPORT, IN ONE LINE. This read 2 before the fix.
+        check("A REBUILD DOES NOT MOVE THE AIM OFF THE PICKED SCAN",
+              _o["afterRebuild"] == 1, _o)
+        check("...nor does the next one, or the one after that",
+              _o["afterThree"] == 1, _o)
+        check("...nor does another cloud arriving", _o["afterAdd"] == 1, _o)
+        check("a choice that names no open cloud is given up, not kept",
+              _o["dangling"] == 1, _o)
+        check("removing a cloud below the choice renumbers it",
+              _o["shifted"] == [1, 1, True], _o)
+        check("removing the chosen cloud gives the choice up",
+              _o["removedChoice"] == [0, 0, False], _o)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

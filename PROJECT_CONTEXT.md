@@ -3131,6 +3131,56 @@ grew two arguments and every hand-written copy of its signature fell over. The d
 
 Converter suite **830 → 846**.
 
+#### ⛔⛔ "REMOVE STRAYS MOVED ALL THE SCANS OUT OF REGISTRATION" — THE CLEAN NEVER TOUCHED A PLACEMENT
+
+Reported on 2026-08-22 as *"a glitch with auto clean up points — when pressed it moves all the scans
+around out of registration or any movements i made to make them line up."* Verified on the
+operator's own capture (23,464,814 returns, `RESTAURANT SCAN\1`): a hand placement with a lean, a
+`Remove strays` that hid 4,004 points, and the placement afterwards **identical to the last decimal**
+— and identical again in the metadata the page rebuilds itself from. The clean moves nothing. **It
+moved the AIM.**
+
+⛔⛔ **`measure()` REPORTED THE EXTENTS AND ALSO CHOSE WHICH CLOUD MOVES.** It ended with
+`V.active = <the last scan>`, unconditional — and `measure()` runs after **every** rebuild. So
+Remove strays, attaching a photograph, re-colouring and re-solving each silently re-pointed the
+movement controls at the last cloud in the list, while the panel went on naming the scan the
+operator had picked. `V.picked` (the label, the cut scope, the photo tray) and `V.active` (the
+sliders, the rings, the arrow keys, **Auto-align**) came apart — the exact *"two selections and
+nothing said so"* fault `pickScan`'s own comment claims to have closed.
+
+⛔ **And the damage is not a wrong label.** The four movement sliders and four typed boxes hold
+**absolute metres**, and `refreshScans` never called `syncSliders()`, so they went on showing the
+previous scan's numbers: the first touch of one committed *that* position onto the new target and
+the cloud jumped. Auto-align reads `active()` too, so one press re-solved a cloud that had already
+been placed by hand.
+
+⭐⭐ **THE LESSON: A FUNCTION THAT REPORTS STATE MUST NOT ALSO CHOOSE IT.** `measure()` exists to
+compute extents. The single line in it that *decided* something was the whole fault, and it stayed
+invisible because what it decided was right on the only path anyone exercises deliberately — the
+first load, when nobody has picked yet.
+
+⚠ **The identical failure was already written up eight lines above it**, against `fitRange`: *"the
+slider read 10 while the setup still said 14 — the picture right, the control wrong — and the first
+touch of it committed the 10, jumping the cloud four metres in a direction nobody dragged."* Same
+mechanism, second door. **A hazard fixed at one entrance is not fixed.**
+
+| fix | why |
+|---|---|
+| `V.chose` — did a **person** pick the moving scan? | `measure` had no way to tell "nobody has picked yet, follow the newest" from "they picked scan 2 twenty minutes ago", so it did the first in both cases. Set by `pickScan` for index > 0 only: the reference cannot be moved, so picking it is not a choice of moving scan. |
+| `measure` reassigns only when nobody has chosen, or the choice names no open cloud | reporting, not deciding |
+| `forgetScan` re-keys `V.active` and `V.picked` like every other index | they were left out because `measure` overwrote `V.active` on its way past — **a collision, not a fix** — and `V.picked` never had even that, so removing a cloud had always moved the pick onto its neighbour in silence |
+| `openProject` clears the pick with the rest of the session state | it is an index into a set of clouds that is no longer there |
+
+⛔ **AND THE SAME REBUILD HANDED BACK EVERY DELETED POINT.** `loadScan` fills each point's live flag
+with 1, and neither `refreshScans` nor `afterColour` called `recomputeLive()` — so a rebuild undid
+every cut, on the one button whose whole job is taking points away. Both now re-derive the mask
+(it is geometry in world space, so it is safe against buffers that have just changed length), with
+the spinner held up for the walk over the points rather than dropped before it.
+
+Tested by running the **shipped** `measure` / `pickScan` / `forgetScan` in node against a real
+sequence of picks, rebuilds and removals — not by matching source strings. The assertion that reads
+1 after the fix read 2 before it. Converter suite **846 → 864**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE PI IS UP TO DATE AND THE SERVICE IS RUNNING THE NEW CODE.** Deployed and verified on the Pi

@@ -3179,6 +3179,12 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
               places, so it was entirely possible to nudge one cloud while
               cutting another and nothing on screen said so. */
            picked:0, ring:false,
+           /* ⛔⛔ WHETHER THAT SELECTION WAS MADE BY A PERSON. Without this
+              flag `measure` had no way to tell "nobody has picked yet, follow
+              the newest scan" from "the operator picked scan 2 twenty minutes
+              ago" -- so it did the first in both cases, on every rebuild, and
+              the movement controls walked off the scan being worked on. */
+           chose:false,
            /* ⛔ SET ONCE THE OPERATOR HAS POSITIONED THE CLIP BOX, and from
               then on adding or removing a cloud leaves it alone. It used to be
               re-fitted to the new extents on every change to the set, which
@@ -4593,9 +4599,29 @@ function measure(){
      mattered. Fit to view puts it back deliberately. */
   V.ext={lo,hi}; if(!V.boxSet) resetBox();
   V.reach=Math.max(3,reach*1.6);
-  V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
-  /* The pick follows only while nobody has made one; once a scan has been
-     picked by hand, adding another must not silently move the target. */
+  /* ⛔⛔ MEASURE REPORTS THE EXTENTS. IT DOES NOT CHOOSE WHICH SCAN MOVES.
+     This assignment used to run unconditionally, and `measure` runs after
+     EVERY rebuild -- so Remove strays, attaching a photograph, re-colouring or
+     re-solving all silently re-aimed the movement controls at the last cloud
+     in the list. The rule immediately below was already written for `V.picked`
+     and simply had never been applied to `V.active`, which is how the panel
+     could go on saying "Working on scan 2" while the sliders, the rings, the
+     arrow keys and Auto-align had all moved to scan 6.
+
+     ⛔ AND THE DAMAGE IS NOT THE WRONG LABEL. The four movement sliders and
+     the four typed boxes hold ABSOLUTE numbers, so the first touch of one
+     commits the previous scan's position onto the new target and the cloud
+     jumps metres in a direction nobody dragged -- the identical failure
+     `fitRange` above is written against, arriving through a second door. And
+     Auto-align reads `active()` too, so one press re-solved a cloud the
+     operator had already placed by hand. Reported as "auto clean up points
+     moves all the scans out of registration": the clean itself never touched a
+     placement, it only moved the aim.
+
+     The pick follows only while nobody has made one; once a scan has been
+     chosen, nothing but the operator moves the target. */
+  if(!V.chose || !V.scans.some(x=>x.index===V.active))
+    V.active = V.scans.length>1 ? V.scans[V.scans.length-1].index : 0;
   if(!V.scans.some(x=>x.index===V.picked)) V.picked=V.active;
   $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
     ' · '+total.toLocaleString()+' points shown';
@@ -4671,7 +4697,11 @@ function pickScan(index){
   const s=V.scans.find(x=>x.index===index); if(!s) return;
   V.picked=index;
   V.editWho=index;
-  if(index>0) V.active=index;
+  /* ⭐ AND THE CHOICE IS RECORDED AS A CHOICE. From here on `measure` leaves
+     the moving scan alone: a rebuild reports what is on screen, it does not
+     decide what the next drag will move. Picking the reference is not a choice
+     of moving scan -- it cannot be moved -- so it does not set the flag. */
+  if(index>0){ V.active=index; V.chose=true; }
   /* ⭐ AND THE PHOTOGRAPH TRAY COMES WITH IT. Picking a scan is how you say
      "work on this one", and its photograph's controls now live in one tray
      rather than being repeated in every row -- so picking has to bring that
@@ -5953,6 +5983,10 @@ async function openProject(path){
     }
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
     V.pairs=[]; V.half=null; V.perr=null;
+    /* ⛔ THE PICK IS SESSION STATE AND GOES WITH THE REST OF IT. A project
+       opened over another job would otherwise keep the last one's choice --
+       an index into a set of clouds that is no longer there. */
+    V.chose=false; V.active=1; V.picked=0;
     V.level=null; V.lvl=[]; V.lerr=null;
     for(const m of j.scans) V.scans.push(await loadScan(m));
     /* ⛔ The level goes back before anything is drawn or masked. Left until
@@ -6810,6 +6844,18 @@ function forgetScan(gone){
   if(V.only===gone){ V.only=-1; $('showb').textContent='All'; }
   else if(V.only>gone) V.only--;
   if(V.editWho===gone) V.editWho=-1; else if(V.editWho>gone) V.editWho--;
+  /* ⛔⛔ THE TWO SELECTIONS ARE RE-KEYED HERE TOO, AND THEY WERE NOT. Every
+     other index in this function is shifted because position 3 becomes a
+     different cloud when a cloud below it goes -- and the moving scan and the
+     picked scan are indices exactly like the rest. They survived only because
+     `measure` used to overwrite `V.active` on its way past, which was never a
+     fix, only a collision that happened to land somewhere sensible; `V.picked`
+     never had even that, so removing a cloud already moved the pick onto its
+     neighbour in silence. Now that `measure` keeps the operator's choice, the
+     shift has to be done properly or the choice it keeps is the wrong cloud. */
+  if(V.active===gone){ V.chose=false; V.active=0; }
+  else if(V.active>gone) V.active--;
+  if(V.picked===gone) V.picked=0; else if(V.picked>gone) V.picked--;
   /* ⛔ THE HIDDEN SET IS RE-KEYED WITH EVERYTHING ELSE. It is keyed on the
      index, and removing a cloud shifts every index above it -- so a set left
      alone would start hiding the wrong scan, which looks exactly like a scan
@@ -7112,7 +7158,14 @@ function tiltRing(index){
 async function refreshScans(j){
   if(!j || !j.scans) return;
   await rebuildFrom(j.scans);
-  measure(); refreshLists(); invalidate(); dirty();
+  measure(); refreshLists(); syncSliders(); invalidate(); dirty();
+  /* ⛔⛔ THE CUTS COME BACK OTHERWISE. `loadScan` fills every point's live
+     flag with 1, so a rebuild puts back everything the operator had deleted --
+     and this path is reached by Remove strays, which is the one button whose
+     whole job is taking points away. `recomputeLive` re-derives the mask from
+     the edit list, which is geometry in world space, so it is safe to run
+     against buffers that have just changed length. */
+  if(V.edits.length) recomputeLive();
 }
 
 /* ---- cleaning one cloud ------------------------------------------- */
@@ -7373,7 +7426,15 @@ async function resolve(index){
 /* Everything the page must redo after a scan has been re-coloured. */
 async function afterColour(j){
   await rebuildFrom(j.scans);
-  measure(); refreshLists(); invalidate(); watch(false); dirty();
+  measure(); refreshLists(); syncSliders(); invalidate(); dirty();
+  /* Same two as `refreshScans`, and for the same reasons: the controls have to
+     describe the scan they will move, and a rebuild hands back every deleted
+     point. Colouring a cloud is not supposed to undo a crop.
+     ⛔ AND THE SPINNER STAYS UP FOR IT. Re-deriving the mask walks every point
+     on the CPU; `watch(false)` used to run first, so the one part of this that
+     can take a second was the part that looked like nothing happening. */
+  if(V.edits.length) recomputeLive();
+  watch(false);
   /* Switch to photo colour, or the work reads as having done nothing -- the
      cloud is still tinted by origin until somebody asks. */
   V.mode=2; $('mode').textContent='Photo / intensity';
