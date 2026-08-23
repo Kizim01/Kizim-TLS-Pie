@@ -3346,6 +3346,41 @@ Suite **880 → 890**. The ladder's tests build **their own room** — `_cloud_a
 several times further down the suite, and a fixture that means something different depending on where
 the test sits is a test that passes for a reason nobody chose.
 
+#### ⛔⛔ 2026-08-23 (evening) — "AUTO ALIGN IS EVEN WORSE THAN BEFORE" — THE JUDGE WENT BLIND WITH DISTANCE
+
+Reproduced on the live project (`main project.03.tlspie`, scans 11/12, folders 12/13, both
+hand-placed close). **It was not the solver — it was the judge.** Every score in `registration.py` is
+a panorama, and a panorama has a **centre**. The pair was solved with both clouds placed in the merged
+frame, which anchors that centre at the **reference tripod** — right where the first pairs stood, and
+ten metres from where the operator was working by scan 11. Measured there: the fixed cloud's profile
+had **0.8% of bins finite against 57% in its own frame**. From the origin a far room is a keyhole:
+below 500 shared bins `compare` returns NaN, **every GICP rung is discarded as unpriceable, and the
+ladder silently falls back to the grid search scored through the same keyhole** — both live presses
+answered *"residual inf m against a nan m sampling floor"*, and the teleport was whatever the slit
+preferred. ⭐⭐ **The early pairs never showed it because the early tripods stood next to the origin:
+the defect GREW with the project** — which is exactly the report, *"auto-align used to work and got
+worse"*. A defect that scales with the data walks past every fixture placed at the origin, so the new
+test room stands **twelve metres away**.
+
+**The fix:** the pair is solved **in the target's own frame** — its raw cloud is a true panorama,
+captured from that spot — and the answer composed back through the target's placement (`_decompose` is
+an exact factoring; compose-back measured at 2.7e-15). Same two presses after: **3.0 cm / 0.7° and
+3.6 cm / 0.7°, residuals 0.018 / 0.015 m against 0.004 m floors, both TRUSTED**, the two fits naming
+each other reciprocally at 0.72 m. (The old docstring said the merged-frame choice existed so there was
+"no transform to compose afterwards" — that convenience was bought at the price of a judge that goes
+blind with distance.)
+
+**And a hand placement is REFINED, never replaced**: an answer past `REFINE_LIMIT_M` / `REFINE_LIMIT_DEG`
+(1.0 m / 20° — the same line Deep align draws) from where the operator put the scan is a **DIFFERENT
+ANSWER**, reported with what the solver wanted and **not applied**. Never called trustworthy.
+
+**The scoring rides the graphics card now.** `_binned_ranges` gives the binning one home
+(`median_profile` and `compare_points` had two copies) and runs through `gpu.xp()`: **644 ms → 66 ms**
+per fine profile on the RTX 3050 Ti, **bit-identical** to the processor path (same finite bins, zero
+difference, float64 end to end per `gpu.py`'s contract; `colour.directions` couldn't be reused — it
+mixes NumPy scalars into the arithmetic and CuPy refuses). GICP itself stays `small_gicp` on every CPU
+core — the judging is what moved. Suite **890 → 902**. Commit `f357e3d`.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⛔ 2026-08-23 — THE DXF DRAWING EXPORTER IS BUILT, COMMITTED AND PUSHED (`96a8438`).** Read the top
