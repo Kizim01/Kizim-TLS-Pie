@@ -2328,9 +2328,12 @@ assertion is made against the **parsed DXF**, never against the writer's own acc
 (hence 14–17 mm), but a segment's **ends** are where a wall ran out of returns — a coverage fact, not a
 measurement.
 
-**⚠ NOT COMMITTED, at the operator's instruction — another session was working on a different feature.**
-Working tree only: `tlsconvert/drawing.py` (new), `test_drawing.py` (new), `tlsconvert/export.py`
-(docstring, a `.dxf` branch, the refusal message).
+**✅ COMMITTED AND PUSHED AS `96a8438`** — `tlsconvert/drawing.py` (new), `test_drawing.py` (new, 42),
+`tlsconvert/export.py` (docstring, a `.dxf` branch, the refusal message) and this entry. It was held
+uncommitted for most of the session at the operator's instruction, because a second session was
+committing a different feature to `main` at the same time; that session's three commits
+(`156752d`, `b1b7b05`, `b0cb924`) landed first and `96a8438` is a clean fast-forward on top of them.
+**Verified before committing: 890 passed / 0 failed on the full suite, 42/42 on the new one.**
 
 #### ⛔⛔ THE BIGGEST FIND OF 2026-08-21: EVERY ALIGNMENT DECISION WAS THROWN AWAY AT EXPORT
 
@@ -3345,14 +3348,20 @@ the test sits is a test that passes for a reason nobody chose.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⛔ 2026-08-23 — THE DXF DRAWING EXPORTER IS BUILT AND UNCOMMITTED.** Read the top section of this
-restart pointer first: 3ds Max cannot open any point cloud we can write, the factories have no ReCap,
-and `tlsconvert/drawing.py` answers that with a dimensioned plan Max reads natively. **Three jobs are
-open**: run it from the real project file (`D:\RESTAURANT SCAN\main project.02.tlspie`, 10 scans and a
-level — it has only ever run on ONE scan), build the **mesh** half the operator also asked for, and
-offer `.dxf` anywhere in the CLI/GUI/Studio. ⚠ **The working tree is uncommitted on purpose** — a second
-session was working on a different feature at the same time, so `git status` will show both. Check
-whose is whose before committing anything.
+**⛔ 2026-08-23 — THE DXF DRAWING EXPORTER IS BUILT, COMMITTED AND PUSHED (`96a8438`).** Read the top
+section of this restart pointer first: 3ds Max cannot open any point cloud we can write, the factories
+have no ReCap, and `tlsconvert/drawing.py` answers that with a dimensioned plan Max reads natively.
+**Three jobs are open**: run it from the real project file
+(`D:\RESTAURANT SCAN\main project.02.tlspie`, 10 scans and a **level** — it has only ever run on ONE
+UNLEVELLED scan, and levelling is what makes a plan trustworthy), build the **mesh** half the operator
+also asked for, and offer `.dxf` anywhere in the CLI/GUI/Studio.
+
+⚠ **AND `AI_HANDOFF_CHANGELOG.md` IS STALE — it still describes the JULY MicroView architecture** (D7/D8
+record triggers, `VLPrecord.sh`, the level shifter that has been removed), while `AI_PROJECT_RUNBOOK.md`
+still names it a required context file to append to every session. Nothing was appended to it today, on
+purpose: a current entry on top of a dead architecture makes the file look maintained when it is not.
+**Either retire it or rewrite its head** — it should not sit half-true. `PROJECT_CONTEXT.md` is doing
+that job.
 
 **✅ 2026-08-23 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
 35.2 MB, Studio 38.8 MB, `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the
@@ -3360,11 +3369,14 @@ native window backend, the RTX 3050 Ti and the CUDA engine mounted from `dist\cu
 because both of today's fixes reach the operator only through the exe — a suite that passes against
 `align.py` says nothing about what is on their desktop.
 
-> ⚠ **THAT BUILD CARRIES UNCOMMITTED WORK.** `tlsconvert/drawing.py` and `test_drawing.py` were
-> already in the working tree when this session started (a DXF writer, so 3ds Max can open something
-> — Max reads only `.rcp`/`.rcs` for point clouds), and `export.py`'s uncommitted edit imports it.
-> They are **not in any commit**; the exes above were built from the tree, so they include it.
-> Left alone deliberately — it is somebody's work in flight, not this session's.
+> ⚠ **THAT BUILD CARRIES THE DXF WORK, WHICH IS NOW COMMITTED.** `tlsconvert/drawing.py` and
+> `test_drawing.py` were in the working tree when that session started (a DXF writer, so 3ds Max can
+> open something — Max reads only `.rcp`/`.rcs` for point clouds), and `export.py`'s edit imports it.
+> That session correctly left it alone as somebody's work in flight and recorded that the exes had been
+> built from a tree containing it. **It landed as `96a8438` shortly afterwards**, so the exes and the
+> repository now agree — but note the ordering: *the build predates the commit*, so a rebuild is the
+> only thing that proves what is in them. ⭐ **The warning was right to be written**, and this line is
+> the other half of it rather than a correction to it.
 
 **📐 2026-08-23 — WHICH PAIRS OF `D:\RESTAURANT SCAN` ARE HARD, MEASURED.** Sixteen consecutive pairs
 were solved blind and then re-solved from a start 5.8 cm / 1.0° off, which is ~25 minutes of solving
