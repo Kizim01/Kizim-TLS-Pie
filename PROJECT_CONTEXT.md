@@ -2256,6 +2256,82 @@ pulses going into a pin with nothing on it. Transient unit: it dies at reboot an
 
 ## Restart pointer — do these in order
 
+#### ⛔⛔ 2026-08-23 — 3ds MAX CANNOT OPEN ANY POINT CLOUD WE CAN WRITE, AND NO FORMAT WORK FIXES IT
+
+The job: the operator sends captures to **Chinese furniture manufacturers** who design furniture around
+the room, in 3ds Max. The obvious reading — "add an exporter Max accepts" — has no answer, and it is
+worth knowing *why* before anyone spends a week on E57.
+
+**Max reads `.rcp` and `.rcs` for point clouds and nothing else.** Both are Autodesk's own indexed
+containers, undocumented, and **no third-party tool writes them**; the only way to make one is to run a
+cloud through **ReCap Pro**, a separate paid product. The operator's answer to "do the factories have
+ReCap" was **no**. So LAS, LAZ, PLY — and E57 had we added it, which `export.py`'s own docstring had
+been holding open — are all files those factories cannot open. ⭐ **That is a wall, not a gap.** Verified
+against Autodesk's own documentation and a format specialist, not from memory.
+
+**Max does read DXF natively**, as does AutoCAD and anything a fabricator owns. So the cloud becomes the
+thing they were going to make from it: a dimensioned plan.
+
+⭐ **`tlsconvert/drawing.py` (new) IS A `writer_for` WRITER, WHICH IS THE WHOLE DESIGN.** It presents the
+same `write`/`close`/`count` contract as `PlyWriter`, so **`convert` and `merge` needed no change at
+all** — the placement, the lean, the level, the cuts, the cleans and the colour pose have all been
+applied before a point reaches it. A drawing built down its own path would be a second place for every
+one of those to be applied, or forgotten. ⛔ It accumulates an **occupancy grid, never points**: memory
+is in occupied cells, which is what makes a 59-scan job possible.
+
+⭐ **THE DERIVED ANSWER IS DRAWN BESIDE ITS EVIDENCE.** `TLS-WALLS` carries the fitted lines,
+`TLS-SLICE` the cells they were fitted to. Green with no grey under it is an invented wall, and you can
+see it. ⛔ **AND UNITS ARE THE SILENT ERROR** — a drawing imported at a thousandth of size looks
+perfectly reasonable until somebody quotes off it. Three defences, because the first two depend on the
+importer: `$INSUNITS`, a text label, and a **1 m grid** — the grid is the one that cannot be ignored,
+since a square either measures 1000 or it does not.
+
+##### ✅ PROVEN ON THE REAL CAPTURE — `RESTAURANT SCAN\1`
+
+23,464,814 returns → **16.8 s → 2.2 MB DXF**. Floor −1.47 m, ceiling +1.29 m, **height 2.76 m**, walls to
+**9.38 m**, fit residual **14–17 mm**. ⭐ **Three faults the synthetic room could never have shown, and
+this is the fourth time this project has met that gap:**
+
+| what | why the fixture missed it |
+|---|---|
+| **Floor detection assumed the room fills the cloud** — it took the strongest level in the LOWER HALF of the z range as the floor. The restaurant is **glazed** and reaches −15 m to +56 m in x, so the midpoint landed at +2.95 m, *above* the ceiling; the ceiling (4.5 M returns, unoccluded, near-normal incidence) was picked as the floor and nothing was found above it. **Now it takes the two strongest levels wherever they fall**, and sorts them by height afterwards | a synthetic box **is** its own extent |
+| **The sheet sprawled** to 39 × 24 m for a 15 m room. ⚠ I first bounded only the grid and wrote a comment claiming the sheet was fixed — **it was not**, since extents come from the entities. The plan is bounded to the room now, and says so on its face | no outdoors to see |
+| **Lines fitted through furniture** — a star on the open floor. ⛔ My first fix tested **density** along the run and the star **survived**, because a crowd of chairs is dense. ⭐ **What separates them is DIMENSION, not density**: a wall is a *surface*, two or three cells thick with empty floor either side; a blob is a *volume* with more of itself on both sides. Probing ±12 cm perpendicular removed the fat stacked band at the bar and kept only its faces | no furniture |
+
+⚠ **A residual false positive remains**: one star on the open floor whose arms are sparse enough to pass
+the both-sides test. It is visible as green over thin grey, which is what the two-layer design is for.
+
+⚠ **AND I BROKE A TEST, IN THE SHAPE THIS FILE KEEPS RECORDING.** `test_tlsconvert.py:265` asserts the
+unsupported-format refusal contains `"Scan Essentials"`; rewriting that message to advertise `.dxf`
+dropped the phrase. Fixed in the **message**, not in their test — the old advice is still true, so the
+refusal now names both audiences. ⭐ **That check looks like a test of a string and is not**: what it
+pins is that the refusal keeps *telling the operator what to do*, and I had silently narrowed it to one
+audience with 889 other checks green.
+
+**Tests: `test_drawing.py` (new, 42) — deliberately its own file, because `test_tlsconvert.py` is a
+quarter of a megabyte and is the easiest thing in this repo for two sessions to collide in.** Every
+assertion is made against the **parsed DXF**, never against the writer's own account of what it wrote.
+
+##### ⛔ WHAT IS NOT DONE — the operator asked for BOTH a cloud and dimensioned plans
+
+1. **The mesh half is not started.** An OBJ/FBX room shell is the only way to give them the *cloud* —
+   Max imports those natively, no ReCap. `.dxf` is the plans half only.
+2. **Sections and elevations** — `slice_plane()` is written and tested, nothing draws them yet.
+3. **⛔ IT HAS ONLY BEEN RUN ON A SINGLE SCAN.** The live job is
+   **`D:\RESTAURANT SCAN\main project.02.tlspie`** — 10 registered scans, a **level (1.47° tilt)** and a
+   lasso + clip box. That needs `merge`, and I stopped rather than guess the sense of `box.inside`.
+   **This matters more than it sounds: levelling is what makes a plan trustworthy, and the box is
+   probably what removes the street.**
+4. **Nothing in the CLI, GUI or Studio offers `.dxf`** — it works through the library only.
+
+⚠ **Tell the factories one thing:** a VLP-16 is ±3 cm on a single return. A *fitted* wall is far better
+(hence 14–17 mm), but a segment's **ends** are where a wall ran out of returns — a coverage fact, not a
+measurement.
+
+**⚠ NOT COMMITTED, at the operator's instruction — another session was working on a different feature.**
+Working tree only: `tlsconvert/drawing.py` (new), `test_drawing.py` (new), `tlsconvert/export.py`
+(docstring, a `.dxf` branch, the refusal message).
+
 #### ⛔⛔ THE BIGGEST FIND OF 2026-08-21: EVERY ALIGNMENT DECISION WAS THROWN AWAY AT EXPORT
 
 Looking for somewhere to hang a refinement, the export path turned out to discard the whole thing.
@@ -3268,6 +3344,15 @@ several times further down the suite, and a fixture that means something differe
 the test sits is a test that passes for a reason nobody chose.
 
 ### ▶ NEXT SESSION STARTS HERE
+
+**⛔ 2026-08-23 — THE DXF DRAWING EXPORTER IS BUILT AND UNCOMMITTED.** Read the top section of this
+restart pointer first: 3ds Max cannot open any point cloud we can write, the factories have no ReCap,
+and `tlsconvert/drawing.py` answers that with a dimensioned plan Max reads natively. **Three jobs are
+open**: run it from the real project file (`D:\RESTAURANT SCAN\main project.02.tlspie`, 10 scans and a
+level — it has only ever run on ONE scan), build the **mesh** half the operator also asked for, and
+offer `.dxf` anywhere in the CLI/GUI/Studio. ⚠ **The working tree is uncommitted on purpose** — a second
+session was working on a different feature at the same time, so `git status` will show both. Check
+whose is whose before committing anything.
 
 **✅ 2026-08-23 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
 35.2 MB, Studio 38.8 MB, `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the

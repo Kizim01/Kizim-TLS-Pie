@@ -20,11 +20,18 @@ from reflectivity. That is not padding: a viewer handed a cloud with no colour
 channel picks its own flat default, and the operator cannot then tell a
 colourised cloud from an uncolourised one at a glance. Grey-by-intensity always
 displays as something truthful about the data.
+⛔ AND NONE OF THESE OPEN IN 3ds MAX. Max reads `.rcp`/`.rcs` and nothing else
+for point clouds, both of them Autodesk's own undocumented containers, made
+only by ReCap Pro. So for a workshop without ReCap the whole list above is
+unopenable, and adding E57 would not change that -- see `drawing.py`, which
+takes the other road and writes a DXF Max reads natively.
 """
 
 import os
 
 import numpy as np
+
+from . import drawing
 
 PLY_COUNT_DIGITS = 12          # fixed width so the header can be patched
 
@@ -149,6 +156,16 @@ def writer_for(path, comment=""):
         return PlyWriter(path, comment=comment)
     if ext in (".las", ".laz"):
         return LasWriter(path, comment=comment)
+    if ext == ".dxf":
+        # ⭐ NOT A POINT FORMAT AT ALL, and it is in this factory anyway
+        # because it is fed by exactly the same stream. `convert` and `merge`
+        # apply the placement, the lean, the level, the cuts, the cleans and
+        # the colour pose before a single point reaches a writer; a drawing
+        # built down its own path would be a second place for every one of
+        # those to be applied -- or forgotten.
+        return drawing.DrawingWriter(path, comment=comment)
     raise ValueError(
-        "Unsupported output format %r. Use .las, .laz or .ply -- these are "
-        "what SketchUp's Scan Essentials imports." % ext)
+        "Unsupported output format %r. Use .las, .laz or .ply for a point "
+        "cloud -- these are what SketchUp's Scan Essentials imports -- or "
+        ".dxf for a dimensioned drawing, which is what 3ds Max and AutoCAD "
+        "open without ReCap." % ext)
