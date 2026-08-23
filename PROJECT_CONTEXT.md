@@ -3381,7 +3381,47 @@ difference, float64 end to end per `gpu.py`'s contract; `colour.directions` coul
 mixes NumPy scalars into the arithmetic and CuPy refuses). GICP itself stays `small_gicp` on every CPU
 core — the judging is what moved. Suite **890 → 902**. Commit `f357e3d`.
 
+⚠ **A DEAD END, RECORDED SO IT IS NOT RE-RUN.** Before the frame fix was found, the standing theory was
+that the solver was fitting junk: `clean_scan` masks the **preview** cloud (`scan.xyz`) while the solve
+reads `scan.sample`, a separate stride-decimated pass no mask has ever touched, so every stray the
+operator removed is still in the cloud being registered. **Measured on the stuck pairs and it is not
+the cause** — the stray rule takes **0.0–0.3%** of the solver's cloud and the answers are identical to
+four decimals (3→2: 0.0430 raw vs 0.0439 cleaned blind, close-start identical at 0.0422; 10→9 and
+12→11 the same story). ⭐ Note *why* the rule barely bites there: it is calibrated on the
+voxel-accumulated preview, where an isolated cell stands out, and the solver's sample is a **uniform
+stride** through the capture, where it does not. **The same rule means different things on two clouds
+of different density** — the `sample_refl` / `view_refl` trap, one level out. The code gap is real (the
+export applies a rule the solve ignores) but it is not an alignment-quality lever.
+
 ### ▶ NEXT SESSION STARTS HERE
+
+**⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through
+the library against their saved placements, and **not once in Studio**. Restart Studio (see the exe
+note below — a session left open is the old program), open the project, and Auto-align the last two
+clouds: each should tuck in by **about 3 cm** and report a **trusted** fit. If anything still jumps,
+the new messages are specific enough to diagnose from — get the exact wording. The rest of the walk
+(~46 more scans) is the same room and the same mechanisms, so this should hold; the failures worth
+hearing about immediately are **a trusted fit that looks wrong by eye**, and **a refusal on a pair that
+obviously overlaps**.
+
+**⭐ THE LAST KNOWN ALIGNMENT DEFECT, QUEUED AND EVIDENCED: `nearest_to` PICKS BY TRIPOD DISTANCE.**
+Folder 10 proved the two questions diverge — nearest tripod was folder 8 (1.97 m, 12.6% shared) while
+the real partner was folder 9 (3.56 m, 16.9%), and the same press reached **66.7% against 90.0%**
+coincidence. Today's fixes make a wrong target *safe*; this would make the default target *right*.
+Two things to measure before building, both cheap: **(a)** does ranking on ~100k thinned points give
+the same ORDER as the full sample? (ordering is a far weaker demand than pose — but this codebase has
+already reverted one thinning that changed an answer, so measure it); **(b)** an unplaced scan has no
+meaningful coincidence, so the rule must fall back to nearest tripod **and say which rule it used**.
+Then rank by coincidence, show the percentage beside each scan in *Align to*, and default to the best.
+⚠ And remember coincidence is measured **at the current placement**, so it understates a badly placed
+scan (folder 10 read 16.9% before its fit and 90.0% after) — it is the right signal for CHOOSING a
+target, and not a measurement of true overlap until the placement is right.
+
+**⚠ One loose end, noted and deliberately not touched.** `scoring_bins` is a two-way switch at 0.02 m,
+so the 0.05 m rung is judged on the coarse 1°×2° grid that cannot resolve 5 cm — while the comment
+directly above it argues that scoring must out-resolve what it judges. There is no evidence either way
+that it is costing anything, and guessing at the solver is what the measurements talked me out of
+twice today.
 
 **⛔ 2026-08-23 — THE DXF DRAWING EXPORTER IS BUILT, COMMITTED AND PUSHED (`96a8438`).** Read the top
 section of this restart pointer first: 3ds Max cannot open any point cloud we can write, the factories
@@ -3398,11 +3438,12 @@ purpose: a current entry on top of a dead architecture makes the file look maint
 **Either retire it or rewrite its head** — it should not sit half-true. `PROJECT_CONTEXT.md` is doing
 that job.
 
-**✅ 2026-08-23 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
-35.2 MB, Studio 38.8 MB, `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the
-native window backend, the RTX 3050 Ti and the CUDA engine mounted from `dist\cuda-engine`. Rebuilt
-because both of today's fixes reach the operator only through the exe — a suite that passes against
-`align.py` says nothing about what is on their desktop.
+**✅ 2026-08-23 17:24 — THE EXES IN `windows-converter/dist` CARRY THE FRAME FIX.** Rebuilt *after*
+`f357e3d`, so all four of the day's alignment fixes are in them. Converter 35.2 MB, Studio 38.8 MB,
+`tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the native window backend, the
+RTX 3050 Ti and the CUDA engine mounted from `dist\cuda-engine`. ⚠ **A Studio left running from before
+17:24 is the OLD program** — the operator has to restart it, which is not obvious from anything on
+screen. A suite that passes against `align.py` says nothing about what is on their desktop.
 
 > ⚠ **THAT BUILD CARRIES THE DXF WORK, WHICH IS NOW COMMITTED.** `tlsconvert/drawing.py` and
 > `test_drawing.py` were in the working tree when that session started (a DXF writer, so 3ds Max can
@@ -3441,6 +3482,8 @@ the best evidence available short of a survey.
 
 **Written to `main project.03.tlspie`**, every other field copied through unchanged — the level, the
 edit, the box, the view, the other nine placements and their photograph poses. **`.02` is untouched.**
+⚠ *`.03` has since moved on under the operator's hand — by 16:52 it held **13** scans, folders 1–13,
+with folder 10 still carrying the corrected placement. Read the file, do not assume these ten.*
 To do it by hand instead: pick folder 10's scan, set **Align to → `TLS_26_08_20_16_25_48`** (folder 9),
 press Auto-align.
 
