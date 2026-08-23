@@ -1545,7 +1545,7 @@ class Level(object):
     """
 
     def __init__(self, normal=(0.0, 0.0, 1.0), pivot=(0.0, 0.0, 0.0),
-                 heading_deg=0.0):
+                 heading_deg=0.0, origin=None):
         n = np.asarray(normal, dtype=np.float64).reshape(3)
         length = float(np.linalg.norm(n))
         if length < 1e-12:
@@ -1567,6 +1567,24 @@ class Level(object):
         # to pass. See `matrix`, which composes them in the only order that
         # works.
         self.heading_deg = float(heading_deg or 0.0)
+        # ⭐⭐ AND WHERE ZERO IS. The tilt says where down is, the heading says
+        # where north is, and until now nothing said where the ORIGIN is -- so
+        # a cloud came out of this program correctly levelled, correctly
+        # oriented, and measured from wherever the first tripod happened to
+        # stand. That is the third and last part of the relationship between
+        # this survey and the world, and it lives here for the reason the
+        # heading does: it is applied in the same breath, to the same frame,
+        # by the same `apply`, and a separate object would be a third thing to
+        # remember to pass to an exporter that already takes a Level.
+        #
+        # ⛔ HELD IN THE RAW FRAME, LIKE THE PIVOT AND LIKE EVERY OTHER PICK IN
+        # THIS PROGRAM, AND ROTATED WHEN IT IS USED. A corner of a room is a
+        # physical thing; stored after the levelling rotation it would stop
+        # being that corner the moment the room was re-levelled, and the origin
+        # would drift off the feature it was set on with nothing to show for
+        # it. Stored raw, it survives a re-level, a re-heading and a reopen.
+        self.origin = (None if origin is None else
+                       np.asarray(origin, dtype=np.float64).reshape(3).copy())
 
     @property
     def tilt_deg(self):
@@ -1575,7 +1593,25 @@ class Level(object):
             min(1.0, max(-1.0, float(self.normal[2]))))))
 
     def is_identity(self):
-        return self.tilt_deg < 1e-12 and abs(self.heading_deg) < 1e-12
+        return (self.tilt_deg < 1e-12 and abs(self.heading_deg) < 1e-12
+                and self.shift_xyz is None)
+
+    @property
+    def shift_xyz(self):
+        """
+        Where the chosen origin ends up after levelling -- what `apply`
+        subtracts -- or None when no origin has been set.
+
+        ⛔ COMPUTED, NEVER STORED. Stored beside the raw origin it would be a
+        second answer to "where is zero", and the two would part company the
+        first time the room was re-levelled -- which is precisely the moment
+        the number changes and nobody is looking at it.
+        """
+        if self.origin is None:
+            return None
+        if self.tilt_deg < 1e-12 and abs(self.heading_deg) < 1e-12:
+            return self.origin.copy()
+        return ((self.origin - self.pivot) @ self.matrix().T) + self.pivot
 
     def matrix(self):
         """
@@ -1626,11 +1662,22 @@ class Level(object):
         return float((-self.heading_deg + 180.0) % 360.0 - 180.0)
 
     def apply(self, xyz):
-        """Rotate about the pivot, so the surface that was named stays put."""
+        """
+        Rotate about the pivot, so the surface that was named stays put --
+        then move the chosen origin to zero, if one has been chosen.
+
+        ⛔ THE SHIFT COMES LAST. It is a translation in the LEVELLED frame:
+        set before the rotation it would be turned by it, and a point put at
+        zero would slide off zero the next time the room was levelled.
+        """
         xyz = np.asarray(xyz)
         if self.is_identity():
             return xyz
-        return (xyz - self.pivot) @ self.matrix().T + self.pivot
+        out = xyz
+        if self.tilt_deg >= 1e-12 or abs(self.heading_deg) >= 1e-12:
+            out = (xyz - self.pivot) @ self.matrix().T + self.pivot
+        shift = self.shift_xyz
+        return out if shift is None else out - shift
 
     def as_dict(self):
         out = {"normal": [float(v) for v in self.normal],
@@ -1640,6 +1687,8 @@ class Level(object):
         # one saved after are the same file.
         if abs(self.heading_deg) >= 1e-12:
             out["heading_deg"] = self.heading_deg
+        if self.origin is not None:
+            out["origin"] = [float(v) for v in self.origin]
         return out
 
     @classmethod
@@ -1648,11 +1697,12 @@ class Level(object):
             return cls()
         return cls(normal=data.get("normal") or (0.0, 0.0, 1.0),
                    pivot=data.get("pivot") or (0.0, 0.0, 0.0),
-                   heading_deg=data.get("heading_deg") or 0.0)
+                   heading_deg=data.get("heading_deg") or 0.0,
+                   origin=data.get("origin"))
 
     def describe(self):
         if self.is_identity():
-            return "already level, and no compass heading set"
+            return "already level, no compass heading and no origin set"
         parts = []
         if self.tilt_deg >= 1e-12:
             parts.append("the frame leans %.2f deg; levelled about "
@@ -1661,6 +1711,10 @@ class Level(object):
                             self.pivot[2]))
         if abs(self.heading_deg) >= 1e-12:
             parts.append("turned %.2f deg so north runs +Y" % self.heading_deg)
+        if self.origin is not None:
+            s = self.shift_xyz
+            parts.append("zero moved to the picked point (%.3f, %.3f, %.3f "
+                         "off the old origin)" % (s[0], s[1], s[2]))
         return "; ".join(parts)
 
 
@@ -1695,6 +1749,118 @@ def heading_to_north(a, b, level=None, points_to="north"):
     want = {"north": 90.0, "east": 0.0, "south": -90.0,
             "west": 180.0}[str(points_to).lower()]
     return float((want - now + 180.0) % 360.0 - 180.0)
+
+
+#: Finding the floor in a capture. The tripod's own legs and the operator's
+#: feet are the nearest returns and are not the floor; past about eight metres
+#: a floor is grazed at such a shallow angle that its returns are long, sparse
+#: and noisy, and in a big room it may not even be the same floor.
+FLOOR_NEAR_M = 0.6
+FLOOR_FAR_M = 8.0
+FLOOR_BAND_M = 0.15
+FLOOR_MIN_POINTS = 2000
+#: Past this the plane found is not a floor, whatever else it is, and saying
+#: so is better than levelling a room to a wall.
+FLOOR_MAX_TILT_DEG = 20.0
+#: ⛔⛔ WHEN A CAPTURE'S FLOOR IS NOT THE SAME PLANE AS EVERYONE ELSE'S -- AND
+#: THIS NUMBER WAS WRONG BY A FACTOR OF FIVE UNTIL IT WAS MEASURED.
+#:
+#: It was written as 2.0 on the reasoning that "a real floor is flat to a
+#: fraction of a degree over a room, so two degrees means a step or a
+#: misplaced scan". The live restaurant says otherwise. Fifteen captures, each
+#: fitted over an 8 m patch of a working floor, disagree with the plane they
+#: jointly define by 0.34, 0.59, 0.63, 0.64, 0.64, 0.67, 0.88, 1.09, 1.76,
+#: 1.86, 1.88, 2.15, 2.18, 2.77 and 3.52 degrees. ⭐ There is NO GAP in that
+#: list. It is one continuum, and 2.0 fell in the middle of it and called four
+#: perfectly ordinary captures suspect.
+#:
+#: A threshold laid across a continuum does not separate two mechanisms, it
+#: cuts one population in half -- and the half it accuses is innocent, which is
+#: how an operator learns to click past the warning. (The credential scan in
+#: this repo carries the same lesson in its own comment; so does the 08-20
+#: out-of-step check.) The individual fits are simply weak: RMS 13-43 mm over
+#: a floor with furniture standing on it, so a degree or two of scatter is the
+#: measurement, not a finding. The AGGREGATE is what is well determined --
+#: fifteen planes over 2.4 M points give 0.84 degrees.
+#:
+#: So this is now set where a plane genuinely stops being that floor: a ramp,
+#: a mezzanine, a scan somewhere else entirely. Between the two, the scatter
+#: is REPORTED as a number and nothing is accused. Finding a misplaced scan is
+#: `solve_multi`'s job and it does it far better.
+FLOOR_ODD_DEG = 10.0
+
+
+class FloorFit(object):
+    """A horizontal-ish plane found in one capture, and how well it fitted."""
+
+    def __init__(self, normal, point, count, rms, height):
+        self.normal = np.asarray(normal, dtype=np.float64)
+        self.point = np.asarray(point, dtype=np.float64)
+        self.count = int(count)
+        self.rms = float(rms)
+        self.height = float(height)
+
+    @property
+    def tilt_deg(self):
+        return float(np.degrees(np.arccos(
+            min(1.0, max(-1.0, abs(float(self.normal[2])))))))
+
+
+def floor_plane(xyz, near=FLOOR_NEAR_M, far=FLOOR_FAR_M, band=FLOOR_BAND_M):
+    """
+    The floor of one capture, found in that capture's own frame.
+
+    ⭐ THE LOWEST STRONG PEAK IN HEIGHT, NOT THE LOWEST POINT. A single stray
+    return under the floor -- a reflection off a puddle, a gap into a void, a
+    ranging error -- is lower than the floor and would take the whole fit with
+    it. A histogram asks a different question: where is there a LOT of surface
+    at one height. The floor is the lowest place that answers.
+
+    ⛔ AND NOT THE BIGGEST PEAK EITHER. In a low room the ceiling returns more
+    points than the floor does, because the floor is covered in furniture; the
+    biggest peak is as likely to be over your head as under your feet.
+
+    Returns a FloorFit in the same frame as `xyz`, or None if nothing in the
+    capture looks like a floor.
+    """
+    p = np.asarray(xyz, dtype=np.float64)
+    if p.ndim != 2 or p.shape[0] < FLOOR_MIN_POINTS:
+        return None
+    r = np.hypot(p[:, 0], p[:, 1])
+    p = p[(r >= near) & (r <= far)]
+    if len(p) < FLOOR_MIN_POINTS:
+        return None
+    z = p[:, 2]
+    lo, hi = (float(v) for v in np.percentile(z, [0.5, 99.5]))
+    if hi - lo < 0.2:
+        return None
+    bins = max(8, int(round((hi - lo) / 0.05)))
+    hist, edges = np.histogram(z, bins=bins, range=(lo, hi))
+    strong = np.nonzero(hist >= 0.2 * hist.max())[0]
+    if not strong.size:
+        return None
+    at = 0.5 * (edges[strong[0]] + edges[strong[0] + 1])
+
+    keep = p[np.abs(z - at) <= band]
+    # Two rounds of trimming. The first band is a slab of a fixed thickness
+    # and will have caught the bottom of a skirting board or a chair foot;
+    # once there is a plane to measure against, those are far from it.
+    for _ in range(2):
+        if len(keep) < FLOOR_MIN_POINTS // 4:
+            return None
+        centre = keep.mean(axis=0)
+        _u, _s, vt = np.linalg.svd(keep - centre, full_matrices=False)
+        n = vt[2]
+        n = n / (np.linalg.norm(n) or 1.0)
+        if n[2] < 0:
+            n = -n
+        off = (keep - centre) @ n
+        rms = float(np.sqrt(np.mean(off ** 2)))
+        if rms < 1e-6:
+            break
+        keep = keep[np.abs(off) <= 2.5 * rms]
+    fit = FloorFit(n, centre, len(keep), rms, at)
+    return fit if fit.tilt_deg <= FLOOR_MAX_TILT_DEG else None
 
 
 class LevelFit(object):

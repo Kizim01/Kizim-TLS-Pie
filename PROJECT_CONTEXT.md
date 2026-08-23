@@ -3549,6 +3549,95 @@ of its own** — it is lit when the three are, *computed* rather than remembered
 would be a second answer to "is the gizmo showing" and the two would part company the first time a
 part was switched by itself.
 
+## THE WORLD GOT A ZERO, A GRID, AND A FLOOR TO STAND ON (2026-08-23, late)
+
+Three requests, one subject — *"a world level grid surface like Fusion 360"*, *"like SketchUp I need
+the world indexed in XYZ, pick XYZ on a point cloud and have the entire world conform to that … there
+is no north south east west, only XYZ"*, and *"when a scan is loaded, use the ground surface points
+and level it to world grid."*
+
+**⭐⭐ `Level` ANSWERED TWO OF THE THREE QUESTIONS ABOUT THE WORLD AND NOBODY HAD NOTICED THE THIRD.**
+The tilt says where **down** is. The heading says where **north** is. Nothing said where **zero** is —
+so every cloud this program has ever written came out correctly levelled, correctly oriented, and
+measured from wherever the first tripod happened to be standing. `Level` now carries an **origin**,
+for exactly the reason its own docstring gives for carrying the heading: it is applied in the same
+breath, to the same frame, by the same `apply`, and a separate object would be a third thing to
+forget to pass to an exporter that already takes a Level.
+
+- **Held in the RAW frame and rotated on use**, like the pivot and like every other pick here. A
+  corner of a room is a physical thing; stored after the rotation it would stop being that corner the
+  moment the room was re-levelled, and zero would drift off the feature with nothing to show for it.
+  Tested: re-levelling leaves zero exactly on the picked point.
+- **`shift_xyz` is computed, never stored.** Stored beside the raw origin it would be a second answer
+  to "where is zero", and the two would part company at the one moment the number changes.
+- **Z alone means Z alone.** "Floor level" moves the height and leaves the plan position where the
+  drawing already has it — mixed **per axis in the raw frame**, because after a rotation a "pure Z"
+  is not pure Z and the axis the operator named would not be the axis that moved.
+- **All three parts are independent**: setting any one leaves the other two exactly as they were.
+  `level()` now takes the current Level for the same reason `set_north` always has.
+- **It moves the world, not the scans** — not one Setup changes, so alignment cannot be disturbed by
+  it and Auto-align cannot undo it. The same argument `Level` makes for keeping the tilt out of the
+  placements.
+
+**The world grid** is drawn at **Z = 0 in the world frame** — after levelling, after the compass,
+after the origin — so it is a picture of the datum the exported file is measured against. ⛔ It is
+deliberately **not** the plumb tool's grid, which already existed and is a different thing: that one
+hangs through the plumb anchor at whatever height it was parked, to hold a straight edge against a
+wall; this one is nailed to zero and cannot be moved, which is the whole of what makes it answer
+"where is the world level surface". Depth test **on**, unlike the plumb reference — a floor you can
+see through the floor is not a floor, and seeing which points are under it is the point.
+
+**The axes are X, Y and Z now**, in the panel, on the gizmo arms and in every message. ⚠ The compass
+tool keeps its compass — N/E/S/W is what that tool *is*, and it is for putting a cloud beside a site
+plan. If it is not wanted, it can go; it was left because removing a working feature on an ambiguous
+reading is worse than leaving it.
+
+### LEVELLING TO THE GROUND, AND A THRESHOLD THE LIVE DATA THREW OUT
+
+`floor_plane` finds the ground in one capture, in that capture's own frame: **the lowest strong peak
+in a height histogram**, not the lowest point (one stray return under the floor would take the fit
+with it) and not the biggest peak (in a low room the ceiling returns more, because the floor has
+furniture on it). Then `level_from_floor` carries each plane through its scan's placement into the
+merged frame, where they should all describe **one** plane, and levels the survey to it.
+
+⛔⛔ **AND THAT IS WHY IT IS NOT DONE SCAN BY SCAN, WHICH IS THE OBVIOUS WAY AND IS WRONG.** The
+program already says so twice — in the Move tray and in `Level`'s docstring: *a tilt shared by every
+scan cancels between them, and taking it out scan by scan pulls the alignment apart.* The suite now
+asserts that not one placement is touched.
+
+**Measured on the live restaurant** (15 captures): a floor found in **every one**, 69k–287k points
+each, RMS 13–43 mm, and the survey leans **0.84°**. ⭐ The fixture had to grow furniture and a
+ceiling *bigger than the floor* before it tested anything real.
+
+⛔⛔ **AND THE MEASUREMENT KILLED MY OWN THRESHOLD.** I wrote `FLOOR_ODD_DEG = 2.0` reasoning that "a
+real floor is flat to a fraction of a degree, so 2° means a step or a misplaced scan". The live data:
+the fifteen captures disagree with their common plane by **0.34, 0.59, 0.63, 0.64, 0.64, 0.67, 0.88,
+1.09, 1.76, 1.86, 1.88, 2.15, 2.18, 2.77, 3.52** degrees. **There is no gap anywhere in that list.**
+It is one population — the roughness of a working floor fitted over an 8 m patch — and 2.0 fell in
+the middle of it and accused **four innocent captures every single run**. A threshold laid across a
+continuum does not separate two mechanisms, it cuts one population in half, and the half it accuses
+is innocent — which is precisely how an operator learns to click past a warning. (Same lesson as the
+credential scan's case-sensitivity note, and as the 08-20 out-of-step check.) The bar now sits at
+**10°**, where a plane genuinely stops being that floor — a ramp, another storey — and the scatter is
+**reported as a number** instead. Finding a misplaced scan is `solve_multi`'s job, and it does it far
+better.
+
+⚠ Also measured and left alone: after levelling, the floor heights across the survey spread **0.19 m**
+and per-capture normals sit 0.3–3.8° off vertical. That is real floor variation plus Z error in the
+alignment; the level fixes tilt only and this is not its business.
+
+**It runs by itself** the first time a job opens with nothing levelled — and never over a decision
+already made (a project being opened, or a room levelled to a named worktop), because a convenience
+that overwrites a decision is not a convenience. It also stays silent when it fails: no floor in view
+is ordinary in a stairwell, and a startup warning about it would be noise before the operator has
+done anything.
+
+⚠ **One fixture bug worth keeping**, because it is the argument for the whole design: the first
+version gave three captures the same tilt *in their own frames* and then placed them at three
+different yaws — which is three tripods each leaning a different way, not one leaning **room**. The
+combined answer came out 1.46° instead of 2.00° and the test was right to fail. *A lean measured in a
+capture's own frame does not mean the same direction as the same numbers in its neighbour's.*
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through

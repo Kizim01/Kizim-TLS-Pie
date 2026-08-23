@@ -649,7 +649,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
                                                   body.get("pairs") or []))
             if path == "/level":
-                return self._json(srv.level(body.get("points") or []))
+                return self._json(srv.level(body.get("points") or [],
+                                            body.get("level")))
+            if path == "/level/floor":
+                return self._json(srv.level_from_floor(body.get("level")))
+            if path == "/origin":
+                return self._json(srv.set_origin(body.get("point"),
+                                                 body.get("level"),
+                                                 body.get("axes")))
             if path == "/folder":
                 return self._json(srv.pick_folder())
             if path == "/shoot/plan":
@@ -1420,7 +1427,7 @@ class AlignServer(object):
                 "trustworthy": fit.ok, "pairs": fit.count,
                 "text": fit.describe()}
 
-    def level(self, points):
+    def level(self, points, level=None):
         """
         Measure the frame's tilt off a surface the operator says is horizontal.
 
@@ -1428,13 +1435,182 @@ class AlignServer(object):
         answer is always the tilt of the raw frame and pressing the button twice
         cannot compound. Nothing is stored on the scans: a level belongs to the
         merged frame, not to any one capture -- see `registration.Level`.
+
+        ⛔ THE HEADING AND THE ORIGIN ARE CARRIED THROUGH. Levelling a frame
+        whose north and zero are already set must change the tilt and nothing
+        else -- the same rule `set_north` follows in the other direction, and
+        the reason the page sends what it currently holds.
         """
         fit = registration.level_from_points(points)
-        return {"ok": True, "level": fit.level.as_dict(),
-                "tilt_deg": fit.level.tilt_deg, "flatness": fit.flatness,
+        had = registration.Level.from_dict(level)
+        made = registration.Level(fit.level.normal, fit.level.pivot,
+                                  had.heading_deg, origin=had.origin)
+        return {"ok": True, "level": made.as_dict(),
+                "tilt_deg": made.tilt_deg, "flatness": fit.flatness,
                 "errors": [float(e) for e in fit.errors],
                 "worst": fit.worst[0], "points": fit.count,
                 "trustworthy": fit.ok, "text": fit.describe()}
+
+    def level_from_floor(self, level=None):
+        """
+        Level the survey off the ground the scans are standing on.
+
+        ⭐⭐ MEASURED PER CAPTURE, COMBINED IN THE MERGED FRAME, APPLIED ONCE.
+        Each capture finds its own floor in its own frame -- where the floor is
+        near, densely sampled and squarely seen -- and each of those planes is
+        then carried through that capture's placement into the merged frame,
+        where they should all be describing ONE plane. That common plane's tilt
+        off horizontal is the survey's level error, and it is the thing `Level`
+        was built to hold.
+
+        ⛔⛔ AND THIS IS WHY IT IS NOT DONE SCAN BY SCAN, WHICH IS THE OBVIOUS
+        WAY AND IS WRONG. The program already says so twice, in the Move tray
+        and in `Level`'s own docstring: *a tilt shared by every scan cancels
+        between them, and taking it out scan by scan pulls the alignment
+        apart.* Levelling each capture into its own lean would write the same
+        rotation into ten different placements, none of which the solver
+        agreed to, and the registration would come apart at every seam. The
+        tilt of the ROOM belongs to the room.
+
+        ⛔ A DISAGREEING CAPTURE IS REPORTED, NOT AVERAGED IN. If one floor
+        plane leans away from the others in the merged frame, that is not a
+        worse measurement of the same thing -- it is either a misplaced scan
+        or a floor that genuinely steps, and both are things the operator
+        needs told rather than smoothed over.
+        """
+        had = registration.Level.from_dict(level)
+        seen, missing = [], []
+        for i, scan in enumerate(self.scans):
+            if getattr(scan, "source", "capture") == "cloud":
+                continue          # no capture position, so no floor of its own
+            xyz = scan.sample if scan.sample is not None else scan.xyz
+            fit = registration.floor_plane(xyz)
+            if fit is None:
+                missing.append(scan.name)
+                continue
+            # ⛔ THE NORMAL IS A DIRECTION, SO IT TAKES THE ROTATION ONLY.
+            # Sent through the full placement it would pick up the tripod's
+            # position and stop being a direction at all.
+            M = registration._pose_matrix(scan.setup, scan.lean)
+            n = M[:3, :3] @ fit.normal
+            n = n / (float(np.linalg.norm(n)) or 1.0)
+            if n[2] < 0:
+                n = -n
+            here = registration.apply_matrix(M, fit.point[None, :])[0]
+            seen.append({"index": i, "name": scan.name,
+                         "folderNo": _folder_number(scan.path),
+                         "normal": n, "point": here, "points": fit.count,
+                         "rms": fit.rms,
+                         "own_tilt_deg": fit.tilt_deg})
+        if not seen:
+            return {"ok": False,
+                    "error": "no floor could be found in any capture — the "
+                             "ground has to be visible within %.0f m of a "
+                             "tripod for this to measure anything."
+                             % registration.FLOOR_FAR_M}
+        stack = np.array([s["normal"] for s in seen])
+        # The common direction, weighted by how many points each stood on:
+        # a floor measured off 40,000 returns is worth more than one off 3,000.
+        w = np.array([float(s["points"]) for s in seen])
+        avg = (stack * w[:, None]).sum(axis=0)
+        avg = avg / (float(np.linalg.norm(avg)) or 1.0)
+        for s in seen:
+            s["off_deg"] = float(np.degrees(np.arccos(
+                min(1.0, max(-1.0, float(np.dot(s["normal"], avg)))))))
+        odd = [s for s in seen if s["off_deg"] > registration.FLOOR_ODD_DEG]
+        agreed = [s for s in seen if s not in odd]
+        if not agreed:
+            return {"ok": False,
+                    "error": "the floors found in each capture do not agree "
+                             "with each other, so there is no one ground "
+                             "plane to level to. Check the alignment first."}
+        if odd:
+            stack = np.array([s["normal"] for s in agreed])
+            w = np.array([float(s["points"]) for s in agreed])
+            avg = (stack * w[:, None]).sum(axis=0)
+            avg = avg / (float(np.linalg.norm(avg)) or 1.0)
+        pivot = np.average(np.array([s["point"] for s in agreed]),
+                           axis=0, weights=w)
+        made = registration.Level(avg, pivot, had.heading_deg,
+                                  origin=had.origin)
+        # ⭐ THE SCATTER IS REPORTED AS A NUMBER, NOT TURNED INTO AN ACCUSATION.
+        # See FLOOR_ODD_DEG: on a real floor these disagree by a degree or two
+        # and that is the measurement, not a finding. What the operator can
+        # actually use is how much the captures agreed and over how many
+        # points -- from which they can see for themselves whether 0.8° is
+        # worth believing.
+        spread = float(max(s["off_deg"] for s in agreed))
+        total = int(sum(s["points"] for s in agreed))
+        return {"ok": True, "level": made.as_dict(),
+                "tilt_deg": made.tilt_deg,
+                "floors": [{"index": s["index"], "name": s["name"],
+                            "folderNo": s["folderNo"], "points": s["points"],
+                            "rms": s["rms"], "off_deg": s["off_deg"]}
+                           for s in seen],
+                "spread_deg": spread, "points": total,
+                "odd": [s["name"] for s in odd],
+                "missing": missing,
+                "text": ("the ground under %d capture%s says the survey leans "
+                         "%.2f° — %s points of floor, agreeing to within %.1f°"
+                         % (len(agreed), "" if len(agreed) == 1 else "s",
+                            made.tilt_deg, "{:,}".format(total), spread))}
+
+    def set_origin(self, point, level=None, axes="xyz"):
+        """
+        Put zero on a point the operator picked, like SketchUp's axes origin.
+
+        ⭐⭐ THE THIRD PART OF THE WORLD, AND THE ONE THAT WAS MISSING. `Level`
+        answers "where is down", `heading_to_north` answers "where is north",
+        and until now nothing answered "where is ZERO" -- so a cloud left this
+        program correctly levelled, correctly oriented, and measured from
+        wherever the first tripod happened to be standing. A drawing needs a
+        datum somebody chose: a column gridline, a corner, a threshold.
+
+        ⛔ IT MOVES THE WORLD, NOT THE SCANS. Not one Setup changes, so the
+        alignment cannot be disturbed by it and it cannot be undone by the
+        next Auto-align -- exactly the argument `Level` makes for keeping the
+        tilt out of the placements. The point is stored in the RAW frame and
+        rotated on use, so it stays on the feature it was picked on even if
+        the room is levelled again afterwards.
+
+        `axes` names which of the three to move. ⭐ "z" alone is what "bring
+        this floor down to the grid" means: the operator wants the height
+        datum set without the plan position sliding out from under the
+        drawing they have already started measuring off.
+        """
+        try:
+            p = np.asarray(point, dtype=np.float64).reshape(3)
+        except Exception:                                     # noqa: BLE001
+            return {"ok": False,
+                    "error": "pick a point on a cloud first — the origin is a "
+                             "place in the room, not a number to type."}
+        if not np.all(np.isfinite(p)):
+            return {"ok": False, "error": "that point is not a real position"}
+        had = registration.Level.from_dict(level)
+        want = str(axes or "xyz").lower()
+        if not want or any(c not in "xyz" for c in want):
+            return {"ok": False, "error": "axes must be some of x, y and z"}
+        # ⛔ MIXED PER AXIS IN THE **RAW** FRAME, WHICH IS WHERE THE ORIGIN
+        # LIVES. Doing it after the rotation would mean "z only" moved x and y
+        # as well the moment the room was levelled, because a rotated z is not
+        # a pure z -- the axis the operator named would not be the axis that
+        # moved, which is the whole of what they asked for.
+        base = had.origin if had.origin is not None else np.zeros(3)
+        made_origin = np.array(base, dtype=np.float64)
+        for i, name in enumerate("xyz"):
+            if name in want:
+                made_origin[i] = p[i]
+        made = registration.Level(had.normal, had.pivot, had.heading_deg,
+                                  origin=made_origin)
+        shift = made.shift_xyz
+        return {"ok": True, "level": made.as_dict(),
+                "origin": [float(v) for v in made_origin],
+                "shift": [float(v) for v in shift],
+                "axes": want,
+                "text": ("zero is now that point"
+                         if want == "xyz" else
+                         "that point is now %s = 0"
+                         % ", ".join(c.upper() for c in want))}
 
     def set_north(self, points, direction, level):
         """
@@ -1472,7 +1648,12 @@ class AlignServer(object):
         # ⛔ THE TILT IS CARRIED THROUGH, NOT REPLACED. Setting north on an
         # already-levelled frame must not un-level it, and the page sends the
         # level it currently holds for exactly that reason.
-        made = registration.Level(base.normal, base.pivot, heading)
+        # ⛔ AND THE ORIGIN IS CARRIED THROUGH TOO, for the same reason the
+        # tilt is: setting north on a frame whose zero has been placed must
+        # not throw the zero away. Every one of the three parts survives the
+        # other two being set.
+        made = registration.Level(base.normal, base.pivot, heading,
+                                  origin=base.origin)
         return {"ok": True, "level": made.as_dict(),
                 "heading_deg": heading, "direction": want,
                 "text": "turned %.2f° so that line runs %s"
@@ -3370,11 +3551,11 @@ PAGE = r"""<!doctype html>
     <button id="zero">Reset</button>
   </div>
   <div class="photo axis"><span class="grow">move by</span><input class="deg" id="mvstep" type="number" step="0.01" min="0.001" value="0.05" title="How far one press of an arrow moves the scan."><span style="color:var(--faint)">m</span><span class="grow" style="text-align:right">turn by</span><input class="deg" id="trstep" type="number" step="0.1" min="0.001" value="1.0" title="How far one press of a turn arrow turns it."><span style="color:var(--faint)">&deg;</span></div>
-  <div class="photo axis"><span class="grow">East / west <span class="num" id="xv">0.00</span> m</span><input class="deg" id="ax_x_m" type="number" step="0.01" value="0" title="Type an exact move it west / east by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;x_m&quot;)"><button class="mini step" title="move it west / east by the step above" onclick="nudgeAxis(&quot;x_m&quot;,-1)">&#9664;</button><button class="mini step" title="move it west / east by the step above" onclick="nudgeAxis(&quot;x_m&quot;,1)">&#9654;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;x_m&quot;)">Set</button></div>
+  <div class="photo axis"><span class="grow">X <span class="num" id="xv">0.00</span> m</span><input class="deg" id="ax_x_m" type="number" step="0.01" value="0" title="Type an exact move along X and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;x_m&quot;)"><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,-1)">&#9664;</button><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,1)">&#9654;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;x_m&quot;)">Set</button></div>
   <input type="range" id="tx" min="-10" max="10" step="0.01" value="0">
-  <div class="photo axis"><span class="grow">North / south <span class="num" id="yv">0.00</span> m</span><input class="deg" id="ax_y_m" type="number" step="0.01" value="0" title="Type an exact move it south / north by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;y_m&quot;)"><button class="mini step" title="move it south / north by the step above" onclick="nudgeAxis(&quot;y_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it south / north by the step above" onclick="nudgeAxis(&quot;y_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;y_m&quot;)">Set</button></div>
+  <div class="photo axis"><span class="grow">Y <span class="num" id="yv">0.00</span> m</span><input class="deg" id="ax_y_m" type="number" step="0.01" value="0" title="Type an exact move along Y and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;y_m&quot;)"><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;y_m&quot;)">Set</button></div>
   <input type="range" id="ty" min="-10" max="10" step="0.01" value="0">
-  <div class="photo axis"><span class="grow">Height <span class="num" id="zv2">0.00</span> m</span><input class="deg" id="ax_z_m" type="number" step="0.005" value="0" title="Type an exact lower / raise it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;z_m&quot;)"><button class="mini step" title="lower / raise it by the step above" onclick="nudgeAxis(&quot;z_m&quot;,-1)">&#9660;</button><button class="mini step" title="lower / raise it by the step above" onclick="nudgeAxis(&quot;z_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;z_m&quot;)">Set</button></div>
+  <div class="photo axis"><span class="grow">Z <span class="num" id="zv2">0.00</span> m</span><input class="deg" id="ax_z_m" type="number" step="0.005" value="0" title="Type an exact move along Z and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;z_m&quot;)"><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;z_m&quot;)">Set</button></div>
   <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
   <div class="photo axis"><span class="grow">Turn <span class="num" id="rv">0.00</span> &deg;</span><input class="deg" id="ax_yaw_deg" type="number" step="0.1" value="0" title="Type an exact turn it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;yaw_deg&quot;)"><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,-1)">&#8634;</button><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,1)">&#8635;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;yaw_deg&quot;)">Set</button></div>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
@@ -3432,6 +3613,20 @@ PAGE = r"""<!doctype html>
     <button id="lvlgo" class="go">Level to these</button></div>
   <div class="row"><button id="lvlundo">Undo point</button>
     <button id="lvlclear">Clear levelling</button></div>
+  <div class="row"><button id="lvlfloor" class="go">Level to the floor</button>
+  </div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    <b>Level to the floor</b> finds the ground in every capture on its own —
+    the lowest place with a lot of surface at one height — carries each of
+    those planes through its scan's placement, and levels the survey to the
+    plane they agree on. It runs by itself the first time a job is opened with
+    nothing levelled yet. ⛔ It changes the <i>room's</i> tilt, never a scan's:
+    a lean shared by every capture cancels between them, and taking it out one
+    scan at a time pulls the alignment apart. It says how many points of floor
+    it stood on and how closely the captures agreed — on a working floor with
+    furniture standing on it that is a degree or two, which is the measurement
+    rather than a fault. Only a plane that is not that floor at all — a ramp,
+    another storey — is left out.</div>
   <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
     The clouds come out in the <b>rig's</b> frame, not gravity's — the pitch
     calibration measured the lasers against each other, so a tripod left
@@ -3441,6 +3636,26 @@ PAGE = r"""<!doctype html>
     cutting: edits already made stay put while the cloud straightens under
     them.</div>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
+  <hr>
+  <label>The world grid, and where zero is</label>
+  <div class="row"><button id="wgrid">World grid</button>
+    <button id="setorg">Pick a point</button></div>
+  <div class="row"><button id="orgxyz" class="go">Zero here (XYZ)</button>
+    <button id="orgz" class="go">Floor level (Z)</button></div>
+  <div class="row"><button id="orgclear">Clear zero</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:3px 0 4px">
+    <b>World grid</b> draws the ground plane at <b>Z&nbsp;=&nbsp;0</b> — metre
+    squares, every fifth one drawn up, the X and Y axes through zero in red and
+    green. It is where the exported file will be measured from, so points
+    hanging below it are below your datum.
+    <b>Pick a point</b>, then <b>Zero here</b> puts the origin on it, or
+    <b>Floor level</b> moves only the height so that point lands on the grid
+    and the plan position stays where your drawing already has it.
+    ⛔ This moves the <i>world</i>, never a scan: no placement changes, so it
+    cannot disturb the alignment and Auto-align cannot undo it. The point is
+    remembered against the room, so re-levelling afterwards leaves zero on the
+    feature you picked.</div>
+  <div id="orglist" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
 <div class="tray" id="ty_north"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'north')"><span class="fold">▾</span><b class="grow">Which way is north</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('north')">✕</button></div><div class="traybody">
   <label>Which way is north</label>
@@ -3614,6 +3829,11 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            turnRing:false, moveGiz:false, moveAxis:null, moveHot:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
            ref:false, plumb:{a:null,b:null}, nth:[], trays:{}, order:[],
+           /* The ground plane at world Z = 0, and the point waiting to become
+              zero. ⛔ The pick is held in its own SCAN's coordinates, like
+              every other pick here: stored as world it would mean somewhere
+              else the moment that cloud was nudged or the room re-levelled. */
+           wgrid:false, org:null,
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
@@ -3812,14 +4032,32 @@ function levelRot(){
   }
   return R;
 }
+/* ⛔ MIRRORS registration.Level.apply, AND IT HAS TO KEEP MIRRORING IT. What
+   is on screen and what is written out are two implementations of one
+   sentence: rotate about the pivot, then move the chosen origin to zero. The
+   shift comes last and is in the LEVELLED frame, exactly as it is there. */
+function levelShift(){
+  if(!V.level || !V.level.origin) return null;
+  const o=V.level.origin, R=levelRot(), p=V.level.pivot;
+  if(!R) return [o[0],o[1],o[2]];
+  const d=[o[0]-p[0],o[1]-p[1],o[2]-p[2]];
+  return [R[0][0]*d[0]+R[0][1]*d[1]+R[0][2]*d[2]+p[0],
+          R[1][0]*d[0]+R[1][1]*d[1]+R[1][2]*d[2]+p[1],
+          R[2][0]*d[0]+R[2][1]*d[1]+R[2][2]*d[2]+p[2]];
+}
 function levelMat(){
-  const R=levelRot(); if(!R) return null;
-  const p=V.level.pivot;                        /* turn about the named surface */
+  const R=levelRot(), sh=levelShift();
+  if(!R && !sh) return null;
+  const I=[[1,0,0],[0,1,0],[0,0,1]], M=R||I;
+  const p=(V.level&&V.level.pivot)||[0,0,0];
   const t=[0,0,0];
-  for(let i=0;i<3;i++) t[i]=p[i]-(R[i][0]*p[0]+R[i][1]*p[1]+R[i][2]*p[2]);
-  return new Float32Array([R[0][0],R[1][0],R[2][0],0,
-                           R[0][1],R[1][1],R[2][1],0,
-                           R[0][2],R[1][2],R[2][2],0,
+  for(let i=0;i<3;i++){
+    t[i]=p[i]-(M[i][0]*p[0]+M[i][1]*p[1]+M[i][2]*p[2]);
+    if(sh) t[i]-=sh[i];
+  }
+  return new Float32Array([M[0][0],M[1][0],M[2][0],0,
+                           M[0][1],M[1][1],M[2][1],0,
+                           M[0][2],M[1][2],M[2][2],0,
                            t[0],t[1],t[2],1]);
 }
 /* Placement, then level. The exporter composes them in this order too, and the
@@ -4205,9 +4443,9 @@ const RING_PX=62;
    ring so its knobs sit clear of it rather than on it. */
 const MOVE_PX = 86;
 const MOVE_AXES = [
-  {key:'x_m', c:'rgba(255,105,97',  lab:'east / west',   unit:'m'},
-  {key:'y_m', c:'rgba(120,230,150', lab:'north / south', unit:'m'},
-  {key:'z_m', c:'rgba(90,170,255',  lab:'height',        unit:'m'}];
+  {key:'x_m', c:'rgba(255,105,97',  lab:'X', unit:'m'},
+  {key:'y_m', c:'rgba(120,230,150', lab:'Y', unit:'m'},
+  {key:'z_m', c:'rgba(90,170,255',  lab:'Z', unit:'m'}];
 
 /* ⭐⭐ THE ARMS POINT ALONG THE AXES THE SLIDERS ACTUALLY MOVE, AND THAT IS
    NOT THE SAME AS THE WORLD AXES. A Setup is applied BEFORE the levelling
@@ -4354,7 +4592,7 @@ function nudgeAxis(key, sign){
   else if(key === 'pitch_deg') leanScan(sign*turnStep(), 0);
   else if(key === 'roll_deg') leanScan(0, sign*turnStep());
   else nudge(0, 0, 0, sign*moveStep());
-  const lab = {x_m:'east / west', y_m:'north / south', z_m:'height',
+  const lab = {x_m:'X', y_m:'Y', z_m:'Z',
                yaw_deg:'turn', pitch_deg:'tip', roll_deg:'bank'}[key];
   say(s.name.slice(0,18) + ' — ' + lab + ' now '
       + (+s.setup[key]).toFixed(DEGREES[key] ? 1 : 2)
@@ -4884,6 +5122,7 @@ function draw(){
       gl.drawArrays(gl.POINTS,0,c.n);
     }
   }
+  drawWorldGrid(vp);
   drawBox(vp);
   drawRef(vp);
   drawPairs(vp);
@@ -5028,6 +5267,72 @@ async function boot(){
   recentre(); draw();
   if(OPEN) openProject(OPEN);
   else if(PENDING.length) ingest(PENDING);
+  else autoFloorLevel();
+}
+
+/* ⭐⭐ LEVEL TO THE GROUND THE SCANS ARE STANDING ON, WITHOUT BEING ASKED.
+   The clouds come out in the rig's frame, and a tripod is never quite level,
+   so the very first thing anybody sees is a room that leans. Every capture is
+   already carrying the answer: the floor is in it.
+
+   ⛔ ONCE, AND ONLY WHEN NOTHING HAS BEEN LEVELLED YET. A project that was
+   opened, or a room the operator levelled to a worktop by hand, holds a
+   decision -- and a convenience that overwrites a decision is not a
+   convenience. It also stays quiet about failing: no floor in view is an
+   ordinary thing in a stairwell or a facade scan, and a warning about it on
+   startup would be noise before the operator has done anything.
+
+   ⛔ IT DOES NOT TOUCH A SINGLE PLACEMENT. See `level_from_floor`: the tilt of
+   the room belongs to the room, and writing it into each scan's lean instead
+   is the thing this program warns against in two other places. */
+async function autoFloorLevel(){
+  if(V.level || !V.scans.length) return;
+  try{
+    const j = await postLevelFloor();
+    if(!j || !j.ok) return;
+    V.level=j.level; showLevel(); recomputeLive(); invalidate(); editsFollow();
+    say('Levelled to the floor: '+j.text+'. Nothing was moved — the tilt '+
+        'belongs to the room, not to any one capture. Turn on the '+
+        '<b>World grid</b> to see the ground plane, or level to a surface '+
+        'you name if this one was not the floor.');
+  }catch(e){ /* startup convenience: it says nothing when it cannot */ }
+}
+function postLevelFloor(){
+  return fetch('level/floor',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({level:V.level})}).then(r=>r.json());
+}
+async function levelToFloor(){
+  remember('levelling to the floor', undoLevel());
+  say('looking for the floor in each capture…');
+  try{
+    const j = await postLevelFloor();
+    if(!j.ok) return say(j.error||'no floor could be found', 'warn');
+    V.level=j.level; showLevel(); showFloors(j); recomputeLive();
+    invalidate(); editsFollow(); dirty();
+    /* ⛔ THE SCATTER IS A NUMBER, NOT AN ACCUSATION -- and the first version
+       of this line got that wrong. It named every capture more than two
+       degrees off as "a step in the building, or a scan that is misplaced".
+       Measured on the live restaurant, fifteen captures scatter from 0.34 to
+       3.52 degrees with no gap anywhere in that list: it is one population,
+       the roughness of a floor with furniture on it, and the accusation would
+       have fallen on four innocent scans every single run. What is worth
+       saying is how well they agreed, so the operator can judge the answer. */
+    say(j.text + (j.odd.length
+        ? '. ⚠ Left out entirely — not the same plane at all, so a ramp, '+
+          'another storey, or a scan somewhere else: '+j.odd.join(', ')
+        : '.'), j.odd.length ? 'warn' : null);
+  }catch(e){ say('Could not level to the floor: '+e.message, 'bad'); }
+}
+function showFloors(j){
+  const box=$('lvllist'); if(!box || !j) return;
+  box.innerHTML = (j.floors||[]).map(f=>
+    '<span class="fno">'+(f.folderNo ? '#'+f.folderNo : '?')+'</span> '+
+    '<span class="num">'+f.points.toLocaleString()+' pts, '+
+    (f.rms*1000).toFixed(0)+' mm rough, '+f.off_deg.toFixed(2)+'° off</span>')
+    .join('<br>') + ((j.missing&&j.missing.length)
+      ? '<br><span style="color:var(--faint)">no floor in view: '+
+        j.missing.join(', ')+'</span>' : '');
 }
 
 /* Recomputed whenever the set of scans changes, so a scan added mid-session
@@ -5257,10 +5562,16 @@ function undoPose(i){
     if(j && j.ok) await afterColour(j);
   };
 }
+/* ⛔ ONE UNDO FOR THE WHOLE WORLD FRAME, and the origin had to join it. The
+   tilt, the compass and zero all live in `V.level` and all three are set by
+   buttons that call this -- an undo that put two of them back would leave the
+   room in a state the operator never made. `V.level` is always REPLACED, never
+   mutated, so holding the reference is holding the old value. */
 function undoLevel(){
-  const was=V.level, pts=V.nth.slice(), lp=V.lvl.slice();
-  return ()=>{ V.level=was; V.nth=pts; V.lvl=lp;
-               showLevel(); showNorth(); invalidate(); editsFollow(); dirty(); };
+  const was=V.level, pts=V.nth.slice(), lp=V.lvl.slice(), og=V.org;
+  return ()=>{ V.level=was; V.nth=pts; V.lvl=lp; V.org=og;
+               showLevel(); showNorth(); showOrigin();
+               invalidate(); editsFollow(); dirty(); };
 }
 /* ⭐⭐ ONE CHOKE POINT FOR THE WHOLE CLIP BOX. Nine sliders, two grips and
    three buttons all move it, and putting a `remember` on each of the fourteen
@@ -5834,7 +6145,8 @@ function setTool(t){
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
   [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs'],
-   ['level','Pick level points'],['plumb','Place / measure']]
+   ['level','Pick level points'],['plumb','Place / measure'],
+   ['setorg','Pick a point']]
     .forEach(([id,label])=>{
       const b=$(id); if(!b) return;
       b.classList.toggle('on', t===id);
@@ -6003,6 +6315,7 @@ function runPick(mx,my){
   if(V.tool==='level') return levelPick(hit);
   if(V.tool==='plumb') return plumbPick(hit);
   if(V.tool==='north') return northPick(hit);
+  if(V.tool==='setorg') return originPick(hit);
   const want=pairWant();
   if(!want) return;
   if(hit.scan!==want) return say(
@@ -6248,6 +6561,73 @@ async function applyNorth(dir){
   }catch(e){ say('Could not set north: '+e.message, 'bad'); }
 }
 
+/* ---- where zero is ----
+   ⭐⭐ THE THIRD PART OF THE WORLD. Level says where down is, the compass says
+   where north is, and nothing said where ZERO is -- so every cloud this
+   program has ever written was measured from wherever the first tripod
+   happened to stand. A drawing needs a datum somebody chose. */
+function originPick(hit){
+  V.org={si:hit.scan.index, p:hit.local.slice()};
+  showOrigin(); invalidate();
+  say('Point taken. Press Zero here (XYZ) to put the origin on it, or Floor '+
+      'level (Z) to move only the height so it lands on the grid.');
+}
+function showOrigin(){
+  const box=$('orglist'); if(!box) return;
+  const bits=[];
+  if(V.level && V.level.origin){
+    const s=levelShift();
+    bits.push('<b style="color:#8fd694">zero moved '+
+      s.map(v=>v.toFixed(3)).join(', ')+' m from where the survey started</b>');
+  }
+  if(V.org){
+    const s=scanAt(V.org.si), w=s?put(affine(s),V.org.p[0],V.org.p[1],
+                                      V.org.p[2]):null;
+    bits.push(w ? ('point picked — it reads '+w.map(v=>v.toFixed(3)).join(', ')+
+                   ' m right now')
+                : 'point picked on a scan that is no longer open');
+  }
+  box.innerHTML = bits.join('<br>') || '';
+}
+async function setOrigin(axes){
+  if(!V.org) return say('Pick a point on a cloud first — press <b>Pick a '+
+                        'point</b>, then click the corner, threshold or '+
+                        'gridline you want zero to sit on.', 'warn');
+  const s=scanAt(V.org.si);
+  if(!s) return say('That point was picked on a scan that is no longer open. '+
+                    'Pick it again.', 'warn');
+  remember('setting where zero is', undoLevel());
+  try{
+    /* ⛔ SENT IN THE RAW FRAME, like the levelling picks and for the same
+       reason: the server stores the origin against the room, not against the
+       levelled view, so that re-levelling later leaves zero on the feature. */
+    const r=await fetch('origin',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({point:preLevel(s,V.org.p), level:V.level,
+                           axes:axes})});
+    const j=await r.json();
+    if(!j.ok) return say(j.error||'zero could not be set there', 'warn');
+    V.level=j.level;
+    if(!V.wgrid){ V.wgrid=true; $('wgrid').classList.add('on'); }
+    showOrigin(); showLevel(); recomputeLive(); invalidate(); editsFollow();
+    dirty();
+    say(j.text+'. The world grid is showing so you can see it.');
+  }catch(e){ say('Could not set zero: '+e.message, 'bad'); }
+}
+function clearOrigin(){
+  remember('clearing where zero is', undoLevel());
+  V.org=null;
+  if(V.level && V.level.origin){
+    /* ⛔ CLEARING ZERO MUST NOT CLEAR THE LEVEL OR THE COMPASS. Three
+       independent facts about the world in one object; the same rule the
+       compass button already follows in the other direction. */
+    const keep=Object.assign({}, V.level);
+    delete keep.origin;
+    V.level=keep;
+  }
+  showOrigin(); showLevel(); recomputeLive(); invalidate(); editsFollow();
+  dirty(); say('Zero is back where the survey started.');
+}
 function showLevel(){
   const box=$('lvllist'); if(!box) return;
   const bits=[];
@@ -6275,7 +6655,11 @@ async function applyLevel(){
                          'while the cloud straightens under them.', 'warn');
   const r=await fetch('level',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({points:pts})});
+    /* ⛔ THE LEVEL GOES WITH IT, so that levelling a frame whose north and
+       zero are already set changes the tilt and nothing else. The compass
+       button has always sent it for exactly this reason; the origin made the
+       other direction matter too. */
+    body:JSON.stringify({points:pts, level:V.level})});
   const j=await r.json();
   if(!j.ok) return say(j.error||'that surface could not be levelled to','warn');
   V.level=j.level; V.lerr=j.errors;
@@ -6324,6 +6708,75 @@ function refOrigin(){
 function refSpan(){
   return {z:Math.max(V.ext.hi[2]-V.ext.lo[2], 3.0),
           r:Math.min(Math.max((V.reach||10)*0.5, 3.0), 15.0)};
+}
+/* ⭐⭐ THE GROUND PLANE, THE WAY A MODELLING PACKAGE DRAWS IT. Z = 0 in the
+   WORLD frame -- after levelling, after the compass, after the origin -- so it
+   is a picture of the datum the exported file will actually be measured
+   against, not of anything the scanner happened to produce.
+
+   ⛔ IT IS NOT THE PLUMB TOOL'S GRID, WHICH ALREADY EXISTED AND IS A DIFFERENT
+   THING. That one is drawn through the plumb ANCHOR, at whatever height the
+   operator parked it, to hold a straight edge against a wall. This one is
+   nailed to zero and cannot be moved -- which is the whole of what makes it
+   answer "where is the world level surface". Two grids that both look like a
+   floor must not be the same control.
+
+   ⛔ AND IT MUST NOT READ AS DATA. Points are what this program is for; a grid
+   bright enough to compete with them is a grid that gets switched off and
+   never used. Minor lines every metre are barely there, every fifth is drawn
+   up, and only the two axis lines through zero carry colour. */
+const GRID_MINOR = 1.0, GRID_MAJOR = 5;
+function gridReach(){
+  /* Big enough to run past the cloud, rounded to whole major squares so the
+     heavy lines stay on multiples of five however far it has to reach. */
+  const e=V.ext, far=Math.max(
+    Math.abs(e.lo[0]), Math.abs(e.hi[0]),
+    Math.abs(e.lo[1]), Math.abs(e.hi[1]), 5.0);
+  return Math.ceil((far*1.15)/(GRID_MINOR*GRID_MAJOR))*GRID_MINOR*GRID_MAJOR;
+}
+function drawWorldGrid(vp){
+  if(!V.wgrid || !V.scans.length) return;
+  const R=gridReach(), minor=[], major=[], ax=[], ay=[];
+  for(let v=-R; v<=R+1e-9; v+=GRID_MINOR){
+    const i=Math.round(v/GRID_MINOR);
+    const line = (i===0) ? null : ((i%GRID_MAJOR===0) ? major : minor);
+    if(!line) continue;
+    line.push([v,-R,0],[v,R,0]);
+    line.push([-R,v,0],[R,v,0]);
+  }
+  ax.push([-R,0,0],[R,0,0]);              /* the X axis through zero */
+  ay.push([0,-R,0],[0,R,0]);              /* and the Y axis */
+  gl.useProgram(lprog);
+  gl.uniformMatrix4fv(lloc.uVP,false,vp);
+  gl.disableVertexAttribArray(loc.aCol);
+  gl.disableVertexAttribArray(loc.aLive);
+  gl.enableVertexAttribArray(lloc.aP);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lbuf);
+  gl.vertexAttribPointer(lloc.aP,3,gl.FLOAT,false,0,0);
+  /* ⛔ DEPTH ON, unlike the plumb reference. This one is a floor: a floor you
+     can see through the floor is not a floor, and the whole reason to draw it
+     is to see which points are under it. */
+  const flat=a=>{ const f=new Float32Array(a.length*3);
+    a.forEach((v,i)=>{ f[i*3]=v[0]; f[i*3+1]=v[1]; f[i*3+2]=v[2]; }); return f; };
+  const line=(pts,r,g,b)=>{
+    if(!pts.length) return;
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pts), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize,1.0);
+    gl.uniform4f(lloc.uCol,r,g,b,1.0);
+    gl.drawArrays(gl.LINES,0,pts.length);
+  };
+  line(minor, 0.145,0.155,0.185);
+  line(major, 0.255,0.275,0.325);
+  line(ax, 0.62,0.26,0.26);
+  line(ay, 0.28,0.55,0.34);
+  /* zero itself, so the origin is a place and not an inference */
+  const dpr=Math.min(devicePixelRatio||1,2);
+  gl.bufferData(gl.ARRAY_BUFFER, flat([[0,0,0]]), gl.DYNAMIC_DRAW);
+  gl.uniform1f(lloc.uSize, 9*dpr);
+  gl.uniform4f(lloc.uCol, 0.95,0.85,0.35,1.0);
+  gl.drawArrays(gl.POINTS,0,1);
+  gl.enableVertexAttribArray(loc.aCol);
+  gl.enableVertexAttribArray(loc.aLive);
 }
 function drawRef(vp){
   if(!V.ref || !V.scans.length) return;
@@ -6913,7 +7366,7 @@ const MENUWHY = {
 /* Which tray owns which pick-tool, so a keyboard shortcut opens the controls
    that go with it instead of arming a tool whose panel is shut. */
 const TOOLTRAY = {rect:'cut', lasso:'cut', pair:'pairs', level:'level',
-                  north:'north', plumb:'plumb'};
+                  north:'north', plumb:'plumb', setorg:'level'};
 const TRAYKEY = 'tlspie.trays.v2';
 
 /* Open, and folded, per tray. ⛔ KEPT ACROSS RELOADS. A tray arrangement is a
@@ -8255,7 +8708,7 @@ function syncClipSliders(){
    they were built, and nothing failed loudly enough to say so: the fallback was
    a working feature, just the wrong one. A tool in neither table now leaves the
    drag to the camera, which is inert rather than misleading. */
-const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1};
+const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1};
 
 /* Is this cloud on screen? One home for the question, because the draw, the
    picker and every new cut all have to agree about it. */
@@ -8555,7 +9008,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     syncGizmo(); invalidate();
     say(want
         ? 'Gizmo on '+s.name+', at the tripod. Drag an arm to slide it — red '+
-          'is east and west, green north and south, blue up. Drag the outer '+
+          'is X, green is Y, blue is Z. Drag the outer '+
           'ring to turn it (shift snaps to 5°), the green inner ring to '+
           'tip it and the pink one to bank it. While it is on, a drag near '+
           'the tripod works the gizmo rather than orbiting the view.'
@@ -8595,8 +9048,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     syncGizmo();
     invalidate();
     say(V.moveGiz
-        ? 'Drag an arm to slide '+s.name+' along that axis. Red is east and '+
-          'west, green north and south, blue up. Press Move gizmo again to '+
+        ? 'Drag an arm to slide '+s.name+' along that axis. Red is X, '+
+          'green Y and blue Z. Press Move gizmo again to '+
           'take them away.'
         : 'Move gizmo off.');
   };
@@ -8636,6 +9089,16 @@ document.addEventListener('DOMContentLoaded', ()=>{
     showPlumb(); invalidate(); };
   $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
   $('refclear').onclick=clearPlumb;
+  $('lvlfloor').onclick=levelToFloor;
+  $('wgrid').onclick=e=>{ V.wgrid=!V.wgrid;
+    e.target.classList.toggle('on',V.wgrid); invalidate();
+    say(V.wgrid ? 'World grid on — metre squares at Z = 0, every fifth drawn '+
+                  'up, the X axis red and the Y axis green through zero.'
+                : 'World grid off.'); };
+  $('setorg').onclick=()=>setTool(V.tool==='setorg'?'':'setorg');
+  $('orgxyz').onclick=()=>setOrigin('xyz');
+  $('orgz').onclick=()=>setOrigin('z');
+  $('orgclear').onclick=clearOrigin;
   $('sortshoot').onclick=sortShoot;
   $('shootsolve').onclick=solveShoot;
   $('clnstray').onclick=cleanStray;
