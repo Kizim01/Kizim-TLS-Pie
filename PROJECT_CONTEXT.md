@@ -3181,13 +3181,105 @@ Tested by running the **shipped** `measure` / `pickScan` / `forgetScan` in node 
 sequence of picks, rebuilds and removals — not by matching source strings. The assertion that reads
 1 after the fix read 2 before it. Converter suite **846 → 864**.
 
+#### ⛔⛔ 2026-08-23 — "RELOAD AT THIS DETAIL IS NOT WORKING" — IT RAISED ON EVERY PRESS
+
+It was broken in the plainest way available. `density()` built a list of **4-tuples** and unpacked it
+as **three names** one line below, so `load()` was never reached and every press answered *"Could not
+re-read at that detail: too many values to unpack (expected 3)"*. It broke the day the **lean** was
+added to that tuple — `d7dc7aa`, *"Tilt a scan, and three controls that did nothing"* — and nothing
+noticed, because the shape of that tuple was written out in **two places** and only one was taught
+about the new field. So there is no tuple now: the old scans are carried whole and read by attribute
+name, and a field can be added to a `Scan` without a second place having to be told.
+
+⚠ **THE SUITE HAD BEEN TESTING THAT FUNCTION FOR WEEKS.** *"changing detail on an empty session is
+harmless"* calls `density()` with no scans open — which returns at the guard clause **three lines in,
+above every broken line**. It went on passing for as long as the body below it raised on every press
+an operator could make. **A case that stops at the guard clause tests the guard clause.**
+
+⛔ **AND THE PLACEMENT WAS NEVER ALL A RE-READ HAD TO CARRY.** Its own docstring promises the operator
+does not lose their work to a change of detail, and it carried four of the six things a scan wears:
+the **cleaning rule** and the **photograph's pose** were dropped, so a finer preview would have handed
+back every stray they had removed and re-solved every heading from the sibling image. That is the
+2026-08-22 rebuild bug one door further out, on the server's own copy. The **rule** carries and the
+**mask** cannot — a mask is one bool per point and a change of density changes how many there are, so
+copying it would either raise or, worse, line up by accident and hide a different set of points.
+A rule that cannot be re-measured is turned **off and named**, never left governing the export while
+the preview shows every point.
+
+⛔ Found by the same audit: **`open_project` restored a project's cleaning rule by calling
+`clean_scan(fresh.index(scan), …)`** — an index into `fresh`, handed to a method that reads
+`self.scans`, which was still the *previous* session and would not become `fresh` for another thirty
+lines. **A saved stray removal has never come back.** Both paths now share one carrier that takes the
+**scan**, not an index; this file has now had two indices pointing at the wrong list. Page side,
+`applyDetail` had its own inline copy of `rebuildFrom`, so when `refreshScans` learnt to put the cuts
+back and re-aim the sliders on 08-22, this path did not.
+
+Verified on the operator's own capture: **107,172 preview points at 10 cm → 388,385 at 5 cm**, with
+the placement, the tilt, the rung and the cleaning rule intact and the mask re-measured (3,576 hidden
+of 388,385, from a rule whose old mask was 107,172 long). Suite **864 → 880**.
+
+#### ⛔⛔ 2026-08-23 — "AUTO ALIGN IS LESS SUCCESSFUL EVEN WHEN I GET THE SCANS REALLY CLOSE"
+
+**Measured before it was touched**, across sixteen consecutive pairs of the restaurant walk, each
+handed the solver its own answer moved 5.8 cm and 1.0° — a person's idea of *really close*. Twelve
+pulled straight back and improved. Four returned the placement untouched. And one — **folder 21 onto
+folder 20** — came back **worse**: a placement priced 0.2048 m replaced by an answer priced 0.2133 m,
+on this program's own metric, at its own final scale.
+
+⭐⭐ **"NEVER WORSE THAN YOURS" WAS TRUE OF EVERY STEP AND FALSE OF THE JOURNEY** — and the journey is
+the only version of it an operator can see. `solve_gicp` carries the guard and it is **per-rung**:
+each rung is guarded against the rung *above* it. The coarse fan runs its four perturbed seeds
+**unguarded** and then takes the lowest residual at the **coarse** bins, so a seed's answer can beat
+the operator's kept placement there, become the pose every finer rung is guarded against, and be
+handed back at the end priced worse than the placement it replaced. **Whether the guard held at all
+depended on which seed won the coarse fan** — a coin toss with nothing on screen to report it.
+
+⛔ **THE NUMBER THAT SETTLES IT WAS ALREADY BEING COMPUTED.** `solve_ladder` prices the true start at
+the final rung so it can write *"(improved on your placement's 0.036 m)"* into a sentence — and when
+that comparison came out the other way it set `improved_from = None` and returned the worse answer
+anyway. **It knew, and spent the knowing on prose.** The guard is now applied **once, globally, on
+the scale the answer is reported at**, from that same number. It can only ever hand back the pose the
+operator supplied, so the worst it can do is decline to move a scan — which is the outcome the guard
+exists to produce.
+
+⭐ **Verified by breaking it.** With the new branch disabled, the stubbed ladder hands back a pose
+**1.8 m and 28° from the placement it was given**, priced 1.558 m against the placement's 0.000, and
+describes it as *"0.6× better than untransformed"*. On the real pairs: folder 21→20 now keeps the
+placement (0.2048 → 0.2048, moved 0.000 m) while folder 2→1 — **the control** — still improves on a
+close start (0.0531 → 0.0371, moved 0.058 m). *A guard that always fires is not a guard, it is a
+disabled button.*
+
+⛔ **AND THE ADVICE HAD TO CHANGE WITH IT.** *"Nudge it towards what you can see is right and press
+again"*, printed after a press that **kept** the operator's placement, sends them round a loop with
+no exit: a nudge is a new placement, the search starts from it, and it is measured as the better fit
+again. Three presses of that and the button is broken whatever the message says. That case now names
+the levers that **can** change the answer — matched points, or a different target scan.
+
+⚠ **WHAT WAS NOT WRONG, AND WAS MEASURED RATHER THAN ASSUMED.** The first hypothesis — that the
+guard's panorama metric disagrees with the geometry an eye sees — was **refuted**: scoring both poses
+a second way, by distance to the nearest reference surface, the two judges agreed on folder 3→2
+(0.1428 vs 0.1437 m) and folder 10→9 (0.1879 vs 0.1894 m), both preferring the placement. On those
+pairs GICP genuinely cannot beat a 6 cm-off placement and the guard is telling the truth. They
+disagreed on only one pair (12→11), and there the geometric win came with 2.7% fewer inliers.
+**The four "did nothing" pairs are honest; the fifth was the bug.**
+
+Suite **880 → 890**. The ladder's tests build **their own room** — `_cloud_a` / `_truth` are rebound
+several times further down the suite, and a fixture that means something different depending on where
+the test sits is a test that passes for a reason nobody chose.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ 2026-08-22 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
+**✅ 2026-08-23 — THE EXES IN `windows-converter/dist` ARE BUILT FROM THE CURRENT CODE.** Converter
 35.2 MB, Studio 38.8 MB, `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the
 native window backend, the RTX 3050 Ti and the CUDA engine mounted from `dist\cuda-engine`. Rebuilt
-because the fix above is a **page** fix, and the page only reaches the operator through the exe —
-a suite that passes against `align.py` says nothing about what is on their desktop.
+because both of today's fixes reach the operator only through the exe — a suite that passes against
+`align.py` says nothing about what is on their desktop.
+
+> ⚠ **THAT BUILD CARRIES UNCOMMITTED WORK.** `tlsconvert/drawing.py` and `test_drawing.py` were
+> already in the working tree when this session started (a DXF writer, so 3ds Max can open something
+> — Max reads only `.rcp`/`.rcs` for point clouds), and `export.py`'s uncommitted edit imports it.
+> They are **not in any commit**; the exes above were built from the tree, so they include it.
+> Left alone deliberately — it is somebody's work in flight, not this session's.
 
 > ⚠ **ONE THING TO TELL THE OPERATOR, AND IT IS OLDER THAN TODAY'S BUG.** Removing a cloud from the
 > session had **always** slid the pick onto its neighbour in silence — `forgetScan` re-keyed the
