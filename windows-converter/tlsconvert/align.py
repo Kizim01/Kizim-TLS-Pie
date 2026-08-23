@@ -926,11 +926,30 @@ class AlignServer(object):
         """
         Fit one scan onto another. `target` defaults to the nearest scan.
 
-        ⛔ THE TARGET IS FITTED WHERE IT NOW STANDS, NOT IN ITS OWN FRAME.
-        The points handed to the solver as the fixed side are the target's
-        AFTER its own placement, so the answer comes back already in the merged
-        frame and there is no transform to compose afterwards -- which is the
-        step that would silently accumulate error down a chain of twenty-five.
+        ⛔⛔ THE PAIR IS SOLVED IN THE TARGET'S OWN FRAME, AND THE REASON IS
+        THE JUDGE, NOT THE SOLVER. Every score in this file is a panorama --
+        per-direction median range -- and a panorama has a CENTRE. It used to
+        be computed with both clouds placed in the merged frame, which anchors
+        that centre at the REFERENCE tripod: right where the first pairs stood,
+        and ten metres from where the operator was working by scan 11. From
+        there a far room subtends a keyhole -- measured on the live project,
+        0.8% of bins finite against 57% in the target's own frame -- so the
+        solve was being judged through a slit when it was judged at all, and
+        below 500 shared bins `compare` returns NaN, every GICP rung is thrown
+        away as unpriceable, and the ladder silently fell back to a grid
+        search scored through the same slit. "Auto-align got worse as the
+        project grew" was this: the judge going blind with distance from the
+        reference. The target's RAW cloud is a true panorama -- it was
+        captured from exactly that spot -- so the pair is solved there and the
+        answer composed back through the target's placement, which is exact
+        (measured at 2.7e-15; `_decompose` is an exact factoring, not a fit).
+
+        ⛔ A HAND PLACEMENT IS REFINED, NEVER REPLACED. When the press starts
+        from the operator's own placement, an answer further than
+        `registration.REFINE_LIMIT_M` / `REFINE_LIMIT_DEG` from it is a
+        DIFFERENT ANSWER -- the same line Deep align draws -- and a different
+        answer is not applied to a scan somebody has already placed by eye.
+        The placement is kept and the refusal says what the solver wanted.
 
         ⚠ AND A CHAIN IS ONLY AS GOOD AS ITS LINKS. Fitting to a neighbour
         that has not itself been placed moves the problem rather than solving
@@ -980,35 +999,92 @@ class AlignServer(object):
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
-            # ⭐⭐ THE MOVING CLOUD GOES IN RAW, AND ITS LEAN GOES IN AS PART
-            # OF THE STARTING POSE -- because the solver answers in full six
-            # degrees of freedom now and the lean is one of the things it
-            # solves FOR. (It was briefly pre-applied here instead, when the
-            # solver was 4-DOF and the lean was purely the operator's; a
-            # 6-DOF solve handed a pre-leaned cloud would return a second
-            # lean on top of the first.) The REFERENCE is still leaned and
-            # placed, because it is the fixed world being matched against.
-            base = fixed.lean.apply(fixed.sample)
-            if not fixed.setup.is_identity():
-                base = fixed.setup.apply(base)
-            sol = registration.solve_ladder(base, scan.sample,
-                                            progress=self._note, start=hint,
-                                            lean=scan.lean,
+            # ⭐⭐ BOTH CLOUDS GO IN RAW; THE PLACEMENTS BECOME THE STARTING
+            # POSE. The pair is solved in the target's own frame (see the
+            # docstring: the judge is a panorama and only the target's own
+            # sensor position gives it a full one), so the operator's absolute
+            # placement is carried in as `inv(F) @ M` -- the moving scan
+            # relative to the target -- and the lean rides inside that matrix
+            # rather than beside it, because a 6-DOF solve handed a pre-leaned
+            # cloud would return a second lean on top of the first.
+            F = registration._pose_matrix(fixed.setup, fixed.lean)
+            Finv = np.linalg.inv(F)
+            if hint is not None:
+                s_loc, l_loc, ok_in = registration._decompose(
+                    Finv @ registration._pose_matrix(hint, scan.lean))
+            else:
+                # Blind: the eight seed headings cover the circle, but the
+                # relative TILT still matters and still has a defined value.
+                _s, l_loc, ok_in = registration._decompose(
+                    Finv @ registration._pose_matrix(registration.Setup(),
+                                                     scan.lean))
+                s_loc = None
+            if not ok_in:
+                return {"ok": False,
+                        "error": "the two placements differ by a tilt past "
+                                 "what a standing tripod can hold -- check "
+                                 "the pitch and roll boxes before solving."}
+            sol = registration.solve_ladder(fixed.sample, scan.sample,
+                                            progress=self._note, start=s_loc,
+                                            lean=l_loc,
                                             begin_voxel=scan.rung)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        scan.setup = sol.setup
-        scan.lean = sol.lean
         # ⛔ ONE PRESS RUNS THE WHOLE LADDER NOW, so the rung is spent to the
         # bottom: a second press with nothing moved gets the honest "already
         # refined as far as this instrument supports", and any nudge, tilt or
         # pair fit starts the ladder over.
         scan.rung = registration.GICP_LADDER[-1]
+
+        # ⛔⛔ THE REFINEMENT LINE. The operator said where the scan is; the
+        # search may only tidy that statement, not overrule it. An answer past
+        # the limits is reported and NOT applied -- "I got them close and it
+        # moved the scan to a completely different space" is what applying it
+        # looks like from the bench. Everything is measured in the target's
+        # frame, where the operator's start and the answer are both at hand.
+        kept_hand = bool(sol.kept_start)
+        refused = None
+        if hint is not None and s_loc is not None and not kept_hand:
+            far = float(np.hypot(sol.setup.dx - s_loc.dx,
+                                 sol.setup.dy - s_loc.dy))
+            turn = abs((sol.setup.yaw_deg - s_loc.yaw_deg + 180.0)
+                       % 360.0 - 180.0)
+            if (far > registration.REFINE_LIMIT_M
+                    or turn > registration.REFINE_LIMIT_DEG):
+                refused = (far, turn)
+                kept_hand = True
+
+        if kept_hand and hint is not None:
+            # Exactly the operator's numbers, not a 1e-15 neighbour of them.
+            scan.setup, scan.lean = hint, scan.lean
+        else:
+            new_setup, new_lean, ok_out = registration._decompose(
+                F @ registration._pose_matrix(sol.setup, sol.lean))
+            if not ok_out:
+                return {"ok": False,
+                        "error": "the answer carried a tilt past what a "
+                                 "standing tripod can hold; nothing was "
+                                 "moved. Check this pair by eye."}
+            scan.setup, scan.lean = new_setup, new_lean
+
+        if refused is not None:
+            text = ("onto %s — the search wanted to move it %.2f m and turn "
+                    "it %.1f° from where you put it. That is a DIFFERENT "
+                    "ANSWER, not a refinement of your placement, so nothing "
+                    "was moved. If that other position could be right, check "
+                    "this pair by eye — or pick matching points on both "
+                    "clouds and fit from those, which states the answer "
+                    "rather than searching for it."
+                    % (fixed.name, refused[0], refused[1]))
+        else:
+            text = "onto %s, coarse to fine — %s" % (fixed.name,
+                                                     sol.describe())
         return {"ok": True, "index": index, "setup": _placement(scan),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
-                "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
+                "trustworthy": sol.ok and refused is None,
+                "ambiguous": sol.ambiguous,
                 "voxel": sol.voxel, "exhausted": False, "target": target,
                 "warning": warn,
                 # ⛔ THE PAGE HAS TO KNOW THE SCAN DID NOT MOVE, because the
@@ -1017,9 +1093,8 @@ class AlignServer(object):
                 # again from a nudged placement runs the same search and keeps
                 # the same placement. Advice that cannot work reads as a
                 # program that does not work.
-                "kept_start": bool(sol.kept_start),
-                "text": "onto %s, coarse to fine — %s"
-                        % (fixed.name, sol.describe())}
+                "kept_start": kept_hand,
+                "text": text}
 
     def take_leans(self, leans):
         """

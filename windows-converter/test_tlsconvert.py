@@ -4868,10 +4868,13 @@ check("a tilt set by hand counts as having moved the scan, so Auto-align "
 # operator's. A 6-DOF solve handed a pre-leaned cloud would return a SECOND
 # lean on top of the first. The reference is still leaned and placed: it is
 # the fixed world being matched against.
-check("the solver gets the raw cloud and the lean as its starting pose",
+# (2026-08-23: BOTH clouds now go in raw -- the pair is solved in the target's
+# own frame, where its raw cloud is a true panorama, and the leans ride inside
+# the composed starting pose `inv(F) @ M` rather than beside it.)
+check("the solver gets the raw clouds and the lean inside the starting pose",
       "scan.lean.apply(scan.sample)" not in _ALIGN_SRC
-      and "lean=scan.lean" in _ALIGN_SRC
-      and "base = fixed.lean.apply(fixed.sample)" in _ALIGN_SRC)
+      and "lean=l_loc" in _ALIGN_SRC
+      and "registration.solve_ladder(fixed.sample, scan.sample" in _ALIGN_SRC)
 check("and the page hands its tilts over with every fit it asks for",
       _ALIGN_SRC.count("leans:leansWire()") == 2
       and "srv.take_leans(body.get(\"leans\"))" in _ALIGN_SRC)
@@ -5631,13 +5634,178 @@ else:
     # loop with no exit: a nudge is a new placement, the search starts from it,
     # and it is measured as the better fit again.
     check("the server tells the page when the scan did not move",
-          '"kept_start": bool(sol.kept_start)' in _ALIGN_SRC)
+          '"kept_start": kept_hand' in _ALIGN_SRC)
     _aa = _js_func("autoAlign")
     check("...and a press that moved nothing does not advise pressing again",
           "j.kept_start" in _aa
           and "Pressing again will not change this" in _aa, _aa)
     check("...it names the levers that can change the answer instead",
           "pick matching points" in _aa and "Align to" in _aa, _aa)
+
+
+# --- the judge that went blind with distance from the reference --------------
+# ⛔⛔ "AUTO ALIGN IS EVEN WORSE THAN IT WAS BEFORE ... MOVES THE SCAN TO A
+# COMPLETELY DIFFERENT SPACE."  Every score in registration.py is a panorama,
+# and a panorama has a CENTRE.  Solving with both clouds placed in the merged
+# frame anchored that centre at the REFERENCE tripod -- so by scan 11 of the
+# live project the fixed cloud's profile had 0.8% of bins finite against 57%
+# in its own frame, `compare` starved below its 500-bin minimum, every GICP
+# rung priced NaN, and the ladder fell back to a grid search judged through
+# the same keyhole.  The early pairs never showed it because the early tripods
+# stood next to the origin: the defect GREW with the project.
+print("\nauto-align: solved where the target stood, refined rather than replaced")
+if not registration.have_gicp():
+    check("small_gicp is installed for the frame tests", False,
+          "pip install small_gicp")
+else:
+    _wrng = np.random.RandomState(11)
+    _wroom = np.vstack([
+        np.column_stack([np.full(3000, -5.0), _wrng.uniform(-4, 4, 3000),
+                         _wrng.uniform(0, 2.6, 3000)]),
+        np.column_stack([np.full(3000, 5.0), _wrng.uniform(-4, 4, 3000),
+                         _wrng.uniform(0, 2.6, 3000)]),
+        np.column_stack([_wrng.uniform(-5, 5, 3000), np.full(3000, -4.0),
+                         _wrng.uniform(0, 2.6, 3000)]),
+        np.column_stack([_wrng.uniform(-5, 5, 3000), np.full(3000, 4.0),
+                         _wrng.uniform(0, 2.6, 3000)]),
+        np.column_stack([_wrng.uniform(-5, 5, 5000),
+                         _wrng.uniform(-4, 4, 5000), np.zeros(5000)]),
+        np.column_stack([1.6 + 0.3 * np.cos(_wrng.uniform(0, 6.28, 1200)),
+                         -0.9 + 0.3 * np.sin(_wrng.uniform(0, 6.28, 1200)),
+                         _wrng.uniform(0, 2.6, 1200)]),
+        np.column_stack([_wrng.uniform(-4, -1, 1200), np.full(1200, 2.2),
+                         _wrng.uniform(0.8, 1.1, 1200)])])
+    # ⛔ THE ROOM STANDS TWELVE METRES FROM THE ORIGIN, because that is the
+    # whole point: the old scoring frame passed every test that placed its
+    # fixtures at the reference tripod, and the operator does not work there.
+    _wroom = _wroom + np.array([12.0, 9.0, 0.0])
+
+    def _seen_from(setup, lean):
+        """The room as that tripod recorded it: its own sensor frame."""
+        T = registration._pose_matrix(setup, lean)
+        inv = np.linalg.inv(T)
+        return np.ascontiguousarray(
+            _wroom @ inv[:3, :3].T + inv[:3, 3])
+
+    _fx_true = registration.Setup(12.3, 8.6, 0.10, 100.0)
+    _fx_lean = registration.Lean(1.2, -0.6)
+    _mv_true = registration.Setup(13.1, 9.4, 0.05, -35.0)
+    _mv_lean = registration.Lean(-0.8, 0.4)
+    _hand = registration.Setup(13.16, 9.35, 0.05, -34.1)   # close, by hand
+
+    _fs = align.AlignServer([], out_path=None)
+    try:
+        _near = np.ascontiguousarray(_wrng.normal(0.0, 2.0, (4000, 3)))
+        _fs.scans = [
+            align.Scan(os.path.join(tmp, "ref.pcap"), _near, None, _near),
+            align.Scan(os.path.join(tmp, "fx.pcap"),
+                       _seen_from(_fx_true, _fx_lean), None,
+                       _seen_from(_fx_true, _fx_lean)),
+            align.Scan(os.path.join(tmp, "mv.pcap"),
+                       _seen_from(_mv_true, _mv_lean), None,
+                       _seen_from(_mv_true, _mv_lean))]
+        _fs.scans[1].setup, _fs.scans[1].lean = _fx_true, _fx_lean
+        _fs.scans[2].setup = _hand
+        _fs.scans[2].lean = registration.Lean(_mv_lean.pitch_deg,
+                                              _mv_lean.roll_deg)
+        _got = _fs.solve(2, start=_hand.as_dict(), target=1)
+        # ⭐⭐ THE WHOLE REPORT IN THREE LINES. Before the fix, this far from
+        # the origin: residual inf, floor nan, and whatever pose the keyhole
+        # grid search happened to like.
+        check("A PAIR FAR FROM THE REFERENCE STILL HAS A LIVE JUDGE",
+              _got["ok"] and _got["residual"] == _got["residual"]
+              and _got["residual"] != float("inf")
+              and _got["floor"] == _got["floor"], _got.get("residual"))
+        _sp = _got["setup"]
+        _off = math.hypot(_sp["x_m"] - _mv_true.dx, _sp["y_m"] - _mv_true.dy)
+        _oyaw = abs((_sp["yaw_deg"] - _mv_true.yaw_deg + 180) % 360 - 180)
+        check("...and one press lands on the truth, in ABSOLUTE coordinates",
+              _off < 0.10 and _oyaw < 1.0, "%.3f m %.2f deg" % (_off, _oyaw))
+        check("...tilt included, composed back through the target's placement",
+              abs(_sp.get("pitch_deg", 0) - _mv_lean.pitch_deg) < 0.5
+              and abs(_sp.get("roll_deg", 0) - _mv_lean.roll_deg) < 0.5,
+              (_sp.get("pitch_deg"), _sp.get("roll_deg")))
+        check("...and it improves on the hand placement it was given",
+              _off < math.hypot(_hand.dx - _mv_true.dx,
+                                _hand.dy - _mv_true.dy), _off)
+
+        # ⛔ THE REFINEMENT LINE. A search that wants to move a hand-placed
+        # scan past REFINE_LIMIT_M / REFINE_LIMIT_DEG has found a DIFFERENT
+        # ANSWER, and a different answer is reported, never applied.
+        _fs.scans[2].setup = _hand
+        _fs.scans[2].rung = None
+        _real_ladder = registration.solve_ladder
+
+        def _wanderer(ref, mov, progress=None, start=None, lean=None,
+                      begin_voxel=None, max_shift=6.0):
+            _s = registration.Solution(
+                registration.Setup(start.dx + 2.0, start.dy - 1.5,
+                                   start.dz, start.yaw_deg + 30.0),
+                0.010, 0.004, 1.0)
+            _s.lean = lean or registration.Lean()
+            _s.voxel = registration.GICP_LADDER[-1]
+            return _s
+
+        registration.solve_ladder = _wanderer
+        try:
+            _ref = _fs.solve(2, start=_hand.as_dict(), target=1)
+        finally:
+            registration.solve_ladder = _real_ladder
+        check("A JUMP PAST THE REFINE LIMITS IS REFUSED, NOT APPLIED",
+              _ref["ok"] and _ref["kept_start"]
+              and abs(_fs.scans[2].setup.dx - _hand.dx) < 1e-12
+              and abs(_fs.scans[2].setup.yaw_deg - _hand.yaw_deg) < 1e-12,
+              _ref.get("text"))
+        check("...and the refusal says what the solver wanted, in metres",
+              "DIFFERENT ANSWER" in _ref["text"]
+              and "2.50 m" in _ref["text"], _ref["text"])
+        check("...and such an answer is never called trustworthy",
+              not _ref["trustworthy"])
+    finally:
+        _fs.stop()
+
+    # ⭐ The compose-back the frame fix rests on is EXACT, lean and all.
+    _cf = registration._pose_matrix(_fx_true, _fx_lean)
+    _cm = registration._pose_matrix(_mv_true, _mv_lean)
+    _sl, _ll, _okl = registration._decompose(np.linalg.inv(_cf) @ _cm)
+    _back = _cf @ registration._pose_matrix(_sl, _ll)
+    check("local frame in, merged frame out, exact to numerical precision",
+          _okl and float(np.abs(_back - _cm).max()) < 1e-9,
+          float(np.abs(_back - _cm).max()))
+
+# --- the scoring rides the graphics card, and is not allowed to change -------
+from tlsconvert import gpu                                   # noqa: E402
+print("\nregistration scoring on %s" % gpu.xp().__name__)
+_gp_pts = np.random.RandomState(3).normal(0, 3, (200_000, 3))
+_gp_a = registration.median_profile(_gp_pts, 360, 90)
+os.environ["TLSPIE_CUDA"] = "0"
+gpu.reset()
+_gp_b = registration.median_profile(_gp_pts, 360, 90)
+_gp_c = registration.compare(_gp_b, _gp_pts,
+                             registration.Setup(0.3, -0.2, 0.0, 2.0), 360, 90)
+del os.environ["TLSPIE_CUDA"]
+gpu.reset()
+_gp_d = registration.compare(_gp_a, _gp_pts,
+                             registration.Setup(0.3, -0.2, 0.0, 2.0), 360, 90)
+_gp_shared = np.isfinite(_gp_a) & np.isfinite(_gp_b)
+check("the card and the processor fill the same bins",
+      int((np.isfinite(_gp_a) ^ np.isfinite(_gp_b)).sum()) == 0)
+check("...and agree on every one of them to numerical precision",
+      float(np.abs(_gp_a[_gp_shared] - _gp_b[_gp_shared]).max()) < 1e-9,
+      float(np.abs(_gp_a[_gp_shared] - _gp_b[_gp_shared]).max()))
+check("...and compare() means the same number on both",
+      abs(_gp_c - _gp_d) < 1e-9, (_gp_c, _gp_d))
+# ⭐ The binning that median_profile and compare_points used to write out
+# separately now has one home -- read the code, not the comments, so a war
+# story quoting the old shape cannot fire this (learned earlier today).
+_reg_code = "\n".join(
+    _l for _l in io.open(registration.__file__, encoding="utf-8")
+    if not _l.lstrip().startswith("#"))
+check("the binning has ONE home, shared by profile and search",
+      _reg_code.count("_binned_ranges(") >= 3
+      and "colour.to_lonlat" not in _reg_code.split("def median_profile")[1]
+      .split("def scoring_bins")[0],
+      _reg_code.count("_binned_ranges("))
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

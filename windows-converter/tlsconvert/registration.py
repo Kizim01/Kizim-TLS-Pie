@@ -218,6 +218,42 @@ class Lean(object):
         return "Lean(%s)" % self.describe()
 
 
+def _binned_ranges(xyz, lon_bins, lat_bins):
+    """
+    Each point's panorama bin and range -- on the graphics card when there is
+    one, on the processor when there is not, same numbers either way.
+
+    ⭐ ONE HOME FOR THE BINNING. `median_profile` and `compare_points` used to
+    write these lines out separately, which is the arrangement this project
+    keeps finding at the bottom of its bugs. The formulas mirror
+    `colour.directions` and `colour.to_lonlat`'s upright path exactly --
+    longitude from +y toward +x, latitude by arcsin -- and must stay in
+    lockstep with them, because a heading solved through one and scored
+    through the other has to mean the same angle.
+
+    ⛔ FLOAT64 END TO END, per `gpu.py`'s contract: the backend is not allowed
+    to change an answer, and the suite holds the two to agreement far tighter
+    than anything downstream can see. `colour.directions` itself is not called
+    because it mixes NumPy scalars into the arithmetic, which CuPy refuses --
+    measured here: the same trig on the card is what turns a 686 ms profile
+    into a card-rate one, and scoring is priced on every rung of every press.
+    """
+    from . import gpu
+    xp = gpu.xp()
+    p = xp.asarray(np.asarray(xyz), dtype=xp.float64)
+    r = xp.sqrt((p * p).sum(axis=1))
+    good = r > 1e-6
+    d = p / xp.where(good, r, 1.0)[:, None]
+    lon = xp.arctan2(d[:, 0], d[:, 1])
+    lon = (lon + math.pi) % (2.0 * math.pi) - math.pi
+    lat = xp.arcsin(xp.clip(d[:, 2], -1.0, 1.0))
+    iu = xp.clip(((lon / (2.0 * math.pi)) + 0.5) * lon_bins,
+                 0, lon_bins - 1).astype(xp.int64)
+    iv = xp.clip((0.5 - lat / math.pi) * lat_bins,
+                 0, lat_bins - 1).astype(xp.int64)
+    return iv * lon_bins + iu, r, xp
+
+
 def median_profile(xyz, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     """
     Per-bin median range: the room as a distance in every direction.
@@ -231,24 +267,22 @@ def median_profile(xyz, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     number at all, and a guard that only accepts improvements would then reject
     every one of them.
     """
-    from . import colour                      # local: avoids a cycle at import
+    from . import gpu
     n = lon_bins * lat_bins
-    d, r = colour.directions(np.asarray(xyz))
-    lon, lat = colour.to_lonlat(d, 0.0)
-    iu = np.clip(((lon / (2.0 * np.pi)) + 0.5) * lon_bins,
-                 0, lon_bins - 1).astype(np.int64)
-    iv = np.clip((0.5 - lat / np.pi) * lat_bins,
-                 0, lat_bins - 1).astype(np.int64)
-    flat = iv * lon_bins + iu
-    order = np.lexsort((r, flat))
+    flat, r, xp = _binned_ranges(xyz, lon_bins, lat_bins)
+    # The lexsort keys ride in one stacked array because CuPy wants an array
+    # where NumPy accepts a tuple; the bin index is exact in float64 up to
+    # 2^53, and the largest grid here is 518,400 bins.
+    order = xp.lexsort(xp.stack((r, flat.astype(xp.float64))))
     flat_s, r_s = flat[order], r[order]
-    starts = np.searchsorted(flat_s, np.arange(n), "left")
-    ends = np.searchsorted(flat_s, np.arange(n), "right")
+    idx = xp.arange(n)
+    starts = xp.searchsorted(flat_s, idx, "left")
+    ends = xp.searchsorted(flat_s, idx, "right")
     filled = ends > starts
-    med = np.full(n, np.nan)
+    med = xp.full(n, float("nan"))
     mid = starts[filled] + (ends[filled] - starts[filled]) // 2
     med[filled] = r_s[mid]
-    return med
+    return gpu.to_host(med)
 
 
 def compare(profile_a, xyz_b, setup, lon_bins=LON_BINS, lat_bins=LAT_BINS):
@@ -293,15 +327,10 @@ def compare_points(profile_a, xyz_b, setup):
     and every reported residual still use `compare`, so what gets printed means
     exactly what it meant before.
     """
-    from . import colour
-    p = setup.apply(xyz_b)
-    d, r = colour.directions(p)
-    lon, lat = colour.to_lonlat(d, 0.0)
-    iu = np.clip(((lon / (2.0 * np.pi)) + 0.5) * LON_BINS,
-                 0, LON_BINS - 1).astype(np.int64)
-    iv = np.clip((0.5 - lat / np.pi) * LAT_BINS,
-                 0, LAT_BINS - 1).astype(np.int64)
-    ref = profile_a[iv * LON_BINS + iu]
+    from . import gpu
+    flat, r, _xp = _binned_ranges(setup.apply(xyz_b), LON_BINS, LAT_BINS)
+    flat, r = gpu.to_host(flat), gpu.to_host(r)
+    ref = profile_a[flat]
     ok = np.isfinite(ref)
     if int(ok.sum()) < 200:
         return float("nan")
@@ -673,6 +702,17 @@ def next_voxel(previous):
             return step
     return None
 
+
+#: ⛔⛔ HOW FAR A "REFINEMENT" OF A HAND PLACEMENT IS ALLOWED TO GO. An
+#: operator who has dragged a scan into place has made a statement about the
+#: room; the search may tidy that statement, never overrule it. Anything past
+#: these limits is a DIFFERENT ANSWER -- the same line `deep_refine` draws for
+#: a photograph's heading -- and a different answer is reported, not applied.
+#: The metre is sized to what a careful hand actually misses by (the coarse
+#: fan recovers half a metre; a whole restaurant booth is more), and twenty
+#: degrees matches the photograph rule so the program draws one line, not two.
+REFINE_LIMIT_M = 1.0
+REFINE_LIMIT_DEG = 20.0
 
 #: The seed fan at the coarse rung. Around an operator's placement the
 #: wobble to escape is small -- a few degrees of hand error -- so the fan is
