@@ -3446,6 +3446,109 @@ must not get a vote. Same trap as the `fresh.index(scan)` check that fired on it
 just fixed in the list is still live in the control where it costs most — *Align to* is the pick that
 decides an alignment. One expression each. Not done because it was not asked for; worth raising.
 
+## FIT ONE SCAN TO EVERY NEIGHBOUR AT ONCE (2026-08-23, late — new tool)
+
+*"I want a tool that aligns one scan to multiple ones near it."* Built as **Fit to its neighbours**,
+beside Auto-align. Aligning a walk pair by pair builds a **chain** — scan 12 placed against 11, which
+was placed against 10 — and each link carries its predecessor's error forward. This asks the question
+the operator actually has: *does this sit right in the room I have already built?*
+
+**⛔⛔ THE UNION IS FITTED; THE CAPTURE POSITIONS DO THE JUDGING.** GICP gets one cloud — every
+neighbour's points carried into the anchor's frame — because more surface is the entire point, and
+small_gicp is a KD-tree over points with no opinion about panoramas. The **score never sees that
+union**: `registration.Judge` holds one profile per neighbour, in that neighbour's own frame, and
+combines them. Merging the profiles would be this morning's blind-judge bug in a better disguise.
+
+⭐⭐ **And measurement changed what I believed about that.** I claimed a merged profile would be
+broadly wrong; it is not. Measured on a two-scan fixture with two columns: the **median difference is
+exactly 0.0000 m**, and **12.7% of directions** move — by a mean of 0.37 m and up to 6 m. The error is
+**sparse and severe, not broad**, which is *worse*: the profile stays full, every candidate still gets
+a plausible number, nothing goes NaN to announce it, and `compare` takes a median so it is insulated
+right up until it is not. The corrupted directions are the **occluded** ones, and the fraction grows
+with every cloud poured in. ⚠ Corollary worth keeping: in an **empty convex room the merge is exactly
+harmless** — the first fixture had no furniture and the difference came out 0.0, which is why the
+fixture now has columns in it.
+
+**The rules, and what forced each one:**
+- **A view that cannot price a pose DISQUALIFIES it** — it does not abstain. Abstention would let the
+  search improve its score by moving *out of a neighbour's sight* rather than into agreement with it,
+  and the never-worse guard is exactly a comparison of two of these numbers.
+- **Weights frozen at construction.** A weight recomputed per candidate is a scoring rule the answer
+  can move, and a rule the answer can move is the one the search will move.
+- **It requires a placement** — not an apology: *"which scans are near this one" is a question only a
+  placed scan can ask.* An unplaced cloud sits at the origin, so its neighbours are whatever is near
+  the reference.
+- **An exported cloud is never a neighbour**: `Judge` prices from a capture position and a merged
+  product has none.
+- **No grid-search fallback.** Without GICP a multi fit would be scored through a merged profile, so
+  it returns nothing and says so.
+
+⛔⛔ **AND THE FIRST LIVE RUN FOUND A GAP THE DESIGN DID NOT HAVE.** Scans 12–14 each read
+**0.035–0.148 m** against their neighbours and **0.797 / 1.463 / 2.039 m** against one particular
+capture — which was voting, and dragging the answer. A multi fit *holds the survey fixed*, so a
+misplaced neighbour does not weaken the fit, it **pulls** it. Such a neighbour is now left out and
+**NAMED**. ⭐ The rule is **75 × the sampling floor**, not a ratio to the best neighbour: a ratio was
+written first and **the synthetic room refuted it inside one run** — in a clean fixture one neighbour
+sits *at* the floor and another a few multiples above it, both perfectly correct, and any ratio wide
+enough to survive that is too wide to catch anything. Same trap `Solution.ambiguous` already carries
+in writing — *"when both fits are down at the sampling floor the ratio between them is noise"* — met
+again one level out. 75 is the log-midpoint of the measured gap (0.148 kept, 0.797 rejected, floor
+0.0046), so 2.3× of margin each side.
+
+### ⛔ WHAT THAT SAYS ABOUT THE LIVE PROJECT: FOLDER 11 LOOKS MISPLACED
+
+Every scan that can see it disagrees with it by metres, and it is the only one they disagree with:
+
+| scan | against folder 11 | against its other neighbours |
+|---|---|---|
+| folder 12 | 1.463 m | 0.035 / 0.066 / 0.100 |
+| folder 13 | 0.797 m | 0.045 / 0.048 / 0.148 |
+| folder 14 | 2.039 m | 0.047 / 0.058 / 0.084 |
+| folder 10 | 1.060 m | 0.017 / 0.077 / 0.131 |
+
+**Folder 11 itself cannot be fitted at all** — the tool refuses it, correctly: its own neighbours
+disagree with each other as seen from where it stands. ⚠ **One thing is not understood and is left
+open:** folder 11 reads **0.0226 m against folder 10** while folder 10 reads **1.060 m against folder
+11** — the pair is wildly non-reciprocal, where every honest pair measured today has been roughly
+symmetric. Do not assume the diagnosis message ("one of THEM is misplaced") is right in this case
+until that asymmetry is explained; the safe statement is that **folder 11 is out of step with
+everything around it**.
+
+⭐ **Two scans genuinely improved** — folders 13 and 12 had been pair-fitted this afternoon and the
+multi fit still halved their residuals (0.093 → 0.046 and 0.075 → 0.034), moving 3.7–6.9 cm and
+picking up real tripod tilts. Three others kept their placement, which is the guard working.
+
+⚠ **Cost**: about 15–30 s per press on four neighbours of ~1.2 M points each.
+
+## THE TILT HAD NO REFINE LIMIT, AND THE LIVE RUN IS WHAT SHOWED IT
+
+Translation was held to 1 m and the turn to 20°; between those and `_decompose`'s 45° refusal
+**nothing at all watched the tip and the bank**. A "refinement" could hold a placement to a metre,
+keep the heading, and roll the cloud over by thirty degrees — at ten metres, a degree of tilt is
+**17 cm of movement at the wall**, so this is the same *"it moved my scan somewhere else"* the other
+two limits exist to prevent, arriving through the one door left open. Now `REFINE_LIMIT_TILT_DEG =
+8.0`, deliberately **tighter than the turn**: twenty degrees of yaw is an ordinary hand slip, twenty
+degrees of tilt means the instrument was nearly on its side. Eight is a bit over twice the largest
+honest change measured (3.58°). ⭐ The pair fit and the multi fit now share **one** `refine_refused`,
+because two copies is how one of them grows a limit the other does not.
+
+## THE GIZMO WAS ALREADY BUILT — IN THREE PIECES, ALL OFF (2026-08-23, late)
+
+*"A gizmo tool for each scan, a button in the move scan section, tilt / pan / rotate / move, placed at
+the capture point, like ideaMaker."* **Every part of that already existed**: three move arms, a turn
+ring, two tilt rings, all centred on the tripod, with a worked-out order of precedence for when they
+overlap. What did not exist was *the gizmo* — they were **three separate buttons, each off until
+asked for**, so an operator wanting what a modelling package calls a gizmo had to know three controls
+existed and press all three. There is now a **Gizmo** button that puts the whole manipulator on the
+tripod in one press.
+
+⭐ The three parts stay switchable alone, because they were made separate for a reason worth keeping:
+each widget standing at the tripod costs you the view orbit near it, and someone who only wants to
+bank a scan should not have to give up three widgets' worth of canvas. ⛔ **The master holds no flag
+of its own** — it is lit when the three are, *computed* rather than remembered, because a fourth flag
+would be a second answer to "is the gizmo showing" and the two would part company the first time a
+part was switched by itself.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through

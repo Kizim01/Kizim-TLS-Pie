@@ -285,13 +285,48 @@ def median_profile(xyz, lon_bins=LON_BINS, lat_bins=LAT_BINS):
     return gpu.to_host(med)
 
 
-def compare(profile_a, xyz_b, setup, lon_bins=LON_BINS, lat_bins=LAT_BINS):
-    """Median disagreement in metres between a profile and a transformed cloud."""
+#: ⛔ How many directions two clouds must share before their disagreement
+#: means anything. Below this the answer is NaN and the candidate is discarded
+#: as UNPRICEABLE rather than scored badly -- and keeping those two outcomes
+#: distinct is what made the blind-judge bug findable at all.
+MIN_SHARED_BINS = 500
+
+
+def compare_full(profile_a, xyz_b, setup, lon_bins=LON_BINS, lat_bins=LAT_BINS):
+    """
+    `compare`, and how many directions it stood on.
+
+    ⭐ THE COUNT IS NOT DIAGNOSTIC, IT IS LOAD-BEARING. Fitting one scan onto
+    several neighbours has to weigh them against each other, and "how much of
+    this scan can that neighbour actually see" is precisely the number already
+    being computed one line above the median and then thrown away. Deriving it
+    a second time somewhere else is how a program ends up with two answers to
+    one question.
+    """
     pb = median_profile(setup.apply(xyz_b), lon_bins, lat_bins)
     both = np.isfinite(profile_a) & np.isfinite(pb)
-    if both.sum() < 500:
-        return float("nan")
-    return float(np.median(np.abs(profile_a[both] - pb[both])))
+    n = int(both.sum())
+    if n < MIN_SHARED_BINS:
+        return float("nan"), n
+    return float(np.median(np.abs(profile_a[both] - pb[both]))), n
+
+
+def compare(profile_a, xyz_b, setup, lon_bins=LON_BINS, lat_bins=LAT_BINS):
+    """Median disagreement in metres between a profile and a transformed cloud."""
+    return compare_full(profile_a, xyz_b, setup, lon_bins, lat_bins)[0]
+
+
+def apply_matrix(T, xyz):
+    """
+    Move points by a 4x4.
+
+    One home for it: a frame change written out by hand in three places is
+    three chances to transpose a rotation, and this file already carries the
+    scars of frames that disagreed.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    p = np.asarray(xyz, dtype=np.float64)
+    return p @ T[:3, :3].T + T[:3, 3]
 
 
 def scoring_bins(voxel):
@@ -603,8 +638,170 @@ def _decompose(T):
             Lean(pitch, roll) if ok else Lean(), ok)
 
 
+#: ⭐ FITTING ONE SCAN ONTO SEVERAL NEIGHBOURS AT ONCE. Measured on the live
+#: restaurant walk: consecutive tripods stand 0.7 m to 4.6 m apart, so four
+#: neighbours inside eight metres takes in the whole of a scan's immediate
+#: company and stops before the far end of the room, whose points are cost
+#: without constraint.
+MULTI_MAX = 4
+MULTI_REACH_M = 8.0
+#: A neighbour needs to see enough of the scan to be worth a vote.
+#: `MIN_SHARED_BINS` is where a number stops being meaningless; a VOTE should
+#: clear a higher bar than that. Measured at the COARSE bins, which is the
+#: scale that binds -- see `Judge.score`.
+MULTI_MIN_BINS = 1500
+#: ⛔⛔ WHEN A NEIGHBOUR IS EVIDENCE ABOUT ITSELF RATHER THAN ABOUT THE SCAN.
+#: A multi fit holds the survey so far fixed, so one misplaced neighbour does
+#: not merely weaken the answer -- it PULLS it, toward that neighbour's own
+#: error. That is the failure the tool exists to prevent, arriving through the
+#: tool, so a neighbour that disagrees with all the others is left out and
+#: NAMED.
+#:
+#: Measured on the live project, scans 12-14 each against their four nearest:
+#: the agreeing neighbours read 0.035-0.148 m, and one particular capture read
+#: 0.797, 1.463 and 2.039 m against three different scans. Not a weaker fit --
+#: a different MECHANISM, a disagreement the size of the ROOM rather than of a
+#: SURFACE.
+#:
+#: ⛔ IN FLOORS, NOT IN A RATIO TO THE BEST NEIGHBOUR, AND THE SUITE IS WHAT
+#: FORCED THAT. A ratio was written first and the synthetic room refuted it
+#: immediately: in a clean fixture one neighbour sits AT the sampling floor and
+#: another a few multiples above it, both perfectly correct, and any ratio wide
+#: enough to survive that is too wide to catch anything. It is the same trap
+#: `Solution.ambiguous` already carries in writing -- "when both fits are down
+#: at the sampling floor the ratio between them is noise" -- met a second time
+#: one level out. The floor is what the instrument can resolve, so a multiple
+#: of it is an absolute the room cannot move.
+#:
+#: 75 is the log-midpoint of the measured gap (0.148 m kept, 0.797 m rejected,
+#: floor 0.0046 m): 2.3x of margin on each side rather than a number picked to
+#: clear the nearest case.
+MULTI_ROGUE_FLOORS = 75.0
+
+
+class Judge(object):
+    """
+    What a candidate pose is worth, measured from real capture positions.
+
+    ⛔⛔ A PANORAMA HAS A CENTRE, SO THERE IS ONE PROFILE PER NEIGHBOUR AND
+    NEVER ONE OVER A MERGED CLOUD. Every score in this file is a per-direction
+    median range, and that only describes a room when it is measured from the
+    spot the instrument actually stood on. Pour three neighbouring scans into
+    one cloud and take a profile at one of their tripods and the medians stop
+    describing any surface at all: the other two put returns in front of that
+    tripod's walls and behind them, so a direction's median lands somewhere
+    between real surfaces and belongs to none of them.
+
+    ⭐⭐ AND THAT FAILURE WOULD BE QUIETER THAN THE ONE IT REPLACES. Solving
+    the whole survey in the reference frame made the profile EMPTY -- NaN,
+    loud, every rung discarded as unpriceable, which is how it was eventually
+    caught (2026-08-23). A merged profile is FULL AND WRONG: it returns a
+    plausible number for every candidate and there is nothing anywhere to
+    notice. So the union of the neighbours is what GICP fits to -- it is a
+    KD-tree over points and holds no opinion about panoramas -- while the
+    JUDGING stays one profile per capture position, combined afterwards.
+
+    A view is `(xyz, T)`: the neighbour's raw cloud in its own frame, and the
+    4x4 carrying the solve frame into that frame. `T` is None for the view the
+    solve frame belongs to.
+    """
+
+    def __init__(self, views, weights=None):
+        self.views = [(np.asarray(x), t) for x, t in views]
+        if weights is None:
+            weights = [1.0] * len(self.views)
+        self.weights = [float(w) for w in weights]
+        self._prof = {}
+        self._floor = None
+
+    def __len__(self):
+        return len(self.views)
+
+    def _profile(self, k, lon_b, lat_b):
+        """Built once per view per scale, and reused down the whole ladder."""
+        key = (k, lon_b, lat_b)
+        got = self._prof.get(key)
+        if got is None:
+            got = median_profile(self.views[k][0], lon_b, lat_b)
+            self._prof[key] = got
+        return got
+
+    def _local(self, k, setup, lean):
+        """The candidate pose expressed in view k's own frame."""
+        T = self.views[k][1]
+        # ⭐ THE ONE-VIEW CASE IS NOT ROUTED THROUGH THE ARITHMETIC. Composing
+        # and re-factoring through an identity is exact only to about 3e-15,
+        # and a pair fit must keep meaning EXACTLY what it meant before this
+        # class existed -- so it short-circuits and the suite can hold the two
+        # paths to bit equality rather than to a tolerance.
+        if T is None:
+            return setup, (lean or Lean()), True
+        return _decompose(np.asarray(T, dtype=np.float64)
+                          @ _pose_matrix(setup, lean))
+
+    def measure(self, xyz_mov, setup, lean, voxel):
+        """Per-view `(residual, shared bins)`. NaN where a view cannot price it."""
+        lon_b, lat_b = scoring_bins(voxel)
+        out = []
+        for k in range(len(self.views)):
+            s, l, ok = self._local(k, setup, lean)
+            if not ok:
+                out.append((float("nan"), 0))
+                continue
+            scored = xyz_mov if l.is_identity() else l.apply(xyz_mov)
+            out.append(compare_full(self._profile(k, lon_b, lat_b),
+                                    scored, s, lon_b, lat_b))
+        return out
+
+    def score(self, xyz_mov, setup, lean, voxel):
+        """
+        One number for the pose: the weighted mean of what each capture
+        position makes of it, in metres.
+
+        ⛔⛔ A VIEW THAT CANNOT PRICE THE POSE DISQUALIFIES IT -- it does not
+        quietly drop out of the average. Dropping it would hand the search a
+        way to improve its score by moving OUT of a neighbour's sight instead
+        of into agreement with it, and the guard deciding whether to keep the
+        operator's placement is exactly a comparison of two of these numbers.
+        The neighbours are chosen once, before the search, on the operator's
+        own placement; after that every one of them votes on every candidate,
+        or the candidate has no price.
+
+        ⛔ THE WEIGHTS ARE FROZEN AT CONSTRUCTION FOR THE SAME REASON. A
+        weight recomputed per candidate is a scoring rule the answer can move,
+        and a rule the answer can move is one the search will move instead of
+        moving the scan.
+        """
+        got = self.measure(xyz_mov, setup, lean, voxel)
+        total = wsum = 0.0
+        for (r, _n), w in zip(got, self.weights):
+            if r != r:
+                return float("nan")
+            total += w * r
+            wsum += w
+        return float(total / wsum) if wsum else float("nan")
+
+    def floor(self):
+        """The sampling floor, mixed exactly as the score is."""
+        if self._floor is None:
+            wsum = sum(self.weights)
+            tot = sum(w * sampling_floor(x)
+                      for (x, _t), w in zip(self.views, self.weights))
+            self._floor = float(tot / wsum) if wsum else float("nan")
+        return self._floor
+
+    def keeping(self, which, weights):
+        """A judge over a subset of these views, reusing the profiles built."""
+        which = list(which)
+        sub = Judge([self.views[k] for k in which], [weights[k] for k in which])
+        for (k, lon_b, lat_b), prof in self._prof.items():
+            if k in which:
+                sub._prof[(which.index(k), lon_b, lat_b)] = prof
+        return sub
+
+
 def solve_gicp(xyz_ref, xyz_mov, start=None, lean=None, voxel=GICP_VOXEL,
-               progress=None, reach=None, guard=True):
+               progress=None, reach=None, guard=True, judge=None):
     """
     Generalised ICP, via koide3/small_gicp. Returns a Solution, or None.
 
@@ -653,17 +850,19 @@ def solve_gicp(xyz_ref, xyz_mov, start=None, lean=None, voxel=GICP_VOXEL,
     if progress:
         progress("scoring the fit", 1, 1)
 
-    lon_b, lat_b = scoring_bins(voxel)
-    prof = median_profile(ref, lon_b, lat_b)
+    # ⭐ THE CLOUD GICP FITS TO AND THE THING THAT PRICES THE RESULT ARE NOW
+    # SEPARATE. For a pair they are the same points and the judge is built
+    # from `ref` right here, exactly as before; for a multi-neighbour fit
+    # `ref` is a union and the judge is one profile per capture position.
+    jd = judge if judge is not None else Judge([(ref, None)])
     # ⭐⭐ THE WHOLE ANSWER IS KEPT, TILT AND ALL -- see `_decompose`. And
     # the residual is priced on the FULL pose: scoring the flattened one was
     # how a better answer used to lose to the placement it improved on.
     setup, found, tilt_ok = _decompose(out.T_target_source)
     sol_lean = found if tilt_ok else lean0
-    scored = mov if sol_lean.is_identity() else sol_lean.apply(mov)
-    residual = compare(prof, scored, setup, lon_b, lat_b)
-    sol = Solution(setup, residual, sampling_floor(ref),
-                   compare(prof, mov, Setup(), lon_b, lat_b))
+    residual = jd.score(mov, setup, sol_lean, voxel)
+    sol = Solution(setup, residual, jd.floor(),
+                   jd.score(mov, Setup(), Lean(), voxel))
     sol.lean = sol_lean
     sol.wild_tilt = not tilt_ok
     sol.iterations = getattr(out, "iterations", None)
@@ -681,8 +880,7 @@ def solve_gicp(xyz_ref, xyz_mov, start=None, lean=None, voxel=GICP_VOXEL,
     # pose nobody chose and label it "yours".
     if guard and start is not None and not (start.is_identity()
                                             and lean0.is_identity()):
-        was = mov if lean0.is_identity() else lean0.apply(mov)
-        began = compare(prof, was, start, lon_b, lat_b)
+        began = jd.score(mov, start, lean0, voxel)
         if began == began and began <= residual:
             kept = Solution(start, began, sol.floor, sol.baseline)
             kept.kept_start = True
@@ -713,6 +911,60 @@ def next_voxel(previous):
 #: degrees matches the photograph rule so the program draws one line, not two.
 REFINE_LIMIT_M = 1.0
 REFINE_LIMIT_DEG = 20.0
+#: ⛔⛔ AND THE TILT NEEDED ITS OWN LINE, WHICH IT DID NOT HAVE. The limits
+#: above cover the translation and the turn; between them and `_decompose`'s
+#: 45-degree refusal there was nothing at all watching the tip and the bank, so
+#: a fit could hold a hand placement to a metre and a turn to twenty degrees
+#: and then roll the cloud over by thirty. At ten metres a degree of tilt is
+#: 17 cm of movement at the wall, which is the same "it moved my scan
+#: somewhere else" the other two limits exist to prevent, arriving by the one
+#: door left open. Caught by running the multi fit on the live project: two
+#: honest fits changed the tilt by 3.58 and 1.24 degrees.
+#:
+#: ⚠ TIGHTER THAN THE TURN, AND ON PURPOSE. A tripod stands on a floor. Twenty
+#: degrees of yaw is an ordinary hand slip; twenty degrees of tilt means the
+#: instrument was nearly on its side. Eight is a bit over twice the largest
+#: honest change measured, and far under anything a standing tripod can do.
+REFINE_LIMIT_TILT_DEG = 8.0
+
+
+def _turn_gap(a, b):
+    """Shortest signed turn between two headings, in degrees."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def refine_gap(setup, lean, from_setup, from_lean):
+    """
+    How far an answer sits from the placement it claims to refine.
+
+    ⭐ ONE HOME FOR IT. The pair fit and the multi fit ask this same question
+    and both apply the same three limits to it; written out twice, the day one
+    of them grew a tilt limit the other would silently not have. Returns
+    (metres, degrees of turn, degrees of tilt).
+    """
+    lean = lean or Lean()
+    from_lean = from_lean or Lean()
+    return (float(math.hypot(setup.dx - from_setup.dx,
+                             setup.dy - from_setup.dy)),
+            _turn_gap(setup.yaw_deg, from_setup.yaw_deg),
+            float(max(abs(lean.pitch_deg - from_lean.pitch_deg),
+                      abs(lean.roll_deg - from_lean.roll_deg))))
+
+
+def refine_refused(setup, lean, from_setup, from_lean):
+    """
+    The gap, if it is past what counts as a refinement -- otherwise None.
+
+    ⛔ AN OPERATOR WHO HAS PLACED A SCAN BY EYE HAS MADE A STATEMENT ABOUT THE
+    ROOM. The search may tidy that statement; past these limits it is not a
+    tidier version of their answer, it is a DIFFERENT one, and a different
+    answer is reported rather than applied.
+    """
+    far, turn, tilt = refine_gap(setup, lean, from_setup, from_lean)
+    if (far > REFINE_LIMIT_M or turn > REFINE_LIMIT_DEG
+            or tilt > REFINE_LIMIT_TILT_DEG):
+        return far, turn, tilt
+    return None
 
 #: The seed fan at the coarse rung. Around an operator's placement the
 #: wobble to escape is small -- a few degrees of hand error -- so the fan is
@@ -726,7 +978,7 @@ FAN_REACH_M = 1.5
 
 
 def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
-                 begin_voxel=None, max_shift=6.0):
+                 begin_voxel=None, max_shift=6.0, judge=None):
     """
     The whole alignment in one press: seed fan, then coarse to fine.
 
@@ -752,6 +1004,14 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
     runs unguarded (`guard=False`): a seed is scaffolding, not a placement,
     and a guard against it would keep a pose nobody chose.
     """
+    # ⛔⛔ A MULTI-NEIGHBOUR FIT HAS NO FALLBACK, AND MUST NOT BE GIVEN ONE.
+    # The grid search scores against a single profile built from the cloud it
+    # is handed, which for a multi fit is the UNION -- a merged panorama, the
+    # exact fiction `Judge` exists to refuse. It would answer every candidate
+    # with a plausible number and there would be nothing to notice. Returning
+    # nothing is the honest outcome; the caller says so out loud.
+    if judge is not None and len(judge) > 1 and not have_gicp():
+        return None
     if not have_gicp():
         if progress:
             progress("GICP unavailable; falling back to the grid search", 0, 1)
@@ -761,6 +1021,12 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
                     start=start)
         sol.lean = lean0
         return sol
+
+    # ⭐ ONE JUDGE FOR THE WHOLE LADDER. Built here rather than inside each
+    # rung so that each reference profile -- a lexsort over every point of a
+    # cloud, at two bin scales -- is computed once and then reused by five
+    # coarse seeds and four rungs, instead of some thirty times over.
+    jd = judge if judge is not None else Judge([(xyz_ref, None)])
 
     rungs = [v for v in GICP_LADDER
              if begin_voxel is None or v <= begin_voxel + 1e-9]
@@ -794,12 +1060,14 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
     tried = []
     for seed, reach in seeds:
         got = solve_gicp(xyz_ref, xyz_mov, start=seed, lean=lean,
-                         voxel=coarse, reach=reach,
+                         voxel=coarse, reach=reach, judge=jd,
                          guard=(true_start is not None
                                 and seed.yaw_deg == true_start.yaw_deg))
         if got is not None and got.residual == got.residual:
             tried.append(got)
     if not tried:
+        if len(jd) > 1:
+            return None            # as above: no merged-panorama fallback
         if progress:
             progress("GICP failed; falling back to the grid search", 0, 1)
         lean0 = lean or Lean()
@@ -819,14 +1087,14 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
     # back on the same scale as everything downstream compares it to.
     if len(rungs) == 1:
         full = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
-                          voxel=rungs[0], guard=False)
+                          voxel=rungs[0], guard=False, judge=jd)
         if full is not None and full.residual == full.residual:
             sol = full
     for i, v in enumerate(rungs[1:], start=1):
         if progress:
             progress("refining at %.0f cm" % (v * 100), i, len(rungs) + 2)
         finer = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
-                           voxel=v)
+                           voxel=v, judge=jd)
         if finer is not None and finer.residual == finer.residual:
             # ⛔⛔ kept_start HERE MEANS "THE COARSER RUNG'S ANSWER STOOD",
             # AND THAT IS NOT WHAT THE FLAG SAYS TO THE OPERATOR. describe()

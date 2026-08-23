@@ -4421,10 +4421,36 @@ for _btn, _what in (("turnring", "the scan's turn ring"),
     # because that line comes earlier in the file -- and the check then reads
     # 400 characters of the wrong thing and reports a button that has toggled
     # all along as broken. The earliest match in a path is not the definition.
+    # ⚠ AND THE BEHAVIOUR, NOT WHERE IT IS WRITTEN. This asked for
+    # `classList.toggle('on'` inside the handler, and failed the moment the
+    # three gizmo buttons started lighting themselves from one shared
+    # `syncGizmo()` -- a change that made the lit state MORE reliable, not
+    # less. Third check in one day to fire on the position of a line rather
+    # than on what the program does. What it means is: pressing again takes
+    # the widget away, which is the flip; the lighting is checked below, at
+    # whatever place actually does it.
     _at = _ALIGN_SRC.find("$('%s').onclick=" % _btn)
     check("%s toggles rather than only switching on" % _what,
-          _at > 0 and ("classList.toggle('on'"
-                       in _ALIGN_SRC[_at:_at + 400]), _btn)
+          _at > 0 and "=!V." in _ALIGN_SRC[_at:_at + 400], _btn)
+for _btn, _flag in (("wire", "V.wire"), ("ref", "V.ref")):
+    _at = _ALIGN_SRC.find("$('%s').onclick=" % _btn)
+    check("...and %s is lit from the flag it controls" % _btn,
+          _at > 0 and "classList.toggle('on'" in _ALIGN_SRC[_at:_at + 400])
+# ⭐ THE THREE PARTS OF THE GIZMO ARE LIT IN ONE PLACE, and the master that
+# turns all three on at once holds NO FLAG OF ITS OWN -- it is lit when the
+# three are, computed rather than remembered. A fourth flag would be a second
+# answer to "is the gizmo showing", and the two would part company the first
+# time somebody switched one part on by itself.
+check("every gizmo button is lit from the flag it controls, in one place",
+      all(("$('%s').classList.toggle('on', !!V.%s)" % _p) in _ALIGN_SRC
+          for _p in (("movegiz", "moveGiz"), ("turnring", "turnRing"),
+                     ("leanring", "leanRing"))))
+check("...and the master gizmo button remembers nothing of its own",
+      "V.gizAll" not in _ALIGN_SRC and "gizmo3:" not in _ALIGN_SRC
+      and "$('gizmo3').classList.toggle('on',\n      !!(V.moveGiz && V.turnRing"
+      " && V.leanRing))" in _ALIGN_SRC)
+check("...and one press puts the whole manipulator on the tripod",
+      "V.moveGiz=V.turnRing=V.leanRing=want;" in _ALIGN_SRC)
 check("and the photograph's rings do too, from their own button",
       "V.tiltRing = (V.tiltRing===index) ? null : index;" in _ALIGN_SRC)
 
@@ -4875,9 +4901,21 @@ check("the solver gets the raw clouds and the lean inside the starting pose",
       "scan.lean.apply(scan.sample)" not in _ALIGN_SRC
       and "lean=l_loc" in _ALIGN_SRC
       and "registration.solve_ladder(fixed.sample, scan.sample" in _ALIGN_SRC)
+# ⛔ NAMED, NOT COUNTED. This used to assert `count(...) == 2`, and the third
+# fit -- onto several neighbours at once -- failed it by EXISTING. A count
+# cannot tell "somebody forgot the tilts" from "somebody added a fit", so it
+# fires on the safe change and has to be re-tuned, which is how a check gets
+# waved through. What it actually means is: every route that FITS a scan sends
+# the page's tilts, so ask that of each route by name.
+_FITS = ("solve", "solve/multi", "pairs")
+_missing = []
+for _route in _FITS:
+    _bit = _ALIGN_SRC.split("fetch('%s'" % _route)
+    if len(_bit) < 2 or "leansWire()" not in _bit[1].split("fetch(")[0]:
+        _missing.append(_route)
 check("and the page hands its tilts over with every fit it asks for",
-      _ALIGN_SRC.count("leans:leansWire()") == 2
-      and "srv.take_leans(body.get(\"leans\"))" in _ALIGN_SRC)
+      not _missing and "srv.take_leans(body.get(\"leans\"))" in _ALIGN_SRC,
+      _missing)
 check("a pair picked on a tilted scan is sent in the frame the fit is solved "
       "in", "mov:leanPt(m,p.mp)" in _ALIGN_SRC)
 
@@ -5568,9 +5606,15 @@ else:
     # handed back at the end priced worse than the placement it replaced.
     _real_gicp = registration.solve_gicp
 
+    # ⚠ `**_kw` IS NOT SLOPPINESS, IT IS THE LESSON. Three stub scorers broke
+    # identically in one session when the pose protocol grew two arguments,
+    # and this stub broke the same way the moment `solve_gicp` learned to take
+    # a `judge`. A stub stands in for a contract it does not model; it has to
+    # ABSORB what it does not model, or every extension to the real function
+    # shows up as a test failure that says nothing about the change.
     def _flattering_gicp(ref, mov, start=None, lean=None,
                          voxel=registration.GICP_VOXEL, progress=None,
-                         reach=None, guard=True):
+                         reach=None, guard=True, **_kw):
         _bad = registration.Setup(start.dx + 0.45, start.dy - 0.35, start.dz,
                                   start.yaw_deg + 7.0)
         _lb, _tb = registration.scoring_bins(voxel)
@@ -5878,6 +5922,264 @@ if os.path.exists(_live):
     _blank = [_p for _p in _paths if _fno(_p) is None]
     check("every scan in the live project can name its folder",
           _paths and not _blank, _blank)
+
+# --- fitting one scan onto SEVERAL neighbours at once -------------------------
+print("\nfitting a scan to several neighbours")
+_MLO = np.array([-6.0, -4.5, -0.1])
+_MHI = np.array([6.0, 4.5, 2.9])
+
+
+#: Two solid columns standing in the room. ⛔⛔ THE FIXTURE NEEDED THESE AND
+#: THE FIRST RUN PROVED IT. Without them the room is an empty convex box, and
+#: then merging two registered scans really is harmless -- both sets of points
+#: lie on the same six surfaces, so the merged profile came out IDENTICAL to
+#: the true one and the check asserting otherwise failed. That is a finding,
+#: not a fixture bug: the merged-panorama error is an OCCLUSION effect. It is
+#: exactly zero in an empty convex room and real the moment anything stands in
+#: the way, because then one scan sees surfaces the other's line of sight
+#: cannot reach, and those land in front of or behind it in the same direction.
+#: A restaurant is booths and columns, so it is real there -- and a fixture
+#: with no furniture would have let the whole design go untested.
+_MCOLS = (((1.2, -1.4, -0.1), (2.0, 1.4, 2.9)),
+          ((-3.4, -3.6, -0.1), (-2.6, -1.0, 2.9)))
+
+
+def _room_from(origin, n=70_000, seed=0):
+    """
+    A single-return panorama of one furnished box room, seen from `origin`.
+
+    ⭐ RAY-CAST, NOT A CLOUD OF WALL POINTS. A panorama is what the ONE nearest
+    surface in each direction looks like, and every judge in registration.py
+    is built on that. A fixture that handed every scan the whole room would
+    let a merged profile look perfect, and the tests would sail past the one
+    thing this feature must not get wrong.
+    """
+    _rng = np.random.RandomState(seed)
+    o = np.asarray(origin, dtype=np.float64)
+    d = _rng.normal(size=(n, 3))
+    d /= np.linalg.norm(d, axis=1)[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t1, t2 = (_MLO - o) / d, (_MHI - o) / d
+        t = np.nanmin(np.where(np.where(d > 0, t2, t1) > 0,
+                               np.where(d > 0, t2, t1), np.inf), axis=1)
+        for _lo, _hi in _MCOLS:                     # nearer hit wins: occlusion
+            a, b = (np.asarray(_lo) - o) / d, (np.asarray(_hi) - o) / d
+            near = np.nanmax(np.minimum(a, b), axis=1)
+            far = np.nanmin(np.maximum(a, b), axis=1)
+            hit = (far >= np.maximum(near, 0.0)) & (near > 0)
+            t = np.where(hit & (near < t), near, t)
+    return d * t[:, None]
+
+
+def _mscan(name, xyz, setup=None, lean=None, source="capture"):
+    _s = align.Scan(name, np.asarray(xyz, dtype=np.float32),
+                    np.full((len(xyz), 3), 128, np.uint8), np.asarray(xyz))
+    _s.setup = setup or registration.Setup()
+    _s.lean = lean or registration.Lean()
+    _s.source = source
+    return _s
+
+
+# ⛔⛔ FIRST, THE THING THE WHOLE DESIGN TURNS ON: a profile taken over a
+# MERGED cloud is not a panorama, and it does not announce itself. The blind
+# judge of 2026-08-23 went NaN and was caught; this one answers.
+_ma = _room_from([0.0, 0.0, 1.4], seed=1)
+_mb_own = _room_from([3.5, 1.0, 1.4], seed=2)
+_mb_in_a = _mb_own + np.array([3.5, 1.0, 0.0])
+_p_true = registration.median_profile(_ma)
+_p_merged = registration.median_profile(np.concatenate([_ma, _mb_in_a]))
+_both = np.isfinite(_p_true) & np.isfinite(_p_merged)
+_bent = np.abs(_p_true[_both] - _p_merged[_both])
+_share = float((_bent > 0.10).mean())
+# ⭐⭐ AND THE SHAPE OF THE ERROR IS THE POINT, WHICH THE FIRST VERSION OF THIS
+# CHECK GOT WRONG. It asserted the MEDIAN difference was large; measured, the
+# median is exactly 0.0000 m. The corruption is SPARSE and SEVERE, not broad:
+# with two scans and two columns, 12.7% of directions move, by a mean of 0.37 m
+# and up to 6 m, while the other 87% are untouched. That is worse than a broad
+# error, not better -- the profile stays full, every candidate still gets a
+# plausible number, and nothing anywhere goes NaN to announce it. The fraction
+# grows with every scan poured in, and `compare` takes a median, so it is
+# insulated right up until it is not.
+check("A MERGED CLOUD IS NOT A PANORAMA, AND IT STILL RETURNS A NUMBER",
+      int(np.isfinite(_p_merged).sum()) > 0.5 * int(np.isfinite(_p_true).sum())
+      and _share > 0.05 and float(np.median(_bent)) < 1e-9,
+      (_share, float(np.median(_bent)), float(_bent.mean())))
+check("...which is why the union is FITTED and the capture points JUDGE",
+      "Judge(" in _ALIGN_SRC and "solve_ladder(pool" in _ALIGN_SRC)
+
+# The single-view judge must not have changed a single number.
+_j1 = registration.Judge([(_ma, None)])
+_mv = registration.Setup(0.4, -0.3, 0.0, 6.0).apply(_ma)
+for _vx in (0.10, 0.02):
+    _lb, _tb = registration.scoring_bins(_vx)
+    _old = registration.compare(registration.median_profile(_ma, _lb, _tb),
+                                registration.Lean(0.5, -0.2).apply(_mv),
+                                registration.Setup(-0.4, 0.3, 0.0, -6.0),
+                                _lb, _tb)
+    _new = _j1.score(_mv, registration.Setup(-0.4, 0.3, 0.0, -6.0),
+                     registration.Lean(0.5, -0.2), _vx)
+    check("a pair fit priced through Judge is BIT-identical at %.0f cm"
+          % (_vx * 100), _old == _new, (_old, _new))
+check("...and so is its sampling floor",
+      registration.sampling_floor(_ma) == _j1.floor())
+
+# ⛔⛔ THE DISQUALIFICATION RULE. A view that cannot price a pose must kill the
+# pose, not quietly abstain from the average -- otherwise the search can lower
+# its score by moving OUT of a neighbour's sight instead of into agreement with
+# it, and the guard that decides whether to keep the operator's placement is
+# exactly a comparison of two of these numbers.
+_blind = _room_from([0.0, 0.0, 1.4], n=300, seed=9)   # too few points to price
+_pose, _flat = registration.Setup(-0.4, 0.3, 0.0, -6.0), registration.Lean()
+_seeing = registration.Judge([(_ma, None)]).score(_mv, _pose, _flat, 0.10)
+check("the sighted view on its own DOES price this pose",
+      _seeing == _seeing, _seeing)
+_mixed = registration.Judge([(_ma, None), (_blind, np.eye(4))])
+_mix = _mixed.score(_mv, _pose, _flat, 0.10)
+check("A VIEW THAT CANNOT PRICE A POSE DISQUALIFIES IT, it does not abstain",
+      _mix != _mix, _mix)
+check("...and the blind view is what did it, not the pose",
+      _mixed.measure(_mv, _pose, _flat, 0.10)[1][1]
+      < registration.MIN_SHARED_BINS,
+      _mixed.measure(_mv, _pose, _flat, 0.10))
+_wj = registration.Judge([(_ma, None), (_ma, np.eye(4))], [3.0, 1.0])
+_before = list(_wj.weights)
+_wj.score(_mv, _pose, _flat, 0.10)
+_wj.score(_mv, registration.Setup(2.0, 2.0, 0.0, 40.0), _flat, 0.10)
+check("the weights are frozen at construction, not recomputed per candidate",
+      _wj.weights == _before == [3.0, 1.0], _wj.weights)
+
+# The shortlist.
+_msrv = align.AlignServer([], out_path=None)
+_msrv.scans = [
+    _mscan("ref", _ma),                                              # 0
+    _mscan("near", _mb_own, registration.Setup(3.5, 1.0, 0.0, 0.0)),  # 1
+    _mscan("alsonear", _room_from([-2.0, 1.5, 1.4], seed=3),
+           registration.Setup(-2.0, 1.5, 0.0, 0.0)),                  # 2
+    _mscan("unplaced", _room_from([1.0, 1.0, 1.4], seed=4)),          # 3
+    _mscan("exported", _room_from([0.5, 0.5, 1.4], seed=5),
+           registration.Setup(0.5, 0.5, 0.0, 0.0), source="cloud"),   # 4
+    _mscan("miles", _room_from([0.0, 0.0, 1.4], seed=6),
+           registration.Setup(300.0, 0.0, 0.0, 0.0)),                 # 5
+]
+_near = _msrv.neighbours_of(1)
+check("the shortlist is the placed captures standing nearest, nearest first",
+      _near and _near[0] == 0 and set(_near) == {0, 2}, _near)
+check("...an UNPLACED cloud is never one of them", 3 not in _near)
+check("...nor is an exported cloud, which has no capture point to judge from",
+      4 not in _near)
+check("...nor is one beyond the reach, whose points are cost without "
+      "constraint", 5 not in _near)
+check("and the shortlist is capped", len(_msrv.neighbours_of(1, limit=1)) == 1)
+
+check("the reference cannot be fitted onto its own neighbours",
+      not _msrv.solve_multi(0)["ok"])
+_unp = _msrv.solve_multi(3)
+check("AN UNPLACED SCAN IS REFUSED, and told why rather than guessed at",
+      not _unp["ok"] and "only a placed" in _unp["error"], _unp.get("error"))
+check("...and one lone neighbour is refused: two is what makes it a multi fit",
+      not _msrv.solve_multi(5)["ok"])
+
+# ⛔ No merged-panorama fallback when GICP is missing.
+_had = registration.have_gicp
+registration.have_gicp = lambda: False
+try:
+    _none = registration.solve_ladder(
+        _ma, _mv, start=registration.Setup(),
+        judge=registration.Judge([(_ma, None), (_ma, np.eye(4))]))
+finally:
+    registration.have_gicp = _had
+check("A MULTI FIT HAS NO GRID-SEARCH FALLBACK, because that would score it "
+      "through a merged profile", _none is None, _none)
+
+if registration.have_gicp():
+    _off = registration.Setup(3.5 + 0.22, 1.0 - 0.17, 0.0, 5.0)
+    _msrv.scans[1].setup = _off
+    _got = _msrv.solve_multi(1)
+    check("ONE PRESS FITS IT AGAINST EVERY NEIGHBOUR AT ONCE",
+          _got.get("ok"), _got.get("error"))
+    if _got.get("ok"):
+        _end = _msrv.scans[1].setup
+        check("...and lands on where that tripod really stood",
+              abs(_end.dx - 3.5) < 0.05 and abs(_end.dy - 1.0) < 0.05
+              and abs((_end.yaw_deg + 180) % 360 - 180) < 1.0,
+              (_end.dx, _end.dy, _end.yaw_deg))
+        check("...and says which captures voted, and how much each could see",
+              len(_got["used"]) == 2
+              and all(u["share"] >= registration.MULTI_MIN_BINS
+                      for u in _got["used"]), _got["used"])
+        check("...and a moved scan restarts the pair ladder, since its "
+              "placement is new", _msrv.scans[1].rung is None)
+    # ⛔⛔ A MISPLACED NEIGHBOUR IS LEFT OUT AND NAMED. The live project found
+    # this the first time the tool ran on it: three scans each read 0.035 to
+    # 0.148 m against their neighbours and 0.797 to 2.039 m against one
+    # particular capture, and that capture was voting.
+    _msrv.scans[1].setup = registration.Setup(3.5, 1.0, 0.0, 0.0)
+    _msrv.scans.append(_mscan("liar", _room_from([-2.0, -2.0, 1.4], seed=7),
+                              registration.Setup(-2.0, -2.0 + 2.5, 0.0, 0.0)))
+    _rg = _msrv.solve_multi(1)
+    check("A NEIGHBOUR THAT DISAGREES WITH ALL THE OTHERS IS NOT GIVEN A VOTE",
+          _rg.get("ok") and [r["name"] for r in _rg.get("rogue", [])] == ["liar"],
+          (_rg.get("error"), _rg.get("rogue")))
+    check("...and the ones that agree still voted",
+          _rg.get("ok") and len(_rg["used"]) >= 2, _rg.get("used"))
+    # ⚠ INDEXED ONLY AFTER CHECKING THERE IS SOMETHING THERE. Written as
+    # `_rg["rogue"][0]`, this did not FAIL when the rejection was disabled --
+    # it raised IndexError and took the whole suite down with it, so the
+    # reversion test that was running at the time measured nothing about the
+    # thirty checks below. A check that crashes on a regression is worse than
+    # one that misses it: it hides its neighbours. Second time today.
+    check("...and it is REPORTED, because that is evidence about that scan",
+          _rg.get("ok") and len(_rg.get("rogue") or []) == 1
+          and _rg["rogue"][0]["residual"] > 1.0, _rg.get("rogue"))
+    _msrv.scans.pop()
+    _msrv.scans[1].setup = registration.Setup(3.5, 1.0, 0.0, 0.0)
+    _wander = registration.Solution(registration.Setup(9.0, 9.0, 0.0, 90.0),
+                                    0.001, 0.001, 1.0)
+    _wander.voxel = registration.GICP_LADDER[-1]
+    _real_ladder = registration.solve_ladder
+    registration.solve_ladder = lambda *a, **k: _wander
+    try:
+        _ref2 = _msrv.solve_multi(1)
+    finally:
+        registration.solve_ladder = _real_ladder
+    check("AN ANSWER PAST THE REFINE LIMITS IS REPORTED, NOT APPLIED",
+          _ref2["ok"] and _ref2["kept_start"]
+          and not _ref2["trustworthy"] and "DIFFERENT ANSWER" in _ref2["text"],
+          _ref2.get("text"))
+    check("...and the scan did not move", abs(_msrv.scans[1].setup.dx - 3.5)
+          < 1e-9 and abs(_msrv.scans[1].setup.dy - 1.0) < 1e-9)
+
+# ⛔⛔ THE TILT HAD NO LIMIT AT ALL, AND THE LIVE PROJECT IS WHAT SHOWED IT.
+# Translation was held to a metre and the turn to twenty degrees, and between
+# those and `_decompose`'s 45-degree refusal nothing watched the tip and bank
+# -- so a "refinement" could hold a placement to a metre and then roll the
+# cloud thirty degrees. At ten metres a degree of tilt is 17 cm at the wall.
+_here, _flat0 = registration.Setup(1.0, 2.0, 0.0, 30.0), registration.Lean()
+check("a tidy-up inside all three limits is applied",
+      registration.refine_refused(registration.Setup(1.1, 2.05, 0.0, 33.0),
+                                  registration.Lean(2.0, -1.0),
+                                  _here, _flat0) is None)
+check("A ROLL PAST THE TILT LIMIT IS A DIFFERENT ANSWER, not a refinement",
+      registration.refine_refused(registration.Setup(1.0, 2.0, 0.0, 30.0),
+                                  registration.Lean(0.0, 25.0),
+                                  _here, _flat0) is not None)
+check("...and the tilt limit is tighter than the turn, because a tripod "
+      "stands on a floor",
+      registration.REFINE_LIMIT_TILT_DEG < registration.REFINE_LIMIT_DEG)
+check("...and the two fits share ONE refusal, so neither can miss a limit",
+      _ALIGN_SRC.count("registration.refine_refused(") == 2
+      and "REFINE_LIMIT_TILT_DEG" not in _ALIGN_SRC)
+_gp = registration.refine_gap(registration.Setup(1.0, 2.0, 0.0, 359.0),
+                              registration.Lean(3.0, 0.0), _here, _flat0)
+check("the turn is measured the short way round the circle",
+      abs(_gp[1] - 31.0) < 1e-9, _gp)
+check("...and the tilt is the worst of tip and bank, not their sum",
+      abs(_gp[2] - 3.0) < 1e-9, _gp)
+
+_msrc = re.sub(r"/\*.*?\*/", "", _ALIGN_SRC, flags=re.S)
+check("the page has a button for it, wired to a route the server answers",
+      "id=\"multi\"" in _msrc and "$('multi').onclick=multiAlign" in _msrc
+      and 'path == "/solve/multi"' in _msrc)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

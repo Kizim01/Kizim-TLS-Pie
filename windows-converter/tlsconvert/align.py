@@ -639,6 +639,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.solve(int(body.get("index", 1)),
                                             body.get("start"),
                                             body.get("target")))
+            if path == "/solve/multi":
+                srv.take_leans(body.get("leans"))
+                return self._json(srv.solve_multi(int(body.get("index", 1)),
+                                                  body.get("start"),
+                                                  body.get("targets")))
             if path == "/pairs":
                 srv.take_leans(body.get("leans"))
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
@@ -942,6 +947,250 @@ class AlignServer(object):
                 best, gap = j, d
         return best
 
+    def neighbours_of(self, index, limit=None, reach=None):
+        """
+        The placed captures standing nearest this one, nearest first.
+
+        ⭐ THE SHORTLIST, NOT THE ANSWER. Tripod distance is a cheap proxy for
+        shared surface and the two genuinely diverge (folder 10 of the live
+        job: the nearest tripod shared 12.6% and the next one along 16.9%).
+        For a fit against ONE scan that is a real weakness. For a fit against
+        several it matters far less, because the point of taking several is
+        not having to pick the right one -- so distance chooses the candidates
+        and how much each can actually SEE decides which of them get a vote.
+
+        ⛔ AN EXPORTED CLOUD IS NEVER A NEIGHBOUR. `Judge` prices a pose from a
+        capture position, and an exported cloud has none -- it is a merged
+        product, so a profile taken at its origin describes nothing. It can
+        still be the scan being MOVED; it cannot be one of the things moved
+        onto.
+        """
+        here = self.scans[index].setup
+        out = []
+        for j, other in enumerate(self.scans):
+            if j == index or getattr(other, "source", "capture") == "cloud":
+                continue
+            if other.sample is None or not len(other.sample):
+                continue
+            # The reference is placed by definition; anything else sitting at
+            # the origin has simply not been put anywhere yet, and fitting to
+            # an unplaced cloud moves the problem rather than solving it.
+            if j != 0 and other.setup.is_identity():
+                continue
+            d = float(np.hypot(other.setup.dx - here.dx,
+                               other.setup.dy - here.dy))
+            if d <= (reach if reach is not None
+                     else registration.MULTI_REACH_M):
+                out.append((d, j))
+        out.sort()
+        return [j for _d, j in out[:(limit or registration.MULTI_MAX)]]
+
+    def solve_multi(self, index, start=None, targets=None):
+        """
+        Fit one scan onto SEVERAL of its neighbours at once.
+
+        ⭐⭐ WHY THIS IS A DIFFERENT TOOL AND NOT A BIGGER AUTO-ALIGN. A pair
+        fit answers "where does this sit relative to that one", and down a
+        walk of twenty-five tripods those answers chain: each scan inherits
+        its target's error and adds its own. Fitting against every neighbour
+        at once asks the question the operator actually has -- "where does
+        this sit in the room I have already built" -- and the neighbours
+        constrain each other, so there is no chain to drift along. It is what
+        every terrestrial package eventually does; this is the cheap version
+        of it, one scan at a time, with the survey so far held fixed.
+
+        ⛔⛔ THE UNION IS FITTED, THE CAPTURE POSITIONS DO THE JUDGING. GICP
+        gets one cloud -- every neighbour's points carried into the anchor's
+        frame -- because more surface is the whole point. The SCORE never sees
+        that union: `registration.Judge` keeps one panorama per neighbour, in
+        that neighbour's own frame, and combines them. Merging the profiles
+        instead would be the blind-judge bug of 2026-08-23 wearing a better
+        disguise -- that one went NaN and was caught; a merged profile answers
+        every candidate with a plausible number.
+
+        ⛔ IT NEEDS A PLACEMENT, AND THAT IS NOT A LIMITATION TO APOLOGISE FOR.
+        "Which scans are near this one" is a question only a placed scan can
+        ask: an unplaced cloud sits at the origin, so its neighbours are
+        whatever happens to be near the reference. Auto-align finds the room
+        from nothing; this refines a scan that has already found it.
+        """
+        if not 0 < index < len(self.scans):
+            return {"ok": False,
+                    "error": "scan 1 is the reference: everything else is "
+                             "placed against it, so it cannot be fitted onto "
+                             "its own neighbours."}
+        if not registration.have_gicp():
+            return {"ok": False,
+                    "error": "fitting to several scans needs the GICP "
+                             "solver, which is not available in this build. "
+                             "Auto-align to one scan still works."}
+        scan = self.scans[index]
+        hint = registration.Setup.from_dict(start) if start else None
+        here = hint if hint is not None else scan.setup
+        if here.is_identity() and scan.lean.is_identity():
+            return {"ok": False,
+                    "error": "this scan has not been placed yet, and which "
+                             "scans are near it is a question only a placed "
+                             "scan can ask — an unplaced cloud sits at the "
+                             "origin. Use Auto-align first, then fit it to "
+                             "its neighbours."}
+        # The shortlist is taken from where the scan is NOW, which is the
+        # page's placement when there is one.
+        was, scan.setup = scan.setup, here
+        try:
+            picked = ([int(t) for t in targets] if targets
+                      else self.neighbours_of(index))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "bad list of scans to fit onto"}
+        finally:
+            scan.setup = was
+        picked = [j for j in picked if 0 <= j < len(self.scans) and j != index]
+        if len(picked) < 2:
+            return {"ok": False,
+                    "error": "only %d placed capture is near enough to fit "
+                             "onto. This tool needs at least two — use "
+                             "Auto-align for a single target."
+                             % len(picked)}
+
+        anchor = picked[0]
+        F_anchor = registration._pose_matrix(self.scans[anchor].setup,
+                                             self.scans[anchor].lean)
+        A_inv = np.linalg.inv(F_anchor)
+        views, union = [], [np.asarray(self.scans[anchor].sample)]
+        for j in picked:
+            if j == anchor:
+                views.append((self.scans[anchor].sample, None))
+                continue
+            F_j = registration._pose_matrix(self.scans[j].setup,
+                                            self.scans[j].lean)
+            into_anchor = A_inv @ F_j
+            views.append((self.scans[j].sample, np.linalg.inv(into_anchor)))
+            union.append(registration.apply_matrix(into_anchor,
+                                                   self.scans[j].sample))
+        pool = np.ascontiguousarray(np.concatenate(union), dtype=np.float64)
+
+        s_loc, l_loc, ok_in = registration._decompose(
+            A_inv @ registration._pose_matrix(here, scan.lean))
+        if not ok_in:
+            return {"ok": False,
+                    "error": "this scan and its neighbour differ by a tilt "
+                             "past what a standing tripod can hold — check "
+                             "the tip and bank boxes before fitting."}
+
+        # ⛔⛔ WHO VOTES IS DECIDED ONCE, HERE, BEFORE ANY SEARCHING, AND AT
+        # THE COARSE BINS BECAUSE THAT IS THE SCALE THAT BINDS. A neighbour
+        # sharing enough directions at 360x90 shares roughly sixteen times as
+        # many at the fine scale, so a view admitted coarse is safe all the
+        # way down -- admit on the fine count and a view could go unpriceable
+        # at the coarse rung, and since an unpriceable view disqualifies the
+        # whole candidate, that would throw away every coarse answer and
+        # leave the press with nothing.
+        wide = registration.Judge(views)
+        seen = wide.measure(scan.sample, s_loc, l_loc,
+                            registration.GICP_LADDER[0])
+        sighted = [k for k, (r, n) in enumerate(seen)
+                   if r == r and n >= registration.MULTI_MIN_BINS]
+        blind = [self.scans[picked[k]].name
+                 for k in range(len(picked)) if k not in sighted]
+        # ⛔⛔ AND THEN THE ONES THAT CAN SEE IT AND DISAGREE WITH EVERYONE
+        # ELSE. This tool holds the survey so far fixed, so a neighbour that
+        # is itself misplaced does not weaken the fit -- it PULLS it, toward
+        # that neighbour's own error, which is the failure the tool exists to
+        # prevent arriving through the tool. Caught on the live project the
+        # first time it was run: three scans each read 0.035-0.148 m against
+        # their neighbours and 0.797-2.039 m against one particular capture.
+        keep, rogue = list(sighted), []
+        if sighted:
+            bar = wide.floor() * registration.MULTI_ROGUE_FLOORS
+            keep = [k for k in sighted if seen[k][0] <= bar]
+            rogue = [(self.scans[picked[k]].name, seen[k][0])
+                     for k in sighted if k not in keep]
+        if len(keep) < 2:
+            if len(rogue) and len(sighted) >= 2:
+                return {"ok": False,
+                        "error": "the captures near this one do not agree "
+                                 "with each other (%s), so one of THEM is "
+                                 "misplaced and this scan cannot be fitted "
+                                 "to a room that disagrees with itself. Check "
+                                 "them by eye first."
+                                 % ", ".join("%s at %.2f m" % r
+                                             for r in rogue)}
+            return {"ok": False,
+                    "error": "only %d of the %d captures near this one can "
+                             "see enough of it to have an opinion, so there "
+                             "is nothing for them to agree about. Auto-align "
+                             "it to the nearest one first, then try again."
+                             % (len(keep), len(picked))}
+        jd = wide.keeping(keep, [float(n) for _r, n in seen])
+        used = [picked[k] for k in keep]
+
+        self._progress = {"stage": "starting", "n": 0, "total": 1, "busy": True}
+        try:
+            sol = registration.solve_ladder(pool, scan.sample,
+                                            progress=self._note, start=s_loc,
+                                            lean=l_loc, judge=jd)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if sol is None:
+            return {"ok": False,
+                    "error": "the solver could not price this fit against "
+                             "those neighbours; nothing was moved."}
+
+        # The same refinement line the pair fit draws, for the same reason.
+        kept_hand = bool(sol.kept_start)
+        refused = None
+        if not kept_hand:
+            refused = registration.refine_refused(sol.setup, sol.lean,
+                                                  s_loc, l_loc)
+            if refused is not None:
+                kept_hand = True
+        if kept_hand:
+            scan.setup, scan.lean = here, scan.lean
+        else:
+            new_setup, new_lean, ok_out = registration._decompose(
+                F_anchor @ registration._pose_matrix(sol.setup, sol.lean))
+            if not ok_out:
+                return {"ok": False,
+                        "error": "the answer carried a tilt past what a "
+                                 "standing tripod can hold; nothing was "
+                                 "moved. Check these scans by eye."}
+            scan.setup, scan.lean = new_setup, new_lean
+            # ⛔ A MULTI FIT IS NEW INFORMATION FOR THE PAIR LADDER. Auto-align
+            # spends a rung per press and refuses once it bottoms out; the
+            # scan has just moved, so that count is about a placement which no
+            # longer exists.
+            scan.rung = None
+
+        names = ", ".join(self.scans[j].name for j in used)
+        if refused is not None:
+            text = ("onto %d captures (%s) — the fit wanted to move it %.2f m, "
+                    "turn it %.1f° and tilt it %.1f° from where you put it. "
+                    "That is a DIFFERENT ANSWER, not a refinement, so nothing "
+                    "was moved." % ((len(used), names) + refused))
+        else:
+            text = "onto %d captures (%s) — %s" % (len(used), names,
+                                                   sol.describe())
+        return {"ok": True, "index": index, "setup": _placement(scan),
+                "residual": sol.residual, "floor": sol.floor,
+                "baseline": sol.baseline, "improvement": sol.improvement,
+                "trustworthy": sol.ok and refused is None,
+                "ambiguous": sol.ambiguous, "voxel": sol.voxel,
+                "kept_start": kept_hand, "exhausted": False,
+                "used": [{"index": j, "name": self.scans[j].name,
+                          "folderNo": _folder_number(self.scans[j].path),
+                          "share": int(n), "was": float(r)}
+                         for j, (r, n) in zip(used,
+                                              [seen[k] for k in keep])],
+                "blind": blind,
+                # ⛔ NAMED, NEVER JUST EXCLUDED. A neighbour thrown out for
+                # disagreeing with all the others is the strongest evidence
+                # this program ever produces that a scan is misplaced, and
+                # dropping it silently would spend that evidence on nothing.
+                "rogue": [{"name": nm, "residual": float(r)}
+                          for nm, r in rogue],
+                "text": text}
+
     def solve(self, index, start=None, target=None):
         """
         Fit one scan onto another. `target` defaults to the nearest scan.
@@ -1066,13 +1315,9 @@ class AlignServer(object):
         kept_hand = bool(sol.kept_start)
         refused = None
         if hint is not None and s_loc is not None and not kept_hand:
-            far = float(np.hypot(sol.setup.dx - s_loc.dx,
-                                 sol.setup.dy - s_loc.dy))
-            turn = abs((sol.setup.yaw_deg - s_loc.yaw_deg + 180.0)
-                       % 360.0 - 180.0)
-            if (far > registration.REFINE_LIMIT_M
-                    or turn > registration.REFINE_LIMIT_DEG):
-                refused = (far, turn)
+            refused = registration.refine_refused(sol.setup, sol.lean,
+                                                  s_loc, l_loc)
+            if refused is not None:
                 kept_hand = True
 
         if kept_hand and hint is not None:
@@ -1089,14 +1334,14 @@ class AlignServer(object):
             scan.setup, scan.lean = new_setup, new_lean
 
         if refused is not None:
-            text = ("onto %s — the search wanted to move it %.2f m and turn "
-                    "it %.1f° from where you put it. That is a DIFFERENT "
-                    "ANSWER, not a refinement of your placement, so nothing "
-                    "was moved. If that other position could be right, check "
-                    "this pair by eye — or pick matching points on both "
+            text = ("onto %s — the search wanted to move it %.2f m, turn it "
+                    "%.1f° and tilt it %.1f° from where you put it. That is a "
+                    "DIFFERENT ANSWER, not a refinement of your placement, so "
+                    "nothing was moved. If that other position could be right, "
+                    "check this pair by eye — or pick matching points on both "
                     "clouds and fit from those, which states the answer "
                     "rather than searching for it."
-                    % (fixed.name, refused[0], refused[1]))
+                    % ((fixed.name,) + refused))
         else:
             text = "onto %s, coarse to fine — %s" % (fixed.name,
                                                      sol.describe())
@@ -3095,7 +3340,20 @@ PAGE = r"""<!doctype html>
   <select id="which" style="width:100%;background:#26262c;color:#ddd;
           border:1px solid #3a3a42;border-radius:5px;padding:5px"></select>
   <div class="row">
+    <button id="gizmo3" class="go" title="Put the whole manipulator on this
+      scan&#39;s tripod at once: three arms to slide it, a ring to turn it and
+      two more to tip and bank it. Press again to take the lot away. The three
+      buttons after this one switch the parts on and off separately.">Gizmo
+      </button>
     <button id="grab">Drag to move</button>
+  </div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    <b>Gizmo</b> puts all six handles on the tripod — the point the instrument
+    actually stood on, which is what the scan turns and tips about, so a ring
+    does what it looks like it will do. It is off until you ask, and while it
+    is on, a drag near the tripod works the gizmo instead of orbiting the
+    view; press it again to get the view back.</div>
+  <div class="row">
     <button id="movegiz" title="Show three arms through this scan&#39;s tripod
       and drag them to slide it along one axis at a time. Press again to take
       them away. The arms point along the axes the SLIDERS move, which after
@@ -3143,6 +3401,16 @@ PAGE = r"""<!doctype html>
     nothing with the one at the far end, so fitting everything to the first
     scan stops working a few positions in. Leave this on <b>nearest</b> and
     the chain builds itself; set it when you know better.</div>
+  <hr>
+  <button class="go" id="multi">Fit to its neighbours</button>
+  <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
+    Fits this scan against <b>every placed capture standing near it</b> at
+    once, instead of one target. Aligning down a walk one pair at a time makes
+    a chain, and each link inherits the error of the one before it; fitting to
+    several holds the scan against the room you have already built, and the
+    neighbours keep each other honest. Place it roughly first — this refines,
+    it does not search.</div>
+  <div id="mused" style="font-size:10.5px;color:var(--faint);margin-bottom:5px"></div>
   </div></div>
 <div class="tray" id="ty_pairs"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
@@ -5232,6 +5500,63 @@ async function autoAlign(){
         'again.', j.trustworthy ? null : 'warn');
   }catch(e){ watch(false); say('Auto-align failed: '+e.message, 'bad'); }
   $('auto').disabled=false;
+}
+
+/* ⭐⭐ FIT TO EVERYTHING STANDING NEARBY, NOT TO ONE CHOSEN TARGET.
+   Aligning a walk pair by pair builds a CHAIN: scan 12 is placed against 11,
+   which was placed against 10, and every link carries its predecessor's error
+   forward. Fitting against all the near neighbours at once asks the question
+   the operator actually has -- "does this sit right in the room I have already
+   built" -- and the neighbours constrain each other, so there is nothing to
+   drift along.
+
+   ⛔ IT REPORTS WHO VOTED, AND THAT IS NOT DECORATION. The answer depends on
+   which captures were near enough and could see enough, and those are choices
+   the operator can change (by placing another scan, or by nudging this one).
+   A fit whose inputs are invisible cannot be argued with. */
+async function multiAlign(){
+  const s=active(); if(!s) return;
+  if(!moved(s)){
+    say('Place this scan roughly first — which captures are near it is a '+
+        'question only a placed scan can ask. Use Auto-align, then fit it to '+
+        'its neighbours.', 'warn');
+    return;
+  }
+  remember('fitting '+s.name+' to its neighbours', undoSetup(s.index));
+  say('fitting to the captures standing near it…');
+  watch(true); $('multi').disabled=true; $('auto').disabled=true;
+  try{
+    const r=await fetch('solve/multi',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index:s.index, start:s.setup, leans:leansWire()})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'fit failed');
+    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
+    watch(false);
+    $('mused').innerHTML = (j.used||[]).map(u=>
+      '<span class="fno">'+(u.folderNo ? '#'+u.folderNo : '?')+'</span> '+
+      u.name+' <span class="num">'+u.share.toLocaleString()+
+      ' directions</span>').join('<br>')+
+      ((j.blind&&j.blind.length)
+        ? '<br><span style="color:var(--faint)">not used, too little in '+
+          'common: '+j.blind.join(', ')+'</span>' : '')+
+      /* ⛔ A REJECTED NEIGHBOUR IS A FINDING ABOUT THAT NEIGHBOUR. It saw
+         enough of this scan to have an opinion and its opinion disagreed with
+         every other capture in the room, which is the strongest evidence this
+         program produces that a scan is in the wrong place. */
+      ((j.rogue&&j.rogue.length)
+        ? '<br><span style="color:var(--orange)">left out — disagrees with '+
+          'the others by metres, so it is probably misplaced itself: '+
+          j.rogue.map(r=>r.name+' ('+r.residual.toFixed(2)+' m)').join(', ')+
+          '</span>' : '');
+    if(j.kept_start) say(j.text+
+        '  Your own placement already agrees with these captures better than '+
+        'anything the search found, so nothing was moved.', 'warn');
+    else say((j.trustworthy ? ''
+        : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. '))+j.text,
+        j.trustworthy ? null : 'warn');
+  }catch(e){ watch(false); say('Fit to neighbours failed: '+e.message,'bad'); }
+  $('multi').disabled=false; $('auto').disabled=false;
 }
 
 /* ⭐ EDITS ARE OPERATIONS, NOT EDITED POINTS: the export re-reads the captures
@@ -8197,6 +8522,45 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const by=to-(+s.setup[key]||0);
       leanScan(key==='pitch_deg'?by:0, key==='roll_deg'?by:0); }; };
   bindLean('rtip','pitch_deg'); bindLean('rbank','roll_deg');
+  /* ⭐⭐ ONE BUTTON FOR THE WHOLE MANIPULATOR, BECAUSE THREE BUTTONS ARE NOT A
+     GIZMO. Every part of this already existed -- arms, turn ring, tilt rings,
+     all sharing the tripod, all with a worked-out order of precedence when
+     they overlap -- and all three were separate toggles, each off until asked
+     for. An operator who wants "the gizmo" the way a modelling package means
+     it had to know three buttons existed and press all three. The parts stay
+     switchable on their own, because they were made separate for a reason:
+     each one standing near the tripod costs you the view orbit there, and
+     someone tipping a scan should not have to give up three widgets' worth of
+     canvas to do it.
+
+     ⛔ THE MASTER HOLDS NO STATE OF ITS OWN. It is lit when all three parts
+     are on, and that is computed from them rather than remembered beside
+     them -- a fourth flag would be a second answer to "is the gizmo showing",
+     and the two would disagree the first time a part was switched alone. */
+  function syncGizmo(){
+    $('movegiz').classList.toggle('on', !!V.moveGiz);
+    $('turnring').classList.toggle('on', !!V.turnRing);
+    $('leanring').classList.toggle('on', !!V.leanRing);
+    $('gizmo3').classList.toggle('on',
+      !!(V.moveGiz && V.turnRing && V.leanRing));
+  }
+  $('gizmo3').onclick=()=>{
+    const s=active();
+    if(!s || s.index===0)
+      return say('The reference scan cannot be moved — everything else '+
+                 'is aligned to it. Pick another scan first.', 'warn');
+    const want = !(V.moveGiz && V.turnRing && V.leanRing);
+    if(want) wantWidget();
+    V.moveGiz=V.turnRing=V.leanRing=want;
+    syncGizmo(); invalidate();
+    say(want
+        ? 'Gizmo on '+s.name+', at the tripod. Drag an arm to slide it — red '+
+          'is east and west, green north and south, blue up. Drag the outer '+
+          'ring to turn it (shift snaps to 5°), the green inner ring to '+
+          'tip it and the pink one to bank it. While it is on, a drag near '+
+          'the tripod works the gizmo rather than orbiting the view.'
+        : 'Gizmo off. Dragging near the tripod orbits the view again.');
+  };
   $('leanring').onclick=e=>{
     const s=active();
     if(!s || s.index===0)
@@ -8204,7 +8568,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
                  'aligned to it. Pick another scan first.', 'warn');
     if(!V.leanRing) wantWidget();
     V.leanRing=!V.leanRing;
-    e.target.classList.toggle('on', V.leanRing);
+    syncGizmo();
     invalidate();
     say(V.leanRing
         ? 'Drag the green ring to tip '+s.name+' and the pink one to bank it. '+
@@ -8228,7 +8592,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
                  'is aligned to it. Pick another scan first.', 'warn');
     if(!V.moveGiz) wantWidget();
     V.moveGiz=!V.moveGiz;
-    e.target.classList.toggle('on', V.moveGiz);
+    syncGizmo();
     invalidate();
     say(V.moveGiz
         ? 'Drag an arm to slide '+s.name+' along that axis. Red is east and '+
@@ -8243,7 +8607,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
                  'is aligned to it. Pick another scan first.', 'warn');
     if(!V.turnRing) wantWidget();
     V.turnRing=!V.turnRing;
-    e.target.classList.toggle('on', V.turnRing);
+    syncGizmo();
     invalidate();
     say(V.turnRing
         ? 'Drag the ring round '+s.name+'\u2019s tripod to turn it. Shift '+
@@ -8259,6 +8623,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('side').onclick=()=>preset(0, 0);
   $('ortho').onclick=()=>setOrtho(!V.ortho);
   $('auto').onclick=autoAlign;
+  $('multi').onclick=multiAlign;
   $('save').onclick=()=>saveMerged(false);
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');
