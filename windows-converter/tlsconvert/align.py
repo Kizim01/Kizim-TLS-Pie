@@ -2271,25 +2271,111 @@ class AlignServer(object):
         if not self.scans:
             self.align_voxel = voxel
             return {"ok": True, "scans": [], "voxel": voxel}
-        keep = [(s.path, s.setup, getattr(s, "rung", None), s.lean)
-                for s in self.scans]
+        # ⛔⛔ THIS BUTTON RAISED ON EVERY PRESS, AND THE TUPLE IS WHY. What
+        # stood here was a list of 4-tuples unpacked as `for p, _s, _r in keep`
+        # one line below -- three names for four fields -- so `load()` was
+        # never reached and "Re-read at this detail" answered every press with
+        # "Could not re-read at that detail: too many values to unpack
+        # (expected 3)". It broke the day the LEAN was added to the tuple
+        # (d7dc7aa, "Tilt a scan, and three controls that did nothing"), and
+        # nothing failed at the time because the shape of that tuple is
+        # written out in TWO places and only one of them was updated.
+        #
+        # ⭐ SO THERE IS NO TUPLE NOW. The old scans are carried whole and read
+        # by attribute name: a field can be added to a Scan without there being
+        # a second place that has to be taught about it. A positional shape
+        # repeated twice has no way to notice when the halves stop agreeing --
+        # which is the same fault, in miniature, as the two selections that
+        # `measure` used to re-point.
+        was = list(self.scans)
         self._progress = {"stage": "re-reading at the new detail", "n": 0,
                           "total": 1, "busy": True}
         try:
-            fresh = load([p for p, _s, _r in keep], voxel_m=voxel or None,
+            fresh = load([s.path for s in was], voxel_m=voxel or None,
                          progress=self._note, max_points=self.max_points)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        for scan, (_path, setup, rung, lean) in zip(fresh, keep):
-            scan.setup = setup
-            scan.rung = rung
-            scan.lean = lean
+        # ⛔ AND THE PLACEMENT WAS NEVER ALL THAT A RE-READ HAD TO CARRY. The
+        # docstring above promises the operator does not lose their work to a
+        # change of detail, and it carried four things out of the six a scan
+        # wears: the CLEANING RULE and the PHOTOGRAPH'S POSE were dropped, so
+        # a finer preview would have handed back every stray the operator had
+        # removed and re-solved every heading from the sibling image. That is
+        # the 2026-08-22 rebuild bug -- `loadScan` fills every live flag with 1
+        # -- one door further out, on the server's own copy this time.
+        lost = []
+        for scan, old in zip(fresh, was):
+            scan.setup = old.setup
+            scan.rung = getattr(old, "rung", None)
+            scan.lean = old.lean
+            if not self._carry_clean(scan, getattr(old, "clean", None)):
+                lost.append(scan.name)
+            self._carry_colour(scan, self.colour_pose(old))
         self.scans = fresh
         self.align_voxel = voxel
-        return {"ok": True, "scans": self._rebuild(), "voxel": voxel}
+        return {"ok": True, "scans": self._rebuild(), "voxel": voxel,
+                "uncleaned": lost}
+
+    def _carry_clean(self, scan, spec):
+        """
+        Re-apply a cleaning RULE to a cloud that has just been re-decoded.
+        True if the rule is on the new cloud, False if it could not be.
+
+        ⛔ THE RULE CARRIES, THE MASK CANNOT. `scan.keep` is one bool per point
+        of `scan.xyz`, and a change of density changes how many of those there
+        are -- so copying the mask across would either raise or, far worse,
+        line up by accident and hide a different set of points. The spec is the
+        thing that means something at any density, and it is what the exporter
+        applies at full density anyway.
+
+        ⛔ A RULE THAT CANNOT BE SHOWN IS DROPPED AND SAID OUT LOUD, never kept
+        quietly. Held on the scan while producing no mask, it would go on
+        governing the EXPORT while the preview showed every point -- which is
+        the exact arrangement `clean_scan` refuses two hundred lines above,
+        for the reason that neither picture looks wrong on its own.
+        """
+        if not spec:
+            return True
+        from . import clean as clean_mod
+        refl = getattr(scan, "view_refl", None)
+        if refl is not None and len(refl) != len(scan.xyz):
+            refl = None
+        try:
+            mask = clean_mod.apply_spec(scan.xyz, refl, spec)
+        except Exception:                                 # noqa: BLE001
+            mask = None
+        if mask is None or not mask.any():
+            scan.clean, scan.keep = None, None
+            return False
+        scan.clean, scan.keep = spec, mask
+        return True
+
+    def _carry_colour(self, scan, pose):
+        """
+        Put a photograph and its solved pose back on a re-decoded cloud.
+
+        ⭐ THE SAME THREE LINES `open_project` USES, AND DELIBERATELY THE SAME
+        ONES. A hand-attached photograph, a heading typed after a bad solve and
+        a camera seat found by the deep polish are all things a fresh `load()`
+        cannot reproduce -- it re-solves from the SIBLING image and calls that
+        the answer. Two paths restoring a photograph two different ways is how
+        one of them ends up restoring less than the other, quietly.
+        """
+        if not pose or not os.path.exists(pose.get("photo") or ""):
+            return
+        scan.camera_z = float(pose.get("camera_z") or 0.0)
+        scan.camera_x = float(pose.get("camera_x") or 0.0)
+        scan.camera_y = float(pose.get("camera_y") or 0.0)
+        colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
+                    camera_x=scan.camera_x, camera_y=scan.camera_y,
+                    yaw=pose.get("yaw_deg"), pitch=pose.get("pitch_deg"),
+                    roll=pose.get("roll_deg"))
+        if scan.colour_info is not None:
+            scan.colour_info["grade"] = pose.get("grade") or "given"
+            scan.colour_info["rung"] = int(pose.get("rung") or 0)
 
     # --- projects ---------------------------------------------------------
     def save_project(self, path, state):
@@ -2421,14 +2507,22 @@ class AlignServer(object):
         lost = []
         for scan, entry in zip(fresh, body.get("scans") or []):
             _take_placement(scan, entry.get("setup"))
-            if entry.get("clean"):
-                self.clean_scan(
-                    fresh.index(scan),
-                    stray=bool((entry["clean"] or {}).get("stray")),
-                    voxel_m=((entry["clean"].get("stray") or {})
-                             .get("voxel_m")),
-                    neighbours=((entry["clean"].get("stray") or {})
-                                .get("neighbours")))
+            # ⛔⛔ THIS USED TO CLEAN THE WRONG LIST, AND SO CLEANED NOTHING.
+            # It called `self.clean_scan(fresh.index(scan), ...)` -- an index
+            # into `fresh`, handed to a method that reads `self.scans[index]`,
+            # while `self.scans` was still the PREVIOUS session and would not
+            # become `fresh` for another thirty lines. With nothing open it
+            # returned "no such scan" and the return value was not looked at;
+            # with a session already open it re-cleaned a cloud that was about
+            # to be thrown away. Either way a project's stray removal never
+            # came back, and the saved spec was still there in the file to say
+            # it should have.
+            #
+            # ⭐ The spec goes to the same carrier the detail re-read uses, and
+            # it takes the SCAN rather than an index -- an index is only ever
+            # an index INTO something, and this is the second time in one file
+            # that the something was the wrong list.
+            self._carry_clean(scan, entry.get("clean"))
             pose = entry.get("colour")
             if not pose:
                 continue
@@ -2439,17 +2533,7 @@ class AlignServer(object):
             if not os.path.exists(pose.get("photo") or ""):
                 lost.append(os.path.basename(pose.get("photo") or "?"))
                 continue
-            scan.camera_z = float(pose.get("camera_z") or 0.0)
-            scan.camera_x = float(pose.get("camera_x") or 0.0)
-            scan.camera_y = float(pose.get("camera_y") or 0.0)
-            colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
-                        camera_x=scan.camera_x, camera_y=scan.camera_y,
-                        yaw=pose.get("yaw_deg"),
-                        pitch=pose.get("pitch_deg"),
-                        roll=pose.get("roll_deg"))
-            if scan.colour_info is not None:
-                scan.colour_info["grade"] = pose.get("grade") or "given"
-                scan.colour_info["rung"] = int(pose.get("rung") or 0)
+            self._carry_colour(scan, pose)
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
@@ -6065,15 +6149,30 @@ async function applyDetail(){
       body:JSON.stringify({voxel:step.v})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not re-read');
-    for(const s of V.scans) for(const c of s.chunks){
-      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
-    }
-    const setups=V.scans.map(s=>s.setup);
-    V.scans=[];
-    for(const m of j.scans) V.scans.push(await loadScan(m));
-    V.scans.forEach((s,i)=>{ if(setups[i]) s.setup=setups[i]; });
-    refreshLists(); showDensity(); recomputeLive(); watch(false);
-    say('now showing at '+step.t+'. Your alignment and edits were kept.');
+    /* ⭐ THE SAME REBUILD EVERY OTHER PATH USES. This had its own copy of
+       `rebuildFrom` written out inline -- the buffer sweep, the setup rescue,
+       the reload loop -- so the two drifted: `refreshScans` learnt to put the
+       cuts back and re-aim the sliders on 2026-08-22 and this did not. One
+       cloud rebuild, one place to fix it. */
+    await rebuildFrom(j.scans);
+    measure(); refreshLists(); showDensity(); syncSliders();
+    /* The cuts are re-derived here as well, for the reason written on
+       `refreshScans`: `loadScan` fills every live flag with 1. */
+    recomputeLive();
+    /* ⭐ AND THE SPINNER COMES DOWN LAST, after the slow part rather than
+       before it. */
+    watch(false);
+    /* ⛔ A CLEANING RULE THAT DID NOT SURVIVE IS SAID OUT LOUD. The server
+       drops it rather than hold a rule it cannot show, and a rule that went
+       from applied to off without a word is exactly the silence that made
+       "Remove strays put everything back" so hard to see. */
+    if(j.uncleaned && j.uncleaned.length)
+      say('now showing at '+step.t+', but the stray removal could not be '+
+          'measured again on '+j.uncleaned.join(', ')+
+          ' — it is OFF rather than applied where you cannot see it. '+
+          'Set it again if you still want it.', 'warn');
+    else
+      say('now showing at '+step.t+'. Your alignment and edits were kept.');
   }catch(e){
     watch(false);
     say('Could not re-read at that detail: '+e.message+

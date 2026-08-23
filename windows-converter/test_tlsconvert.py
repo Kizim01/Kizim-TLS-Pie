@@ -5355,5 +5355,148 @@ console.log(JSON.stringify(out));
               _o["removedChoice"] == [0, 0, False], _o)
 
 
+# --- "reload at this detail is not working" ----------------------------------
+# ⛔⛔ THIS FUNCTION WAS ALREADY UNDER TEST AND THE BUG WAS UNDERNEATH THE TEST.
+# "changing detail on an empty session is harmless" calls `density()` with no
+# scans open, and that returns at the guard clause three lines in -- so it went
+# on passing for as long as the body below it raised on every press an operator
+# could actually make. A case that stops at the guard clause tests the guard
+# clause. The check that matters is the one an operator's press would take.
+print("\nthe detail re-read, with scans actually open")
+
+_ddir = tempfile.mkdtemp(prefix="tlsdetail")
+_RULE = {"stray": {"voxel_m": 1.0, "neighbours": 1}}
+
+
+def _detail_scan(path, seed=0, n=3000):
+    _rng = np.random.RandomState(seed)
+    _pts = _rng.normal(0.0, 3.0, (n, 3)).astype(np.float32)
+    _sc = align.Scan(path, _pts, np.full((n, 3), 128, np.uint8), _pts)
+    _sc.view_refl = np.full(n, 90, dtype=np.uint8)
+    return _sc
+
+
+_real_load = align.load
+
+
+def _stub_load(paths, **_kw):
+    """A re-decode that does not need a capture, so the CARRY can be tested."""
+    return [_detail_scan(p, 10 + i, n=1500) for i, p in enumerate(paths)]
+
+
+_dsrv = align.AlignServer([], out_path=None)
+try:
+    _pa = os.path.join(_ddir, "a.pcap")
+    _pb = os.path.join(_ddir, "b.pcap")
+    for _p in (_pa, _pb):
+        io.open(_p, "wb").close()
+    _sa, _sb = _detail_scan(_pa, 1), _detail_scan(_pb, 2)
+    _sa.setup = registration.Setup(1.5, -2.5, 0.25, 33.0)
+    _sa.lean = registration.Lean(2.0, -1.0)
+    _sa.rung = 0.02
+    _sa.clean = dict(_RULE)
+    _sa.keep = np.ones(len(_sa.xyz), dtype=bool)
+    _dsrv.scans = [_sa, _sb]
+
+    # ⭐⭐ THE WHOLE REPORT IN ONE LINE. Before the fix this came back
+    # "too many values to unpack (expected 3)": the re-read never reached
+    # `load()` at all, so every press of "Re-read at this detail" answered
+    # with a failure about the program's own bookkeeping.
+    _d = _dsrv.density(0.05)
+    check("A DETAIL RE-READ GETS AS FAR AS THE CAPTURES",
+          "unpack" not in str(_d.get("error") or ""), _d)
+
+    align.load = _stub_load
+    try:
+        _d = _dsrv.density(0.02)
+    finally:
+        align.load = _real_load
+    check("...and comes back with every open capture re-read",
+          _d.get("ok") and len(_d.get("scans") or []) == 2, _d)
+    _new = _dsrv.scans[0]
+    check("the placement survives a change of detail",
+          abs(_new.setup.dx - 1.5) < 1e-9
+          and abs(_new.setup.yaw_deg - 33.0) < 1e-9, _new.setup.as_dict())
+    check("...and so does the tilt, which is the other half of a placement",
+          abs(_new.lean.pitch_deg - 2.0) < 1e-9
+          and abs(_new.lean.roll_deg + 1.0) < 1e-9, _new.lean.as_dict())
+    check("...and the rung, so the refinement ladder does not start over",
+          _new.rung == 0.02, _new.rung)
+    # ⛔ THE SERVER'S HALF OF THE 2026-08-22 REBUILD BUG. The page put the
+    # operator's cuts back on and the server handed back every stray they had
+    # removed, on the same press.
+    check("THE CLEANING RULE IS RE-MEASURED ON THE NEW CLOUD, NOT DROPPED",
+          _new.clean == _RULE and _new.keep is not None, _new.clean)
+    # ⭐ Re-MEASURED, not copied: the old mask was 3000 long and the new cloud
+    # is 1500 points. A copied mask would either raise or -- far worse -- line
+    # up by accident and hide a different set of points.
+    check("...measured on the new cloud's own points, never copied across",
+          _new.keep is not None and len(_new.keep) == len(_new.xyz) == 1500,
+          None if _new.keep is None else len(_new.keep))
+    check("a cloud that never had a rule does not acquire one",
+          _dsrv.scans[1].clean is None and _dsrv.scans[1].keep is None)
+
+    # ⛔ A rule that cannot be shown is turned OFF and named, never left
+    # governing the export while the preview shows every point.
+    _orphan = _detail_scan(os.path.join(_ddir, "c.pcap"), 3)
+    _orphan.view_refl = None
+    check("a rule the new cloud cannot carry is dropped rather than hidden",
+          _dsrv._carry_clean(_orphan, {"min_refl": 50.0}) is False
+          and _orphan.clean is None and _orphan.keep is None,
+          _orphan.clean)
+    check("...and the answer carries a place to name the clouds that lost it",
+          "uncleaned" in _d, sorted(_d))
+    _ad = _js_func("applyDetail")
+    check("...which the page reads and says out loud",
+          "j.uncleaned" in _ad, _ad)
+    # The page's own rebuild rules, which this path had its own copy of.
+    check("the detail re-read uses the one cloud rebuild, not a private copy",
+          "rebuildFrom(j.scans)" in _ad and "gl.deleteBuffer" not in _ad, _ad)
+    check("...so it re-aims the controls and puts the cuts back like the rest",
+          "syncSliders()" in _ad and "recomputeLive()" in _ad, _ad)
+
+    # ⛔⛔ AND THE SAME CARRY, ON THE PATH THAT CLEANED THE WRONG LIST.
+    # `open_project` asked `clean_scan` for an index into `fresh` while that
+    # method reads `self.scans`, which was still the PREVIOUS session -- so a
+    # project's stray removal never came back, and the spec sitting in the
+    # saved file said it should have.
+    _proj = os.path.join(_ddir, "j" + align.PROJECT_EXT)
+    with io.open(_proj, "w", encoding="utf-8") as _fh:
+        json.dump({"format": "TLS-Pie project",
+                   "version": align.PROJECT_VERSION,
+                   "scans": [{"path": _pa, "rel": "a.pcap", "name": "a.pcap",
+                              "setup": {"x_m": 1.0, "y_m": 2.0, "z_m": 0.0,
+                                        "yaw_deg": 10.0},
+                              "clean": dict(_RULE)}]}, _fh)
+    align.load = _stub_load
+    try:
+        _o = _dsrv.open_project(_proj)
+    finally:
+        align.load = _real_load
+    check("OPENING A PROJECT PUTS ITS CLEANING RULE BACK ON THE CLOUD",
+          _o.get("ok") and _dsrv.scans[0].clean == _RULE
+          and _dsrv.scans[0].keep is not None, _o)
+    check("...and it is the reopened cloud that wears it, not the old one",
+          _dsrv.scans[0].keep is not None
+          and len(_dsrv.scans[0].keep) == len(_dsrv.scans[0].xyz),
+          len(_dsrv.scans))
+    # ⭐ THE COMMENTS ARE STRIPPED BEFORE THIS READS THE CODE, and the first
+    # version of this check was failed by that. It looked for the old wrong
+    # call being absent -- and the comment explaining the bug quotes the wrong
+    # call, so the check fired on the war story rather than on the code. A
+    # source check that matches prose is a check that goes off when someone
+    # writes about the thing, which is how a check stops being believed.
+    _opsrc = "\n".join(
+        _l for _l in _ALIGN_SRC.split("def open_project")[1]
+        .split("    def ")[0].splitlines() if not _l.lstrip().startswith("#"))
+    check("...through the same carrier the re-read uses, taking the SCAN",
+          "_carry_clean" in _opsrc and "self.clean_scan(" not in _opsrc,
+          _opsrc[:200])
+finally:
+    align.load = _real_load
+    _dsrv.stop()
+    shutil.rmtree(_ddir, ignore_errors=True)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
