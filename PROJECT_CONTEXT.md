@@ -3378,6 +3378,42 @@ because both of today's fixes reach the operator only through the exe — a suit
 > only thing that proves what is in them. ⭐ **The warning was right to be written**, and this line is
 > the other half of it rather than a correction to it.
 
+**⭐⭐ 2026-08-23 — THE LIVE PROJECT: FOLDER 10 WAS OUT, AND AUTO-ALIGN WOULD HAVE AIMED IT AT THE
+WRONG SCAN.** Asked to look at the last two scans of `D:\RESTAURANT SCAN\main project.02.tlspie`
+(10 captures, all placed, a level, one edit).
+
+| scan | folder | as saved | verdict |
+|---|---|---|---|
+| 8 | 9 (`…16_25_48`) | **86.1%** of it within 10 cm of folder 8, nn RMS 0.091 m | **already right** — Auto-align correctly declines to move it |
+| 9 | 10 (`…16_28_48`) | **16.9%** within 10 cm, nn RMS 0.206 m | **out** — one press takes it to **90.0%**, nn RMS **0.082 m** |
+
+The correction is 0.31 m and +3.78° of yaw, and the **tilt goes from −3.72° to −0.91°** — 2.8° of
+pitch is roughly half a metre at the far side of a ten-metre room, which is the kind of error that
+looks like "the alignment is off" without looking like anything in particular.
+
+⛔⛔ **AND THE TARGET THE PROGRAM WOULD HAVE CHOSEN IS THE WRONG ONE.** `nearest_to` picks by
+**distance between tripods**; that answer here is folder 8 at 1.97 m, sharing **12.6%**. The scan that
+actually shares surface is folder 9 at 3.56 m, sharing **16.9%**. Fitting to folder 8 reaches 66.7%
+coincidence; fitting to folder 9 reaches **90.0%**. Same press, same cloud, different partner —
+**"nearest tripod" and "most shared surface" are not the same question, and round a corner they are
+not even close.** This is the strongest case yet for giving the program an overlap number and letting
+it, and the operator, choose a target with it.
+
+⭐ **Corroborated before it was written down.** Fitting folder 10 against folder 9 and against
+folder 8 — two different references — lands on the same pose to about a centimetre and a tenth of a
+degree (x −7.72/−7.73, y −6.79, z +0.22, yaw −61.26/−61.24). Two independent references agreeing is
+the best evidence available short of a survey.
+
+**Written to `main project.03.tlspie`**, every other field copied through unchanged — the level, the
+edit, the box, the view, the other nine placements and their photograph poses. **`.02` is untouched.**
+To do it by hand instead: pick folder 10's scan, set **Align to → `TLS_26_08_20_16_25_48`** (folder 9),
+press Auto-align.
+
+⚠ **One thing the ranking does NOT mean.** Coincidence is measured *at the placement the project was
+saved with*, so a badly placed scan reads as low-overlap when it may share plenty — folder 10 read
+16.9% before the fit and 90.0% after. It is the right signal for **choosing a target**; it is not a
+measurement of true overlap until the placement is right.
+
 **📐 2026-08-23 — WHICH PAIRS OF `D:\RESTAURANT SCAN` ARE HARD, MEASURED.** Sixteen consecutive pairs
 were solved blind and then re-solved from a start 5.8 cm / 1.0° off, which is ~25 minutes of solving
 and is worth not repeating. **The pairs where one press does nothing useful:**
@@ -3386,14 +3422,26 @@ and is worth not repeating. **The pairs where one press does nothing useful:**
 |---|---|---|
 | **3 → 2** | 0.0430 WEAK-ish | placement kept; a second, geometric judge **agrees** it cannot be beaten |
 | **7 → 6** | **1.0463** WEAK AMBIGUOUS | placement kept — a residual this size means the pair barely overlaps |
-| **9 → 7** | 0.1257 WEAK | moved 0.119 m / −2.7° to a *different* answer, slightly better |
+| ~~**9 → 7**~~ | ~~0.1257 WEAK~~ | **VOID — the sweep skipped folder 8 and chained across it; see the correction below** |
 | **10 → 9** | 0.0491 WEAK AMBIGUOUS | placement kept; geometric judge **agrees** |
 | **12 → 11** | 0.1905 WEAK | placement kept; geometric judge **disagrees** (but on 2.7% fewer inliers) |
 | **21 → 20** | 0.2133 WEAK AMBIGUOUS | **this is the one that came back worse — now fixed** |
 
 Everything else (2→1, 4→3, 5→4, 6→5, 11→10, 13→12, 14→13, 15→14, 16→15, 17→16, 18→17, 19→18, 20→19)
-pulled straight back to the blind answer and improved on the placement it was given. Note **folder 8
-does not exist** — the walk goes 7 → 9.
+pulled straight back to the blind answer and improved on the placement it was given.
+
+> ⛔⛔ **CORRECTION, SAME DAY — THE `9 → 7` ROW IS AN ARTIFACT OF THE SWEEP, NOT A PROPERTY OF THE DATA,
+> AND "FOLDER 8 DOES NOT EXIST" WAS WRONG.** Folder 8 exists and is complete — `.pcap`, `.json`, `.jpg`
+> and `.cloud` — but **it is the only folder in the shoot that keeps them one level deeper**, in
+> `8\TLS_26_08_20_16_23_37\`, so a `8\*.pcap` glob found nothing and the sweep silently chained
+> **9 onto 7, across a scan it never saw**. Of course that pair fitted badly: they are two tripod
+> positions apart. Delete that row from your reading of the table; the real link is 9 → 8, unmeasured.
+> ⭐ **The lesson is the shape of the mistake.** A folder shaped differently from its fifty-eight
+> siblings did not raise anything — the glob returned an empty list, the loop went round, and the
+> result was a table with one extra "hard pair" in it that read exactly like the others. **A missing
+> input and an input that is genuinely hard look identical downstream unless something counts what it
+> expected to find.** Anything walking this shoot must resolve captures by **stem** (`*\<stem>.pcap`
+> then `*\*\<stem>.pcap`), never by assuming the folder's shape.
 
 ⚠ **AND A CAUTION ABOUT THE SECOND JUDGE.** Nearest-surface RMS was used as the independent opinion,
 and it reads **~0.12 m even on the best pair (2→1)** because most of each cloud has no counterpart in
