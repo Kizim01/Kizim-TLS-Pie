@@ -835,6 +835,40 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
             began = compare(prof, was, true_start, lon_b, lat_b)
             if began == began and began > sol.residual:
                 sol.improved_from = began
+            elif began == began:
+                # ⛔⛔ THE GUARD, APPLIED ONCE, ON THE SCALE THE ANSWER IS
+                # REPORTED AT -- AND THE NUMBER THAT DECIDES IT WAS ALREADY
+                # BEING COMPUTED, ONE LINE UP, TO DECORATE A SENTENCE.
+                #
+                # `solve_gicp`'s guard is per-rung and each rung is guarded
+                # against the rung ABOVE it, not against the operator. That
+                # chain is not the promise the guard makes. The coarse fan
+                # runs its four perturbed seeds UNGUARDED and then takes the
+                # lowest residual at the COARSE bins, so a seed's answer can
+                # beat the operator's kept placement there, become the pose
+                # every finer rung is guarded against, and be handed back at
+                # the end priced worse than the placement it replaced -- on
+                # this program's own metric, at its own final scale.
+                #
+                # Measured on the restaurant walk: folder 21 onto folder 20,
+                # a placement priced 0.2048 m replaced by an answer priced
+                # 0.2133 m. "An alignment the operator made by hand must
+                # never be quietly replaced by a worse one" was true of every
+                # STEP and false of the JOURNEY, which is the only version of
+                # it an operator can see. Whether the guard held at all
+                # depended on which seed won the coarse fan -- a coin toss
+                # nothing on screen reported.
+                #
+                # ⭐ It can only ever hand back the pose the operator supplied,
+                # so it cannot invent an answer; the worst it can do is decline
+                # to move a scan, which is the outcome the guard exists to
+                # produce.
+                kept = Solution(true_start, began, sol.floor, sol.baseline)
+                kept.kept_start = True
+                kept.lean = lean0
+                kept.voxel = sol.voxel
+                kept.rival, kept.rival_residual = sol.rival, sol.rival_residual
+                sol = kept
     if progress:
         progress("done", len(rungs) + 2, len(rungs) + 2)
     return sol

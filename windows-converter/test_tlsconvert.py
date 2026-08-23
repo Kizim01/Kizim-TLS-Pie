@@ -5498,5 +5498,147 @@ finally:
     shutil.rmtree(_ddir, ignore_errors=True)
 
 
+# --- the guard that held for every step and not for the journey --------------
+# ⛔⛔ "AUTO ALIGN IS BEING LESS SUCCESSFUL EVEN WHEN I GET THE SCANS REALLY
+# CLOSE TO ONE ANOTHER."  Measured across sixteen consecutive pairs of the
+# restaurant walk: on folder 21 onto folder 20 a placement priced 0.2048 m came
+# back replaced by an answer priced 0.2133 m -- worse, on this program's own
+# metric, at its own final scale.  `solve_gicp`'s guard is per-rung and each
+# rung is guarded against the rung ABOVE it, so "never worse than yours" was
+# true of every STEP and false of the JOURNEY, which is the only version of it
+# an operator can see.
+print("\nauto-align: the never-worse promise, end to end")
+if not registration.have_gicp():
+    check("small_gicp is installed for the ladder's own promise", False,
+          "pip install small_gicp")
+else:
+    # ⭐ ITS OWN ROOM, not the module's `_cloud_a` / `_truth`: those names are
+    # rebound several times further down the file, and a fixture that means
+    # something different depending on where the test sits is a test that
+    # passes for a reason nobody chose.
+    _grng = np.random.RandomState(4)
+    _walls = np.vstack([
+        np.column_stack([np.full(4000, -5.0), _grng.uniform(-4, 4, 4000),
+                         _grng.uniform(0, 2.6, 4000)]),
+        np.column_stack([np.full(4000, 5.0), _grng.uniform(-4, 4, 4000),
+                         _grng.uniform(0, 2.6, 4000)]),
+        np.column_stack([_grng.uniform(-5, 5, 4000), np.full(4000, -4.0),
+                         _grng.uniform(0, 2.6, 4000)]),
+        np.column_stack([_grng.uniform(-5, 5, 4000), np.full(4000, 4.0),
+                         _grng.uniform(0, 2.6, 4000)]),
+        np.column_stack([_grng.uniform(-5, 5, 6000),
+                         _grng.uniform(-4, 4, 6000), np.zeros(6000)]),
+        # A pillar and a counter, so the room is not symmetric and the search
+        # has something to be right or wrong ABOUT.
+        np.column_stack([2.0 + 0.3 * np.cos(_grng.uniform(0, 6.28, 1500)),
+                         -1.0 + 0.3 * np.sin(_grng.uniform(0, 6.28, 1500)),
+                         _grng.uniform(0, 2.6, 1500)]),
+        np.column_stack([_grng.uniform(-4, -1, 1500),
+                         np.full(1500, 2.5), _grng.uniform(0.8, 1.1, 1500)])])
+    _GA, _GB, _GYAW = np.array([0.9, 0.6, 1.3]), np.array([2.7, -1.4, 1.3]), 21.0
+    _cloud_a = _walls - _GA
+    _grot = np.array([[math.cos(math.radians(-_GYAW)),
+                       -math.sin(math.radians(-_GYAW)), 0.0],
+                      [math.sin(math.radians(-_GYAW)),
+                       math.cos(math.radians(-_GYAW)), 0.0],
+                      [0.0, 0.0, 1.0]])
+    _cloud_b = (_walls - _GB) @ _grot.T
+    _truth = registration.Setup(dx=(_GB - _GA)[0], dy=(_GB - _GA)[1],
+                                dz=(_GB - _GA)[2], yaw_deg=_GYAW)
+    check("the ladder's own room reconstructs its truth",
+          float(np.abs(_truth.apply(_cloud_b) - _cloud_a).max()) < 1e-6,
+          float(np.abs(_truth.apply(_cloud_b) - _cloud_a).max()))
+
+    def _ladder_price(setup, lean=None, voxel=registration.GICP_LADDER[-1]):
+        _lb, _tb = registration.scoring_bins(voxel)
+        _pr = registration.median_profile(_cloud_a, _lb, _tb)
+        _pt = (_cloud_b if lean is None or lean.is_identity()
+               else lean.apply(_cloud_b))
+        return registration.compare(_pr, _pt, setup, _lb, _tb)
+
+    # ⭐ THE OPTIMISER IS STUBBED SO THAT THE LADDER IS WHAT IS UNDER TEST.
+    # The stub reproduces the real mechanism rather than an arbitrary failure:
+    # a wrong pose that prices cheaply at the COARSE rung -- which is where the
+    # fan chooses, and where the four perturbed seeds run unguarded -- and
+    # honestly below it. That is how a seed's answer beats the operator's kept
+    # placement, becomes the pose every finer rung is guarded against, and is
+    # handed back at the end priced worse than the placement it replaced.
+    _real_gicp = registration.solve_gicp
+
+    def _flattering_gicp(ref, mov, start=None, lean=None,
+                         voxel=registration.GICP_VOXEL, progress=None,
+                         reach=None, guard=True):
+        _bad = registration.Setup(start.dx + 0.45, start.dy - 0.35, start.dz,
+                                  start.yaw_deg + 7.0)
+        _lb, _tb = registration.scoring_bins(voxel)
+        _honest = registration.compare(
+            registration.median_profile(ref, _lb, _tb), mov, _bad, _lb, _tb)
+        _s = registration.Solution(
+            _bad,
+            0.0001 if voxel >= registration.GICP_LADDER[0] else _honest,
+            0.0001, 1.0)
+        _s.lean = lean or registration.Lean()
+        _s.voxel = voxel
+        return _s
+
+    registration.solve_gicp = _flattering_gicp
+    try:
+        _held = registration.solve_ladder(_cloud_a, _cloud_b, start=_truth)
+    finally:
+        registration.solve_gicp = _real_gicp
+    # ⭐⭐ THE WHOLE REPORT IN ONE LINE. Before the fix this came back holding
+    # the stub's wrong pose, 0.45 m and 7 degrees from the placement it was
+    # given, with the number that proves it worse already computed one line up
+    # and spent on a sentence.
+    check("A LADDER THAT ENDS WORSE THAN THE PLACEMENT HANDS THE PLACEMENT BACK",
+          _held.kept_start
+          and abs(_held.setup.dx - _truth.dx) < 1e-9
+          and abs(_held.setup.dy - _truth.dy) < 1e-9
+          and abs(_held.setup.yaw_deg - _truth.yaw_deg) < 1e-9,
+          _held.describe())
+    check("...priced on the scale it is reported at, so the number is real",
+          abs(_held.residual - _ladder_price(_truth)) < 1e-9,
+          (_held.residual, _ladder_price(_truth)))
+    check("...and it says nothing was moved rather than claiming a solve",
+          "already the better fit" in _held.describe(), _held.describe())
+    # ⛔ AND IT MUST NOT KEEP A PLACEMENT THE LADDER GENUINELY BEAT. A guard
+    # that always fires is not a guard, it is a disabled button -- which is the
+    # failure this whole file keeps finding at the other end.
+    _far = registration.Setup(_truth.dx + 0.8, _truth.dy - 0.6, _truth.dz,
+                              _truth.yaw_deg + 12.0)
+    _moved = registration.solve_ladder(_cloud_a, _cloud_b, start=_far)
+    check("a placement the search really does beat is still improved on",
+          not _moved.kept_start
+          and math.hypot(_moved.setup.dx - _truth.dx,
+                         _moved.setup.dy - _truth.dy)
+          < math.hypot(_far.dx - _truth.dx, _far.dy - _truth.dy),
+          _moved.describe())
+
+    # ⭐ THE SAME PROMISE ASKED OF THE REAL SOLVER, from the starts a person
+    # actually leaves behind after dragging a cloud into place by eye.
+    for _dm, _dd in ((0.02, 0.4), (0.08, 1.5)):
+        _st = registration.Setup(_truth.dx + _dm, _truth.dy - _dm,
+                                 _truth.dz, _truth.yaw_deg + _dd)
+        _out = registration.solve_ladder(_cloud_a, _cloud_b, start=_st)
+        _got = _ladder_price(_out.setup, _out.lean, _out.voxel)
+        _was = _ladder_price(_st, None, _out.voxel)
+        check("a close start is never handed back worse than it arrived "
+              "(%.2f m / %.1f deg)" % (_dm, _dd), _got <= _was + 1e-9,
+              "%.5f against %.5f" % (_got, _was))
+
+    # ⛔ AND THE ADVICE HAS TO MATCH WHAT HAPPENED. "Nudge it and press again"
+    # said about a press that kept the operator's placement sends them round a
+    # loop with no exit: a nudge is a new placement, the search starts from it,
+    # and it is measured as the better fit again.
+    check("the server tells the page when the scan did not move",
+          '"kept_start": bool(sol.kept_start)' in _ALIGN_SRC)
+    _aa = _js_func("autoAlign")
+    check("...and a press that moved nothing does not advise pressing again",
+          "j.kept_start" in _aa
+          and "Pressing again will not change this" in _aa, _aa)
+    check("...it names the levers that can change the answer instead",
+          "pick matching points" in _aa and "Align to" in _aa, _aa)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

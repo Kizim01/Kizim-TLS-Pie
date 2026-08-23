@@ -1011,6 +1011,13 @@ class AlignServer(object):
                 "trustworthy": sol.ok, "ambiguous": sol.ambiguous,
                 "voxel": sol.voxel, "exhausted": False, "target": target,
                 "warning": warn,
+                # ⛔ THE PAGE HAS TO KNOW THE SCAN DID NOT MOVE, because the
+                # advice it prints afterwards is wrong in that one case: it
+                # tells the operator to nudge it and press again, and pressing
+                # again from a nudged placement runs the same search and keeps
+                # the same placement. Advice that cannot work reads as a
+                # program that does not work.
+                "kept_start": bool(sol.kept_start),
                 "text": "onto %s, coarse to fine — %s"
                         % (fixed.name, sol.describe())}
 
@@ -5106,6 +5113,20 @@ async function autoAlign(){
     watch(false);
     if(j.warning) say(j.warning, 'warn');
     if(j.exhausted) say(j.text, 'warn');
+    /* \u26d4\u26d4 THE ADVICE HAS TO MATCH WHAT HAPPENED, AND IN ONE CASE IT DID NOT.
+       "Nudge it towards what you can see is right and press again" is the
+       right thing to say about an answer that MOVED the scan. Said about a
+       press that kept the operator's own placement, it sends them round a
+       loop that cannot end: a nudge is a new placement, the search starts
+       from it, and it is priced as the better fit again. Three presses of
+       that and the button is broken, whatever the message says. So the case
+       where nothing moved names the levers that CAN change the answer. */
+    else if(j.kept_start) say(j.text+
+        '  Pressing again will not change this, and nor will a small nudge '+
+        '\u2014 the search starts from wherever the scan sits and keeps '+
+        'measuring your placement as the better fit. What does change it: '+
+        'pick matching points on both clouds and fit from those, or aim it '+
+        'at a different scan under Align to.', 'warn');
     else say((j.trustworthy ? ''
         : (j.ambiguous ? 'MORE THAN ONE ANSWER FITS. ' : 'WEAK FIT. '))+j.text+
         '  One press runs the whole search, coarse to fine \u2014 if it still '+
