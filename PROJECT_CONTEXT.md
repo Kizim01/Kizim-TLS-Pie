@@ -3281,6 +3281,29 @@ because both of today's fixes reach the operator only through the exe — a suit
 > They are **not in any commit**; the exes above were built from the tree, so they include it.
 > Left alone deliberately — it is somebody's work in flight, not this session's.
 
+**📐 2026-08-23 — WHICH PAIRS OF `D:\RESTAURANT SCAN` ARE HARD, MEASURED.** Sixteen consecutive pairs
+were solved blind and then re-solved from a start 5.8 cm / 1.0° off, which is ~25 minutes of solving
+and is worth not repeating. **The pairs where one press does nothing useful:**
+
+| pair | blind residual | what happened from a close start |
+|---|---|---|
+| **3 → 2** | 0.0430 WEAK-ish | placement kept; a second, geometric judge **agrees** it cannot be beaten |
+| **7 → 6** | **1.0463** WEAK AMBIGUOUS | placement kept — a residual this size means the pair barely overlaps |
+| **9 → 7** | 0.1257 WEAK | moved 0.119 m / −2.7° to a *different* answer, slightly better |
+| **10 → 9** | 0.0491 WEAK AMBIGUOUS | placement kept; geometric judge **agrees** |
+| **12 → 11** | 0.1905 WEAK | placement kept; geometric judge **disagrees** (but on 2.7% fewer inliers) |
+| **21 → 20** | 0.2133 WEAK AMBIGUOUS | **this is the one that came back worse — now fixed** |
+
+Everything else (2→1, 4→3, 5→4, 6→5, 11→10, 13→12, 14→13, 15→14, 16→15, 17→16, 18→17, 19→18, 20→19)
+pulled straight back to the blind answer and improved on the placement it was given. Note **folder 8
+does not exist** — the walk goes 7 → 9.
+
+⚠ **AND A CAUTION ABOUT THE SECOND JUDGE.** Nearest-surface RMS was used as the independent opinion,
+and it reads **~0.12 m even on the best pair (2→1)** because most of each cloud has no counterpart in
+the other — it is dominated by non-overlap, so it is only meaningful as a *comparison between two
+poses of the same pair*, never as a fit quality on its own. The scripts that produced all of the
+above live in this session's scratchpad, not the repo.
+
 > ⚠ **ONE THING TO TELL THE OPERATOR, AND IT IS OLDER THAN TODAY'S BUG.** Removing a cloud from the
 > session had **always** slid the pick onto its neighbour in silence — `forgetScan` re-keyed the
 > edits, the pairs, the cut scope and the hidden set, but never `V.picked`, and `V.active` survived
