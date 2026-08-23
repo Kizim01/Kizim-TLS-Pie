@@ -743,17 +743,37 @@ def _folder_number(path):
     for one thing, and no way to tell which the panel is showing.
     """
     try:
-        parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+        here = os.path.dirname(os.path.abspath(path))
     except Exception:                                     # noqa: BLE001
         return None
-    if not parent:
-        return None
-    # A numbered folder, or the one `shoot` puts the dark scans in. Anything
-    # else is just some folder, and a badge saying "Scan files" is noise.
-    if parent.isdigit():
-        return parent
     from . import shoot as shoot_mod
-    return parent if parent == shoot_mod.NO_PHOTO_DIR else None
+    # ⛔ TWO LEVELS UP, AND THE BOUND IS THE WHOLE DESIGN. Most captures sit
+    # straight inside their numbered folder, but a camera that files each
+    # capture into a subfolder of its own name puts one more level in the way:
+    # `...\8\TLS_26_08_20_16_23_37\TLS_26_08_20_16_23_37.pcap`. Folder 8 of
+    # this shoot is exactly that shape, and it was the one folder whose badge
+    # came out blank -- silently, because a missing badge and a folder that is
+    # genuinely not numbered look identical on screen. Anywhere under `...\8\`
+    # the answer "this came out of 8" is true however deep the file sits, so
+    # walking up is right. What it must NOT do is keep walking: an unbounded
+    # search finds any numbered ancestor at all -- a job filed under a year, a
+    # drive named 2 -- and prints a confident wrong number, which is worse
+    # than the blank it replaced. One extra level covers the one shape that
+    # occurs; the bound covers everything else.
+    for _ in range(2):
+        name = os.path.basename(here)
+        if not name:
+            return None
+        # A numbered folder, or the one `shoot` puts the dark scans in.
+        # Anything else is just some folder, and a badge saying "Scan files"
+        # is noise.
+        if name.isdigit() or name == shoot_mod.NO_PHOTO_DIR:
+            return name
+        up = os.path.dirname(here)
+        if up == here:                       # the root; there is no further up
+            return None
+        here = up
+    return None
 
 
 class AlignServer(object):
@@ -3010,9 +3030,12 @@ PAGE = r"""<!doctype html>
 .stage>summary::before{content:'\25b8';position:absolute;left:3px;
   color:var(--faint);transition:transform .15s ease}
 .stage[open]>summary::before{transform:rotate(90deg)}
-.fno{display:inline-block;padding:0 5px;border-radius:3px;
-  background:rgba(126,224,192,.16);color:#7ee0c0;font-size:10px;
-  font-variant-numeric:tabular-nums;letter-spacing:.02em}
+/* The folder badge, first thing after the tint swatch. `min-width` is what
+   makes it a column rather than a row of differently-sized pills: #7 and #13
+   take the same space, so every scan name starts at the same x. */
+.fno{display:inline-block;padding:0 5px;border-radius:3px;min-width:2.4em;
+  text-align:center;background:rgba(126,224,192,.16);color:#7ee0c0;
+  font-size:10px;font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .stage>.blurb{font-size:10.5px;color:var(--faint);margin:0 0 6px 2px}
 @media (prefers-reduced-motion:reduce){
   .stage>summary::before{transition:none}
@@ -6912,23 +6935,31 @@ function refreshLists(){
     'this scan: the movement controls, the rotation ring and new cuts all '+
     'follow whichever scan is picked."><div class="head">'+
     '<span class="grow"><span class="sw" style="background:rgb('+
-    s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+s.name+
+    s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+
+    /* ⭐ WHICH NUMBERED FOLDER IT CAME OUT OF, HARD AGAINST THE COLOUR MARKER.
+       After a shoot is sorted every capture lives in a folder named for its
+       position, and that number is the only thing on screen that tells two
+       scans of the same room apart -- the capture's own name is a timestamp
+       nobody reads, and the tint is handed out by load order, so it changes
+       the moment another is added. Without it the honest way to find out
+       whether folder 23 is already open is to open it again and see.
+
+       ⛔ IT SITS BEFORE THE NAME, NOT AFTER THE COUNT. It was at the far end
+       of the line, which put it past a variable-width timestamp and a
+       variable-width point count: on a job of a dozen scans the numbers came
+       out at a dozen different x positions, so reading off which folders were
+       open meant reading every row instead of glancing down a column. Fixed
+       to the left of the name they line up, and `min-width` on `.fno` keeps
+       #7 and #13 the same width so the names stay level too. */
+    (s.folderNo ? '<span class="fno" title="This capture came out of folder '+
+      s.folderNo+'. Shown so you can see at a glance which folders are '+
+      'already open.">'+(/^\d+$/.test(s.folderNo) ? '#'+s.folderNo
+                                                  : s.folderNo)+'</span> '
+      : '')+s.name+
     ' &middot; <span class="num">'+s.points.toLocaleString()+'</span>'+
     (s.source==='cloud' ? ' <span class="num" title="An exported cloud: no '+
       'pan track, so the detail slider and the pitch check cannot apply to '+
       'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
-      : '')+
-    /* ⭐ WHICH NUMBERED FOLDER IT CAME OUT OF. After a shoot is sorted every
-       capture lives in a folder named for its position, and that number is
-       the only thing on screen that tells two scans of the same room apart --
-       the capture's own name is a timestamp nobody reads, and the tint is
-       handed out by load order, so it changes the moment another is added.
-       Without it the honest way to find out whether folder 23 is already open
-       is to open it again and see. */
-    (s.folderNo ? ' <span class="fno" title="This capture came out of folder '+
-      s.folderNo+'. Shown so you can see at a glance which folders are '+
-      'already open.">'+(/^\d+$/.test(s.folderNo) ? '#'+s.folderNo
-                                                  : s.folderNo)+'</span>'
       : '')+'</span>'+
     '<button class="mini'+(V.hidden[s.index]?' on':'')+
     '" title="'+(V.hidden[s.index]

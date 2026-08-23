@@ -5807,6 +5807,77 @@ check("the binning has ONE home, shared by profile and search",
       .split("def scoring_bins")[0],
       _reg_code.count("_binned_ranges("))
 
+# --- which numbered folder a capture came out of -----------------------------
+# ⛔ THIS BADGE SHIPPED WITH NO TEST AT ALL, and the one shape it got wrong was
+# the one on the operator's own drive: folder 8 of the restaurant shoot files
+# its capture into a subfolder of its own name, so the immediate parent is a
+# timestamp and the badge came out blank. A missing badge and a folder that is
+# genuinely not numbered look IDENTICAL on screen -- there is nothing to
+# notice -- which is the same shape as the sweep that silently chained 9 onto
+# 7 across the scan it never saw. Both cost the same thing: an absence that
+# reads as an answer.
+print("\nwhich folder a capture came out of")
+from tlsconvert.align import _folder_number as _fno            # noqa: E402
+from tlsconvert import shoot as _shoot_mod                      # noqa: E402
+_root = os.path.join(tempfile.mkdtemp(), "RESTAURANT SCAN")
+check("a capture straight in its numbered folder",
+      _fno(os.path.join(_root, "12", "TLS_26_08_20_16_34_46.pcap")) == "12")
+check("...and the one filed into a subfolder of its own name STILL answers 12",
+      _fno(os.path.join(_root, "12", "TLS_26_08_20_16_34_46",
+                        "TLS_26_08_20_16_34_46.pcap")) == "12")
+check("the dark-scan folder is named, not numbered, and still shows",
+      _fno(os.path.join(_root, _shoot_mod.NO_PHOTO_DIR, "x.pcap"))
+      == _shoot_mod.NO_PHOTO_DIR)
+check("a folder that is not part of a sorted shoot gets no badge",
+      _fno(os.path.join(_root, "Scan files", "x.pcap")) is None)
+# ⛔ THE BOUND IS THE POINT. Three levels down, the numbered folder is no
+# longer plausibly this capture's position -- and the failure mode of walking
+# further is not a blank, it is a CONFIDENT WRONG NUMBER, which is the one
+# outcome worse than saying nothing.
+check("...and the walk STOPS: it will not reach past two levels for a number",
+      _fno(os.path.join(_root, "12", "a", "b", "x.pcap")) is None)
+check("a numbered ancestor far up the tree is not mistaken for a position",
+      _fno(os.path.join("D:" + os.sep, "2024", "job", "sub", "x.pcap"))
+      is None)
+_legend_src = io.open(align.__file__, encoding="utf-8").read()
+# ⭐ STRIP THE COMMENT BEFORE MATCHING THE CODE. The block above the badge
+# explains where it used to sit and quotes the old shape; a check reading raw
+# source would pass or fail on the war story rather than on the markup. Same
+# trap that fired on "fresh.index(scan)" earlier today.
+# Whitespace out, too: the two markers are being compared for ORDER, and a
+# reflow that moves `s.name` onto its own line must not be able to decide it.
+_row = re.sub(r"\s+", "", re.sub(
+    r"/\*.*?\*/", "", _legend_src.split("function refreshLists(")[1]
+    .split("photoBrief(s)")[0], flags=re.S))
+check("the badge is rendered BEFORE the name, against the colour marker",
+      _row.index('class="fno"') < _row.index("+s.name+"),
+      (_row.index('class="fno"'), _row.index("+s.name+")))
+check("...and .fno reserves a fixed width, so the names line up",
+      "min-width:2.4em" in _legend_src.split(".fno{")[1].split("}")[0])
+check("the page copies folderNo off the server's metadata",
+      "folderNo:m.folderNo" in _legend_src)
+# ⛔ AND THE SERVER ACTUALLY SENDS IT. The page builds its scan object field by
+# field rather than spreading the server's -- align.py says so in its own
+# warning -- so a number computed and never emitted would leave the badge
+# blank with nothing thrown. Check the metadata, not just the markup.
+_fsrv = align.AlignServer([], out_path=None)
+_fsrv.scans = [_detail_scan(os.path.join(_root, "23", "TLS_x.pcap"), 4),
+               _detail_scan(os.path.join(_root, "Scan files", "TLS_y.pcap"),
+                            5)]
+_fmeta = _fsrv._rebuild()
+check("...and the server's metadata carries the number for a sorted capture",
+      _fmeta[0].get("folderNo") == "23", _fmeta[0].get("folderNo"))
+check("...and carries None, not a guess, for one filed outside the shoot",
+      _fmeta[1].get("folderNo") is None, _fmeta[1].get("folderNo"))
+# The live project, if the drive is present: the badge has to answer for every
+# scan actually in it, folder 8 included.
+_live = os.path.join("D:" + os.sep, "RESTAURANT SCAN", "main project.03.tlspie")
+if os.path.exists(_live):
+    _paths = [_e.get("path") for _e in
+              json.load(io.open(_live, encoding="utf-8")).get("scans", [])]
+    _blank = [_p for _p in _paths if _fno(_p) is None]
+    check("every scan in the live project can name its folder",
+          _paths and not _blank, _blank)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

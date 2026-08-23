@@ -2575,6 +2575,8 @@ running it.**
   timestamp nobody reads, and the tint is handed out by load order so it changes when another arrives.
   Adding a capture from a folder that is already open now says so, as a warning rather than a refusal,
   because a folder is allowed to hold two captures.
+  ⚠ **Amended 2026-08-23** — it shipped in the wrong place and blank on one real folder; see
+  *"The folder badge was there, and still did not answer the question"* below.
 
 ⛔ **AND A STALE CLAIM WAS FOUND ON SCREEN.** The import message still read *"Every scan is solved against
 the FIRST one, never against the previous, so errors do not accumulate down the chain"* — which stopped
@@ -3393,6 +3395,57 @@ stride** through the capture, where it does not. **The same rule means different
 of different density** — the `sample_refl` / `view_refl` trap, one level out. The code gap is real (the
 export applies a rule the solve ignores) but it is not an alignment-quality lever.
 
+## THE FOLDER BADGE WAS THERE, AND STILL DID NOT ANSWER THE QUESTION (2026-08-23, late)
+
+The operator asked for *"the number of the folder the scans came from … placed next to the color
+marker on the list of scans active in the project, so when I go to load up the next point cloud I
+don't get confused."* **The badge already existed** — `f3b5178`, two days old, server field, page
+field, CSS class, all wired. It was still the right request, for two reasons.
+
+**⭐ IT WAS AT THE FAR END OF THE ROW.** Order was swatch → name → point count → `#12`. Both the name
+(a timestamp) and the count are variable width, so on a thirteen-scan job the numbers came out at
+thirteen different x positions. Reading off which folders are open then means reading every row —
+which is not what a badge is for. It now sits **immediately after the colour marker**, before the
+name, and `.fno` carries `min-width:2.4em` so `#7` and `#13` occupy the same space and the names stay
+level too. **A number you have to hunt for is not a number you can glance at**; the placement was the
+whole feature, and it was the half that got no thought.
+
+**⛔ AND IT WAS BLANK ON FOLDER 8 — THE ONE THAT NEEDED IT MOST.** `_folder_number` read the immediate
+parent only. Folder 8 of this shoot files its capture into a subfolder of its own name
+(`…\8\TLS_26_08_20_16_23_37\TLS_26_08_20_16_23_37.pcap`), so the parent is a timestamp and the badge
+came out empty. ⭐⭐ **A missing badge and a folder that is genuinely not numbered look identical on
+screen.** There is nothing to notice, no error, no gap — the row just reads as an unsorted capture.
+This is the *same folder and the same shape* that silently dropped a scan from the 08-21 hard-pairs
+sweep and chained 9 onto 7 across a scan that was never seen. **Twice now, one unusual path layout has
+produced a confident-looking wrong answer by being absent** — the standing lesson (*a missing input
+and a genuinely hard input look identical downstream*) has now been paid for on screen as well as in
+a sweep.
+
+Fixed by walking up **at most two levels** for a numbered folder. The bound is the design, not a
+shortcut: anywhere under `…\8\` the answer "came out of 8" is true however deep the file sits, but an
+unbounded walk finds *any* numbered ancestor — a job filed under a year, a drive named `2` — and
+prints a **confident wrong number, which is worse than the blank it replaced**. One extra level covers
+the one shape that occurs; the bound covers everything else. Verified against the live project: all
+**13 of 13** scans in `main project.03.tlspie` now name their folder, where it was 12 of 13.
+
+**⚠ IT HAD NO TEST AT ALL** — `grep folderNo test_tlsconvert.py` returned nothing, which is why a
+feature that was blank on real data for two days looked finished. Now eleven checks: the two path
+shapes, the dark-scan folder, an unsorted folder, **both halves of the bound**, the render order, the
+fixed width, the page copying the field, the server *emitting* it (align.py's own warning is that the
+page builds its scan object field by field, so a number computed and never sent is a silent blank),
+and a live-project check that every open scan can name its folder. Suite **902 → 914**. Verified by
+breaking it — three reversions (one-level walk, badge back after the count, `min-width` removed) fired
+**exactly four checks and nothing else**, which also confirms nothing else in the suite covered them.
+⭐ One test fixed itself in the making: the first order check compared `.index()` on raw source, which
+would have *crashed* rather than failed when the mutation put `s.name` on its own line — it now strips
+block comments **and** whitespace, because the two markers are being compared for order and a reflow
+must not get a vote. Same trap as the `fresh.index(scan)` check that fired on its own war story.
+
+⚠ **OFFERED, NOT DONE: the three dropdowns still identify scans by timestamp alone.** *Align to*,
+*Which scan* and *Only this cloud* all render `s.name` and nothing else, so the confusion the badge
+just fixed in the list is still live in the control where it costs most — *Align to* is the pick that
+decides an alignment. One expression each. Not done because it was not asked for; worth raising.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through
@@ -3438,7 +3491,14 @@ purpose: a current entry on top of a dead architecture makes the file look maint
 **Either retire it or rewrite its head** — it should not sit half-true. `PROJECT_CONTEXT.md` is doing
 that job.
 
-**✅ 2026-08-23 17:24 — THE EXES IN `windows-converter/dist` CARRY THE FRAME FIX.** Rebuilt *after*
+**✅ 2026-08-23 18:11 — THE EXES IN `windows-converter/dist` CARRY THE FRAME FIX *AND* THE FOLDER
+BADGE.** Rebuilt after the badge work; the 17:24 build described below was the frame-fix one and is
+superseded. Same sizes, same `--selftest` result (exit 0, native window backend, RTX 3050 Ti, CUDA
+engine mounted from `dist\cuda-engine`). ⚠ **The restart warning stands and now has a second reason:**
+a Studio left open from before 18:11 shows neither the moved badge nor folder 8's number.
+
+<!-- superseded, kept for the ordering note it carries -->
+**2026-08-23 17:24 — the frame-fix build.** Rebuilt *after*
 `f357e3d`, so all four of the day's alignment fixes are in them. Converter 35.2 MB, Studio 38.8 MB,
 `tlsconvert` 34.4 MB; `TLS-Pie-Studio.exe --selftest` exits 0 reporting the native window backend, the
 RTX 3050 Ti and the CUDA engine mounted from `dist\cuda-engine`. ⚠ **A Studio left running from before
