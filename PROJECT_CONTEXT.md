@@ -3754,6 +3754,100 @@ windows and doorways. Clipping fixes *zoom extents*, not file size. And that fil
 levelled nor origin-set** — `.04` has `level: null` — so open it in the rebuilt Studio first, where
 floor levelling now runs by itself, and set zero before the export that matters.
 
+## 2026-08-24, second pass — the ground plane, a button nobody had removed, and a slicer's panel
+
+### ⭐⭐ "LIKE FUSION 360" MEANT: THE GROUND PLANE IS THERE BEFORE ANYTHING IS
+
+`V.wgrid` started `false`, so the world grid — built the same morning — had to be switched on by hand
+every session. **Three things had to agree** and only one of them was the flag: the flag itself, the
+**button's `on` class** (or the control reads *off* while the grid is drawn), and the draw call.
+
+⛔ **The draw call carried a `&& V.scans.length` guard, and that guard is right for every overlay
+around it and wrong for this one.** A tripod marker, a pair label, a straight edge all *describe*
+something; with nothing loaded they have nothing to describe. The ground plane is the opposite —
+**it IS the empty document**. `measure()` already hands `V.ext` a 10 × 10 m default when the job is
+empty, so an empty window now opens onto a 20 m grid with zero marked, which is the whole of what the
+request meant. ⭐ *A guard copied from a neighbour inherits the neighbour's reason for existing, and
+nobody re-derives it.*
+
+A deliberate **off** now survives a save, read as **`!== false`** — every project saved before the
+grid existed has no `wgrid` key at all, and `!!undefined` would have quietly reintroduced exactly the
+default this change removes.
+
+### ⛔⛔ "BRING BACK THE MOVE CLOUD BUTTON" — NOTHING HAD BEEN REMOVED
+
+`git log -S` across the whole history: `id="grab"` was added once, in `79a4e34`, and never touched;
+no button was ever labelled "Move cloud". **Drag to move, the gizmo, all six sliders and all six typed
+boxes live in the `move` tray — and that tray was not in the set opened on a fresh install**
+(`scans`, `add`, `autoalign`, `photo`). With it closed there is **no way to move a cloud at all**.
+
+⭐⭐ **A working feature with no door is indistinguishable from a removed one, and the report you get
+names the symptom.** Third time in two days: the export "not working" (it wrote to the home folder),
+the gizmo and the folder badge (both present, neither reachable). **When a report says something was
+taken away, check the door before checking the code.**
+
+The fix needed two halves, and **the second is the one that reaches the operator**:
+
+- `move` added to the default-open set — which by itself reaches **nobody**, because the tray
+  arrangement is kept in `localStorage` on purpose.
+- A **one-time reopen** for arrangements saved before today, flagged `moveback`. ⛔ **The flag has to
+  be WRITTEN, immediately** — without it the reopen fires every launch and hauls the tray back open
+  each morning after it was deliberately shut. *A migration that does not record having run is a
+  setting the operator cannot change.* Bumping `TRAYKEY` instead would have thrown away every
+  operator's order and folds to fix one tray.
+
+### ⭐⭐ THE MOVE AND PLACEMENT CONTROLS, GROUPED THE WAY A SLICER GROUPS THEM
+
+Asked for controls resembling ideaMaker's. What ideaMaker actually does, and what was copied: each
+transform gets **its own panel**, the **handle that drives it sits at the top of that panel**, and the
+**axis letter is the colour of the arm you drag**. This tray had six numbered rows in one flat list,
+with the arms and rings as three buttons somewhere above them, and nothing saying which three rows
+belonged to which.
+
+Now **Move** (X / Y / Z + the arms) and **Rotate** (Turn / Tip / Bank + the two rings), each in a
+bordered group with its own **Reset**.
+
+⛔⛔ **THE COLOURS ARE COPIED FROM THE HANDLES, NOT PICKED TO LOOK RIGHT.** A coloured axis letter is
+an *instruction* — grab the arm of this colour and it writes into this box — so a panel that chose its
+own red would be giving a wrong instruction that looks deliberate. `MOVE_AXES` and `LEAN_AXES` hold
+the only definition. The check reads the `rgba(...)` out of those arrays, converts, and compares it to
+the CSS: **`.k.mx` must equal the X arm's colour, not merely be reddish**. ⚠ And there is a **second
+red in this file** — the orientation cube's `AXES` (`#ff6b6b` vs the arm's `#ff6961`) — deliberately
+not used here, because that cube turns the *camera* and moves nothing; a check pins that too.
+
+⛔ **AND ONE OF ideaMaker's SIGNATURE BUTTONS DOES NOT TRANSFER.** "Lay flat" and "on the platform" are
+safe on a model that stands alone and **destructive on a scan that is registered to its neighbours** —
+dropping one cloud onto Z = 0 by itself pulls it off the ones it was fitted to. The tray now *says*
+so, and points at where that job actually lives: **Straighten → Level to a surface, then Floor
+level**, which does it to the whole room at once. ⭐ *Copying an interface means copying what its
+objects are, not just what its buttons say — and here the objects are not independent.*
+
+**Reset became three buttons, which found a real bug.** Where a scan *stands* and how it is *turned*
+are two different mistakes with two different fixes — a bad heading from a coarse fit is worth
+throwing away while the position it found is worth keeping — and until now dropping one meant dropping
+both. One implementation, three buttons (`RESET_KEYS`), so the undo, the `method` and the cleared rung
+cannot drift apart. ⛔⛔ **And `dirty()` was missing from Reset, and only from Reset**: every other way
+of moving a scan goes through `nudge`, which marks the project unsaved, while Reset wrote straight
+into the setup and left the name reading **"saved"**. The flag's own comment says a false "unsaved"
+costs one press and a false "saved" costs the afternoon — **this was the second kind**.
+
+### ⚠ THE CHECKS, AUDITED BY BREAKING THEM — AND ONE THAT CRASHED AGAIN
+
+Two reversion rounds, one fault put back at a time. The first round (grid + trays, 8 faults) was
+**8 for 8, one check each, no crashes**.
+
+Three existing checks failed on the restructure and **all three had been matching a spelling rather
+than a behaviour** — `"remember('resetting '+s.name"`, `"pitch_deg:0,roll_deg:0,method:'manual'"`,
+`">X <span class=\"num\"..."`. Rewritten to ask the question instead: the reset now has to *remember
+before it writes*, and the two half-resets must **between them name every one of the six axes and not
+overlap** — an invariant stronger than the string it replaced, since it catches an axis that no button
+on the panel can put back.
+
+⚠ **And one new check crashed instead of failing** — it used `_wsrc`, which is defined 1300 lines
+further down the file. *Fourth time in two days.* Also rewritten: `_group_block()` returns `""` rather
+than a slice running to the end of the file when it cannot find the group's end, because an unbounded
+slice would contain the *other* group's ids and **pass**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⛔⛔ FIRST: THE EXE IS ONE BUILD BEHIND, AND THE REBUILD IS BLOCKED.** `build_exe.py` fails with

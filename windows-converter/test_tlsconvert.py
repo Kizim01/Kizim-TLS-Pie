@@ -4694,8 +4694,26 @@ check("and fitting the box to the view remembers the box it replaced, not "
       _fit.find("remember('fitting the clip box") < _fit.find("resetBox()"),
       _fit[:120])
 
+# ⛔ THERE ARE THREE RESET BUTTONS NOW -- all six, position only, rotation only
+# -- and this used to match one literal string in one handler. It has to hold
+# for every one of them, so it asks the question of the thing they all go
+# through instead: does the reset remember what it is about to throw away, and
+# does every button reach it?
+_reset = _ALIGN_SRC[_ALIGN_SRC.find("function resetPart(which)"):]
+_reset = _reset[:_reset.find("\n  }") + 4]
 check("Reset -- the most destructive button in the move tray -- is undoable",
-      "remember('resetting '+s.name" in _ALIGN_SRC)
+      "remember(" in _reset and "undoSetup(s.index)" in _reset
+      and _reset.find("remember(") < _reset.find("s.setup[k]=0"),
+      _reset[:160])
+check("...from all three of its buttons, not just the one that had it",
+      all(("$('%s').onclick=()=>resetPart(" % _b) in _ALIGN_SRC
+          for _b in ("zero", "zeromove", "zeroturn")))
+# ⛔⛔ AND IT MARKS THE PROJECT UNSAVED. Every other way of moving a scan goes
+# through `nudge`, which does; Reset wrote straight into the setup and left the
+# name reading "saved". A false "unsaved" costs one press. This was the other
+# kind.
+check("...and a reset counts as a change to the project",
+      "dirty();" in _reset)
 # ⛔⛔ THE LARGEST SINGLE ACTION IN THE PROGRAM. It refits one camera heading
 # across every photographed scan at once, so a shoot where the rig was seated
 # differently for part of the day comes back changed in a dozen places -- and
@@ -4888,8 +4906,145 @@ check("the tilt sliders cannot lie the way the move sliders could: their ends "
       'id="rtip" min="-45" max="45"' in _ALIGN_SRC
       and "const LEAN_MAX = 45;" in _ALIGN_SRC
       and registration.Lean.MAX_DEG == 45.0)
+# ⛔⛔ THE LEAN WAS FORGOTTEN HERE ONCE: Reset put back four numbers and left the
+# scan tipped. Splitting Reset into three buttons is a second chance to make
+# exactly that mistake, so the check is now the invariant rather than one
+# spelling of one handler -- position and rotation together must name every
+# axis, or an axis exists that no button on the panel can put back.
+_keys = {}
+for _grp, _body in re.findall(r"(move|turn|all):\s*\[([^\]]*)\]",
+                              _ALIGN_SRC[_ALIGN_SRC.find("const RESET_KEYS"):]
+                              [:400]):
+    _keys[_grp] = set(re.findall(r"'([a-z_]+)'", _body))
 check("Reset puts back all six numbers, not four",
-      "pitch_deg:0,roll_deg:0,method:'manual'" in _ALIGN_SRC)
+      _keys.get("all") == {"x_m", "y_m", "z_m",
+                           "yaw_deg", "pitch_deg", "roll_deg"}, _keys)
+check("...and the two half-resets between them reach every one of the six",
+      _keys.get("move", set()) | _keys.get("turn", set()) == _keys.get("all"),
+      _keys)
+check("...without overlapping, so neither undoes part of the other's job",
+      not (_keys.get("move", set()) & _keys.get("turn", {1})), _keys)
+
+# --- the move and placement controls, grouped the way a slicer groups them ---
+# ⛔⛔ A COLOURED AXIS LETTER IS AN INSTRUCTION: grab the arm of THIS colour and
+# it writes into the box beside it.  If the panel picks its own red the
+# instruction is wrong, and wrong in the way that is hardest to notice --
+# it looks deliberate.  So the check is not "are the letters coloured" but
+# "are they the SAME colour as the handle", read from the one definition of
+# what an arm is drawn in.
+_css_k = dict(re.findall(r"\.k\.(\w+)\{color:(#[0-9a-f]{6})\}", _ALIGN_SRC))
+
+
+def _handle_hex(block, key):
+    """The colour the gizmo actually draws that handle in, as #rrggbb."""
+    m = re.search(r"\{key:'" + key + r"'[^}]*?c:'rgba\((\d+),(\d+),(\d+)",
+                  block)
+    return None if not m else "#%02x%02x%02x" % tuple(int(g)
+                                                      for g in m.groups())
+
+
+_mv_src = _ALIGN_SRC[_ALIGN_SRC.find("const MOVE_AXES"):][:400]
+_ln_src = _ALIGN_SRC[_ALIGN_SRC.find("const LEAN_AXES"):][:600]
+check("the panel's axis letters are coloured at all",
+      set(_css_k) == {"mx", "my", "mz", "rt", "rp", "rb"}, _css_k)
+check("...in the colour of the ARM that writes into the box beside them",
+      all(_css_k.get(_c) == _handle_hex(_mv_src, _k)
+          for _c, _k in (("mx", "x_m"), ("my", "y_m"), ("mz", "z_m"))),
+      [(_c, _css_k.get(_c), _handle_hex(_mv_src, _k))
+       for _c, _k in (("mx", "x_m"), ("my", "y_m"), ("mz", "z_m"))])
+check("...and the tip and bank letters in the colour of their RINGS",
+      _css_k.get("rp") == _handle_hex(_ln_src, "pitch_deg")
+      and _css_k.get("rb") == _handle_hex(_ln_src, "roll_deg"),
+      [_css_k.get("rp"), _handle_hex(_ln_src, "pitch_deg"),
+       _css_k.get("rb"), _handle_hex(_ln_src, "roll_deg")])
+_ring_src = _ALIGN_SRC[_ALIGN_SRC.find("function drawRing()"):][:900]
+check("...and Turn in the colour of the turn ring",
+      _css_k.get("rt") == "#60beff" and "rgba(96,190,255" in _ring_src)
+# ⛔ AND THE ORIENTATION CUBE'S REDS ARE NOT THESE REDS, deliberately: that cube
+# turns the CAMERA and moves nothing, so borrowing its palette here would say
+# the wrong thing about what the letter is for.
+check("...taken from the handles, not from the camera cube that looks like them",
+      "#ff6b6b" not in set(_css_k.values()))
+# ⛔⛔ AND THE LETTERS HAVE TO WEAR IT. Every check above reads the CSS, and a
+# reversion that stripped `class="k mz"` off the Z row passed all of them: the
+# colour stayed defined, stayed correct, and stopped being applied. That is the
+# failure this whole group exists to prevent, and it went straight through.
+# So: the label, the colour class and the box it writes into, tied together in
+# one assertion -- X cannot wear Z's colour, and none of them can wear none.
+_rows = _ALIGN_SRC[_ALIGN_SRC.find('<div class="tray" id="ty_move">'):]
+_rows = _rows[:_rows.find('<div class="tray" id="ty_autoalign">')]
+_rows = _rows.split('<div class="photo axis">')
+for _lab, _cls, _fid in (("X", "mx", "ax_x_m"), ("Y", "my", "ax_y_m"),
+                         ("Z", "mz", "ax_z_m"),
+                         ("Turn", "rt", "ax_yaw_deg"),
+                         ("Tip", "rp", "ax_pitch_deg"),
+                         ("Bank", "rb", "ax_roll_deg")):
+    _row = [r for r in _rows if ('id="%s"' % _fid) in r]
+    check("the %s row wears the colour of the handle that writes into it"
+          % _lab,
+          len(_row) == 1
+          and ('<span class="k %s">%s</span>' % (_cls, _lab)) in _row[0],
+          (_row[0][:90] if len(_row) == 1 else "%d rows" % len(_row)))
+# ⭐ The grouping itself: each transform sits with the handle that drives it,
+# which is the whole of what a slicer's Move / Rotate panels do.
+def _group_block(name):
+    """One group of the move tray, from its heading to the next group's.
+
+    ⛔ RETURNS "" RATHER THAN A SLICE TO THE END OF THE FILE when it cannot
+    find the end of the group.  An unbounded slice would contain the OTHER
+    group's ids and pass -- a check that is loudest when the thing it looks
+    for has been deleted is worse than no check.
+    """
+    i = _ALIGN_SRC.find('<div class="ghead"><b>' + name + '</b>')
+    if i < 0:
+        return ""
+    ends = [x for x in (_ALIGN_SRC.find('<div class="grp">', i + 1),
+                        _ALIGN_SRC.find('<button id="zero"', i + 1)) if x > i]
+    return _ALIGN_SRC[i:min(ends)] if ends else ""
+
+
+for _grp, _btn, _fields in (("Move", "movegiz", ("ax_x_m", "ax_z_m")),
+                            ("Rotate", "turnring",
+                             ("ax_yaw_deg", "ax_roll_deg"))):
+    _cut = _group_block(_grp)
+    check("the %s controls sit with the handle that drives them" % _grp,
+          bool(_cut) and ('id="%s"' % _btn) in _cut
+          and all(('id="%s"' % _f) in _cut for _f in _fields),
+          _cut[:120])
+check("...and neither group has swallowed the other's handles",
+      'id="turnring"' not in _group_block("Move")
+      and 'id="movegiz"' not in _group_block("Rotate"))
+# ⛔ THE TRAY IS HAND-WRITTEN MARKUP AND GROUPING IT ADDED FOUR NESTED DIVS. One
+# missing </div> does not fail loudly: the tray simply swallows every tray below
+# it and the panel goes quiet from that point down, which reads as "the buttons
+# have gone" -- the very report that started this.
+_move_tray = _ALIGN_SRC[_ALIGN_SRC.find('<div class="tray" id="ty_move">'):]
+_move_tray = _move_tray[:_move_tray.find('<div class="tray" id="ty_autoalign">')]
+check("the move tray's divs balance, so it cannot swallow the trays below it",
+      bool(_move_tray)
+      and len(re.findall(r"<div\b", _move_tray))
+      == len(re.findall(r"</div>", _move_tray)),
+      (len(re.findall(r"<div\b", _move_tray)),
+       len(re.findall(r"</div>", _move_tray))))
+# ⛔ AND EVERY CONTROL IN IT EXISTS EXACTLY ONCE. A duplicated id is the other
+# silent failure here: `$(id)` returns the first, so the second is a button that
+# is drawn, is pressed, and does nothing at all.
+check("...and every control in it is there exactly once",
+      all(_move_tray.count('id="%s"' % _b) == 1
+          for _b in ("gizmo3", "grab", "movegiz", "turnring", "leanring",
+                     "zero", "zeromove", "zeroturn", "which",
+                     "mvstep", "trstep")),
+      {_b: _move_tray.count('id="%s"' % _b)
+       for _b in ("gizmo3", "grab", "movegiz", "turnring", "leanring",
+                  "zero", "zeromove", "zeroturn", "which",
+                  "mvstep", "trstep")})
+# ⛔ AND A SLICER'S OWN PLACEMENT BUTTONS DO NOT TRANSFER. "Lay flat" and "on
+# the platform" are safe on a model that stands alone and destructive on a scan
+# that is registered to its neighbours -- dropping one onto Z = 0 by itself
+# pulls it off them. The panel has to say where that job really lives.
+check("...and the panel says why it has no 'on the platform' button",
+      "on the</b>\n    <b>platform</b>" in _ALIGN_SRC
+      or ("platform</b>" in _ALIGN_SRC and "Straighten</b>" in _ALIGN_SRC))
 check("a tilt set by hand counts as having moved the scan, so Auto-align "
       "starts from it",
       "|| s.setup.pitch_deg || s.setup.roll_deg" in _ALIGN_SRC)
@@ -6258,6 +6413,54 @@ check("the page draws a grid at world zero, and it is not the plumb grid",
 check("...on its own switch, so it cannot be confused with the plumb one",
       "id=\"wgrid\"" in _wsrc and "$('wgrid').onclick" in _wsrc
       and "V.wgrid" in _wsrc)
+
+# --- the ground plane is there when the program opens ------------------------
+# ⛔ THREE THINGS HAVE TO AGREE or the grid is "on" in a way nobody can see: the
+# flag starts true, the BUTTON starts lit to say so, and the draw call has to
+# survive an empty job. Any one of them alone is a silent half-fix -- the flag
+# on its own draws nothing before a scan is loaded, which is precisely the
+# moment "like Fusion 360" is about.
+_wg_body = _wsrc[_wsrc.find("function drawWorldGrid("):]
+_wg_body = _wg_body[:_wg_body.find("\nfunction ", 1)]
+check("the ground plane is on from the first frame, not off until asked for",
+      "wgrid:true" in _wsrc and "wgrid:false" not in _wsrc)
+check("...and the button says so, instead of reading off while it is drawn",
+      'id="wgrid" class="on"' in _wsrc)
+check("...and it draws with NOTHING loaded, which is the whole point",
+      bool(_wg_body) and "if(!V.wgrid) return;" in _wg_body
+      and "V.scans.length" not in _wg_body,
+      _wg_body[:200])
+# ⛔ AND A PROJECT SAVED BEFORE THE GRID EXISTED HAS NO `wgrid` KEY AT ALL. A
+# truthy read would open every one of them with the datum switched off -- the
+# default this change exists to reverse, reintroduced by the loader.
+check("a deliberate 'off' survives a save and a reopen",
+      "wgrid:V.wgrid}" in _wsrc)
+check("...but a project saved before the grid existed still opens onto it",
+      "V.wgrid=j.view.wgrid!==false;" in _wsrc)
+
+# --- the move controls have a door -------------------------------------------
+# ⛔⛔ REPORTED AS A BUTTON THAT HAD BEEN REMOVED. Nothing had been removed:
+# Drag to move, the gizmo and all six sliders live in the `move` tray, and that
+# tray was not in the set opened on a fresh install. A working feature with no
+# way in is indistinguishable from a broken one, and the report names the
+# symptom.
+_tray_default = _wsrc[_wsrc.find("for(const [id] of TRAYS) st[id] = {open:false"):]
+_tray_default = _tray_default[:_tray_default.find("}else")]
+check("a fresh install opens the tray the move controls live in",
+      "'move'" in _tray_default,
+      _tray_default[:240])
+# ⛔ AND A DEFAULT REACHES NOBODY WHO ALREADY HAS A SAVED ARRANGEMENT, which is
+# everyone who has ever run the program -- the trays are kept across reloads on
+# purpose. The reopen has to run once against an existing state.
+check("...and an arrangement saved before today gets it back too",
+      "!got.moveback" in _wsrc
+      and "st.move = {open:true, shut:false};" in _wsrc)
+# ⛔⛔ ONCE. Without the flag being WRITTEN, the reopen fires on every launch and
+# hauls the tray back open each morning after it was deliberately shut: a
+# migration that does not record having run is a setting nobody can change.
+check("...once, so shutting it again sticks",
+      "order:V.order, moveback:true}" in _wsrc)
+
 # ⛔⛔ THE PAGE AND THE EXPORTER ARE TWO IMPLEMENTATIONS OF ONE SENTENCE, and
 # this program has been bitten before by them drifting. Both must rotate about
 # the pivot and THEN subtract the shift.
@@ -6265,8 +6468,9 @@ check("the page applies zero the same way the exporter does",
       "function levelShift(" in _wsrc and "t[i]-=sh[i];" in _wsrc)
 check("...and the axes are named X, Y and Z, not by the compass",
       "east / west" not in _wsrc and "north / south" not in _wsrc
-      and ">X <span class=\"num\" id=\"xv\"" in _wsrc
-      and ">Z <span class=\"num\" id=\"zv2\"" in _wsrc)
+      and all(('>%s</span><span class="grow"><span class="num" id="%s"'
+               % (_n, _id)) in _wsrc
+              for _n, _id in (("X", "xv"), ("Y", "yv"), ("Z", "zv2"))))
 check("...and the compass tool keeps its compass, which is what it is for",
       "id=\"nN\"" in _wsrc and "heading_to_north" in _ALIGN_SRC)
 

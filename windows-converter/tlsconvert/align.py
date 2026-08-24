@@ -3418,6 +3418,38 @@ PAGE = r"""<!doctype html>
   /* The same row, but not indented under a scan's name. */
   .photo.axis{margin-left:0;margin-top:8px}
   .photo .step{padding:2px 5px;font-size:10.5px;min-width:0}
+  /* ⭐⭐ THE MOVE AND PLACEMENT CONTROLS, GROUPED THE WAY A SLICER GROUPS THEM.
+     ideaMaker gives each transform its own panel, puts the handle that drives
+     it at the top of that panel, and colours the axis letter the same colour
+     as the arm you drag. This tray had six numbered rows in one flat list with
+     nothing to say that the first three belong to the arms and the last three
+     to the rings -- so the arms and the rings were three buttons somewhere
+     above, and the boxes they write into were somewhere below.
+
+     ⛔ THE COLOURS ARE COPIED FROM THE HANDLES, NOT PICKED TO LOOK RIGHT.
+     MOVE_AXES and LEAN_AXES hold the only definition of what colour an arm or
+     a ring is drawn in; a panel that chose its own red would disagree with the
+     arm it labels the first time either was touched, and a wrong colour here
+     is worse than none -- it is an instruction to grab the wrong handle.
+     ⛔ AND THERE IS A SECOND RED IN THIS FILE. The orientation cube's AXES are
+     a slightly different set, deliberately not used here: that cube turns the
+     CAMERA and moves nothing. */
+  .grp{border:.5px solid var(--edge);border-radius:12px;
+    background:rgba(255,255,255,.026);padding:5px 8px 8px;margin-top:9px}
+  .grp>.ghead{display:flex;align-items:center;gap:6px;margin:2px 0 1px}
+  .grp>.ghead b{font-size:10.5px;font-weight:600;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--dim)}
+  .grp>.ghead .why{flex:1;min-width:0;font-size:10px;color:var(--faint);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .grp>.ghead button{padding:2px 8px;font-size:10.5px;border-radius:8px}
+  .grp input[type=range]{margin:3px 0 1px}
+  .grp>.blurb{font-size:10.5px;color:var(--faint);margin:7px 0 0}
+  /* The axis letter, in the colour of the handle that writes into the box
+     beside it, at a fixed width so the three read as a column. */
+  .k{flex:none;width:3.1em;font-weight:600;font-size:11.5px;
+    letter-spacing:.04em}
+  .k.mx{color:#ff6961}  .k.my{color:#78e696}  .k.mz{color:#5aaaff}
+  .k.rt{color:#60beff}  .k.rp{color:#78e696}  .k.rb{color:#ff82be}
   /* The runners-up. Quiet, because most of the time the first one is right. */
   .fits{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 0 15px}
   .fits button{padding:2px 6px;font-size:10px;border-radius:8px;width:auto;
@@ -3627,11 +3659,31 @@ PAGE = r"""<!doctype html>
     does what it looks like it will do. It is off until you ask, and while it
     is on, a drag near the tripod works the gizmo instead of orbiting the
     view; press it again to get the view back.</div>
-  <div class="row">
+  <div class="photo axis"><span class="grow">move by</span><input class="deg" id="mvstep" type="number" step="0.01" min="0.001" value="0.05" title="How far one press of an arrow moves the scan."><span style="color:var(--faint)">m</span><span class="grow" style="text-align:right">turn by</span><input class="deg" id="trstep" type="number" step="0.1" min="0.001" value="1.0" title="How far one press of a turn arrow turns it."><span style="color:var(--faint)">&deg;</span></div>
+  <div class="grp">
+  <div class="ghead"><b>Move</b><span class="why">three arms, one axis each
+    </span><button id="zeromove" title="Put this scan back to the position the
+    capture recorded and leave its turn, tip and bank exactly as they are.">
+    Reset</button></div>
+  <div class="row" style="margin-top:5px">
     <button id="movegiz" title="Show three arms through this scan&#39;s tripod
       and drag them to slide it along one axis at a time. Press again to take
-      them away. The arms point along the axes the SLIDERS move, which after
-      levelling is not quite the same as the world&#39;s.">Move gizmo</button>
+      them away. The arms point along the axes the BOXES below move, which
+      after levelling is not quite the same as the world&#39;s.">Move
+      gizmo</button></div>
+  <div class="photo axis"><span class="k mx">X</span><span class="grow"><span class="num" id="xv">0.00</span> m</span><input class="deg" id="ax_x_m" type="number" step="0.01" value="0" title="Type an exact move along X and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;x_m&quot;)"><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,-1)">&#9664;</button><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,1)">&#9654;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;x_m&quot;)">Set</button></div>
+  <input type="range" id="tx" min="-10" max="10" step="0.01" value="0">
+  <div class="photo axis"><span class="k my">Y</span><span class="grow"><span class="num" id="yv">0.00</span> m</span><input class="deg" id="ax_y_m" type="number" step="0.01" value="0" title="Type an exact move along Y and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;y_m&quot;)"><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;y_m&quot;)">Set</button></div>
+  <input type="range" id="ty" min="-10" max="10" step="0.01" value="0">
+  <div class="photo axis"><span class="k mz">Z</span><span class="grow"><span class="num" id="zv2">0.00</span> m</span><input class="deg" id="ax_z_m" type="number" step="0.005" value="0" title="Type an exact move along Z and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;z_m&quot;)"><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;z_m&quot;)">Set</button></div>
+  <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
+  </div>
+  <div class="grp">
+  <div class="ghead"><b>Rotate</b><span class="why">rings about the tripod
+    </span><button id="zeroturn" title="Put this scan&#39;s turn, tip and bank
+    back to what the capture recorded and leave where it stands exactly as it
+    is.">Reset</button></div>
+  <div class="row" style="margin-top:5px">
     <button id="turnring" title="Show a ring round this scan's tripod and
       drag it to turn the scan. Press again to take it away. It is off until
       you ask for it: a press near a ring starts a rotation, so a ring left
@@ -3640,26 +3692,26 @@ PAGE = r"""<!doctype html>
     <button id="leanring" title="Show two rings round this scan&#39;s tripod
       and drag them to tip and bank it. Press again to take them away. They
       lie in the SCAN&#39;s own planes, which after levelling is not quite the
-      same as the world&#39;s.">Tilt rings</button>
-    <button id="zero">Reset</button>
-  </div>
-  <div class="photo axis"><span class="grow">move by</span><input class="deg" id="mvstep" type="number" step="0.01" min="0.001" value="0.05" title="How far one press of an arrow moves the scan."><span style="color:var(--faint)">m</span><span class="grow" style="text-align:right">turn by</span><input class="deg" id="trstep" type="number" step="0.1" min="0.001" value="1.0" title="How far one press of a turn arrow turns it."><span style="color:var(--faint)">&deg;</span></div>
-  <div class="photo axis"><span class="grow">X <span class="num" id="xv">0.00</span> m</span><input class="deg" id="ax_x_m" type="number" step="0.01" value="0" title="Type an exact move along X and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;x_m&quot;)"><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,-1)">&#9664;</button><button class="mini step" title="move it along X by the step above" onclick="nudgeAxis(&quot;x_m&quot;,1)">&#9654;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;x_m&quot;)">Set</button></div>
-  <input type="range" id="tx" min="-10" max="10" step="0.01" value="0">
-  <div class="photo axis"><span class="grow">Y <span class="num" id="yv">0.00</span> m</span><input class="deg" id="ax_y_m" type="number" step="0.01" value="0" title="Type an exact move along Y and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;y_m&quot;)"><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Y by the step above" onclick="nudgeAxis(&quot;y_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;y_m&quot;)">Set</button></div>
-  <input type="range" id="ty" min="-10" max="10" step="0.01" value="0">
-  <div class="photo axis"><span class="grow">Z <span class="num" id="zv2">0.00</span> m</span><input class="deg" id="ax_z_m" type="number" step="0.005" value="0" title="Type an exact move along Z and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;z_m&quot;)"><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,-1)">&#9660;</button><button class="mini step" title="move it along Z by the step above" onclick="nudgeAxis(&quot;z_m&quot;,1)">&#9650;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;z_m&quot;)">Set</button></div>
-  <input type="range" id="tz" min="-2" max="2" step="0.005" value="0">
-  <div class="photo axis"><span class="grow">Turn <span class="num" id="rv">0.00</span> &deg;</span><input class="deg" id="ax_yaw_deg" type="number" step="0.1" value="0" title="Type an exact turn it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;yaw_deg&quot;)"><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,-1)">&#8634;</button><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,1)">&#8635;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;yaw_deg&quot;)">Set</button></div>
+      same as the world&#39;s.">Tilt rings</button></div>
+  <div class="photo axis"><span class="k rt">Turn</span><span class="grow"><span class="num" id="rv">0.00</span> &deg;</span><input class="deg" id="ax_yaw_deg" type="number" step="0.1" value="0" title="Type an exact turn it by the step above and press Enter." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;yaw_deg&quot;)"><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,-1)">&#8634;</button><button class="mini step" title="turn it by the step above" onclick="nudgeAxis(&quot;yaw_deg&quot;,1)">&#8635;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;yaw_deg&quot;)">Set</button></div>
   <input type="range" id="rz" min="-180" max="180" step="0.1" value="0">
   <div class="blurb">Tip and bank correct one tripod that was not level. A
     whole room that leans is <b>Level</b> instead — a tilt shared by every scan
     cancels between them, and taking it out scan by scan pulls the alignment
     apart.</div>
-  <div class="photo axis"><span class="grow">Tip <span class="num" id="tipv">0.00</span> &deg;</span><input class="deg" id="ax_pitch_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact tip and press Enter. Positive lifts what is in front of the instrument." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;pitch_deg&quot;)"><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,-1)">&#8963;&minus;</button><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,1)">&#8963;+</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;pitch_deg&quot;)">Set</button></div>
+  <div class="photo axis"><span class="k rp">Tip</span><span class="grow"><span class="num" id="tipv">0.00</span> &deg;</span><input class="deg" id="ax_pitch_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact tip and press Enter. Positive lifts what is in front of the instrument." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;pitch_deg&quot;)"><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,-1)">&#8963;&minus;</button><button class="mini step" title="tip it by the turn step above" onclick="nudgeAxis(&quot;pitch_deg&quot;,1)">&#8963;+</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;pitch_deg&quot;)">Set</button></div>
   <input type="range" id="rtip" min="-45" max="45" step="0.1" value="0">
-  <div class="photo axis"><span class="grow">Bank <span class="num" id="bankv">0.00</span> &deg;</span><input class="deg" id="ax_roll_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact bank and press Enter. Positive lifts the instrument&#39;s right-hand side." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;roll_deg&quot;)"><button class="mini step" title="drop the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,-1)">&#8635;</button><button class="mini step" title="lift the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,1)">&#8634;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;roll_deg&quot;)">Set</button></div>
+  <div class="photo axis"><span class="k rb">Bank</span><span class="grow"><span class="num" id="bankv">0.00</span> &deg;</span><input class="deg" id="ax_roll_deg" type="number" step="0.1" min="-45" max="45" value="0" title="Type an exact bank and press Enter. Positive lifts the instrument&#39;s right-hand side." onkeydown="if(event.key===&quot;Enter&quot;) setAxis(&quot;roll_deg&quot;)"><button class="mini step" title="drop the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,-1)">&#8635;</button><button class="mini step" title="lift the right-hand side by the turn step above" onclick="nudgeAxis(&quot;roll_deg&quot;,1)">&#8634;</button><button class="mini" title="Use the number typed on the left." onclick="setAxis(&quot;roll_deg&quot;)">Set</button></div>
   <input type="range" id="rbank" min="-45" max="45" step="0.1" value="0">
+  </div>
+  <div class="row"><button id="zero" title="Put this scan back exactly where
+    the capture recorded it — where it stands and how it is turned, both at
+    once. Ctrl-Z restores the placement.">Reset all six</button></div>
+  <div class="blurb">⛔ A slicer would offer <b>lay flat</b> and <b>on the
+    platform</b> here, and neither belongs on a single scan: the clouds are
+    registered to <i>each other</i>, so dropping one onto Z&nbsp;=&nbsp;0 by
+    itself pulls it off its neighbours. That job is done to the whole room at
+    once, under <b>Straighten</b> — Level to a surface, then Floor level.</div>
   </div></div>
 <div class="tray" id="ty_autoalign"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'autoalign')"><span class="fold">▾</span><b class="grow">Auto-align</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('autoalign')">✕</button></div><div class="traybody">
   <button class="go" id="auto">Auto-align</button>
@@ -3731,7 +3783,7 @@ PAGE = r"""<!doctype html>
   <div id="lvllist" style="font-size:10.5px;color:var(--faint)"></div>
   <hr>
   <label>The world grid, and where zero is</label>
-  <div class="row"><button id="wgrid">World grid</button>
+  <div class="row"><button id="wgrid" class="on">World grid</button>
     <button id="setorg">Pick a point</button></div>
   <div class="row"><button id="orgxyz" class="go">Zero here (XYZ)</button>
     <button id="orgz" class="go">Floor level (Z)</button></div>
@@ -3740,7 +3792,9 @@ PAGE = r"""<!doctype html>
     <b>World grid</b> draws the ground plane at <b>Z&nbsp;=&nbsp;0</b> — metre
     squares, every fifth one drawn up, the X and Y axes through zero in red and
     green. It is where the exported file will be measured from, so points
-    hanging below it are below your datum.
+    hanging below it are below your datum. It is <b>on from the moment the
+    program opens</b>, before anything is loaded, the way a modelling package
+    shows you its ground plane — switch it off here if it is in the way.
     <b>Pick a point</b>, then <b>Zero here</b> puts the origin on it, or
     <b>Floor level</b> moves only the height so that point lands on the grid
     and the plan position stays where your drawing already has it.
@@ -3947,7 +4001,12 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
               zero. ⛔ The pick is held in its own SCAN's coordinates, like
               every other pick here: stored as world it would mean somewhere
               else the moment that cloud was nudged or the room re-levelled. */
-           wgrid:false, org:null,
+           /* ⭐⭐ ON FROM THE FIRST FRAME, the way Fusion, SketchUp and every
+              modelling package open onto their ground plane. A datum you have
+              to go and switch on is a datum most of a job gets done without:
+              the operator has no picture of where zero is until something has
+              already been placed against it. */
+           wgrid:true, org:null,
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
@@ -5341,6 +5400,11 @@ async function boot(){
   const st = trayState();
   V.trays = st.trays; V.order = st.order;
   buildTopbar(); applyOrder(); showTrays();
+  /* ⛔ WRITTEN BACK IMMEDIATELY, or the one-time reopen above is not one time:
+     it would run on every launch and drag the tray back open each morning
+     after the operator had deliberately shut it. A migration that does not
+     record having run is a setting the operator cannot change. */
+  saveTrays();
   addEventListener('click', closeMenus);
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
@@ -6851,7 +6915,14 @@ function gridReach(){
   return Math.ceil((far*1.15)/(GRID_MINOR*GRID_MAJOR))*GRID_MINOR*GRID_MAJOR;
 }
 function drawWorldGrid(vp){
-  if(!V.wgrid || !V.scans.length) return;
+  /* ⛔ NO `&& V.scans.length` GUARD, unlike every other overlay here. The
+     others describe something: a tripod, a pair, a straight edge held against
+     a wall -- with nothing loaded they have nothing to describe. This one IS
+     the empty document. `measure()` gives V.ext a 10 x 10 m default when the
+     job is empty, so gridReach() answers 10 and an empty window opens onto a
+     20 m ground plane with zero marked, which is the whole of what "like
+     Fusion 360" means. */
+  if(!V.wgrid) return;
   const R=gridReach(), minor=[], major=[], ax=[], ay=[];
   for(let v=-R; v<=R+1e-9; v+=GRID_MINOR){
     const i=Math.round(v/GRID_MINOR);
@@ -7021,7 +7092,7 @@ function projectState(){
              server passes the whole block through untouched */
           view: {detail:V.detail, exdet:V.exdet, mode:V.mode,
                  psize:V.psize, ortho:V.ortho, gizmo:V.gizmo,
-                 ref:V.ref, plumb:V.plumb}};
+                 ref:V.ref, plumb:V.plumb, wgrid:V.wgrid}};
 }
 function showProject(){
   const p=V.project;
@@ -7112,6 +7183,13 @@ async function openProject(path){
       $('gizmo').classList.toggle('on',V.gizmo);
       V.ref=!!j.view.ref; V.plumb=j.view.plumb||{a:null,b:null};
       $('ref').classList.toggle('on',V.ref);
+      /* ⛔ `!== false`, NOT `!!`. Every project saved before the grid was
+         written has no `wgrid` key at all, and `!!undefined` would open all of
+         them with the ground plane switched off -- which is the default this
+         change exists to reverse. Only an operator who deliberately turned it
+         off gets it back off. */
+      V.wgrid=j.view.wgrid!==false;
+      $('wgrid').classList.toggle('on',V.wgrid);
       setOrtho(!!j.view.ortho);
     }
     V.edits=j.edits||[];
@@ -7495,15 +7573,31 @@ function trayState(){
   if(!st){
     st = {};
     for(const [id] of TRAYS) st[id] = {open:false, shut:false};
-    for(const id of ['scans','add','autoalign','photo']) st[id].open = true;
+    /* ⛔⛔ `move` IS IN THIS LIST AND WAS NOT. Drag to move, the gizmo, the six
+       sliders and the typed boxes all live in that one tray, so with it closed
+       there is no way to move a cloud at all -- and the operator reported it as
+       a BUTTON THAT HAD BEEN TAKEN AWAY, which is exactly what it looks like
+       from the outside. Nothing had been removed; the door had never been open.
+       ⭐ Same shape as the export: a working feature with no way in reads as a
+       broken one, and the report you get names the symptom, not the cause. */
+    for(const id of ['scans','add','move','autoalign','photo'])
+      st[id].open = true;
+  }else if(!got.moveback){
+    /* ⛔ AND A DEFAULT DOES NOT REACH ANYONE WHO ALREADY HAS A SAVED ONE. The
+       arrangement is kept across reloads on purpose, so every operator who has
+       ever used this program would go on not having the move controls. This
+       opens that one tray, once, and leaves the rest of the arrangement --
+       order, folds, everything else shut -- exactly as they left it. Bumping
+       TRAYKEY instead would have thrown all of that away to fix one tray. */
+    st.move = {open:true, shut:false};
   }
   for(const [id] of TRAYS) if(!st[id]) st[id] = {open:false, shut:false};
-  return {trays:st, order:trayOrder(got && got.order)};
+  return {trays:st, order:trayOrder(got && got.order), moveback:true};
 }
 function saveTrays(){
   try{
     localStorage.setItem(TRAYKEY,
-      JSON.stringify({trays:V.trays, order:V.order}));
+      JSON.stringify({trays:V.trays, order:V.order, moveback:true}));
   }catch(e){}
 }
 
@@ -9331,16 +9425,44 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('applydet').onclick=applyDetail;
   $('detv').textContent=detailText(V.detail);
   $('exv').textContent=detailText(V.exdet);
-  $('zero').onclick=()=>{ const s=active(); if(!s) return;
-    /* ⛔ THE MOST DESTRUCTIVE BUTTON IN THIS TRAY HAD NO UNDO, and it sits
-       immediately beside the controls the placement was made with. */
-    remember('resetting '+s.name+' to where it was recorded',
-             undoSetup(s.index));
-    s.setup={x_m:0,y_m:0,z_m:0,yaw_deg:0,
-             pitch_deg:0,roll_deg:0,method:'manual'};
-    s.rung=null; syncSliders(); invalidate(); editsFollow();
-    say(s.name+' put back where the capture recorded it. Ctrl-Z restores the '+
-        'placement.'); };
+  /* ⭐ ONE RESET PER GROUP, WHICH IS WHAT A SLICER GIVES YOU -- and here it is
+     not just tidiness. Where a scan STANDS and how it is TURNED are two
+     different mistakes with two different fixes: a bad heading out of a coarse
+     fit is worth throwing away while the position it found is worth keeping,
+     and until now the only way to drop one was to drop both and start over.
+     ⛔ ONE IMPLEMENTATION, THREE BUTTONS. Written out three times, the undo,
+     the `method` and the rung would drift apart, and the one that got it wrong
+     would be whichever was added last. */
+  const RESET_KEYS = {
+    move:['x_m','y_m','z_m'],
+    turn:['yaw_deg','pitch_deg','roll_deg'],
+    all: ['x_m','y_m','z_m','yaw_deg','pitch_deg','roll_deg']};
+  function resetPart(which){
+    const s=active(); if(!s) return;
+    const what={move:'where it stands', turn:'how it is turned',
+                all:'its placement'}[which];
+    /* ⛔ THE MOST DESTRUCTIVE BUTTONS IN THIS TRAY, sitting immediately beside
+       the controls the placement was made with. They had no undo. */
+    remember('resetting '+what+' on '+s.name, undoSetup(s.index));
+    for(const k of RESET_KEYS[which]) s.setup[k]=0;
+    s.setup.method='manual';
+    /* ⛔ AND THE RECORDED FIT QUALITY GOES WITH ANY OF THE THREE. A residual
+       describes the placement it was measured at; zeroing half a pose leaves a
+       number that was never true of what is now on screen -- worse than no
+       number, because it reads as a fit that has been checked. */
+    s.rung=null;
+    /* ⛔⛔ `dirty()` WAS MISSING HERE, AND ONLY HERE. Every other way of moving
+       a scan goes through `nudge`, which marks the project unsaved; Reset
+       wrote straight into the setup and left the name reading "saved". The
+       flag's own comment says a false "unsaved" costs one press and a false
+       "saved" costs the afternoon -- this was the second kind. */
+    syncSliders(); invalidate(); editsFollow(); dirty();
+    say(s.name+' — '+what+' put back to what the capture recorded. '+
+        'Ctrl-Z restores it.');
+  }
+  $('zero').onclick=()=>resetPart('all');
+  $('zeromove').onclick=()=>resetPart('move');
+  $('zeroturn').onclick=()=>resetPart('turn');
   $('mode').onclick=e=>{
     V.mode=(V.mode+1)%3;
     e.target.textContent=['By scan','Height','Photo / intensity'][V.mode];
