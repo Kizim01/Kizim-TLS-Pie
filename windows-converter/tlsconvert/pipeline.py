@@ -23,6 +23,7 @@ what it preserves is noise rather than geometry. Reasonable for a preview, poor
 for measurement. It is the operator's call, so it is not clamped either.
 """
 
+import copy
 import json
 import os
 import time
@@ -136,6 +137,78 @@ class VoxelAccumulator:
         refl = np.clip(np.round(self.refl / self.counts), 0,
                        255).astype(np.uint8)
         return xyz, refl
+
+
+class OnePerCell(object):
+    """
+    A writer that lets ONE point through per voxel cell of the merged cloud.
+
+    ⛔⛔ THE VOXEL WAS APPLIED PER CAPTURE, SO OVERLAPS STACKED. Each capture is
+    thinned in its OWN frame and then moved into the merged one, so two tripods
+    looking at the same wall each write their own copy of it, offset by
+    wherever their grids happened to land. Asking for 2 cm and getting a
+    surface several layers thick is not what the number says.
+
+    ⚠ AND THE MEASUREMENT IS SMALLER THAN THE STORY -- this comment said "every
+    surface nineteen layers thick" before anybody ran it. Live restaurant, 17
+    captures at 2 cm: 17,522,363 points reached this wrapper and 11,350,717
+    came out, so **35% removed**, not the 19x the reasoning implied. Captures
+    only overlap where they can both SEE, and down a walk that is a fraction of
+    each one. The honest claim is a real third off and surfaces one layer
+    thick -- worth having, and not the lever that decides whether a file
+    opens. That lever is the detail setting: the same job at a fine setting
+    ran to 186,087,187 points and 823 MB.
+
+    ⭐ IT WRAPS THE WRITER RATHER THAN COLLECTING THE CLOUD. Points arrive here
+    already in the merged frame -- `convert` transforms before it writes -- so
+    binning them again in WORLD space is what puts every capture on one grid.
+    The memory is one int64 per surviving cell and nothing else: the points
+    themselves stream straight out as they always did.
+
+    ⚠ IT KEEPS THE FIRST POINT IN A CELL, IT DOES NOT AVERAGE. Averaging across
+    captures would need every contributing point held until the last capture
+    was read, which is the whole cloud in memory. Keeping the first is what a
+    thinning is; the averaging that improves a surface has already happened
+    inside each capture's own accumulator.
+    """
+
+    def __init__(self, writer, voxel_m):
+        self._w = writer
+        self.voxel_m = float(voxel_m)
+        self._seen = np.empty(0, dtype=np.int64)
+        self.dropped = 0
+
+    @property
+    def count(self):
+        return self._w.count
+
+    def write(self, xyz, rgb, intensity=None):
+        n = int(np.asarray(xyz).shape[0])
+        if not n:
+            return
+        keys = pack_voxel_keys(xyz, self.voxel_m)
+        # Within this capture first -- `return_index` gives the first point of
+        # each cell, which is the one that survives.
+        uniq, first = np.unique(keys, return_index=True)
+        if self._seen.size:
+            at = np.clip(np.searchsorted(self._seen, uniq), 0,
+                         self._seen.size - 1)
+            fresh = self._seen[at] != uniq
+        else:
+            fresh = np.ones(uniq.size, dtype=bool)
+        take = np.sort(first[fresh])
+        self.dropped += n - int(take.size)
+        if take.size:
+            self._w.write(np.asarray(xyz)[take], np.asarray(rgb)[take],
+                          intensity=(None if intensity is None
+                                     else np.asarray(intensity)[take]))
+        # ⛔ KEPT SORTED, because `searchsorted` above is the whole reason this
+        # is affordable; `union1d` sorts, which is what makes the next capture's
+        # lookup a binary search rather than a scan.
+        self._seen = np.union1d(self._seen, uniq[fresh])
+
+    def close(self):
+        """The real writer is closed by whoever made it, exactly once."""
 
 
 def box_rotation(yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
@@ -419,6 +492,48 @@ class Edit(object):
             else:
                 seen.add(op.scan)
         return sorted(seen)
+
+    def renumbered(self, mapping):
+        """
+        The same edit, re-aimed at a shorter list of clouds.
+
+        ⛔⛔ AN EDIT IS SCOPED BY POSITION, SO DROPPING A CLOUD FROM AN EXPORT
+        SILENTLY RE-AIMS EVERY CUT AFTER IT. `merge` narrows the plan with
+        `for_scan(i)` where `i` is the place in the list it was handed -- so
+        leave the hidden clouds out and cut number 5 lands on what used to be
+        number 6. Nothing raises: a box that trimmed a tripod out of one scan
+        quietly takes a bite out of its neighbour instead, and the export
+        completes and looks fine. This is the same shape as the stale-scope
+        fault `AlignServer.save` already refuses out loud.
+
+        `mapping` is {old position: new position}. An operation whose every
+        named cloud has gone is DROPPED, not widened -- see `for_scan`: a scope
+        that names nothing must never come to mean everything.
+        """
+        def again(scope):
+            if scope is None:
+                return (True, None)                # all clouds: still all
+            if isinstance(scope, tuple):
+                got = tuple(mapping[s] for s in scope if s in mapping)
+                return (bool(got), got)
+            return (scope in mapping, mapping.get(scope))
+
+        def kept(ops):
+            out = []
+            for op in ops:
+                alive, scope = again(op.scan)
+                if not alive:
+                    continue
+                op = copy.copy(op)
+                op.scan = scope
+                out.append(op)
+            return out
+
+        made = Edit()
+        made.keep = kept(self.keep)
+        made.drop = kept(self.drop)
+        made.lassos = kept(self.lassos)
+        return made
 
     def for_scan(self, index):
         """
@@ -879,7 +994,8 @@ def _pose_kwargs(colours, i):
 
 
 def merge(captures, out_path, setups=None, progress=None, edit=None,
-          level=None, colours=None, cleans=None, leans=None, **kwargs):
+          level=None, colours=None, cleans=None, leans=None, thin_m=None,
+          **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -931,6 +1047,11 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
         raise ValueError("colours must name every capture: %d given for %d"
                          % (len(colours), len(captures)))
     writer = export.writer_for(out_path, comment=comment)
+    # ⛔ ONE GRID FOR THE FINISHED CLOUD, NOT ONE PER CAPTURE. Without this the
+    # voxel is applied in each capture's own frame and the overlaps stack --
+    # measured at 35% of the points on the live job, and surfaces several
+    # layers thick where captures see the same wall. See `OnePerCell`.
+    sink = writer if not thin_m else OnePerCell(writer, thin_m)
     parts = []
     try:
         for i, (path, setup) in enumerate(zip(captures, setups)):
@@ -949,7 +1070,7 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
             # worst case: `prepare_colour` refuses below MIN_CONFIDENCE, and
             # that control exists precisely BECAUSE a correct pair scored 2.01,
             # so the one case it was built for exported grey.
-            parts.append(convert(path, out_path, setup=setup, writer=writer,
+            parts.append(convert(path, out_path, setup=setup, writer=sink,
                                  progress=None, level=level,
                                  lean=(leans[i] if i < len(leans) else None),
                                  edit=None if (mine is None or mine.is_empty())
@@ -963,6 +1084,7 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
     return {
         "out": out_path,
         "points": writer.count,
+        "thinned": (0 if sink is writer else int(sink.dropped)),
         "edit": None if edit is None else edit.describe(),
         "level": None if level is None else level.describe(),
         "captures": captures,

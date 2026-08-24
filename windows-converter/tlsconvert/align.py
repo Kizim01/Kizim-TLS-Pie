@@ -651,6 +651,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/level":
                 return self._json(srv.level(body.get("points") or [],
                                             body.get("level")))
+            if path == "/save/where":
+                return self._json(srv.pick_out())
             if path == "/level/floor":
                 return self._json(srv.level_from_floor(body.get("level")))
             if path == "/origin":
@@ -3115,7 +3117,46 @@ class AlignServer(object):
                 "camera": (0.0, 0.0,
                            float(getattr(scan, "camera_z", 0.0) or 0.0))}
 
-    def save(self, setups, voxel=None, edit=None, level=None):
+    def pick_out(self):
+        """
+        Ask for a file to write the merged cloud into, and remember it.
+
+        ⛔⛔ THERE WAS NO WAY TO CHOOSE THIS, WHICH IS MOST OF WHAT "THE EXPORT
+        BUTTON DOES NOT WORK" MEANT. `out_path` was decided once at launch from
+        whatever the program was opened with, and a Studio started from its own
+        icon got `~/tlspie_merged.laz` -- a file in a folder nobody has any
+        reason to look in. It wrote, it named the path in one line of status
+        text that scrolls away, and the cloud was never found.
+        """
+        from . import desktop
+        if desktop.WINDOW[0] is None:
+            return {"ok": False,
+                    "error": "no native window, so no system file dialog"}
+        base = os.path.splitext(os.path.basename(self.project_path
+                                                 or "merged"))[0]
+        got = desktop.pick_cloud_out(suggest="%s.laz" % base)
+        if not got:
+            return {"ok": False, "cancelled": True}
+        if not os.path.splitext(got)[1]:
+            got += ".laz"
+        self.out_path = got
+        return {"ok": True, "out": got}
+
+    def save(self, setups, voxel=None, edit=None, level=None, hidden=None,
+             out=None):
+        """
+        Write every cloud that is on screen into one file.
+
+        ⛔ HIDDEN CLOUDS ARE LEFT OUT, AND THAT IS A CHANGE. Hiding used to mean
+        "not drawn, not cut from, but still exported" -- which is defensible on
+        its own terms (Remove is how you take something out of the job) and is
+        not what anybody means when they hide a cloud and press Export. It now
+        means what it looks like it means, and the result NAMES what was left
+        out, so hiding something and forgetting is a sentence on screen rather
+        than a scan missing from a file nobody re-reads.
+        """
+        if out:
+            self.out_path = out
         if not self.out_path:
             return {"ok": False, "error": "no output path was given"}
         if not self.scans:
@@ -3139,11 +3180,44 @@ class AlignServer(object):
                              "re-open the project."
                              % (stale[0] + 1, len(self.scans),
                                 "is" if len(self.scans) == 1 else "are")}
+        # ⛔⛔ THE STALENESS CHECK ABOVE RUNS ON THE ORIGINAL NUMBERING, AND
+        # THIS RENUMBERING RUNS AFTER IT. An edit is scoped by POSITION in the
+        # list handed to `merge`, so leaving the hidden clouds out re-aims
+        # every cut that came after one of them -- silently, because a box
+        # that trimmed a tripod out of scan 5 simply takes a bite out of scan
+        # 6 instead and the export completes looking fine. See
+        # `pipeline.Edit.renumbered`, which is the one place that arithmetic
+        # is written.
+        hide = {int(i) for i in (hidden or []) if 0 <= int(i) < len(self.scans)}
+        keepers = [i for i in range(len(self.scans)) if i not in hide]
+        if not keepers:
+            return {"ok": False,
+                    "error": "every cloud is hidden, so there is nothing to "
+                             "write. Show at least one and press Export "
+                             "again."}
+        left_out = [self.scans[i].name for i in sorted(hide)]
+        scans = [self.scans[i] for i in keepers]
+        if hide:
+            plan = plan.renumbered({old: new
+                                    for new, old in enumerate(keepers)})
         keep = None if plan.is_empty() else plan
+        step = (self.merge_voxel if voxel is None else float(voxel or 0.0))
+        # ⛔⛔ A BAR THAT DOES NOT MOVE FOR TWO MINUTES IS A PROGRAM THAT HAS
+        # HUNG, WHICH IS THE OTHER HALF OF "THE EXPORT BUTTON DOES NOT WORK".
+        # Measured on the live project: 15 captures, 16.9 M points, 114
+        # SECONDS -- and the whole of it was reported as one step, "n 0 of 1",
+        # so the bar sat at zero from the press to the file appearing. `merge`
+        # has always called back once per capture; nobody was listening.
+        done = [0]
+
+        def _step(stage, *rest):
+            done[0] += 1
+            self._note(str(stage), min(done[0], len(scans)), len(scans))
+
         self._progress = {"stage": "writing the merged cloud", "n": 0,
-                          "total": 1, "busy": True}
+                          "total": max(1, len(scans)), "busy": True}
         try:
-            if len(self.scans) == 1:
+            if len(scans) == 1:
                 # ⛔ ONE CLOUD IS NOT A MERGE, and `pipeline.merge` refuses it
                 # outright -- rightly, because merging one capture into another
                 # scan's frame is a contradiction. Before a cloud could be
@@ -3151,7 +3225,7 @@ class AlignServer(object):
                 # and "merge needs at least two captures" is a sentence about
                 # this program's internals rather than about anything the
                 # operator did. The single-capture path already exists.
-                only = self.scans[0]
+                only = scans[0]
                 mine = None if keep is None else keep.for_scan(0)
                 pose = self.colour_pose(only) or {}
                 info = pipeline.convert(
@@ -3171,19 +3245,27 @@ class AlignServer(object):
                 return {"ok": True, "out": self.out_path, "points": written,
                         "edit": None if keep is None else keep.describe(),
                         "level": None if lvl.is_identity()
-                        else lvl.describe(), "single": True}
-            info = pipeline.merge([s.path for s in self.scans], self.out_path,
-                                  setups=[s.setup for s in self.scans],
+                        else lvl.describe(), "single": True,
+                        "written": 1, "hidden": left_out}
+            info = pipeline.merge([s.path for s in scans], self.out_path,
+                                  setups=[s.setup for s in scans],
                                   # ⛔ PASSED EXPLICITLY, BECAUSE THE SETUPS
                                   # GO OVER AS OBJECTS. `merge` reads a lean out
                                   # of setup DICTS when it is given them; hand it
                                   # Setups and there is nowhere for one to hide.
-                                  leans=[s.lean for s in self.scans],
+                                  leans=[s.lean for s in scans],
                                   colours=[self.colour_pose(s)
-                                           for s in self.scans],
+                                           for s in scans],
                                   cleans=[getattr(s, "clean", None)
-                                          for s in self.scans],
-                                  edit=keep,
+                                          for s in scans],
+                                  edit=keep, progress=_step,
+                                  # ⛔ ONE GRID FOR THE FINISHED CLOUD. The
+                                  # voxel was applied per capture, so captures
+                                  # seeing one wall each wrote their own offset
+                                  # copy: 35% of the points on the live job.
+                                  # "Full" has no cell size and asks for every
+                                  # return.
+                                  thin_m=(None if not step else step),
                                   level=None if lvl.is_identity() else lvl,
                                   voxel_m=(self.merge_voxel if voxel is None
                                            else float(voxel)))
@@ -3191,7 +3273,13 @@ class AlignServer(object):
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         return {"ok": True, "out": info["out"], "points": info["points"],
-                "edit": info["edit"], "level": info["level"]}
+                "edit": info["edit"], "level": info["level"],
+                "thinned": info.get("thinned", 0),
+                # ⛔ WHAT WAS LEFT OUT IS PART OF THE RESULT, not a footnote.
+                # Hiding a cloud to see behind it and forgetting is the whole
+                # risk of leaving hidden clouds out, and the only thing that
+                # makes it safe is saying so at the moment the file is written.
+                "written": len(scans), "hidden": left_out}
 
     @property
     def url(self):
@@ -3787,8 +3875,29 @@ PAGE = r"""<!doctype html>
 <div class="tray" id="ty_export"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'export')"><span class="fold">▾</span><b class="grow">Write the cloud out</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('export')">✕</button></div><div class="traybody">
   <label>Export detail <span class="num" id="exv">as previewed</span></label>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
-  <div class="row"><button id="save" class="go">Save merged</button>
-    <button id="saveclip">Save clip box only</button></div>
+  <div class="row"><button id="save" class="go">Export merged cloud</button>
+    <button id="saveclip">Clip box only</button></div>
+  <div class="row"><button id="savewhere">Save as…</button></div>
+  <div id="outpath" style="font-size:10.5px;color:var(--faint);margin:4px 0 2px"></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    Writes <b>every cloud that is on screen</b> into one file — hidden ones are
+    left out, and the result says which. Choose <b>.laz</b> unless you have a
+    reason not to: same points as .las in about a third of the space, and
+    anything that opens one opens the other. <b>.ply</b> is the one to reach
+    for when a reader will not take either.
+    <br>The detail above is <b>one grid across the finished cloud</b>, so
+    tripods that saw the same wall write it once instead of once each — about
+    a third fewer points on this job, and surfaces one layer thick.
+    <b>Full — every return</b> has no grid and thins nothing.
+    <br><b>Size is decided by the detail setting, not by the format.</b> This
+    job writes <b>11 million points / 54&nbsp;MB at 2&nbsp;cm</b> and
+    <b>186 million / 823&nbsp;MB</b> at a fine one. Start at <b>5 cm</b> or
+    <b>10 cm</b> for SketchUp — you can always export again finer, and a cloud
+    it will not open teaches you nothing.
+    <br>⚠ <b>SketchUp does not read point clouds on its own.</b> It needs
+    <b>Scan Essentials</b> or <b>Undet</b>, and those read .laz directly. With
+    no extension, no point format will open — use <b>Top</b> + <b>O</b> and
+    trace, or ask for a DXF plan.</div>
   </div></div>
 <div class="tray" id="ty_view"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'view')"><span class="fold">▾</span><b class="grow">View</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('view')">✕</button></div><div class="traybody">
   <label>View</label>
@@ -5264,6 +5373,7 @@ async function boot(){
   measure();
   refreshLists();
   syncSliders(); syncClipSliders(); showTurn(); clipLabels(); showPlumb();
+  showOut();
   recentre(); draw();
   if(OPEN) openProject(OPEN);
   else if(PENDING.length) ingest(PENDING);
@@ -5428,8 +5538,9 @@ function toggleHidden(i){
   if(V.only>=0){ V.only=-1; const b=$('showb'); if(b) b.textContent='All'; }
   refreshLists(); invalidate(); showHidden();
   say(V.hidden[i]
-      ? whoName(i)+' hidden. New cuts leave it alone — it is still in the '+
-        'job and still exported. Use Remove to take it out.'
+      ? whoName(i)+' hidden. New cuts leave it alone and it will NOT be '+
+        'written to the exported cloud — it is still in the job, so showing '+
+        'it again brings it back with its alignment.'
       : whoName(i)+' is showing again.'+
         (Object.keys(V.hidden).length ? ''
          : ' Every cloud is back, so cuts go through all of them.'));
@@ -7740,12 +7851,20 @@ function refreshLists(){
       'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
       : '')+'</span>'+
     '<button class="mini'+(V.hidden[s.index]?' on':'')+
+    /* ⛔ THE TOOLTIP USED TO PROMISE THE OPPOSITE, and it was right at the
+       time: hidden meant "not drawn, not cut from, but STILL EXPORTED", with
+       Remove as the way to take something out of the job. Defensible, and not
+       what anybody means when they hide two clouds and press Export. Hidden
+       now means hidden all the way through, and the export names what it left
+       out so that hiding one and forgetting is a sentence on screen rather
+       than a scan missing from a file nobody re-reads. */
     '" title="'+(V.hidden[s.index]
-      ? 'Hidden. Still in the job and still exported — it is just not drawn, '+
-        'and new cuts leave it alone.'
+      ? 'Hidden: not drawn, not pickable, not taken from by new cuts and NOT '+
+        'written to the exported cloud. Still in the job — show it again '+
+        'and it comes back with its alignment.'
       : 'Hide this cloud so you can work on the ones behind it. A hidden '+
-        'cloud is not drawn, not pickable, and NOT taken from by new cuts — '+
-        'but it IS still exported. Use Remove to take it out of the job.')+
+        'cloud is not drawn, not pickable, not taken from by new cuts and is '+
+        'left out of the export. Use Remove to take it out of the job.')+
     '" onclick="toggleHidden('+s.index+')">'+
     (V.hidden[s.index]?'Show':'Hide')+'</button>'+
     '<button class="mini'+(KILL[0]===s.index?' ask':'')+
@@ -8600,25 +8719,78 @@ function addScan(){
 /* `clipOnly` adds the current box as a keep operation for THIS write without
    putting it in the edit list -- the operator asked to export the box, not to
    delete everything else from the session they are still working in. */
+/* ⛔⛔ WHERE THE FILE GOES IS NOW A DECISION, NOT AN ACCIDENT OF LAUNCH.
+   `OUT` was baked into the page at startup from whatever the program was
+   opened with, and for a Studio started from its own icon that is
+   `~/tlspie_merged.laz`. The export ran, wrote a real file, named the path in
+   one line of status text, and the cloud was never seen again -- which is
+   what "the export button doesn't work" turned out to mean. Asked once and
+   remembered for the rest of the session. */
+let OUTPATH = OUT || '';
+async function chooseOut(){
+  try{
+    const r=await fetch('save/where',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j=await r.json();
+    if(j.cancelled) return '';
+    if(!j.ok){
+      /* No native dialog (the browser fallback): the launch path is all
+         there is, and saying so beats a button that does nothing. */
+      say(j.error+' — it will be written to '+(OUTPATH||'nowhere')+'.','warn');
+      return OUTPATH;
+    }
+    OUTPATH=j.out; showOut(); return OUTPATH;
+  }catch(e){ say('Could not ask where to save: '+e.message,'bad'); return ''; }
+}
+function showOut(){
+  const box=$('outpath'); if(!box) return;
+  box.innerHTML = OUTPATH
+    ? 'writes to <b>'+OUTPATH.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</b>'
+    : 'no file chosen yet — Export will ask.';
+}
 async function saveMerged(clipOnly){
-  if(!OUT) return say('No output file was given.', 'bad');
   if(!V.scans.length) return say('Nothing to save yet.', 'warn');
+  const on=V.scans.filter(s=>shown(s.index));
+  if(!on.length) return say('Every cloud is hidden, so there is nothing to '+
+                            'write. Show at least one first.', 'warn');
+  if(!OUTPATH && !await chooseOut()) return;
   const plan=editPlan();
   if(clipOnly) plan.keep.push(boxSpec());
   const step=DETAIL[V.exdet];
-  say('writing '+OUT+' at '+step.t+' …'); watch(true);
+  const hid=V.scans.filter(s=>!shown(s.index)).map(s=>s.index);
+  say('writing '+on.length+' cloud'+(on.length===1?'':'s')+' to '+OUTPATH+
+      ' at '+step.t+' …'); watch(true);
   $('save').disabled=true; $('saveclip').disabled=true;
   try{
     const r=await fetch('save',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({setups:V.scans.map(s=>s.setup),
-                           voxel:step.v, edit:plan, level:V.level})});
+                           voxel:step.v, edit:plan, level:V.level,
+                           /* ⛔ SENT BY INDEX, and the server renumbers the
+                              edits to match -- a cut is scoped by POSITION in
+                              the list it is handed, so dropping a cloud
+                              re-aims every cut after it. */
+                           hidden:hid, out:OUTPATH})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
     watch(false);
-    say('saved '+j.points.toLocaleString()+' points to '+j.out+
-        ' at '+step.t+(j.edit&&j.edit!=='no edit'?' — '+j.edit:'')+
-        (j.level?' — '+j.level:''));
+    say('saved '+j.points.toLocaleString()+' points from '+j.written+
+        ' cloud'+(j.written===1?'':'s')+' to '+j.out+' at '+step.t+
+        /* ⭐ WHAT THE ONE GRID SAVED, because "186 million points" and "12
+           million points" are the difference between a file that opens and one
+           that does not, and the operator should see which they just made. */
+        ((j.thinned>0) ? ' ('+j.thinned.toLocaleString()+
+          ' overlapping points merged away)' : '')+
+        (j.edit&&j.edit!=='no edit'?' — '+j.edit:'')+
+        (j.level?' — '+j.level:'')+
+        /* ⛔ LEFT-OUT CLOUDS ARE THE HEADLINE OF THE RESULT. Hiding one to
+           see behind it and forgetting is the whole risk of honouring Hide
+           here, and the only thing that makes it safe is saying so at the
+           moment the file is written. */
+        ((j.hidden&&j.hidden.length)
+          ? '.  ⚠ HIDDEN, so NOT written: '+j.hidden.join(', ')+
+            '. Show them and export again if they belong in the file.' : ''),
+        (j.hidden&&j.hidden.length) ? 'warn' : null);
   }catch(e){ watch(false); say('Save failed: '+e.message, 'bad'); }
   $('save').disabled=false; $('saveclip').disabled=false;
 }
@@ -9078,6 +9250,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('auto').onclick=autoAlign;
   $('multi').onclick=multiAlign;
   $('save').onclick=()=>saveMerged(false);
+  $('savewhere').onclick=chooseOut;
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');
   $('rect').onclick=()=>setTool(V.tool==='rect'?'':'rect');

@@ -6397,5 +6397,182 @@ check("...and there is a button to run it again",
       "id=\"lvlfloor\"" in _fsrc and "$('lvlfloor').onclick=levelToFloor"
       in _fsrc and 'path == "/level/floor"' in _fsrc)
 
+# --- the export: where it goes, and what goes into it ------------------------
+print("\nexporting the merged cloud")
+# ⛔⛔ THE BUG WAS NEVER IN THE WRITER. Run on the live project the export
+# produced 16,951,263 points and an 82 MB file in 114 seconds, every time. It
+# wrote to `~/tlspie_merged.laz` -- the fallback `tlspie_studio.py` picks when
+# the program is started from its own icon -- and an 823 MB file was sitting
+# there, written that morning, that the operator had never found. "It doesn't
+# work" meant "I cannot choose where it goes and the one line naming the path
+# scrolls away", and no amount of testing the writer would ever have said so.
+_esrc = re.sub(r"/\*.*?\*/", "", _ALIGN_SRC, flags=re.S)
+check("THE EXPORT ASKS WHERE TO PUT THE FILE, and remembers the answer",
+      "function chooseOut(" in _esrc and "fetch('save/where'" in _esrc
+      and 'path == "/save/where"' in _esrc and "def pick_out(" in _ALIGN_SRC)
+check("...and a Save-as dialog exists that offers what we can actually write",
+      "def pick_cloud_out(" in io.open(
+          os.path.join("tlsconvert", "desktop.py"), encoding="utf-8").read())
+check("...and the chosen path is on screen, not only in a line of status text",
+      "id=\"outpath\"" in _esrc and "function showOut(" in _esrc)
+check("...and pressing Export with nowhere to go ASKS rather than failing",
+      "if(!OUTPATH && !await chooseOut()) return;" in _esrc)
+# ⛔ A bar that does not move for two minutes is a program that has hung.
+check("the export reports progress per capture, not as one long step",
+      "edit=keep, progress=_step," in _ALIGN_SRC
+      and "self._note(str(stage), min(done[0], len(scans)), len(scans))"
+      in _ALIGN_SRC)
+
+_xsrv = align.AlignServer([], out_path=os.path.join(_rdir, "vis.laz"))
+_xsrv.scans = [_mscan("one", _room_from([0.0, 0.0, 1.4], n=900, seed=21)),
+               _mscan("two", _room_from([1.0, 0.0, 1.4], n=900, seed=22)),
+               _mscan("three", _room_from([2.0, 0.0, 1.4], n=900, seed=23))]
+_sx = [s.setup.as_dict() for s in _xsrv.scans]
+
+# ⭐ THE MERGE IS STUBBED, AND THAT IS THE POINT OF THE TEST. Export re-reads
+# the captures off disk at full density, so a fixture built out of arrays can
+# never reach the writer -- and the writer was never what was broken. What is
+# worth checking is exactly what `save` HANDS to the merge: which captures,
+# with which placements, carrying which edits.
+_seen_merge = {}
+_real_merge = pipeline.merge
+
+
+def _stub_merge(captures, out_path, **kw):
+    _seen_merge.clear()
+    _seen_merge.update(kw)
+    _seen_merge["captures"] = list(captures)
+    _seen_merge["out"] = out_path
+    return {"out": out_path, "points": 1234, "edit": None, "level": None}
+
+
+pipeline.merge = _stub_merge
+try:
+    # ⛔ INSIDE THE STUB, AND THAT IS NOT TIDINESS. Outside it, this check did
+    # not FAIL when the hidden-cloud filter was disabled -- it fell through to
+    # the real merge, which cannot re-read a fixture built out of arrays, and
+    # raised, taking every check below it down with it. THIRD time today that
+    # one of my own checks hid its neighbours by crashing instead of failing.
+    check("every cloud hidden is refused, with something to do about it",
+          not _xsrv.save(_sx, hidden=[0, 1, 2])["ok"]
+          and "hidden" in (_xsrv.save(_sx, hidden=[0, 1, 2]).get("error") or ""),
+          _xsrv.save(_sx, hidden=[0, 1, 2]))
+    _one = _xsrv.save(_sx, out=os.path.join(_rdir, "chosen.laz"))
+    check("an out path handed in at the moment of saving is used and kept",
+          _one.get("out") == os.path.join(_rdir, "chosen.laz")
+          and _xsrv.out_path == os.path.join(_rdir, "chosen.laz"), _one)
+    check("...and every cloud goes in when none is hidden",
+          _one["written"] == 3 and _one["hidden"] == [], _one)
+    _hid = _xsrv.save(_sx, hidden=[1])
+    check("A HIDDEN CLOUD IS LEFT OUT OF THE EXPORT",
+          _hid["ok"] and _hid["written"] == 2
+          and len(_seen_merge["captures"]) == 2, _hid.get("error")
+          or _hid.get("written"))
+    check("...and it is the RIGHT two, with their own placements",
+          _seen_merge["captures"] == ["one", "three"]
+          and len(_seen_merge["setups"]) == 2, _seen_merge.get("captures"))
+    check("...and is NAMED in the result, because forgetting one is the risk",
+          _hid.get("hidden") == ["two"], _hid.get("hidden"))
+    # ⛔ And the edit that reaches the merge has been re-aimed to match.
+    _xsrv.save(_sx, hidden=[1],
+               edit={"drop": [{"lo": [0, 0, 0], "hi": [1, 1, 1], "scan": 2}],
+                     "keep": [], "lassos": []})
+    check("THE EDIT THAT REACHES THE MERGE IS RE-AIMED AT THE SHORTER LIST",
+          _seen_merge["edit"].drop[0].scan == 1,
+          _seen_merge["edit"].drop[0].scan)
+    check("...so the cut still lands on the cloud it was made on",
+          _seen_merge["captures"][1] == "three")
+    # ⛔ The progress callback has to be the one that counts captures.
+    check("...and a progress callback goes with it",
+          callable(_seen_merge.get("progress")))
+finally:
+    pipeline.merge = _real_merge
+
+# ⛔⛔ THE TRAP THAT DROPPING A CLOUD CREATES, AND IT IS SILENT. `merge`
+# narrows the plan with `for_scan(i)` where i is the POSITION in the list it
+# was handed. Leave a hidden cloud out and every cut after it lands on its
+# neighbour: a box that trimmed a tripod out of scan 2 takes a bite out of
+# scan 3 instead, the export completes, and the file looks fine.
+_plan = pipeline.Edit(drop=[{"lo": [0, 0, 0], "hi": [1, 1, 1], "scan": 2}],
+                      keep=[{"lo": [0, 0, 0], "hi": [1, 1, 1], "scan": None}],
+                      lassos=[])
+_moved = _plan.renumbered({0: 0, 2: 1})
+check("AN EDIT IS RE-AIMED WHEN THE LIST IT INDEXES GETS SHORTER",
+      _moved.drop[0].scan == 1, _moved.drop[0].scan)
+check("...and a cut that names everybody still names everybody",
+      _moved.keep[0].scan is None)
+_gone = pipeline.Edit(drop=[{"lo": [0, 0, 0], "hi": [1, 1, 1], "scan": 1}])
+check("...and a cut whose only cloud has gone is DROPPED, never widened",
+      not pipeline.Edit(drop=[]).drop
+      and len(_gone.renumbered({0: 0, 2: 1}).drop) == 0,
+      _gone.renumbered({0: 0, 2: 1}).drop)
+_many = pipeline.Edit(drop=[{"lo": [0, 0, 0], "hi": [1, 1, 1],
+                             "scan": [0, 1, 2]}])
+check("...and a cut naming several keeps the ones that are still there",
+      set(_many.renumbered({0: 0, 2: 1}).drop[0].scan) == {0, 1},
+      _many.renumbered({0: 0, 2: 1}).drop[0].scan)
+check("...and the original edit is not modified in place",
+      _plan.drop[0].scan == 2, _plan.drop[0].scan)
+# ⛔ THE VOXEL WAS APPLIED PER CAPTURE, SO THE OVERLAPS STACKED. Each capture is
+# thinned in its OWN frame and then moved into the merged one, so tripods that
+# saw the same wall each write their own copy of it, offset by wherever their
+# grids landed. ⚠ Measured before believing it: 17 captures at 2 cm sent
+# 17,522,363 points and 11,350,717 came out -- 35% removed, not the "nineteen
+# layers" the reasoning first claimed, because captures overlap only where
+# they can both see. The fixture below is a wall five captures ALL see, which
+# is the best case, not the typical one.
+
+
+class _Sink(object):
+    def __init__(self):
+        self.xyz = []
+        self.count = 0
+
+    def write(self, xyz, rgb, intensity=None):
+        self.xyz.append(np.asarray(xyz))
+        self.count += len(xyz)
+
+    def close(self):
+        pass
+
+
+_wall = np.random.RandomState(31).uniform([-2, -2, 0], [2, 2, 2], (40_000, 3))
+_wall[:, 1] = 0.0
+_sink = _Sink()
+_thin = pipeline.OnePerCell(_sink, 0.05)
+for _pass in range(5):                      # five captures seeing one wall
+    _thin.write(_wall + np.array([0.004 * _pass, 0.0, 0.003 * _pass]),
+                np.full((len(_wall), 3), 128, np.uint8))
+check("ONE GRID ACROSS THE FINISHED CLOUD, so overlaps do not stack",
+      _sink.count < 40_000 * 1.05, _sink.count)
+check("...and five passes over one wall cost barely more than one",
+      _sink.count < 4000, _sink.count)
+check("...and it says how much it took away",
+      _thin.dropped == 5 * 40_000 - _sink.count, _thin.dropped)
+_kept = np.concatenate(_sink.xyz)
+check("...leaving one point per cell and no cell empty that had points",
+      len(np.unique(pipeline.pack_voxel_keys(_kept, 0.05))) == len(_kept),
+      (len(_kept), len(np.unique(pipeline.pack_voxel_keys(_kept, 0.05)))))
+# ⭐ The escape hatch is the "Full — every return" setting: no cell size, so
+# nothing is thinned and every return reaches the file exactly as before.
+check("...and asking for every return thins nothing",
+      "thin_m=(None if not step else step)" in _ALIGN_SRC)
+_solo = _Sink()
+_one_cap = pipeline.OnePerCell(_solo, 0.05)
+_one_cap.write(_wall, np.full((len(_wall), 3), 128, np.uint8))
+check("a single capture is thinned to its own grid and nothing else",
+      _one_cap.dropped == 40_000 - _solo.count and _solo.count > 0)
+check("an empty write is not an error",
+      pipeline.OnePerCell(_Sink(), 0.05).write(
+          np.zeros((0, 3)), np.zeros((0, 3), np.uint8)) is None)
+check("the export renumbers, and does it in one place",
+      "plan.renumbered({old: new" in _ALIGN_SRC
+      and _ALIGN_SRC.count(".renumbered(") == 1)
+# The staleness refusal has to be read on the ORIGINAL numbering, or hiding a
+# cloud would turn a real stale-scope fault into a silently re-aimed cut.
+check("...after the stale-scope refusal, never before",
+      _ALIGN_SRC.index("an edit is aimed at cloud %d")
+      < _ALIGN_SRC.index("plan.renumbered({old: new"))
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

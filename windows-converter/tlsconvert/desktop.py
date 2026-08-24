@@ -107,6 +107,13 @@ CAPTURE_FILTERS = ("Scans and clouds (*.pcap;*.las;*.laz;*.ply)",
 IMAGE_FILTERS = ("Panorama images (*.jpg;*.jpeg;*.png;*.tif;*.tiff)",
                  "All files (*.*)")
 PROJECT_FILTERS = ("TLS Pie project (*.tlspie)", "All files (*.*)")
+#: ⛔ THE ORDER IS THE RECOMMENDATION. LAZ first because it is the same points
+#: as LAS in a third of the space and every reader that takes one takes the
+#: other; PLY last because it is the one anything will open when nothing else
+#: will. These are the three `export.writer_for` can actually write, and a
+#: filter offering a fourth would be a dialog that leads to an error message.
+CLOUD_FILTERS = ("LAZ point cloud (*.laz)", "LAS point cloud (*.las)",
+                 "PLY point cloud (*.ply)", "All files (*.*)")
 
 
 def pick_files(title="Add a scan"):
@@ -181,6 +188,33 @@ def pick_project(save=False, title=None):
     if isinstance(chosen, str):
         return chosen
     return chosen[0]
+
+
+def pick_cloud_out(suggest="merged.laz", title=None):
+    """
+    A native Save-as dialog for the merged cloud. '' if cancelled.
+
+    ⛔⛔ THERE WAS NO WAY TO CHOOSE WHERE THE EXPORT WENT, and that is most of
+    what "the export button does not work" meant. The path was decided once, at
+    launch, from whatever file the program was opened with -- and for a Studio
+    started from its own icon that is `~/tlspie_merged.laz`, a file in a folder
+    the operator has no reason to look in. It wrote, it reported the path in a
+    line of status text, and the cloud was never found.
+
+    ⚠ The save dialog returns a plain string where the open one returns a
+    tuple; see `pick_project`, which has the same seam. And a raised dialog
+    must not be swallowed into the same empty string as a cancelled one --
+    that is how a broken Save button once looked like a working one.
+    """
+    win = WINDOW[0]
+    if win is None:
+        return ""
+    import webview
+    chosen = win.create_file_dialog(
+        webview.SAVE_DIALOG, save_filename=suggest, file_types=CLOUD_FILTERS)
+    if not chosen:
+        return ""
+    return chosen if isinstance(chosen, str) else chosen[0]
 
 
 def show(url, title="TLS-Pie Studio", width=1400, height=900, on_close=None):

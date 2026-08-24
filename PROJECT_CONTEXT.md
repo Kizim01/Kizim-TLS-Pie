@@ -3638,6 +3638,76 @@ different yaws — which is three tripods each leaning a different way, not one 
 combined answer came out 1.46° instead of 2.00° and the test was right to fail. *A lean measured in a
 capture's own frame does not mean the same direction as the same numbers in its neighbour's.*
 
+## "THE EXPORT BUTTON DOESN'T WORK" — IT WORKED EVERY TIME (2026-08-24)
+
+*"Export button doesn't seem to be working, I need to save all non-hidden pointclouds into one I can
+use in SketchUp."*
+
+**⛔⛔ NOTHING WAS BROKEN IN THE WRITER, AND NO AMOUNT OF TESTING IT WOULD HAVE SAID SO.** Run against
+the live project the export produced **16,951,263 points and an 82 MB file in 114 seconds**, cleanly.
+Then the evidence: `out_path` in the project read `C:\Users\sunun\tlspie_merged.laz`, and sitting in
+the home folder was an **823 MB file written that same morning at 09:31** — **186,087,187 points** —
+that the operator had never found.
+
+`tlspie_studio.py` picks the output path **once, at launch**, from whatever file the program was
+opened with; started from its own icon that is `~/tlspie_merged.laz`. The page baked it in as a
+`const` at page-build time, so nothing could ever change it. It wrote, it named the path in one line
+of status text that scrolls away, and the cloud vanished into a folder nobody looks in. ⭐ *"It
+doesn't work" meant "I cannot choose where it goes."*
+
+**Four faults, all of them real:**
+1. **No way to choose the destination** → **Save as…**, a native dialog offering only the three
+   formats `export.writer_for` can actually write, remembered for the session and **shown on screen**
+   rather than in a line of status text. Pressing Export with nowhere chosen now *asks*.
+2. **A bar that did not move for two minutes.** 15 captures, 16.9 M points, **114 s**, all reported
+   as a single step — `n 0 of 1` from the press until the file appeared. `merge` has always called
+   back once per capture; nobody was listening. ⭐ *A progress bar that does not move is a program
+   that has hung.*
+3. **Hidden clouds were exported.** Hiding meant "not drawn, not cut from, but still written", which
+   is defensible and is not what anyone means when they hide two clouds and press Export. Now hidden
+   all the way through — and the result **names what it left out**, because hiding one to see behind
+   it and forgetting is the whole risk of honouring Hide here. Both tooltips corrected; they had been
+   promising the opposite.
+4. ⛔⛔ **THE TRAP THAT FIX 3 CREATES, AND IT IS SILENT.** An edit is scoped by **position** in the
+   list handed to `merge`, which narrows it with `for_scan(i)`. Leave a hidden cloud out and every cut
+   after it lands on its neighbour — a box that trimmed a tripod out of scan 5 takes a bite out of
+   scan 6 instead, nothing raises, and the export completes looking fine. One `Edit.renumbered`, run
+   **after** the stale-scope refusal (which must read the original numbering), with a test for the
+   None / single / list / all-gone cases.
+
+### ⭐ AND THE FILE WAS UNUSABLE ANYWAY: ONE GRID, NOT ONE PER CAPTURE
+
+The voxel was applied in **each capture's own frame** and then the cloud was moved into the merged
+one — so captures that saw the same wall each wrote their own copy of it, offset by wherever their
+grids happened to land. `OnePerCell` wraps the writer and bins again in **world** space (points reach
+the writer already transformed), keeping one point per cell across the whole job. Memory is one int64
+per surviving cell; the points still stream.
+
+⚠ **AND THE MEASUREMENT IS SMALLER THAN THE STORY I HAD ALREADY WRITTEN INTO THE CODE.** The comment
+said *"every surface nineteen layers thick"* before anyone ran it. Measured on `.04`: **17,522,363
+points reached the wrapper and 11,350,717 came out — 35% removed**, not 19×. Captures overlap only
+where they can both **see**, and down a walk that is a fraction of each one. Corrected in four places
+(the class, `merge`, `save`, the tray text) rather than left standing. ⭐ *A third off and surfaces
+one layer thick is worth having; it is not the lever that decides whether a file opens.*
+
+**That lever is the detail setting**, and the numbers are now printed in the tray: **11 M points /
+54 MB at 2 cm** against **186 M / 823 MB** at a fine one, same job.
+
+### ⚠ SKETCHUP CANNOT OPEN A POINT CLOUD AT ALL WITHOUT AN EXTENSION
+
+`export.writer_for` writes `.ply`, `.las`, `.laz` — nothing else. Plain SketchUp Pro reads **none** of
+them. **Scan Essentials** or **Undet** read `.laz` directly, so with either one the existing format
+is already right and **adding E57 or PTS would be wasted work** — the same shape as the 3ds Max
+finding (`.rcp`/`.rcs` only, so adding point formats there was wasted too). With no extension, no
+point format helps; the routes are the **DXF plan** `tlsconvert/drawing.py` already writes, or Top +
+orthographic and trace. Said plainly in the tray rather than left for the operator to discover.
+
+**Verified on `main project.04.tlspie`**: 17 of 19 clouds written, the two hidden ones named,
+11,350,717 points, 54.2 MB, 241 s. Suite **1013 → 1020**; seven reversions across two rounds, all
+caught. ⚠ **Three of my own checks crashed instead of failing this session** — the third took thirty
+later checks down with it during a reversion test, so that round measured nothing until it was
+re-run.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through
