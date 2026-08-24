@@ -3850,12 +3850,12 @@ slice would contain the *other* group's ids and **pass**.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⛔⛔ FIRST: THE EXE IS ONE BUILD BEHIND, AND THE REBUILD IS BLOCKED.** `build_exe.py` fails with
-**`PermissionError: [WinError 5]` on `dist/TLS-Pie-Studio.exe`** — the running Studio (PIDs 21220 /
-25192, started 11:12) holds the file. Source is committed and pushed (`7db96d4`, 1024 passing); the
-**10:49 exe does not contain the Save-as fix**, so Export in the operator's running copy still writes
-to the home folder without asking. ⛔ Do NOT kill those processes: there may be unplaced alignment
-work in them. Ask the operator to save and close Studio, then rebuild and `--selftest`.
+**✅ THE EXES ARE CURRENT: rebuilt 22:06 from `a3aa6b3`, selftest 0, CUDA engine found.** They carry
+everything from 08-24 — the Save-as destination, the world grid on at startup, the reopened move tray
+and the slicer-shaped move panel. (The 11:41 blockage is closed: the operator shut Studio.)
+⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
+modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
+it will happily tell you a shipped fix is missing.
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through
 the library against their saved placements, and **not once in Studio**. Restart Studio (see the exe
