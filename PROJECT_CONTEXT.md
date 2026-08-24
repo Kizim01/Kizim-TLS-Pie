@@ -3848,6 +3848,54 @@ further down the file. *Fourth time in two days.* Also rewritten: `_group_block(
 than a slice running to the end of the file when it cannot find the group's end, because an unbounded
 slice would contain the *other* group's ids and **pass**.
 
+## 2026-08-24, third pass — the floor was parallel to the grid, never on it
+
+### ⛔⛔ "LOADING SCAN ONE DOES NOT ALIGN THE FLOOR TO THE LEVEL GRID" — CORRECT, AND IT NEVER HAD
+
+Auto-levelling answered **"which way is down" and stopped there**. A capture's zero is the
+**instrument**, and the instrument stands on a tripod — so a freshly loaded scan came out flat and
+**floating**: the ground sat about **1.4 m under the world grid**, and the grid cut through the room
+at chest height. Measured on a synthetic room: floor height after levelling **−1.42 m**.
+
+Every part of *"use the ground surface points and level it to world grid"* was built except the last
+step. ⭐⭐ **And the tray said "Nothing was moved"** — true of the scans, and read as true of the
+world. *A message that describes the thing you did protect can vouch for the thing you did not.*
+
+`level_from_floor` now names the floor as the height datum when no origin has been set. The `pivot` is
+already a measured point **on** the floor **and** is the rotation centre, so after levelling it sits at
+exactly its own Z — naming it puts the ground on zero to the millimetre and costs no new measurement.
+⛔ **Only when nobody has set one**: a datum the operator chose is a decision, and re-stamping it on
+every load would slide a drawing already being measured off it. No origin at all is not a decision.
+
+### ⛔⛔ AND FIXING IT EXPOSED A SILENT ONE: "FLOOR LEVEL" MISSED THE GRID BY THE ROOM'S LEAN
+
+`set_origin(point, axes="z")` mixed the pick into the origin **per axis in the RAW frame**, on the
+reasoning that naming `z` must not move `x` and `y`. It does keep them still — **and it also fails to
+put the point on the grid**, because a raw `(0, 0, z)` stops being a pure height the moment the
+levelling rotation carries it sideways. Measured: a room leaning **0.84°** with the pick **5.8 m** out
+in plan put the floor **+7.3 cm above zero**, and said nothing.
+
+The origin now keeps the **whole picked point** — which is *why* it is stored raw, so it stays on the
+feature — and carries **the axes it speaks for** beside it. `shift_xyz` drops the unnamed components
+**after** the rotation, where dropping one genuinely keeps it still. ⭐ *An axis dropped before the
+rotation comes back through it.* Both cases now land at exactly 0.000000 m.
+
+⛔ **Backward compatible by construction:** `origin_axes` is written only when it is not all three, and
+a missing key reads as `"xyz"` — which is what every origin set before today meant. A key defaulting
+to `"z"` instead would have moved every datum ever set; that reversion fires four checks.
+
+### ⚠ BOTH BUGS PASSED 1053 CHECKS, AND THE CHECK FOR THIS WAS ALREADY THERE
+
+`FLOOR LEVEL MOVES THE HEIGHT AND NOTHING ELSE` asks exactly the right question — **of a fixture with
+no lean, where the answer cannot come out wrong.** ⭐⭐ *Same shape as the liquid-name control that
+could not detect an illiquidity-biased data defect: the control was correct and blind.* The new checks
+ask whether **the point the operator put on the floor comes out on the floor**, on a room that leans.
+
+⚠ **And one of the new checks was weaker than it read.** It compared the leaning answer against a
+computed flat one, and **passed when a reversion sent both to zero**. *Two sides that can fail together
+are not a check* — it now measures against the point's own plan position. Four reversions, all caught.
+Suite **1053 → 1061**, exes **22:56**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE EXES ARE CURRENT: rebuilt 22:06 from `a3aa6b3`, selftest 0, CUDA engine found.** They carry
