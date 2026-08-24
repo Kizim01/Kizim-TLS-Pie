@@ -6362,6 +6362,41 @@ _L2 = registration.Level.from_dict(_o2["level"])
 check("FLOOR LEVEL MOVES THE HEIGHT AND NOTHING ELSE",
       abs(_L2.shift_xyz[0]) < 1e-12 and abs(_L2.shift_xyz[1]) < 1e-12
       and abs(_L2.shift_xyz[2] + 1.25) < 1e-12, _L2.shift_xyz)
+# ⛔⛔ AND THE CHECK ABOVE IS BLIND, WHICH IS WHY THIS ONE EXISTS. It asks the
+# right question of a level with NO LEAN, where the answer cannot come out
+# wrong: "z only" was mixed into the origin in the raw frame, and a raw
+# (0, 0, z) only stays a pure height while there is no rotation to carry it
+# sideways. On a room leaning 0.84 deg with the pick 5.8 m out in plan the
+# floor landed 7.3 cm ABOVE the grid, silently, and 1053 checks passed.
+# ⭐ The claim is not "the shift has zeros in x and y" -- it is "the point the
+# operator put on the floor comes out ON the floor", so that is what is asked.
+_lean = registration.Level(normal=(math.sin(math.radians(0.84)), 0.0,
+                                   math.cos(math.radians(0.84))),
+                           pivot=(5.0, 3.0, -1.42))
+_pick = [7.1, -2.3, -1.44]
+_Lz = registration.Level.from_dict(
+    _wsrv.set_origin(_pick, level=_lean.as_dict(), axes="z")["level"])
+_land = _Lz.apply(np.array([_pick]))[0]
+check("...on a room that LEANS, which is the only case that can be wrong",
+      abs(_land[2]) < 1e-9, _land)
+# ⛔ AGAINST THE POINT'S OWN PLAN POSITION, NOT AGAINST ANOTHER COMPUTED ONE.
+# This first compared the leaning answer with the flat one -- which passed when
+# a reversion sent BOTH to the origin, because two zeros are equal. A check
+# whose two sides can fail together is not a check.
+check("...and the plan position is still left alone",
+      abs(_land[0] - _pick[0]) < 0.02 and abs(_land[1] - _pick[1]) < 0.02,
+      [_land, _pick])
+# ⛔ A PROJECT SAVED BEFORE THE AXES EXISTED MEANT ALL THREE, and must go on
+# meaning all three -- a missing key that read as "z" would move every datum
+# ever set.
+check("...and an origin saved before today still means all three axes",
+      registration.Level.from_dict(
+          {"normal": [0, 0, 1], "pivot": [0, 0, 0],
+           "origin": [1, 2, 3]}).origin_axes == "xyz")
+check("...while one saved since keeps the axes it was given",
+      registration.Level.from_dict(
+          registration.Level(origin=[1, 2, 3],
+                             origin_axes="z").as_dict()).origin_axes == "z")
 # ⛔⛔ THE THREE PARTS OF THE WORLD ARE INDEPENDENT. Setting any one of them
 # must leave the other two exactly as they were -- the rule the compass has
 # always followed, now that there are three things to forget instead of two.
@@ -6560,6 +6595,34 @@ check("AND NOT ONE PLACEMENT WAS TOUCHED - the tilt belongs to the room",
 check("...which the source says out loud, next to the code that does it",
       "level_from_floor" in _ALIGN_SRC
       and "pulls the alignment apart" in _ALIGN_SRC)
+# ⛔⛔ THE FLOOR GOES **ON** THE GRID, NOT MERELY PARALLEL TO IT. Reported from
+# a fresh project: load a scan and the ground does not meet the world grid. It
+# never had -- levelling answered "which way is down" and stopped, and since a
+# capture's zero is the INSTRUMENT, the ground sat a tripod's height UNDER the
+# grid, which then cut through the room at chest height. Everything the request
+# asked for was built except the last step, and the tray said "nothing was
+# moved", so nothing looked wrong.
+_flr = registration.Level.from_dict(_lv["level"])
+_on = _flr.apply(np.array([_flr.pivot]))[0]
+check("AND THE GROUND ENDS UP ON THE GRID, not a tripod's height above it",
+      _lv["ok"] and abs(_on[2]) < 1e-9, _on)
+check("...by moving the WORLD's height, so still no placement is touched",
+      _flr.origin_axes == "z"
+      and all(s.lean.is_identity() and s.setup.dz == 0.0 for s in _fsrv.scans))
+check("...and it says how far the ground had to come, in the operator's words",
+      _lv.get("floored") is True and _lv["drop_m"] > 0.5
+      and "the floor is now the grid" in _lv["text"], _lv.get("text"))
+# ⛔ AND IT DOES NOT RE-STAMP A DATUM SOMEBODY CHOSE. No origin at all is the
+# default nobody asked for; an origin that was set is a decision, and quietly
+# moving it on every load would slide a drawing already being measured off it.
+_mine = registration.Level(normal=_flr.normal, pivot=_flr.pivot,
+                           origin=[3.0, 4.0, 5.0]).as_dict()
+_kept = registration.Level.from_dict(
+    _fsrv.level_from_floor(level=_mine)["level"])
+check("...but a datum the operator already set is left exactly alone",
+      _kept.origin is not None
+      and float(np.abs(_kept.origin - np.array([3.0, 4.0, 5.0])).max()) < 1e-12
+      and _kept.origin_axes == "xyz", _kept.origin)
 # ⭐ A ramp is not that floor; a rough patch of the same floor IS.
 # ⚠ 15, not 25: past FLOOR_MAX_TILT_DEG `floor_plane` refuses to call a plane
 # a floor at all, so a 25-degree ramp came back in `missing` and never reached

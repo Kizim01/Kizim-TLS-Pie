@@ -1545,7 +1545,7 @@ class Level(object):
     """
 
     def __init__(self, normal=(0.0, 0.0, 1.0), pivot=(0.0, 0.0, 0.0),
-                 heading_deg=0.0, origin=None):
+                 heading_deg=0.0, origin=None, origin_axes="xyz"):
         n = np.asarray(normal, dtype=np.float64).reshape(3)
         length = float(np.linalg.norm(n))
         if length < 1e-12:
@@ -1585,6 +1585,24 @@ class Level(object):
         # it. Stored raw, it survives a re-level, a re-heading and a reopen.
         self.origin = (None if origin is None else
                        np.asarray(origin, dtype=np.float64).reshape(3).copy())
+        # ⛔⛔ AND WHICH AXES IT GOVERNS, BECAUSE "Z ALONE" HAS TO BE DECIDED IN
+        # THE FRAME THE SHIFT IS APPLIED IN. This used to be done by mixing the
+        # picked point into the old origin per axis in the RAW frame, on the
+        # reasoning that naming z should not move x and y. It does keep x and y
+        # still -- and it also fails to put the picked point on the grid, which
+        # is the entire thing that was asked for. Measured on a room leaning
+        # 0.84 deg with the pick 5.8 m out in plan: the floor landed 7.3 cm
+        # ABOVE zero, silently. A raw (0, 0, z) is not a pure height once it
+        # has been through the levelling rotation.
+        #
+        # ⭐ So the point is kept WHOLE and raw -- it stays on the feature it
+        # was picked on, which is why the origin is stored raw at all -- and the
+        # axes it speaks for are carried beside it. `shift_xyz` rotates the
+        # whole point and then keeps only the named components, so "z" means
+        # "this point's HEIGHT becomes zero and its plan position is left
+        # alone", which is what the words meant all along.
+        want = "".join(c for c in "xyz" if c in str(origin_axes or "").lower())
+        self.origin_axes = want or "xyz"
 
     @property
     def tilt_deg(self):
@@ -1610,8 +1628,16 @@ class Level(object):
         if self.origin is None:
             return None
         if self.tilt_deg < 1e-12 and abs(self.heading_deg) < 1e-12:
-            return self.origin.copy()
-        return ((self.origin - self.pivot) @ self.matrix().T) + self.pivot
+            out = self.origin.copy()
+        else:
+            out = ((self.origin - self.pivot) @ self.matrix().T) + self.pivot
+        # ⛔ THE AXES ARE CHOSEN HERE, AFTER THE ROTATION, AND THAT IS THE FIX.
+        # An axis dropped before the rotation comes back through it; dropped
+        # after, it is genuinely not moved. See `origin_axes`.
+        if self.origin_axes != "xyz":
+            out = np.array([out[i] if c in self.origin_axes else 0.0
+                            for i, c in enumerate("xyz")])
+        return out
 
     def matrix(self):
         """
@@ -1689,6 +1715,12 @@ class Level(object):
             out["heading_deg"] = self.heading_deg
         if self.origin is not None:
             out["origin"] = [float(v) for v in self.origin]
+            # Written only when it is not the whole three, so a project saved
+            # before this existed and one saved after are the same file -- and
+            # a missing key reads back as "xyz", which is exactly what every
+            # origin set before today meant.
+            if self.origin_axes != "xyz":
+                out["origin_axes"] = self.origin_axes
         return out
 
     @classmethod
@@ -1698,7 +1730,8 @@ class Level(object):
         return cls(normal=data.get("normal") or (0.0, 0.0, 1.0),
                    pivot=data.get("pivot") or (0.0, 0.0, 0.0),
                    heading_deg=data.get("heading_deg") or 0.0,
-                   origin=data.get("origin"))
+                   origin=data.get("origin"),
+                   origin_axes=data.get("origin_axes") or "xyz")
 
     def describe(self):
         if self.is_identity():
@@ -1713,8 +1746,10 @@ class Level(object):
             parts.append("turned %.2f deg so north runs +Y" % self.heading_deg)
         if self.origin is not None:
             s = self.shift_xyz
-            parts.append("zero moved to the picked point (%.3f, %.3f, %.3f "
-                         "off the old origin)" % (s[0], s[1], s[2]))
+            parts.append("%s zero moved to the picked point "
+                         "(%.3f, %.3f, %.3f off the old origin)"
+                         % ("".join(c.upper() for c in self.origin_axes),
+                            s[0], s[1], s[2]))
         return "; ".join(parts)
 
 

@@ -1533,8 +1533,30 @@ class AlignServer(object):
             avg = avg / (float(np.linalg.norm(avg)) or 1.0)
         pivot = np.average(np.array([s["point"] for s in agreed]),
                            axis=0, weights=w)
-        made = registration.Level(avg, pivot, had.heading_deg,
-                                  origin=had.origin)
+        # ⛔⛔ AND THE FLOOR IS PUT **ON** THE GRID, NOT MERELY PARALLEL TO IT.
+        # Levelling answers "which way is down" and stops there, so a freshly
+        # loaded scan came out flat and floating: a capture's zero is the
+        # INSTRUMENT, and the instrument stands on a tripod, so the ground sat
+        # about 1.4 m UNDER the world grid and the grid cut through the room at
+        # chest height. Every part of "level it to the world grid" was built
+        # except the last one, and the tray even said so out loud -- "nothing
+        # was moved".
+        #
+        # ⭐ The height is free here and costs nothing to take: `pivot` is a
+        # measured point ON the floor and is the rotation centre, so after
+        # levelling it sits at exactly its own Z, and naming it as the origin's
+        # z puts the ground on zero to the millimetre.
+        #
+        # ⛔ ONLY WHEN NOBODY HAS SET ONE. A datum the operator chose is a
+        # decision, and a program that quietly re-stamps it every time a scan
+        # is loaded would move a drawing already being measured off it. No
+        # origin at all is not a decision -- it is the default nobody asked
+        # for, and it is the one being fixed.
+        floored = had.origin is None
+        made = registration.Level(
+            avg, pivot, had.heading_deg,
+            origin=(pivot.copy() if floored else had.origin),
+            origin_axes=("z" if floored else had.origin_axes))
         # ⭐ THE SCATTER IS REPORTED AS A NUMBER, NOT TURNED INTO AN ACCUSATION.
         # See FLOOR_ODD_DEG: on a real floor these disagree by a degree or two
         # and that is the measurement, not a finding. What the operator can
@@ -1552,10 +1574,17 @@ class AlignServer(object):
                 "spread_deg": spread, "points": total,
                 "odd": [s["name"] for s in odd],
                 "missing": missing,
+                "floored": floored,
+                "drop_m": (float(-pivot[2]) if floored else 0.0),
                 "text": ("the ground under %d capture%s says the survey leans "
                          "%.2f° — %s points of floor, agreeing to within %.1f°"
+                         "%s"
                          % (len(agreed), "" if len(agreed) == 1 else "s",
-                            made.tilt_deg, "{:,}".format(total), spread))}
+                            made.tilt_deg, "{:,}".format(total), spread,
+                            ("" if not floored else
+                             ", and the floor is now the grid (it was %.2f m "
+                             "off it, which is the tripod's height)"
+                             % abs(float(pivot[2])))))}
 
     def set_origin(self, point, level=None, axes="xyz"):
         """
@@ -1592,18 +1621,34 @@ class AlignServer(object):
         want = str(axes or "xyz").lower()
         if not want or any(c not in "xyz" for c in want):
             return {"ok": False, "error": "axes must be some of x, y and z"}
-        # ⛔ MIXED PER AXIS IN THE **RAW** FRAME, WHICH IS WHERE THE ORIGIN
-        # LIVES. Doing it after the rotation would mean "z only" moved x and y
-        # as well the moment the room was levelled, because a rotated z is not
-        # a pure z -- the axis the operator named would not be the axis that
-        # moved, which is the whole of what they asked for.
-        base = had.origin if had.origin is not None else np.zeros(3)
-        made_origin = np.array(base, dtype=np.float64)
-        for i, name in enumerate("xyz"):
-            if name in want:
-                made_origin[i] = p[i]
+        # ⛔⛔ THE PICKED POINT IS KEPT WHOLE, AND THE AXES TRAVEL BESIDE IT.
+        # This used to mix the pick into the old origin per axis in the RAW
+        # frame, so that naming "z" could not move x and y. It did keep them
+        # still, and it also missed the grid: a raw (0, 0, z) is not a pure
+        # height once it has been through the levelling rotation, so the point
+        # the operator put on the floor came out ABOVE it -- 7.3 cm on a room
+        # leaning 0.84 deg with the pick 5.8 m out, and nothing said so.
+        # `Level.shift_xyz` now drops the unnamed axes AFTER the rotation,
+        # where dropping one actually keeps it still.
+        if had.origin is None:
+            made_origin, made_axes = p.copy(), want
+        else:
+            # ⚠ TWO PICKS, AND ONLY ONE POINT TO HOLD THEM. Plan zero from a
+            # column and height zero from the floor are two different places,
+            # and this structure carries one; the axes the new pick does not
+            # name keep the OLD point's components, which is exact whenever
+            # both picks agree there and approximate when they do not. It is
+            # no worse than what it replaces and the common case -- one pick,
+            # or a re-pick of the same axes -- is now exact rather than out by
+            # the room's lean.
+            made_origin = np.array(had.origin, dtype=np.float64)
+            for i, name in enumerate("xyz"):
+                if name in want:
+                    made_origin[i] = p[i]
+            made_axes = "".join(c for c in "xyz"
+                                if c in want or c in had.origin_axes)
         made = registration.Level(had.normal, had.pivot, had.heading_deg,
-                                  origin=made_origin)
+                                  origin=made_origin, origin_axes=made_axes)
         shift = made.shift_xyz
         return {"ok": True, "level": made.as_dict(),
                 "origin": [float(v) for v in made_origin],
@@ -5470,10 +5515,15 @@ async function autoFloorLevel(){
     const j = await postLevelFloor();
     if(!j || !j.ok) return;
     V.level=j.level; showLevel(); recomputeLive(); invalidate(); editsFollow();
-    say('Levelled to the floor: '+j.text+'. Nothing was moved — the tilt '+
-        'belongs to the room, not to any one capture. Turn on the '+
-        '<b>World grid</b> to see the ground plane, or level to a surface '+
-        'you name if this one was not the floor.');
+    /* ⛔ THIS USED TO SAY "NOTHING WAS MOVED", WHICH WAS TRUE OF THE SCANS AND
+       READ AS TRUE OF THE WORLD. No placement changes -- that part still
+       holds and still matters -- but the ground plane now lands on the grid
+       rather than a tripod's height under it, and a message that says nothing
+       moved is the reason nobody noticed it had not. */
+    say('Levelled to the floor: '+j.text+'. No scan was moved — the tilt '+
+        'belongs to the room, not to any one capture, and the height moves '+
+        'the world rather than the clouds. Level to a surface you name if '+
+        'this one was not the floor.');
   }catch(e){ /* startup convenience: it says nothing when it cannot */ }
 }
 function postLevelFloor(){
