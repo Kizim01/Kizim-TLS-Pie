@@ -3708,7 +3708,60 @@ caught. ⚠ **Three of my own checks crashed instead of failing this session** �
 later checks down with it during a reversion test, so that round measured nothing until it was
 re-run.
 
+### ⛔⛔ AND THE FIX SHIPPED AND DID NOT FIX IT — CAUGHT ONLY BY BEING ASKED TWICE
+
+The Save as… work went into the **10:49** build. It changed nothing, and the evidence is exact:
+Studio was started at **11:12** — after that build — and at **11:41** it wrote a **377 MB** file to
+`C:\Users\sunun\tlspie_merged.laz`. The operator pressed Export again, lost the file again, and came
+back and asked *the same question a second time*. **That second asking is the only reason this was
+caught.**
+
+`OUTPATH` was seeded **`OUT || ''`**, and `tlspie_studio.py` **always** computes a fallback path — so
+the `if(!OUTPATH && !await chooseOut())` branch could never be reached. There was always something
+there, Export used it silently, and the Save as… button sat unused right beside it.
+
+⭐⭐ **A PATH THE PROGRAM INVENTED IS NOT A PATH THE OPERATOR CHOSE**, and seeding one from the other
+made the two indistinguishable. The launch fallback is a **poor destination and a good hint** — it is
+derived from whatever the job was opened with — so it is now spent as the suggested *name*, and the
+dialog opens in the project's own folder. `OUTPATH` starts genuinely empty, so **Export asks the
+first time, every session**. Pinned by a check that fails on the exact seeding that shipped
+(`"let OUTPATH = OUT" not in _esrc`).
+
+⚠ **A methodology near-miss worth keeping.** To check whether the running exe had the new controls I
+grepped the binary for `savewhere` — absent. Before concluding anything I grepped for **`Auto-align`**,
+a string that has been in the program for weeks: also absent. PyInstaller stores the modules as
+compressed bytecode, so **grep cannot see any of it** and the test was meaningless in both directions.
+*Check the method against something you already know the answer to, before trusting what it says about
+something you don't.*
+
+### ⭐ SKETCHUP: SETTLED. THE OPERATOR HAS SCAN ESSENTIALS
+
+So **`.laz` is already the right format and adding E57 or PTS would be wasted work** — the same shape
+as the 3ds Max `.rcp`-only finding. The question is closed; do not reopen it.
+
+Verified the written file is well formed for it: **LAS 1.4, point format 2** (XYZ + intensity + real
+RGB, not grey — the photographs reach the file), 1 mm scale, **zero offsets** so coordinates sit near
+the origin. ⚠ If Scan Essentials ever refuses one, the only plausible cause is the **LAS 1.4** header
+and dropping to 1.2 is one line at `export.py:116` (point format 2 exists in both). Not done
+speculatively — 1.4 is standard and there is no evidence against it.
+
+**Delivered and sitting on the drive:** `D:\RESTAURANT SCAN\main project.04 merged.laz` — all **19**
+clouds, **12,041,236 points, 57 MB**, 242 s, 6,542,318 overlapping points merged away.
+
+⚠ **Measured, so nobody wastes time clipping for size:** the cloud spans 85 × 75 m, but **91% of
+points lie within 10 m** of the walk and only **2% beyond 20 m**. It is a thin far-field halo through
+windows and doorways. Clipping fixes *zoom extents*, not file size. And that file is **neither
+levelled nor origin-set** — `.04` has `level: null` — so open it in the rebuilt Studio first, where
+floor levelling now runs by itself, and set zero before the export that matters.
+
 ### ▶ NEXT SESSION STARTS HERE
+
+**⛔⛔ FIRST: THE EXE IS ONE BUILD BEHIND, AND THE REBUILD IS BLOCKED.** `build_exe.py` fails with
+**`PermissionError: [WinError 5]` on `dist/TLS-Pie-Studio.exe`** — the running Studio (PIDs 21220 /
+25192, started 11:12) holds the file. Source is committed and pushed (`7db96d4`, 1024 passing); the
+**10:49 exe does not contain the Save-as fix**, so Export in the operator's running copy still writes
+to the home folder without asking. ⛔ Do NOT kill those processes: there may be unplaced alignment
+work in them. Ask the operator to save and close Studio, then rebuild and `--selftest`.
 
 **⭐⭐ THE ONE THING ONLY THE OPERATOR CAN DO: PRESS THE BUTTON.** Every fix today was verified through
 the library against their saved placements, and **not once in Studio**. Restart Studio (see the exe
