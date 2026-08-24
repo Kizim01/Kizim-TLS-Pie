@@ -6417,6 +6417,24 @@ check("...and the chosen path is on screen, not only in a line of status text",
       "id=\"outpath\"" in _esrc and "function showOut(" in _esrc)
 check("...and pressing Export with nowhere to go ASKS rather than failing",
       "if(!OUTPATH && !await chooseOut()) return;" in _esrc)
+# ⛔⛔ AND THE ASK ACTUALLY FIRES, WHICH THE FIRST VERSION OF THIS DID NOT.
+# `OUTPATH` was seeded `OUT || ''`, and `tlspie_studio.py` ALWAYS computes a
+# fallback -- so the branch above could never be reached, Export went on
+# writing silently to ~/tlspie_merged.laz, and the operator pressed it again
+# and lost the file again with a Save as... button sitting right there. Caught
+# only because they came back and asked the same question a second time.
+# ⭐ A path the PROGRAM invented is not a path the operator CHOSE.
+check("A LAUNCH DEFAULT IS NOT A CHOICE — the destination starts empty",
+      "let OUTPATH = '';" in _esrc and "let OUTPATH = OUT" not in _esrc)
+check("...and the launch fallback is spent as the suggested NAME instead",
+      "body:JSON.stringify({suggest:OUT||''})" in _esrc
+      and "def pick_out(self, suggest=None):" in _ALIGN_SRC)
+check("...and the dialog opens where the work is, not where Windows last was",
+      "directory=where" in io.open(os.path.join("tlsconvert", "desktop.py"),
+                                   encoding="utf-8").read())
+_wsrv2 = align.AlignServer([], out_path=None)
+check("...and asking with no native window says so, and changes nothing",
+      _wsrv2.pick_out("x.laz")["ok"] is False and _wsrv2.out_path is None)
 # ⛔ A bar that does not move for two minutes is a program that has hung.
 check("the export reports progress per capture, not as one long step",
       "edit=keep, progress=_step," in _ALIGN_SRC

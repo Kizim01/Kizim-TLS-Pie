@@ -652,7 +652,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.level(body.get("points") or [],
                                             body.get("level")))
             if path == "/save/where":
-                return self._json(srv.pick_out())
+                return self._json(srv.pick_out(body.get("suggest")))
             if path == "/level/floor":
                 return self._json(srv.level_from_floor(body.get("level")))
             if path == "/origin":
@@ -3117,7 +3117,7 @@ class AlignServer(object):
                 "camera": (0.0, 0.0,
                            float(getattr(scan, "camera_z", 0.0) or 0.0))}
 
-    def pick_out(self):
+    def pick_out(self, suggest=None):
         """
         Ask for a file to write the merged cloud into, and remember it.
 
@@ -3132,9 +3132,14 @@ class AlignServer(object):
         if desktop.WINDOW[0] is None:
             return {"ok": False,
                     "error": "no native window, so no system file dialog"}
-        base = os.path.splitext(os.path.basename(self.project_path
-                                                 or "merged"))[0]
-        got = desktop.pick_cloud_out(suggest="%s.laz" % base)
+        # ⭐ THE SUGGESTION COMES FROM WHERE THE OPERATOR IS WORKING: the open
+        # project first, then whatever the program was launched with, then a
+        # bare name. The launch fallback is a poor DESTINATION and a perfectly
+        # good hint -- it is derived from the file the job was opened from.
+        seed = self.project_path or suggest or "merged"
+        base = os.path.splitext(os.path.basename(seed))[0] or "merged"
+        folder = os.path.dirname(os.path.abspath(seed)) if seed else ""
+        got = desktop.pick_cloud_out(suggest="%s.laz" % base, folder=folder)
         if not got:
             return {"ok": False, "cancelled": True}
         if not os.path.splitext(got)[1]:
@@ -8726,17 +8731,31 @@ function addScan(){
    one line of status text, and the cloud was never seen again -- which is
    what "the export button doesn't work" turned out to mean. Asked once and
    remembered for the rest of the session. */
-let OUTPATH = OUT || '';
+/* ⛔⛔ IT STARTS EMPTY, AND `OUT` IS ONLY A SUGGESTED NAME. This was written
+   as `OUT || ''` first, which meant the "ask when nowhere is chosen" branch
+   could never fire: `tlspie_studio.py` ALWAYS computes a fallback path, so
+   there was always something there and Export went on writing to
+   `~/tlspie_merged.laz` exactly as before -- the operator pressed it again and
+   the file landed in the home folder again, with a Save as... button sitting
+   right there unused. A path the PROGRAM invented is not a path the operator
+   CHOSE, and treating the two as the same is the whole bug. */
+let OUTPATH = '';
 async function chooseOut(){
   try{
     const r=await fetch('save/where',{method:'POST',
-      headers:{'Content-Type':'application/json'}, body:'{}'});
+      headers:{'Content-Type':'application/json'},
+      /* The launch fallback is worth nothing as a DESTINATION and everything
+         as a suggested name and folder -- it is derived from whatever the job
+         was opened with, which is where the operator is working. */
+      body:JSON.stringify({suggest:OUT||''})});
     const j=await r.json();
     if(j.cancelled) return '';
     if(!j.ok){
       /* No native dialog (the browser fallback): the launch path is all
          there is, and saying so beats a button that does nothing. */
-      say(j.error+' — it will be written to '+(OUTPATH||'nowhere')+'.','warn');
+      OUTPATH = OUTPATH || OUT || '';
+      showOut();
+      say(j.error+' — falling back to '+(OUTPATH||'nowhere')+'.','warn');
       return OUTPATH;
     }
     OUTPATH=j.out; showOut(); return OUTPATH;
@@ -8744,9 +8763,10 @@ async function chooseOut(){
 }
 function showOut(){
   const box=$('outpath'); if(!box) return;
+  const safe=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
   box.innerHTML = OUTPATH
-    ? 'writes to <b>'+OUTPATH.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</b>'
-    : 'no file chosen yet — Export will ask.';
+    ? 'writes to <b>'+safe(OUTPATH)+'</b>'
+    : 'No file chosen — <b>Export will ask you where to put it.</b>';
 }
 async function saveMerged(clipOnly){
   if(!V.scans.length) return say('Nothing to save yet.', 'warn');

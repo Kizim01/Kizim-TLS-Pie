@@ -190,7 +190,7 @@ def pick_project(save=False, title=None):
     return chosen[0]
 
 
-def pick_cloud_out(suggest="merged.laz", title=None):
+def pick_cloud_out(suggest="merged.laz", folder="", title=None):
     """
     A native Save-as dialog for the merged cloud. '' if cancelled.
 
@@ -210,8 +210,14 @@ def pick_cloud_out(suggest="merged.laz", title=None):
     if win is None:
         return ""
     import webview
+    # ⭐ OPENS WHERE THE WORK IS. A save dialog that starts in the last place
+    # Windows happened to use is how a file ends up somewhere nobody looks --
+    # which is the fault this whole function exists to fix, so it would be a
+    # poor thing to reintroduce one line further down.
+    where = folder if folder and os.path.isdir(folder) else ""
     chosen = win.create_file_dialog(
-        webview.SAVE_DIALOG, save_filename=suggest, file_types=CLOUD_FILTERS)
+        webview.SAVE_DIALOG, directory=where, save_filename=suggest,
+        file_types=CLOUD_FILTERS)
     if not chosen:
         return ""
     return chosen if isinstance(chosen, str) else chosen[0]
