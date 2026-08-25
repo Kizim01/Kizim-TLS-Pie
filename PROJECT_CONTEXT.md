@@ -3970,11 +3970,78 @@ takes that branch instead of levelling"), and `_ref["error"]` on a result that *
 when the guard is removed** — the very regression the check exists to catch. Both rewritten to fail.
 Suite **1061 → 1083**, seven reversions all caught, exes **19:40** on 2026-08-25.
 
+## 2026-08-25 — the photograph's pose: a ring that never sent, and the offset nothing could reach
+
+### ⛔⛔ "MOVE IMAGE CONTROLS NOT WORKING" — THE HEADING RING WAS BROKEN BY ONE LINE
+
+`tiltRelease` read `V.tiltAxis` to decide what to send, and the pointer-up handler cleared that flag
+**on the same line, before the call**:
+
+```js
+if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
+```
+
+So `if(V.tiltAxis==='yaw')` **could never be true** and every ring drag ended by sending tip and bank.
+Tip and bank worked **by luck**. The heading ring turned the picture on screen, then re-coloured at the
+**old** heading, so it sprang back.
+
+⭐ **The fix is not the ordering — the release is now TOLD which axis it is finishing.** *A handler that
+reads mutable state a tear-down line can clear is one whose correctness lives in a different statement*,
+and fixing the order just waits for someone to move that line again.
+
+⚠ **I said "two call sites, both with the same fault". Wrong** — there is one; the second match was my
+own comment quoting the bug, which `replace_all` had also rewritten. Restored, and the check now asserts
+that **no call anywhere still reads the cleared flag** rather than counting sites.
+
+### ⛔⛔ THE CAMERA'S SEAT: SOLVED, STORED, USED — AND NEVER SHOWN
+
+`camera_x` and `camera_y` have always been modelled: the scorer takes them, **deep align solves for
+them**, they are stored on the scan, saved into the project and used on every recolour. **The page was
+sent only the height.** So the offset that decides whether a picture *can* line up was invisible and
+unsettable — the fourth built-and-unreachable control this week.
+
+⭐⭐ **And it is the one no rotation can absorb.** A ring turns every ray's **direction**; a centre a few
+centimetres to one side moves where the rays **start**, pulling near edges one way and far ones the
+other. No heading trades that out — it can only choose *which distance* is wrong. *"It will not line up
+even with deep align" is what that looks like from the outside.*
+
+Three dashed arms at the tripod, in the photograph's own colours — ⛔ **deliberately unlike the scan's
+move arms, which share that tripod and do the opposite thing** (those move the cloud; these move the
+camera inside a cloud that stays put); this file already says two controls a centimetre apart spelled
+the same and doing opposite things is worse than either choice. Only the outer half of an arm grabs
+(the inner halves overlap each other and the tripod marker), the drag clamps **where the server clamps**
+so it cannot run past a bound and be refused, and the seat is sent **once on release** like every other
+pose change. X and Y boxes beside the height, in centimetres.
+
+⛔ `set_camera` now validates the three **by one rule rather than three copies**, and `None` leaves an
+axis alone — which made **all-None a request that asks for nothing**. An existing check caught it:
+making the height optional had quietly turned *"set the camera to nothing"* into a **success** that
+re-coloured the cloud and reported a seat nobody chose. All-None is refused.
+
+### ⛔⛔ AND THE DOOR AGAIN: THE PHOTOGRAPH PANEL HAD NO GIZMO BUTTON
+
+Every part existed and the only way in was a `mini` button called **rings** inside the **scan list** — a
+different panel from the one an operator is looking at while working on a picture, and small enough to
+read as a label. The tray now opens with **Gizmo**, plus the two halves it is made of (**Rings** aim the
+picture, **Camera arms** move its centre) and a line saying **which half to reach for** when turning
+will not do it.
+
+- ⛔ **The master holds no flag of its own** — lit when both halves are, computed not remembered. A
+  fourth flag would be a second answer to *"is the gizmo showing"*. Same rule as the scan's gizmo.
+- ⛔ **A half that is off is not grabbable.** A widget catching the pointer while invisible does
+  something the operator cannot see. Both halves off means the gizmo is **off**, not a lit button over
+  an empty tripod.
+- ⛔ **The button aims at `V.picked`**, which is what the pane beside it is keyed on — `active()` first
+  would let it work on a different photograph from the controls directly underneath it.
+
+Suite **1083 → 1110**, exes **20:37**.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 22:06 from `a3aa6b3`, selftest 0, CUDA engine found.** They carry
-everything from 08-24 — the Save-as destination, the world grid on at startup, the reopened move tray
-and the slicer-shaped move panel. (The 11:41 blockage is closed: the operator shut Studio.)
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-25 20:37, selftest 0, CUDA engine found.** They carry
+everything from 08-24 and 08-25 — the Save-as destination, the world grid on at startup, the reopened
+move tray, the slicer-shaped move panel, per-scan levelling **and** the floor drop, the heading-ring
+fix, the camera-seat arms and the photograph panel's own Gizmo button.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.
