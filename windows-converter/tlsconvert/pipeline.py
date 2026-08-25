@@ -744,7 +744,39 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
                           % (confidence, colour_mod.MIN_CONFIDENCE))
         return None, info
 
-    return colour_mod.Colouriser(rgb, yaw, camera), info
+    # ⭐ THE CAMERA IS NOT AT THE LIDAR'S CENTRE HERE EITHER -- see the note
+    # in `align.colour_scan`. The ladder is climbed on the same rules (it
+    # cannot make the solved heading worse; a failed rung leaves the pose
+    # standing), so a straight CLI convert paints the same picture Studio
+    # would rather than one sitting low by the camera's mounting height.
+    # ⛔ ONLY WHEN THE WHOLE POSE IS THE PROGRAM'S TO FIND -- a `--camera-z`
+    # the operator gave is an input, not a starting guess to overwrite.
+    if any(camera):
+        return colour_mod.Colouriser(rgb, yaw, camera), info
+    pose = {"yaw_deg": float(yaw), "pitch_deg": 0.0, "roll_deg": 0.0,
+            "camera_x": float(camera[0]), "camera_y": float(camera[1]),
+            "camera_z": float(camera[2])}
+    try:
+        for rung in range(1, len(colour_mod.RUNGS) + 1):
+            got = colour_mod.refine_pose(
+                pts, lum,
+                camera=(pose["camera_x"], pose["camera_y"],
+                        pose["camera_z"]),
+                yaw_deg=pose["yaw_deg"], pitch_deg=pose["pitch_deg"],
+                roll_deg=pose["roll_deg"], rung=rung)
+            if not got.get("ok"):
+                break
+            pose = got
+    except Exception:                                     # noqa: BLE001
+        pass              # the sweep's answer stands; the climb was a bonus
+    info["yaw_deg"] = float(pose["yaw_deg"])
+    info["pitch_deg"] = float(pose.get("pitch_deg") or 0.0)
+    info["roll_deg"] = float(pose.get("roll_deg") or 0.0)
+    camera = (float(pose.get("camera_x") or 0.0),
+              float(pose.get("camera_y") or 0.0),
+              float(pose.get("camera_z") or 0.0))
+    return colour_mod.Colouriser(rgb, info["yaw_deg"], camera,
+                                 info["pitch_deg"], info["roll_deg"]), info
 
 
 #: `photo` was not given, so look for one beside the capture -- the CLI's

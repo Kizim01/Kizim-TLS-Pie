@@ -4097,16 +4097,42 @@ by whatever its tripod did. Two orderings were wrong at once.
 Suite **1110 → 1134**; three deliberate reversions (paint back to raw, `add` loses its opt-in, export
 colours before the lean) each caught by exactly the check built for it.
 
+## 2026-08-26 — "the image is too low": the first paint now knows where the camera sits
+
+**Reported after the level-frame pass: the image is still misaligned, too low, needs to go up.**
+"Too low, uniformly" is a signature, not a mystery: the rig mounts the 360 camera **above** the lidar
+and its clamp leans it, yet the first paint assumed **height zero and tilt zero on every scan** — so
+the picture landed low on everything near, by atan(height/range) plus the mounting pitch, and the only
+way up was knowing to press Auto-align three times.
+
+- **Measured before building anything** (folder 1): the ladder finds **camera z +6 cm** and **pitch
+  +2.45°**, fit 0.288 → 0.318, in 4 seconds. A knowably-wrong first paint on every scan is the
+  program's job to fix, not the operator's to discover.
+- **The attach now climbs the whole refinement ladder itself** — `colour_scan`'s solve path and
+  `prepare_colour`'s CLI self-solve both — on the ladder's own rules: it only adopts a trial that
+  beat what it held, so it cannot make the solved heading worse; the **grade stays the global
+  sweep's** (a refinement must never promote a pairing); a **failed rung leaves the sweep's answer
+  standing** (the climb is a bonus, never the reason an attach fails). `rung` is set to the top, so
+  the Auto-align button honestly offers what is *left* — judgement by eye.
+- **⛔ ONLY WHEN THE WHOLE POSE IS THE PROGRAM'S TO FIND.** A camera the operator set (Re-solve after
+  typing a height, `--camera-z` on the CLI) is an **input, not a starting guess** — climbing there
+  would quietly overwrite the number they just chose. Guarded by `if not any(camera)`; the reversion
+  audit showed an *existing* check ("Re-solve can carry a new height in with it") also pins this —
+  the guard was load-bearing before it was written. A heading given by hand still never climbs:
+  **a nudge stays a nudge**, every gizmo release repaints in milliseconds.
+- Fresh import of folder 1 end-to-end: **17 s** (unchanged), first paint yaw 92.26° pitch +2.47°
+  camera z +3.8 cm seat +2.2 cm, **rung 4, grade confirmed** — the operator's first look is now the
+  program's best, not its guess.
+
+Suite **1134 → 1144**; two reversions (climb removed; climb ignoring the operator's camera) both
+caught, the second by the new check *and* the pre-existing Re-solve check.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-25 22:37, selftest 0, CUDA engine found.** They carry
-everything from 08-24 and 08-25 including the level-frame colour pass: the photograph is solved and
-painted against the LEVELLED cloud at every door, imports go level-first, and the camera seat now
-reaches the export. **Worth trying on folder 1 first (`D:\RESTAURANT SCAN\1`)**: import the pcap
-fresh — the floor should land on the grid on its own — then attach the photograph and look at the
-near edges before touching anything; the heading should come back ~92.5° confirmed. If it is still
-off, press Gizmo and drag the dashed camera arms a few centimetres — the mounting lean measured
-+2.55°, so a small tilt on the rings may also be left to take out by eye.
+**⚠ THE EXES ARE STALE: built 2026-08-25 22:37, BEFORE the auto-climb pass above.** A Studio run
+from them still makes the first paint at height zero and tilt zero — the image lands low. Rebuild,
+then re-import folder 1 fresh: the first paint should arrive already fitted (heading ~92.3°
+confirmed, camera a few centimetres up) with nothing to press.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.

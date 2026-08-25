@@ -7482,5 +7482,145 @@ check("...while an identical re-fit does not repaint a million points",
       _flvl2["ok"] and len(_rp_calls) == 1 and not _flvl2.get("repainted"),
       len(_rp_calls))
 
+# --- the first paint already knows where the camera sits --------------------
+#
+# ⛔⛔ "THE IMAGE IS TOO LOW, NEEDS TO GO UP." The rig mounts the 360 camera
+# ABOVE the lidar on the same tripod, and its clamp leans it a little -- yet
+# the first paint assumed height zero and tilt zero on every scan, so the
+# picture landed low on everything near, by atan(height/range) plus the
+# mounting pitch, and the only way up was pressing Auto-align three times.
+# Measured on folder 1: +6.1 cm and +2.45 deg, fit 0.288 -> 0.318, 4 seconds.
+# The attach now climbs the whole ladder itself, on the ladder's own rules.
+print("\nthe first paint knows where the camera sits")
+
+_ca_scan = _mscan("cam", _lc_pts)
+_ca_refines, _ca_paints = [], []
+_ca_pose = {"ok": True, "yaw_deg": 40.8, "pitch_deg": 2.4, "roll_deg": -0.2,
+            "camera_z": 0.06, "camera_x": 0.001, "camera_y": -0.002}
+_real_climb = (colour.load_panorama, colour.solve_yaw, colour.peaks,
+               colour.sample, colour.refine_pose, align.grade_solve)
+
+
+def _patch_climb(refine=None):
+    colour.load_panorama = lambda p: (_fake_rgb,
+                                      np.zeros((64, 128), np.float32))
+    colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
+                        (41.0, 9.0, None))
+    colour.peaks = lambda profile: [{"yaw_deg": 41.0, "confidence": 9.0}]
+    colour.sample = (lambda pts, img, **kw:
+                     (_ca_paints.append(dict(kw)),
+                      np.full((len(pts), 3), 7, np.uint8))[1])
+    colour.refine_pose = refine or (lambda pts, lum, **kw:
+                                    (_ca_refines.append(dict(kw)),
+                                     dict(_ca_pose))[1])
+    def _grade(info, pts, refl, lum, camera):
+        info["grade"] = "sure"
+    align.grade_solve = _grade
+
+
+def _restore_climb():
+    (colour.load_panorama, colour.solve_yaw, colour.peaks,
+     colour.sample, colour.refine_pose, align.grade_solve) = _real_climb
+
+
+_patch_climb()
+try:
+    _ca_info = align.colour_scan(_ca_scan, "fake.jpg")
+finally:
+    _restore_climb()
+check("THE ATTACH CLIMBS THE WHOLE LADDER ITSELF",
+      _ca_info.get("ok") and len(_ca_refines) == len(colour.RUNGS),
+      len(_ca_refines))
+check("...and the FIRST paint is made at the climbed pose, not the sweep's",
+      _ca_paints and _ca_paints[0]["yaw_deg"] == 40.8
+      and _ca_paints[0]["pitch_deg"] == 2.4
+      and _ca_paints[0]["camera"] == (0.001, -0.002, 0.06), _ca_paints[:1])
+check("...the scan remembers the camera the ladder found",
+      abs(_ca_scan.camera_z - 0.06) < 1e-9
+      and abs(_ca_scan.camera_x - 0.001) < 1e-9)
+check("...the ladder's rung says so, so the button offers what is LEFT",
+      _ca_info.get("rung") == len(colour.RUNGS), _ca_info.get("rung"))
+check("...and the grade is still the global sweep's, untouched by the climb",
+      _ca_info.get("grade") == "sure", _ca_info.get("grade"))
+
+# ⛔ A NUDGE STAYS A NUDGE: the given path -- every gizmo release, every
+# repaint -- must not spend seconds re-searching a pose somebody just chose.
+_ca_refines[:] = []
+_patch_climb()
+try:
+    align.colour_scan(_ca_scan, "fake.jpg", yaw=12.0)
+finally:
+    _restore_climb()
+check("a heading given by hand is painted, never re-searched",
+      len(_ca_refines) == 0, len(_ca_refines))
+
+# ⛔ AND A CAMERA THE OPERATOR SET IS AN INPUT, NOT A STARTING GUESS. Re-solve
+# after typing a height re-enters the solved path with that height; climbing
+# there would quietly overwrite the number they just chose.
+_ca_refines[:] = []
+_ca_paints[:] = []
+_ca2 = _mscan("cam2", _lc_pts)
+_patch_climb()
+try:
+    align.colour_scan(_ca2, "fake.jpg", camera_z=0.03)
+finally:
+    _restore_climb()
+check("a camera height the operator set is honoured, not re-fitted",
+      len(_ca_refines) == 0 and _ca_paints
+      and _ca_paints[0]["camera"] == (0.0, 0.0, 0.03),
+      (_ca_refines, _ca_paints[:1]))
+
+# ⛔ A FAILED RUNG LEAVES THE SWEEP'S ANSWER STANDING -- the climb is a bonus,
+# never the reason an attach fails or paints nothing.
+_ca_paints[:] = []
+_ca3 = _mscan("cam3", _lc_pts)
+_patch_climb(refine=lambda pts, lum, **kw: {"ok": False, "reason": "nope"})
+try:
+    _ca3_info = align.colour_scan(_ca3, "fake.jpg")
+finally:
+    _restore_climb()
+check("a failed rung leaves the sweep's answer standing",
+      _ca3_info.get("ok") and _ca_paints
+      and _ca_paints[0]["yaw_deg"] == 41.0
+      and _ca3_info.get("rung") == 0
+      and _ca_paints[0]["camera"] == (0.0, 0.0, 0.0), _ca_paints[:1])
+
+# ⭐ THE CLI's SELF-SOLVE CLIMBS TOO, so a straight convert paints the same
+# picture Studio would -- and a --camera-z the operator gave is respected.
+_cli_cols = []
+
+
+class _RecColouriser(object):
+    def __init__(self, rgb, yaw_deg, camera=(0.0, 0.0, 0.0),
+                 pitch_deg=0.0, roll_deg=0.0):
+        _cli_cols.append((yaw_deg, tuple(camera), pitch_deg, roll_deg))
+
+    def __call__(self, xyz):
+        return np.zeros((len(xyz), 3), np.uint8)
+
+
+_real_cli2 = (pipeline.sample_for_solve, colour.load_panorama,
+              colour.solve_yaw, colour.refine_pose, colour.Colouriser)
+pipeline.sample_for_solve = lambda path, meta, frame, **kw: _cli_pts
+colour.load_panorama = lambda p: (_fake_rgb, np.zeros((64, 128), np.float32))
+colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
+                    (41.0, 99.0, None))
+colour.refine_pose = lambda pts, lum, **kw: dict(_ca_pose)
+colour.Colouriser = _RecColouriser
+try:
+    pipeline.prepare_colour("ghost.pcap", {}, None, photo="fake.jpg")
+    pipeline.prepare_colour("ghost.pcap", {}, None, photo="fake.jpg",
+                            camera=(0.0, 0.0, 0.05))
+finally:
+    (pipeline.sample_for_solve, colour.load_panorama,
+     colour.solve_yaw, colour.refine_pose, colour.Colouriser) = _real_cli2
+check("the CLI's self-solve climbs the same ladder",
+      len(_cli_cols) == 2 and _cli_cols[0][0] == 40.8
+      and _cli_cols[0][1] == (0.001, -0.002, 0.06)
+      and _cli_cols[0][2] == 2.4, _cli_cols[:1])
+check("...and a --camera-z the operator gave is an input, not a guess",
+      _cli_cols[1][0] == 41.0 and _cli_cols[1][1] == (0.0, 0.0, 0.05),
+      _cli_cols[1:])
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

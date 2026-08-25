@@ -435,6 +435,56 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         grade_solve(info, sample, getattr(scan, "sample_refl", None), lum,
                     camera)
 
+        # ⭐⭐ THE CAMERA IS NOT AT THE LIDAR'S CENTRE, AND THE FIRST PAINT
+        # SHOULD ALREADY KNOW IT. The rig mounts the 360 camera ABOVE the
+        # lidar on the same tripod, so a paint from height zero is knowably
+        # wrong on every scan -- the picture lands LOW on everything near,
+        # by atan(height/range), and the camera's own mounting lean does the
+        # same in front. "The image is too low" was this, seen from outside:
+        # measured on the operator's folder 1, the ladder finds +6.1 cm and
+        # +2.45 deg and lifts the fit from 0.288 to 0.318 in seconds. So the
+        # whole ladder is climbed AT ATTACH, on the ladder's own rules: it
+        # only ever adopts a trial that beat what it held, so it cannot make
+        # the solved heading worse -- and the GRADE is already written by the
+        # global sweep above, which a refinement must never touch. A failed
+        # rung leaves the pose it started from standing.
+        # ⛔ ONLY WHEN THE WHOLE POSE IS THE PROGRAM'S TO FIND. A camera the
+        # operator has set -- Re-solve after typing a height into the box --
+        # is an INPUT to the solve, not a starting guess for the ladder to
+        # overwrite; climbing there would quietly undo the number they just
+        # chose. A zero camera is the untouched default on every fresh
+        # attach, which is exactly the case the climb exists for.
+        if not any(camera):
+            pose = {"yaw_deg": info["yaw_deg"], "pitch_deg": 0.0,
+                    "roll_deg": 0.0, "camera_z": camera[2],
+                    "camera_x": camera[0], "camera_y": camera[1]}
+            step = max(1, len(sample) // 600_000)
+            climbed = 0
+            try:
+                for rung in range(1, len(colour_mod.RUNGS) + 1):
+                    got = colour_mod.refine_pose(
+                        sample[::step], lum,
+                        camera=(pose["camera_x"], pose["camera_y"],
+                                pose["camera_z"]),
+                        yaw_deg=pose["yaw_deg"],
+                        pitch_deg=pose["pitch_deg"],
+                        roll_deg=pose["roll_deg"], rung=rung)
+                    if not got.get("ok"):
+                        break
+                    pose, climbed = got, rung
+            except Exception:                             # noqa: BLE001
+                pass      # the sweep's answer stands; the climb was a bonus
+            yaw = float(pose["yaw_deg"])
+            camera = (float(pose.get("camera_x") or 0.0),
+                      float(pose.get("camera_y") or 0.0),
+                      float(pose.get("camera_z") or 0.0))
+            info["yaw_deg"] = yaw
+            info["pitch_deg"] = float(pose.get("pitch_deg") or 0.0)
+            info["roll_deg"] = float(pose.get("roll_deg") or 0.0)
+            info["camera_x"], info["camera_y"], info["camera_z"] = camera
+            info["rung"] = climbed
+            scan.camera_x, scan.camera_y, scan.camera_z = camera
+
     scan.rgb = colour_mod.sample(world, rgb_img, yaw_deg=yaw,
                                  camera=camera,
                                  pitch_deg=info["pitch_deg"],
