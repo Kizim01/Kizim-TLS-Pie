@@ -3936,9 +3936,39 @@ tripods, tip and bank recovered to **8.5e-07°**, and a ceiling normal flips rat
 room over. `Lean.matrix()` is `Rx(pitch) @ Ry(-roll)`, so the angles fall out in that order — bank
 until the floor's normal has no sideways component, then tip until what remains is straight up.
 
-⚠ **A check crashed instead of failing again — `.index()` on source, FIFTH occurrence in this suite.**
-It asserted the *order of two strings* when the claim was "opening a project takes that branch instead
-of levelling"; reworded code made it raise and take every later check down. Rewritten to ask the claim.
+### ⛔⛔ AND THE SECOND HALF: "THEY LAND IN THE CENTRE OF THE GRID"
+
+Straightening a capture leaves it **standing on its tripod**. A capture's zero is the *instrument*, so
+a levelled-only cloud arrives with its **tripod** on the ground plane and the floor a tripod's height
+underneath — the grid through the middle of the room at chest height. Every tripod's legs were set
+differently, so the height is a property of the **setup** exactly as its lean is, and `level_scan` now
+takes both.
+
+⭐ **The drop is measured THROUGH the lean, not beside it.** The pose is `Rz(yaw) @ L` then the shift,
+and `Rz` cannot change a height, so the floor lands at `(L @ p).z + dz` — one number off the same
+plane the lean came from. Measured separately the two would answer slightly different questions and
+part company the first time either was recomputed.
+
+### ⛔⛔ AND IT NEEDED `Setup.sited`, OR IT WOULD HAVE BROKEN THE ALIGNER IN SILENCE
+
+**Four places ask "has this scan been placed?" and none of them store the answer** — they infer it
+from the setup being **identity**. A floor drop makes the setup non-identity, so with that test every
+freshly loaded capture would have started looking **placed**: the multi-fit would offer unplaced clouds
+as fit targets, and the pair solver's *"you are fitting one unplaced cloud to another"* warning would
+go quiet in precisely the case it exists for.
+
+⭐⭐ **The fix was noticing those sites ask a narrower question than the one they wrote.** What they
+need is *"is this cloud anywhere IN PLAN yet"* — x, y, heading. Height was never part of it;
+`is_identity()` was the same answer only for as long as nothing ever set the height alone. So
+`Setup.sited` answers the real question, the two refusals are unchanged for every existing case, and
+no placement flag had to be invented or threaded through the solver. *An inferred fact is correct until
+something else legitimately writes to what it was inferred from.*
+
+⚠ **Two checks crashed instead of failing this pass — the FIFTH and SIXTH of that pattern here.**
+`.index()` on source (it asserted the *order of two strings* when the claim was "opening a project
+takes that branch instead of levelling"), and `_ref["error"]` on a result that **loses that key exactly
+when the guard is removed** — the very regression the check exists to catch. Both rewritten to fail.
+Suite **1061 → 1083**, seven reversions all caught, exes **19:40** on 2026-08-25.
 
 ### ▶ NEXT SESSION STARTS HERE
 
