@@ -6874,6 +6874,42 @@ check("...sent once on release, like every other pose change",
 check("...and an arm is consulted before the ring it sits inside",
       _fsrc.find("camGrip(e.clientX,e.clientY)")
       < _fsrc.find("tiltGrip(e.clientX,e.clientY)"))
+# ⛔⛔ AND THE DOOR: every part of this existed and the only way in was a `mini`
+# button called "rings" inside the SCAN LIST -- a different panel from the one
+# an operator is looking at while working on a picture, and small enough to
+# read as a label. Fourth built-and-unreachable control this week.
+_ptray = _ALIGN_SRC[_ALIGN_SRC.find('<div class="tray" id="ty_photo">'):]
+_ptray = _ptray[:_ptray.find('<div class="tray" id="ty_shoot">')]
+check("THE PHOTOGRAPH'S OWN PANEL HAS THE BUTTON THAT SHOWS ITS GIZMO",
+      'id="photogiz"' in _ptray and 'id="photorings"' in _ptray
+      and 'id="photoarms"' in _ptray, _ptray[:120])
+check("...and it says which half to reach for when turning will not do it",
+      "no rotation can absorb" in _ptray or "cannot be traded out" in _ptray)
+# ⛔ THE MASTER HOLDS NO FLAG OF ITS OWN, computed from the halves -- a fourth
+# flag would be a second answer to "is the gizmo showing" and the two would
+# disagree the first time a half was switched alone. Same rule as the scan's.
+check("...and the master is lit from the halves, not remembered beside them",
+      "$('photogiz').classList.toggle('on'," in _ALIGN_SRC
+      and "V.photoGiz" not in _ALIGN_SRC)
+# ⛔ A HALF THAT IS OFF IS NOT GRABBABLE. A widget switched off that still
+# catches the pointer is worse than one left on: the press does something the
+# operator cannot see.
+check("...and a half that is switched off cannot be grabbed either",
+      "if(!V.photoRings) return null;" in _ALIGN_SRC
+      and "if(!V.camArms) return null;" in _ALIGN_SRC)
+check("...while both halves off means the gizmo is off, not a lit empty tripod",
+      "if(!V.photoRings && !V.camArms) V.tiltRing=null;" in _ALIGN_SRC)
+# ⛔ THE BUTTON AIMS AT THE SCAN THE PANEL IS SHOWING. The pane beside it is
+# keyed on `V.picked`; taking `active()` first would let the button work on a
+# different photograph from the controls directly underneath it.
+_giz = _fsrc[_fsrc.find("$('photogiz').onclick"):]
+_giz = _giz[:_giz.find("$('nav').onclick")]
+check("...and it acts on the scan whose photograph the panel is showing",
+      bool(_giz) and "V.picked" in _giz
+      and _giz.find("V.picked") < _giz.find("active()"), _giz[:140])
+# ⛔ AND THE OLD LITTLE BUTTON STILL WORKS, so the two cannot fall out of step.
+check("...and the small button in the list keeps the tray's buttons in step",
+      "if(window.syncPhotoGizmo) window.syncPhotoGizmo();" in _ALIGN_SRC)
 
 # ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. Reported: the
 # scans "land in the centre of the grid". A capture's zero is the INSTRUMENT,

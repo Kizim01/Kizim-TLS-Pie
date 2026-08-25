@@ -4028,6 +4028,28 @@ PAGE = r"""<!doctype html>
   </div></div>
 <div class="tray" id="ty_photo"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'photo')"><span class="fold">▾</span><b class="grow">This scan&#39;s photograph</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('photo')">✕</button></div><div class="traybody">
   <div class="blurb">The photograph belonging to whichever scan is picked. Double-click a scan in <b>Scans in this job</b> to work on it.</div>
+  <div class="grp">
+  <div class="ghead"><b>Gizmo</b><span class="why">on the tripod it was shot
+    from</span></div>
+  <div class="row"><button id="photogiz" class="go" title="Put the whole
+    manipulator on this photograph: three rings to turn, tip and bank it, and
+    three arms to move the camera&#39;s own centre. Press again to take the lot
+    away. The two buttons below switch the halves on and off separately.">
+    Gizmo</button></div>
+  <div class="row">
+    <button id="photorings" title="Three rings round the tripod: heading, tip
+      and bank. These aim the picture — they turn every ray&#39;s
+      DIRECTION.">Rings</button>
+    <button id="photoarms" title="Three arms through the tripod that move the
+      camera&#39;s optical centre in X, Y and Z. This is the offset no rotation
+      can absorb: a ring turns the rays, this moves where they START, which is
+      what pulls near edges one way and far ones the other.">Camera
+      arms</button></div>
+  <div class="blurb">⭐ If the picture will not line up however you turn it,
+    it is the <b>arms</b> you want, not the rings. A camera centre that sat a
+    few centimetres off the lidar&#39;s cannot be traded out by any heading —
+    turning can only choose <i>which distance</i> is wrong.</div>
+  </div>
   <div id="photopane"></div>
   </div></div>
 <div class="tray" id="ty_shoot"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'shoot')"><span class="fold">▾</span><b class="grow">Solve the whole shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('shoot')">✕</button></div><div class="traybody">
@@ -4202,6 +4224,11 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
            tiltRing:null, tiltAxis:null, camAxis:null,
+           /* ⛔ WHICH HALVES OF THE PHOTO GIZMO ARE SHOWING. `tiltRing` names
+              the SCAN it is on; these two say what is drawn. Both on by
+              default, so the button in the tray puts up a whole gizmo the
+              first time it is pressed rather than an empty tripod. */
+           photoRings:true, camArms:true,
            /* And the SCAN's own tip and bank rings -- a third widget about the
               same tripod, nested inside the turn ring so that the two do not
               fight over the same pixels. */
@@ -5255,6 +5282,7 @@ const CAM_AXES=[
   {key:'y', c:'rgba(120,230,150', v:[0,1,0], lab:'cam Y'},
   {key:'z', c:'rgba(255,130,190', v:[0,0,1], lab:'cam Z'}];
 function camArmsOf(){
+  if(!V.camArms) return null;      /* off means not drawn AND not grabbable */
   const r=tiltRingsOf(); if(!r) return null;
   /* ⛔ `r.R` IS A RADIUS IN METRES, not a scale -- `screenRadius` returns the
      world distance that spans TILT_PX pixels here, and `r.c` is the projected
@@ -5343,6 +5371,10 @@ function tiltRingPath(r, ax){
 }
 /* Which of the three the pointer is nearest, and how far off it is. */
 function tiltGrip(mx,my){
+  /* ⛔ A RING THAT IS NOT DRAWN MUST NOT BE GRABBABLE. A widget switched off
+     that still catches the pointer is worse than one that is on: the press
+     does something the operator cannot see. */
+  if(!V.photoRings) return null;
   const r=tiltRingsOf(); if(!r) return null;
   let best=null;
   for(const ax of TILT_AXES){
@@ -5357,6 +5389,7 @@ function tiltGrip(mx,my){
   return (best && best.d<=9) ? best : null;
 }
 function drawTiltRings(){
+  if(!V.photoRings) return;
   const r=tiltRingsOf(); if(!r) return;
   const now={yaw:(r.s.yaw==null ? 0 : +r.s.yaw),
              pitch:+r.s.pitch||0, roll:+r.s.roll||0};
@@ -8744,6 +8777,9 @@ function tiltRing(index){
   V.tiltRing = (V.tiltRing===index) ? null : index;
   if(V.tiltRing!=null) V.picked = index;
   refreshLists(); invalidate();
+  /* The tray's buttons read this state, and the little button in the list can
+     change it -- so one of them would go stale without this. */
+  if(window.syncPhotoGizmo) window.syncPhotoGizmo();
   say(V.tiltRing==null ? 'Rings hidden.'
       : 'Drag the rings to turn, tip and bank the photograph'+
         (s.yaw==null ? ', starting from level and facing zero \u2014 the solve '+
@@ -9726,6 +9762,80 @@ document.addEventListener('DOMContentLoaded', ()=>{
           'take them away.'
         : 'Tilt rings off.');
   };
+  /* ⭐⭐ THE PHOTOGRAPH'S GIZMO, IN THE PHOTOGRAPH'S OWN PANEL. Every part of
+     it existed and the only way in was a `mini` button called "rings" inside
+     the scan list -- a different panel from the one the operator is looking at
+     when they are working on a picture, and small enough to read as a label.
+     Fourth time this week that a built control had no door: the export, the
+     scan gizmo, the folder badge, this.
+
+     ⛔ THE MASTER HOLDS NO FLAG OF ITS OWN -- it is lit when both halves are,
+     computed rather than remembered, for the reason the scan's gizmo master
+     is: a fourth flag would be a second answer to "is the gizmo showing", and
+     the two would disagree the first time a half was switched alone. */
+  function syncPhotoGizmo(){
+    const on = V.tiltRing!=null;
+    $('photorings').classList.toggle('on', on && !!V.photoRings);
+    $('photoarms').classList.toggle('on', on && !!V.camArms);
+    $('photogiz').classList.toggle('on',
+      on && !!V.photoRings && !!V.camArms);
+  }
+  window.syncPhotoGizmo = syncPhotoGizmo;
+  $('photogiz').onclick=()=>{
+    /* ⛔ THE SCAN THE PANEL IS SHOWING, which is `V.picked` -- the pane
+         beside these buttons is keyed on it. Taking `active()` first
+         would let the button aim at a different photograph from the
+         one whose controls are on screen under it. */
+      const s = V.scans.find(x=>x.index===V.picked) || active();
+    if(!s) return say('Pick a scan first — double-click one in Scans in '+
+                      'this job.', 'warn');
+    if(V.tiltRing===s.index && V.photoRings && V.camArms){
+      V.tiltRing=null;
+      syncPhotoGizmo(); refreshLists(); invalidate();
+      return say('Photograph gizmo off.');
+    }
+    /* Both halves back on: a master that put up half a gizmo would be a
+       button whose meaning depended on what was pressed before it. */
+    V.photoRings=true; V.camArms=true;
+    if(V.tiltRing!==s.index) tiltRing(s.index);
+    else { refreshLists(); invalidate(); }
+    syncPhotoGizmo();
+    if(V.tiltRing!=null)
+      say('Gizmo on '+s.name.slice(0,18)+', at the tripod the picture was '+
+          'shot from. Drag a RING to turn, tip or bank the photograph; drag '+
+          'a dashed ARM to move the camera’s own centre in X, Y or Z. If it '+
+          'will not line up however you turn it, the arms are the ones you '+
+          'want.');
+  };
+  const photoHalf=(id, flag, on, off)=>{
+    $(id).onclick=()=>{
+      /* ⛔ THE SCAN THE PANEL IS SHOWING, which is `V.picked` -- the pane
+         beside these buttons is keyed on it. Taking `active()` first
+         would let the button aim at a different photograph from the
+         one whose controls are on screen under it. */
+      const s = V.scans.find(x=>x.index===V.picked) || active();
+      if(!s) return say('Pick a scan first.', 'warn');
+      if(V.tiltRing!==s.index){
+        V[flag]=true; tiltRing(s.index); syncPhotoGizmo();
+        if(V.tiltRing!=null) say(on);
+        return;
+      }
+      V[flag]=!V[flag];
+      /* ⛔ BOTH HALVES OFF IS THE GIZMO OFF. Leaving the target set with
+         nothing drawn would light the tray's button over an empty tripod --
+         a control saying it is on while the screen says it is not. */
+      if(!V.photoRings && !V.camArms) V.tiltRing=null;
+      syncPhotoGizmo(); refreshLists(); invalidate();
+      say(V[flag] ? on : off);
+    };
+  };
+  photoHalf('photorings', 'photoRings',
+            'Rings on — drag them to turn, tip and bank the picture.',
+            'Rings off.');
+  photoHalf('photoarms', 'camArms',
+            'Camera arms on — drag a dashed arm to move the camera’s own '+
+            'centre. The number on the arm is in centimetres.',
+            'Camera arms off.');
   $('nav').onclick=()=>setNav(!V.nav);
   $('psave').onclick=()=>saveProject(false);
   $('psaveas').onclick=()=>saveProject(true);
