@@ -3896,6 +3896,50 @@ computed flat one, and **passed when a reversion sent both to zero**. *Two sides
 are not a check* — it now measures against the point's own plan position. Four reversions, all caught.
 Suite **1053 → 1061**, exes **22:56**.
 
+## 2026-08-24, fourth pass — the scan comes to the grid, not the grid to the scan
+
+### ⛔⛔ THE REQUEST CONTRADICTED A RULE THE CODE ARGUES FOR IN TWO PLACES — AND WAS RIGHT
+
+*"I want the scan to straighten to the world grid, not the world grid to the scan, so each subsequent
+scan is levelled to the world grid."*
+
+`level_from_floor` turns **the world** so the ground becomes horizontal. That is the right answer for a
+room whose floor genuinely slopes, and the wrong answer to *"why does the second scan I load lean?"* —
+because the world had already been turned to suit the **first** tripod, and every capture after it
+arrives carrying its own tripod's error with nothing to take it out.
+
+And `Level` warns, in its own docstring and in the Move tray, that **a tilt shared by every scan
+cancels between them and taking it out scan by scan pulls the alignment apart.** That warning is
+correct and it does **not** cover this. ⭐⭐ **It is a statement about scans already REGISTERED to one
+another**: N floor measurements carry N different noises, so N nearly-equal rotations are not one
+rotation, and the differences open every seam. **A capture that has not been fitted to anything has no
+seam to open, and its lean is simply wrong.** A survey instrument levels every setup independently
+before it measures anything — this scanner has no compensator, so `lean_from_floor` is that
+compensator in software. Straightening on arrival also leaves the solver two fewer degrees of freedom.
+
+⛔⛔ **SO THE WHOLE SAFETY IS *WHEN*, AND IT IS ENFORCED IN `level_scan`, NOT LEFT TO THE CALLER.**
+A capture that has already been placed is refused — by then something is fitted to it and its lean is
+load bearing. ⛔ **The reference needs a different question**: scan 0's setup is *always* identity, so
+it cannot say on its own whether the job has a registration to break, and the rest of the list has to
+be asked — otherwise the anchor gets straightened out from under everything registered to it. `force`
+exists for the operator who means it, and the refusal says what to do instead.
+
+⛔ **Order at import is part of the safety.** Levelling runs **before** the solve; run after, it would
+be refused on exactly the scans that just arrived and would silently do nothing. Same on a fresh job:
+each capture stands itself up, *then* the room is asked about its floor — so what `autoFloorLevel`
+finds afterwards is the leftover that genuinely belongs to the room (a sloping floor, and the tripod's
+height above it). Reversed, the world would be turned to suit the first tripod and every scan then
+straightened against a grid that had already moved.
+
+⭐ **The maths was checked against known answers before it was wired to anything**: 36 synthetic
+tripods, tip and bank recovered to **8.5e-07°**, and a ceiling normal flips rather than turning the
+room over. `Lean.matrix()` is `Rx(pitch) @ Ry(-roll)`, so the angles fall out in that order — bank
+until the floor's normal has no sideways component, then tip until what remains is straight up.
+
+⚠ **A check crashed instead of failing again — `.index()` on source, FIFTH occurrence in this suite.**
+It asserted the *order of two strings* when the claim was "opening a project takes that branch instead
+of levelling"; reworded code made it raise and take every later check down. Rewritten to ask the claim.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE EXES ARE CURRENT: rebuilt 22:06 from `a3aa6b3`, selftest 0, CUDA engine found.** They carry

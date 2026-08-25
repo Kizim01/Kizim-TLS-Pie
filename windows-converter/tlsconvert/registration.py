@@ -66,6 +66,28 @@ class Setup(object):
     def is_identity(self):
         return not (self.dx or self.dy or self.dz or self.yaw_deg)
 
+    @property
+    def sited(self):
+        """
+        Has this cloud been put somewhere IN PLAN yet -- x, y or heading.
+
+        ⛔⛔ THE QUESTION THE SOLVER ACTUALLY ASKS, WHICH IS NARROWER THAN
+        `is_identity`. Two places refuse to fit to a cloud that "has not been
+        placed", and both inferred that from the whole setup being identity --
+        which was the same answer only for as long as nothing ever set the
+        HEIGHT on its own. Standing a freshly loaded capture on its own floor
+        does exactly that, and with the broader test every new scan would have
+        started looking placed the moment it appeared: the multi-fit would
+        offer unplaced clouds as targets, and the pair solver's "you are
+        fitting one unplaced cloud to another" warning would fall silent in
+        precisely the case it exists for.
+
+        ⭐ Height was never part of what they were asking. A capture dropped
+        onto the floor is still nowhere in plan, and that is what these two
+        need to know.
+        """
+        return bool(self.dx or self.dy or self.yaw_deg)
+
     def apply(self, xyz):
         """Rotate about the sensor's vertical axis, then translate."""
         xyz = np.asarray(xyz)
@@ -1896,6 +1918,47 @@ def floor_plane(xyz, near=FLOOR_NEAR_M, far=FLOOR_FAR_M, band=FLOOR_BAND_M):
         keep = keep[np.abs(off) <= 2.5 * rms]
     fit = FloorFit(n, centre, len(keep), rms, at)
     return fit if fit.tilt_deg <= FLOOR_MAX_TILT_DEG else None
+
+
+def lean_from_floor(normal):
+    """
+    The tip and bank that stand ONE capture upright on its own floor.
+
+    ⭐⭐ THIS IS THE INSTRUMENT'S COMPENSATOR, IN SOFTWARE. A survey instrument
+    levels every setup independently before it measures anything, so a tripod
+    that was a degree out produces a cloud that is still vertical. This scanner
+    has no compensator, so each capture arrives leaning by however its own
+    tripod stood -- and that lean is a property of THAT SETUP, not of the room.
+
+    ⛔ WHICH IS EXACTLY THE DISTINCTION `Level` IS MAKING WHEN IT REFUSES TO DO
+    THIS. Level warns, correctly, that a tilt SHARED by every scan cancels
+    between them and that taking it out scan by scan pulls the alignment apart.
+    That is a statement about scans already REGISTERED to one another: N floor
+    measurements carry N different noises, so N nearly-equal rotations are not
+    one rotation, and the differences open every seam. It says nothing about a
+    capture that has not been fitted to anything yet, where the lean is simply
+    wrong and there is no seam to open. Straightening on arrival also leaves
+    the solver two fewer degrees of freedom to find.
+
+    So: `Level` for the room, this for the setup, and the guard that keeps them
+    apart is WHEN it is applied -- see `level_scan`, which refuses a capture
+    that has already been placed.
+
+    `Lean.matrix()` is `Rx(pitch) @ Ry(-roll)`, so the two angles fall out in
+    that order: bank until the floor's normal has no sideways component left,
+    then tip until what remains is straight up.
+    """
+    n = np.asarray(normal, dtype=np.float64).reshape(3)
+    length = float(np.linalg.norm(n))
+    if length < 1e-12:
+        raise ValueError("a floor needs a direction, and that one has none")
+    n = n / length * (-1.0 if n[2] < 0 else 1.0)
+    roll = math.degrees(math.atan2(n[0], n[2]))
+    b = math.radians(roll)
+    cb, sb = math.cos(b), math.sin(b)
+    turned = np.array([cb * n[0] - sb * n[2], n[1], sb * n[0] + cb * n[2]])
+    pitch = math.degrees(math.atan2(turned[1], turned[2]))
+    return Lean(pitch_deg=pitch, roll_deg=roll)
 
 
 class LevelFit(object):

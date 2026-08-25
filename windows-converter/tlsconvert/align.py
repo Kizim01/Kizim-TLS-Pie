@@ -655,6 +655,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.pick_out(body.get("suggest")))
             if path == "/level/floor":
                 return self._json(srv.level_from_floor(body.get("level")))
+            if path == "/level/scan":
+                return self._json(srv.level_scan(body.get("index"),
+                                                 force=body.get("force")))
             if path == "/origin":
                 return self._json(srv.set_origin(body.get("point"),
                                                  body.get("level"),
@@ -984,7 +987,9 @@ class AlignServer(object):
             # The reference is placed by definition; anything else sitting at
             # the origin has simply not been put anywhere yet, and fitting to
             # an unplaced cloud moves the problem rather than solving it.
-            if j != 0 and other.setup.is_identity():
+            # ⛔ IN PLAN -- see `Setup.sited`. A capture stood on its own floor
+            # has a height and is still nowhere, and this must go on saying so.
+            if j != 0 and not other.setup.sited:
                 continue
             d = float(np.hypot(other.setup.dx - here.dx,
                                other.setup.dy - here.dy))
@@ -1251,7 +1256,7 @@ class AlignServer(object):
             return {"ok": False,
                     "error": "a scan cannot be aligned to itself"}
         warn = None
-        if target != 0 and fixed.setup.is_identity():
+        if target != 0 and not fixed.setup.sited:      # in plan; Setup.sited
             warn = ("scan %d has not been placed itself, so this fits one "
                     "unplaced cloud to another -- place it first, or align to "
                     "the reference." % (target + 1))
@@ -1452,6 +1457,94 @@ class AlignServer(object):
                 "errors": [float(e) for e in fit.errors],
                 "worst": fit.worst[0], "points": fit.count,
                 "trustworthy": fit.ok, "text": fit.describe()}
+
+    def level_scan(self, index, force=False):
+        """
+        Stand ONE capture upright on its own floor, in its own frame.
+
+        ⭐⭐ THE WORLD GRID STAYS PUT AND THE SCAN COMES TO IT. `level_from_floor`
+        does the opposite -- it turns the whole world so that the ground the
+        survey is standing on becomes horizontal -- and that is right for a room
+        whose floor genuinely slopes, or for a survey referenced to a first
+        tripod that was out. It is the wrong answer to "why does the second scan
+        I load lean?", because the world had already been turned to suit the
+        FIRST one, and every capture after it arrives carrying its own tripod's
+        error with nothing to take it out.
+
+        ⛔ AND IT IS NOT THE THING `Level` WARNS AGAINST, THOUGH IT LOOKS LIKE
+        IT. That warning -- a tilt shared by every scan cancels between them,
+        and taking it out scan by scan pulls the alignment apart -- is about
+        scans already REGISTERED to one another: N floor measurements carry N
+        different noises, so N nearly-equal rotations are not one rotation and
+        the differences open every seam. A capture that has not been fitted to
+        anything has no seam to open, and its lean is simply wrong.
+
+        ⛔⛔ SO THE WHOLE SAFETY IS **WHEN**, AND IT IS ENFORCED HERE RATHER THAN
+        LEFT TO THE CALLER. A capture that has already been placed is refused,
+        because by then something has been fitted to it and its lean is load
+        bearing. The reference is refused as soon as anything else has been
+        placed at all: its own setup is always identity, so it cannot say on its
+        own whether the job has a registration to break -- the rest of the list
+        has to be asked. `force` exists for the operator who means it, and says
+        so in the message rather than silently.
+        """
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "no scan was named"}
+        if not 0 <= i < len(self.scans):
+            return {"ok": False, "error": "there is no scan %d" % i}
+        scan = self.scans[i]
+        if getattr(scan, "source", "capture") == "cloud":
+            return {"ok": False,
+                    "error": "%s was imported as a finished cloud, so it has "
+                             "no tripod of its own to stand up" % scan.name}
+        others = any(s.setup.sited
+                     for j, s in enumerate(self.scans) if j != i)
+        placed = scan.setup.sited or (i == 0 and others)
+        if placed and not force:
+            return {"ok": False, "placed": True,
+                    "error": ("%s has already been placed, and straightening "
+                              "it now would move it out of the fit it is "
+                              "holding. Level it before it is aligned, or "
+                              "reset its placement first." % scan.name)}
+        xyz = scan.sample if scan.sample is not None else scan.xyz
+        fit = registration.floor_plane(xyz)
+        if fit is None:
+            return {"ok": False,
+                    "error": ("no floor could be found in %s — the ground has "
+                              "to be visible within %.0f m of the tripod for "
+                              "this to measure anything"
+                              % (scan.name, registration.FLOOR_FAR_M))}
+        made = registration.lean_from_floor(fit.normal)
+        scan.lean = made
+        # ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. A
+        # capture's zero is the INSTRUMENT, so a cloud that has only been
+        # levelled arrives with its TRIPOD on the ground plane and the floor
+        # hanging a tripod's height underneath -- the grid through the middle
+        # of the room at chest height, which is what it looks like from the
+        # outside. Every tripod's legs were set differently, so this is a
+        # property of the setup exactly as its lean is.
+        #
+        # ⭐ MEASURED THROUGH THE LEAN THAT WAS JUST APPLIED, NOT BESIDE IT.
+        # The pose is Rz(yaw) @ L then the shift, and Rz cannot change a
+        # height, so the floor ends up at (L @ p).z + dz -- one number, taken
+        # from the same plane the lean came from. Measured beside it, the two
+        # would be answers to slightly different questions and would part
+        # company the first time either was recomputed.
+        floor = float((made.matrix() @ np.asarray(fit.point,
+                                                  dtype=np.float64))[2])
+        scan.setup.dz = -floor
+        return {"ok": True, "index": i, "name": scan.name,
+                "setup": _placement(scan),
+                "was_deg": fit.tilt_deg, "drop_m": float(-floor),
+                "pitch_deg": made.pitch_deg, "roll_deg": made.roll_deg,
+                "points": int(fit.count), "rms": float(fit.rms),
+                "text": ("%s stood up on its own floor — its tripod was "
+                         "%.2f° out and %.2f m above the ground, measured on "
+                         "%s points"
+                         % (scan.name, fit.tilt_deg, abs(floor),
+                            "{:,}".format(int(fit.count))))}
 
     def level_from_floor(self, level=None):
         """
@@ -5491,7 +5584,19 @@ async function boot(){
   recentre(); draw();
   if(OPEN) openProject(OPEN);
   else if(PENDING.length) ingest(PENDING);
-  else autoFloorLevel();
+  else {
+    /* ⛔ EACH CAPTURE STANDS ITSELF UP FIRST, THEN THE ROOM IS ASKED ABOUT ITS
+       FLOOR. Both, and in this order: the scans come to the grid, and what is
+       left over -- a floor that genuinely slopes, and the tripod's height
+       above it -- is the room's, which is what `autoFloorLevel` is for. Run
+       the other way round the world would be turned to suit the first tripod
+       and then every scan straightened against a grid that had already moved.
+       ⛔ NOT ON A PROJECT BEING OPENED. Those placements are registered, and
+       `level_scan` refuses them one by one -- but the reason it refuses is
+       worth stating here too, where the decision is. */
+    await levelArrivals(V.scans.map(s=>s.index), false);
+    autoFloorLevel();
+  }
 }
 
 /* ⭐⭐ LEVEL TO THE GROUND THE SCANS ARE STANDING ON, WITHOUT BEING ASKED.
@@ -5530,6 +5635,44 @@ function postLevelFloor(){
   return fetch('level/floor',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({level:V.level})}).then(r=>r.json());
+}
+/* ⭐⭐ THE SCAN COMES TO THE GRID, NOT THE GRID TO THE SCAN. Levelling the WORLD
+   answers the question once, off whatever was loaded at the time -- so the
+   first capture looks right and every one after it arrives leaning by its own
+   tripod's error, with nothing to take it out. A survey instrument levels each
+   setup independently before it measures anything; this is that, in software.
+
+   ⛔ ON ARRIVAL, WHICH IS THE WHOLE SAFETY. `level_scan` refuses a capture that
+   has already been placed, because by then something is fitted to it -- see the
+   note there on why this is not the scan-by-scan levelling `Level` warns about.
+   Straightening first also hands the solver two fewer degrees of freedom.
+
+   ⛔ AND IT STAYS QUIET WHEN IT CANNOT. No floor in view is ordinary in a
+   stairwell or a facade, and it is not worth a warning on every import. */
+async function levelOne(index, loud){
+  try{
+    const r = await fetch('level/scan',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index:index})});
+    const j = await r.json();
+    if(!j || !j.ok){ if(loud && j && j.error) say(j.error,'warn'); return null; }
+    const s = V.scans.find(x=>x.index===j.index);
+    if(s) s.setup = j.setup;
+    return j;
+  }catch(e){ return null; }
+}
+async function levelArrivals(list, loud){
+  const done=[];
+  for(const i of list){ const j = await levelOne(i, loud); if(j) done.push(j); }
+  if(!done.length) return done;
+  syncSliders(); recomputeLive(); invalidate(); editsFollow();
+  const worst = done.reduce((a,b)=>a.was_deg>b.was_deg?a:b);
+  say(done.length===1
+      ? done[0].text + '. The world grid did not move — the scan came to it.'
+      : done.length+' captures stood up on their own floors, the worst '+
+        worst.was_deg.toFixed(2)+'° out ('+worst.name.slice(0,18)+'). The '+
+        'world grid did not move — the scans came to it.');
+  return done;
 }
 async function levelToFloor(){
   remember('levelling to the floor', undoLevel());
@@ -8838,6 +8981,12 @@ async function ingest(paths){
       say('⚠ folder '+j.folder_clash.join(', ')+' was already open, so '+
           'this may be the same position twice. The number beside each scan '+
           'in the list says which folder it came out of.', 'warn');
+    /* ⛔ STRAIGHTENED BEFORE IT IS ALIGNED, AND THE ORDER IS THE WHOLE POINT.
+       A capture that has been placed is refused by `level_scan` -- rightly,
+       since something is then fitted to it -- so levelling after the solve
+       would silently do nothing on exactly the scans that just arrived. It
+       also gives the solver two fewer degrees of freedom to find. */
+    await levelArrivals(V.scans.slice(was).map(s=>s.index), false);
     if(opt.align && V.scans.length>1) await alignArrivals(Math.max(1, was));
   }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
   $('add').disabled=false; $('browse').disabled=false;

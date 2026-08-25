@@ -6656,13 +6656,161 @@ _fsrc = re.sub(r"/\*.*?\*/", "", _ALIGN_SRC, flags=re.S)
 check("it runs by itself when a job opens with nothing levelled",
       "autoFloorLevel();" in _fsrc and "if(V.level || !V.scans.length) return;"
       in _fsrc)
+# ⚠ `.index()` ON SOURCE CRASHES INSTEAD OF FAILING when the code it looks for
+# is reworded, and takes every later check down with it -- FIFTH time in this
+# suite. The claim was never about the order of two strings anyway: it is that
+# opening a project takes the branch INSTEAD of levelling. So ask that.
+_boot = _fsrc[_fsrc.find("if(OPEN) openProject(OPEN);"):]
+_boot = _boot[:_boot.find("\n}")] if "if(OPEN) openProject(OPEN);" in _fsrc \
+    else ""
 check("...and never over a decision already made: a project, or a hand level",
-      "if(OPEN) openProject(OPEN);" in _fsrc
-      and _fsrc.index("else autoFloorLevel();")
-      > _fsrc.index("if(OPEN) openProject(OPEN);"))
+      bool(_boot) and _boot.startswith("if(OPEN) openProject(OPEN);")
+      and "autoFloorLevel" in _boot
+      and _boot.find("autoFloorLevel") > _boot.find("else"), _boot[:160])
 check("...and there is a button to run it again",
       "id=\"lvlfloor\"" in _fsrc and "$('lvlfloor').onclick=levelToFloor"
       in _fsrc and 'path == "/level/floor"' in _fsrc)
+
+# --- the scan comes to the grid, not the grid to the scan --------------------
+print("\nstanding each capture up on its own floor")
+# ⛔⛔ THE COMPLAINT THIS ANSWERS: load the second scan and it leans. Levelling
+# the WORLD answers the question once, off whatever was open at the time, so
+# the first capture looks right and every one after it arrives carrying its own
+# tripod's error with nothing to take it out.
+# ⭐ The maths is the instrument's compensator: recover the tip and bank that
+# stand a capture upright from the floor as THAT tripod saw it. Checked against
+# tripods whose lean is known, because a formula that is merely plausible here
+# produces a room that is merely nearly straight.
+_worst = 0.0
+for _tip, _bank in ((-9.0, -14.0), (-3.0, 0.8), (0.0, 0.0), (0.4, 5.0),
+                    (2.7, -1.0), (11.0, 17.0)):
+    _was = registration.Lean(pitch_deg=_tip, roll_deg=_bank)
+    _saw = np.linalg.inv(_was.matrix()) @ np.array([0.0, 0.0, 1.0])
+    _got = registration.lean_from_floor(_saw)
+    _up = _got.matrix() @ _saw
+    _worst = max(_worst, abs(_got.pitch_deg - _tip),
+                 abs(_got.roll_deg - _bank), float(abs(_up[0])),
+                 float(abs(_up[1])))
+check("THE TIP AND BANK THAT STAND A CAPTURE UPRIGHT ARE RECOVERED EXACTLY",
+      _worst < 1e-6, _worst)
+# ⛔ A CEILING'S NORMAL POINTS DOWN, and flipping it is right rather than a
+# special case -- the same rule `Level` already follows.
+_ceil = registration.lean_from_floor([0.0, 0.0, -1.0])
+check("...and a plane seen from underneath is stood up, not turned over",
+      float((_ceil.matrix() @ np.array([0.0, 0.0, 1.0]))[2]) > 0.999,
+      _ceil.matrix() @ np.array([0.0, 0.0, 1.0]))
+_ssrv = align.AlignServer.__new__(align.AlignServer)
+_ssrv.scans = [_mscan("one", _floored(tip_deg=1.7, seed=31)),
+               _mscan("two", _floored(tip_deg=0.6, seed=32, yaw_deg=40.0))]
+_s1 = _ssrv.level_scan(1)
+check("a capture is stood up on its own floor, in its own frame",
+      _s1["ok"] and _s1["was_deg"] > 0.2
+      and _ssrv.scans[1].lean.is_identity() is False, _s1.get("error"))
+check("...and it reports what the tripod was out by, on how many points",
+      _s1["ok"] and _s1["points"] > 5_000 and "tripod was" in _s1["text"],
+      _s1.get("text"))
+# ⛔⛔ AND WHAT IS LEFT IS UPRIGHT. The measurement is the tilt of that floor
+# AFTER the lean has been written, which is the only claim that matters.
+_after = registration.floor_plane(
+    registration.apply_matrix(
+        registration._pose_matrix(_ssrv.scans[1].setup, _ssrv.scans[1].lean),
+        _ssrv.scans[1].xyz))
+check("...so the floor it was standing on now lies flat to the world",
+      _after is not None and _after.tilt_deg < 0.05,
+      None if _after is None else _after.tilt_deg)
+# ⛔⛔ THE GUARD IS **WHEN**, AND IT IS THE WHOLE REASON THIS IS NOT THE
+# SCAN-BY-SCAN LEVELLING THE PROGRAM WARNS AGAINST. A capture nothing is fitted
+# to has no seam to open; one that has been placed is load bearing.
+_ssrv.scans[1].setup = registration.Setup(dx=2.0, yaw_deg=15.0)
+_ref = _ssrv.level_scan(1)
+check("A CAPTURE THAT HAS ALREADY BEEN PLACED IS REFUSED",
+      not _ref["ok"] and _ref.get("placed") is True
+      and "already been placed" in _ref["error"], _ref)
+# ⚠ `.get`, NOT `[...]`. Written with `_ref["error"]` this raised KeyError the
+# moment the guard was removed -- the exact regression it is here to catch --
+# and a check that CRASHES on a regression takes its neighbours down with it.
+# Sixth time in this suite.
+check("...and the refusal says what to do instead, rather than just no",
+      "before it is aligned" in _ref.get("error", "")
+      or "reset its placement" in _ref.get("error", ""), _ref.get("error"))
+check("...but an operator who means it can say so",
+      _ssrv.level_scan(1, force=True)["ok"])
+# ⛔ THE REFERENCE CANNOT ANSWER THIS FROM ITS OWN SETUP. Scan 0's setup is
+# always identity, so "have I been placed?" is not a question it can answer
+# alone -- the rest of the list has to be asked, or the anchor gets straightened
+# out from under everything registered to it.
+_ssrv.scans[0].setup = registration.Setup()
+check("...and the REFERENCE is refused once anything else has been placed",
+      not _ssrv.level_scan(0)["ok"], _ssrv.level_scan(0))
+_ssrv.scans[1].setup = registration.Setup()
+check("...while on a job where nothing is placed yet, it is allowed",
+      _ssrv.level_scan(0)["ok"])
+_ssrv.scans[1].source = "cloud"
+_imp = _ssrv.level_scan(1)
+check("an imported cloud has no tripod to stand up, and is told so",
+      not _imp["ok"] and "no tripod" in _imp["error"], _imp)
+_ssrv.scans[1].source = "capture"
+check("...and a scan that does not exist is refused, not indexed into",
+      not _ssrv.level_scan(99)["ok"] and not _ssrv.level_scan(None)["ok"])
+# ⭐ The order at import is the safety: level BEFORE the solve, or `level_scan`
+# refuses exactly the scans that just arrived.
+check("captures are straightened BEFORE they are aligned, not after",
+      "await levelArrivals(" in _fsrc
+      and _fsrc.find("await levelArrivals(V.scans.slice(was)")
+      < _fsrc.find("if(opt.align && V.scans.length>1)"))
+check("...and on a fresh job the scans are stood up before the room is asked",
+      _fsrc.find("await levelArrivals(V.scans.map(") < _fsrc.find(
+          "autoFloorLevel();\n  }")
+      if "autoFloorLevel();\n  }" in _fsrc else False)
+check("...over an endpoint of its own", 'path == "/level/scan"' in _ALIGN_SRC)
+
+# ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. Reported: the
+# scans "land in the centre of the grid". A capture's zero is the INSTRUMENT,
+# so a levelled-only cloud arrives with its TRIPOD on the ground plane and the
+# floor a tripod's height underneath -- the grid through the middle of the room
+# at chest height.
+_dsrv = align.AlignServer.__new__(align.AlignServer)
+_dsrv.scans = [_mscan("drop", _floored(tip_deg=1.7, seed=41))]
+_d = _dsrv.level_scan(0)
+check("A CAPTURE IS STOOD ON THE FLOOR, not left with its tripod on the grid",
+      _d["ok"] and _d["drop_m"] > 0.5, _d.get("drop_m") or _d.get("error"))
+_placedxyz = registration.apply_matrix(
+    registration._pose_matrix(_dsrv.scans[0].setup, _dsrv.scans[0].lean),
+    _dsrv.scans[0].xyz)
+_where = registration.floor_plane(_placedxyz)
+check("...so its own floor comes out AT zero, not near it",
+      _where is not None and abs(float(_where.point[2])) < 0.01,
+      None if _where is None else float(_where.point[2]))
+check("...and the drop is reported in the words the operator would use",
+      "above the ground" in _d["text"], _d["text"])
+# ⛔⛔ THE TRAP THIS CREATES, AND THE WHOLE REASON `Setup.sited` EXISTS. Four
+# places ask "has this been placed?" and none of them store the answer -- they
+# infer it from the setup being identity. A floor drop makes the setup
+# non-identity, so with the broad test every freshly loaded capture would start
+# looking PLACED: the multi-fit would offer unplaced clouds as fit targets, and
+# the pair solver's "one unplaced cloud to another" warning would go quiet in
+# exactly the case it is for. Height was never what they were asking about.
+check("A CAPTURE DROPPED ONTO THE FLOOR IS STILL NOWHERE IN PLAN",
+      not _dsrv.scans[0].setup.is_identity()
+      and not _dsrv.scans[0].setup.sited, _dsrv.scans[0].setup.as_dict())
+check("...while x, y or a heading does count as somewhere",
+      registration.Setup(dx=0.4).sited and registration.Setup(dy=-0.4).sited
+      and registration.Setup(yaw_deg=3.0).sited
+      and not registration.Setup(dz=-1.4).sited
+      and not registration.Setup().sited)
+# ⛔ AND THE TWO REFUSALS ASK THE NARROW QUESTION, not the broad one -- a check
+# on the source because the alternative is standing up a whole solve to prove
+# a branch was not taken.
+check("...and both places that refuse an unplaced target ask exactly that",
+      _ALIGN_SRC.count("not other.setup.sited") == 1
+      and _ALIGN_SRC.count("not fixed.setup.sited") == 1
+      and "j != 0 and other.setup.is_identity()" not in _ALIGN_SRC
+      and "target != 0 and fixed.setup.is_identity()" not in _ALIGN_SRC)
+# ⭐ The drop and the lean come off ONE plane, so recomputing either cannot put
+# them out of step: the pose is Rz(yaw) @ L then the shift, and Rz cannot
+# change a height.
+check("...and the drop is measured THROUGH the lean, not beside it",
+      "made.matrix() @ np.asarray(fit.point" in _ALIGN_SRC)
 
 # --- the export: where it goes, and what goes into it ------------------------
 print("\nexporting the merged cloud")
