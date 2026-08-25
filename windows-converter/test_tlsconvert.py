@@ -7154,5 +7154,333 @@ check("...after the stale-scope refusal, never before",
       _ALIGN_SRC.index("an edit is aimed at cloud %d")
       < _ALIGN_SRC.index("plan.renumbered({old: new"))
 
+# --- the photograph meets a LEVEL cloud --------------------------------------
+#
+# ⛔⛔ THE PANORAMA'S HORIZON IS THE CAMERA'S, NOT THE RIG'S. The 360 camera
+# levels its own stitch from its IMU; the lidar has no tilt sensor, so the raw
+# capture leans by whatever the tripod did. Every solve and every paint used
+# the RAW cloud -- "the colouriser has to see the points where the sensor saw
+# them" was true of the lidar and false of the camera, and the camera is the
+# sensor whose picture is being sampled. Reported as "image alignment is still
+# not working correctly ... the insta camera image seems level but the lidar
+# data is sometimes at an angle".
+print("\nthe photograph meets a level cloud")
+
+import inspect                                              # noqa: E402
+
+_L25 = registration.Lean(pitch_deg=2.5, roll_deg=-1.5)
+_lc_pts = np.asarray(room)[::13]
+_lc = _mscan("leaning", _lc_pts, lean=registration.Lean(2.5, -1.5))
+_saw_solve, _saw_paint, _saw_grade = [], [], []
+_real_cscan = (colour.load_panorama, colour.solve_yaw, colour.peaks,
+               colour.sample, align.grade_solve)
+_fake_rgb = np.zeros((64, 128, 3), np.uint8)
+
+
+def _patch_colour():
+    colour.load_panorama = lambda p: (_fake_rgb,
+                                      np.zeros((64, 128), np.float32))
+    colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
+                        (_saw_solve.append(np.asarray(pts)), (41.0, 9.0,
+                                                              None))[1])
+    colour.peaks = lambda profile: [{"yaw_deg": 41.0, "confidence": 9.0}]
+    colour.sample = (lambda pts, img, **kw:
+                     (_saw_paint.append(np.asarray(pts)),
+                      np.full((len(pts), 3), 7, np.uint8))[1])
+    align.grade_solve = (lambda info, pts, refl, lum, camera:
+                         _saw_grade.append(np.asarray(pts)))
+
+
+def _restore_colour():
+    (colour.load_panorama, colour.solve_yaw, colour.peaks,
+     colour.sample, align.grade_solve) = _real_cscan
+
+
+_patch_colour()
+try:
+    _got_lc = align.colour_scan(_lc, "fake.jpg")
+finally:
+    _restore_colour()
+_want_lc = _L25.apply(_lc_pts)
+check("THE SOLVER IS HANDED THE LEVELLED CLOUD, NOT THE RIG'S RAW ONE",
+      _got_lc.get("ok") and len(_saw_solve) == 1
+      and np.allclose(_saw_solve[0], _want_lc, atol=1e-4),
+      _got_lc.get("reason"))
+check("...and the paint samples the same frame the solve stood in",
+      _saw_paint and np.allclose(_saw_paint[0], _L25.apply(_lc.xyz),
+                                 atol=1e-4))
+check("...which is genuinely a different frame from the raw points",
+      _saw_paint and not np.allclose(_saw_paint[0], _lc.xyz, atol=1e-3))
+check("...and the grade judges the frame that was solved",
+      _saw_grade and np.allclose(_saw_grade[0], _want_lc, atol=1e-4))
+check("...while the scan's own points are left untouched",
+      np.allclose(_lc.xyz, np.asarray(_lc_pts, dtype=np.float32), atol=1e-6))
+_saw_solve[:], _saw_paint[:] = [], []
+_flat = _mscan("upright", _lc_pts)
+_patch_colour()
+try:
+    align.colour_scan(_flat, "fake.jpg")
+finally:
+    _restore_colour()
+check("...and an upright capture goes through exactly as before",
+      _saw_solve and np.allclose(_saw_solve[0], _lc_pts, atol=1e-4))
+
+# ⛔ THE SAME FRAME AT EVERY DOOR, BY NAME. Auto-align and Deep align hand the
+# solver the sample themselves, so fixing colour_scan alone would leave a
+# refinement that "improves" the pose right out of the frame it is worn in.
+_rsrv = align.AlignServer.__new__(align.AlignServer)
+_rsrv._progress = {}
+_rsrv._rebuild = lambda: []
+_rs = _mscan("worn", _lc_pts, lean=registration.Lean(2.0, 1.0))
+_rs.photo = "fake.jpg"
+_rs.colour_info = {"ok": True, "photo": "fake.jpg", "yaw_deg": 10.0,
+                   "pitch_deg": 0.0, "roll_deg": 0.0, "rung": 0,
+                   "camera_x": 0.0, "camera_y": 0.0, "camera_z": 0.0,
+                   "grade": "sure", "given": False, "caution": None,
+                   "candidates": [], "second": None}
+_rsrv.scans = [_rs]
+_pose_fake = {"ok": True, "camera_z": 0.0, "camera_x": 0.0, "camera_y": 0.0,
+              "yaw_deg": 10.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+              "improved": False, "gain": 0.0, "score": 1.0, "was": 1.0,
+              "turned_deg": 0.0, "tilted_deg": 0.0, "raised_m": 0.0,
+              "evaluations": 1, "railed": False, "exhausted": False,
+              "solo": {}, "stood_down": [], "used": [], "far": False,
+              "seconds": 0.1, "candidates": []}
+_saw_refine, _saw_deep = [], []
+_real_rd = (colour.refine_pose, colour.deep_align)
+_want_rs = registration.Lean(2.0, 1.0).apply(np.asarray(_lc_pts))
+_patch_colour()
+colour.refine_pose = (lambda pts, lum, **kw:
+                      (_saw_refine.append(np.asarray(pts)),
+                       dict(_pose_fake))[1])
+colour.deep_align = (lambda pts, lum, **kw:
+                     (_saw_deep.append(np.asarray(pts)),
+                      dict(_pose_fake))[1])
+try:
+    _r_ref = _rsrv.refine(0)
+    _r_deep = _rsrv.deep(0, seconds=0.1)
+finally:
+    colour.refine_pose, colour.deep_align = _real_rd
+    _restore_colour()
+check("Auto-align refines in the levelled frame",
+      _r_ref.get("ok") and _saw_refine
+      and np.allclose(_saw_refine[0], _want_rs, atol=1e-4),
+      _r_ref.get("error"))
+check("...and Deep align searches the same frame",
+      _r_deep.get("ok") and _saw_deep
+      and np.allclose(_saw_deep[0], _want_rs, atol=1e-4),
+      _r_deep.get("error"))
+
+# ⛔⛔ ON ARRIVAL THE CAPTURE STANDS UP BEFORE ITS PHOTOGRAPH ARRIVES. The
+# photograph used to be solved WHILE the capture streamed -- before the scan
+# object existed, so before its floor could be fitted -- which aligned a level
+# picture to a still-leaning cloud, then levelled the cloud out from under it.
+# The operator's own order of work: convert, level the floor to the grid,
+# THEN import the image and align it.
+_lean_at_colour, _arrival = [], _floored(tip_deg=1.5, seed=51)
+_real_arrive = (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+                pipeline.sample_for_solve, pipeline.find_photo,
+                align.colour_scan)
+pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+rig.frame_for = lambda meta, **kw: None
+decode.stream_world_points = (lambda path, meta, frame, **kw:
+                              iter([(np.asarray(_arrival, np.float32),
+                                     np.full(len(_arrival), 100, np.uint8))]))
+pipeline.sample_for_solve = (lambda path, meta, frame, with_refl=False, **kw:
+                             ((np.asarray(_arrival),
+                               np.full(len(_arrival), 100, np.uint8))
+                              if with_refl else np.asarray(_arrival)))
+pipeline.find_photo = lambda p: "sibling.jpg"
+align.colour_scan = (lambda scan, photo, **kw:
+                     (_lean_at_colour.append((scan.lean.pitch_deg,
+                                              scan.lean.roll_deg,
+                                              scan.setup.dz)),
+                      {"ok": True})[1])
+try:
+    _came = align.load(["fake_arrival.pcap"], voxel_m=None, colour=True,
+                       level=True, max_points=200_000)
+    _lvlA = list(_lean_at_colour)
+    _lean_at_colour[:] = []
+    _came2 = align.load(["fake_restore.pcap"], voxel_m=None, colour=True,
+                        level=False, max_points=200_000)
+    _lvlB = list(_lean_at_colour)
+finally:
+    (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+     pipeline.sample_for_solve, pipeline.find_photo,
+     align.colour_scan) = _real_arrive
+check("ON ARRIVAL THE CAPTURE IS STANDING UP BEFORE THE PHOTOGRAPH ARRIVES",
+      _lvlA and abs(_lvlA[0][0]) + abs(_lvlA[0][1]) > 0.5
+      and not _came[0].lean.is_identity(), _lvlA)
+check("...and it is standing ON the grid, not a tripod's height above it",
+      _lvlA and abs(_lvlA[0][2]) > 0.5, _lvlA)
+check("...while the paths that RESTORE state afterwards leave the lean alone",
+      _lvlB and _lvlB[0] == (0.0, 0.0, 0.0) and _came2[0].lean.is_identity(),
+      _lvlB)
+check("...and leaving it alone is the DEFAULT a caller gets",
+      inspect.signature(align.load).parameters["level"].default is False)
+check("...while the add path opts in by name",
+      "level=True" in inspect.getsource(align.AlignServer.add))
+# A refused pairing still reaches the panel WITH ITS REASON -- the old
+# streaming path preserved this, and a silently grey cloud beside a
+# photograph would read as "colour does not work".
+_real_cs2 = align.colour_scan
+(pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+ pipeline.sample_for_solve, pipeline.find_photo) = _real_arrive[:5]
+pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+rig.frame_for = lambda meta, **kw: None
+decode.stream_world_points = (lambda path, meta, frame, **kw:
+                              iter([(np.asarray(_arrival, np.float32),
+                                     np.full(len(_arrival), 100, np.uint8))]))
+pipeline.sample_for_solve = (lambda path, meta, frame, with_refl=False, **kw:
+                             ((np.asarray(_arrival),
+                               np.full(len(_arrival), 100, np.uint8))
+                              if with_refl else np.asarray(_arrival)))
+pipeline.find_photo = lambda p: "sibling.jpg"
+align.colour_scan = lambda scan, photo, **kw: {"ok": False,
+                                               "reason": "wrong room"}
+try:
+    _ref_scan = align.load(["fake_refuse.pcap"], voxel_m=None, colour=True,
+                           level=True, max_points=200_000)[0]
+finally:
+    (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+     pipeline.sample_for_solve, pipeline.find_photo) = _real_arrive[:5]
+    align.colour_scan = _real_cs2
+check("...and a refused pairing still reaches the panel with its reason",
+      (_ref_scan.colour_info or {}).get("reason") == "wrong room",
+      _ref_scan.colour_info)
+
+# ⛔⛔ THE SEAT TRAVELS WITH THE POSE, ALL THREE AXES. `colour_pose` sent
+# (0, 0, camera_z): the sideways seat the deep polish solves -- the parallax
+# no rotation can absorb -- was stored, painted on screen, and dropped HERE,
+# so `_carry_colour` (which already reads camera_x/y out of this dict)
+# restored zeros and the exporter painted the file from a point the rays
+# never left. Fifth solved-stored-used-and-never-sent value this week.
+_cp = _mscan("posed", _lc_pts[:200])
+_cp.photo = "p.jpg"
+_cp.colour_info = {"ok": True, "photo": "p.jpg", "yaw_deg": 12.0,
+                   "pitch_deg": 1.0, "roll_deg": -0.5, "rung": 2,
+                   "grade": "sure"}
+_cp.camera_x, _cp.camera_y, _cp.camera_z = 0.03, -0.02, 0.11
+_cpose = align.AlignServer.colour_pose(_rsrv, _cp)
+check("THE CAMERA'S SEAT TRAVELS WITH THE POSE, ALL THREE AXES",
+      _cpose["camera_x"] == 0.03 and _cpose["camera_y"] == -0.02
+      and _cpose["camera"] == (0.03, -0.02, 0.11), _cpose)
+check("...so what reaches the exporter is no longer (0, 0, height)",
+      _cpose["camera"][:2] != (0.0, 0.0))
+check("...and the ladder's rung survives a save and a reopen",
+      _cpose.get("rung") == 2, _cpose.get("rung"))
+
+# ⛔⛔ THE EXPORT PAINTS THE SAME FRAME THE SCREEN SOLVED. `convert`'s emit
+# used to colour FIRST and lean second, on the claim that the colouriser has
+# to see the points where the sensor saw them -- the lidar's frame, when the
+# panorama is the CAMERA's and the camera is level. Colour now samples after
+# the lean and before the placement.
+_seen_colour, _seen_write = [], []
+_S30 = registration.Setup(dx=2.0, dy=-1.0, yaw_deg=30.0)
+
+
+def _spy_col(xyz):
+    _seen_colour.append(np.asarray(xyz).copy())
+    return np.full((len(xyz), 3), 5, np.uint8)
+
+
+class _SpyWriter(object):
+    count = 0
+
+    def write(self, xyz, rgb, intensity=None):
+        _seen_write.append(np.asarray(xyz).copy())
+
+    def close(self):
+        pass
+
+
+_raw_exp = np.asarray(_arrival[:4000], dtype=np.float64)
+_real_exp = (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+             export.writer_for)
+
+
+class _FakeFrame(object):
+    pitch_deg = 0.0
+
+    def describe(self):
+        return "fake frame"
+
+
+pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+rig.frame_for = lambda meta, **kw: _FakeFrame()
+decode.stream_world_points = (lambda path, meta, frame, **kw:
+                              iter([(np.asarray(_raw_exp, np.float64),
+                                     np.full(len(_raw_exp), 90,
+                                             np.uint8))]))
+export.writer_for = lambda *a, **k: _SpyWriter()
+try:
+    pipeline.convert("ghost.pcap", "ghost.laz", colouriser=_spy_col,
+                     colour=True, lean=_L25, setup=_S30, photo=None)
+finally:
+    (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+     export.writer_for) = _real_exp
+check("THE EXPORT COLOURS THE LEVELLED POINTS, NOT THE RAW ONES",
+      _seen_colour and np.allclose(_seen_colour[0], _L25.apply(_raw_exp)),
+      None if not _seen_colour else _seen_colour[0][:1])
+check("...and writes them PLACED, so the colour stayed ahead of the setup",
+      _seen_write
+      and np.allclose(_seen_write[0], _S30.apply(_L25.apply(_raw_exp))))
+check("...which are two different frames, or this proves nothing",
+      _seen_colour and _seen_write
+      and not np.allclose(_seen_colour[0], _seen_write[0]))
+
+# ⭐ AND THE CLI's OWN SOLVE STANDS IN THAT FRAME TOO, or a pose solved on raw
+# points would be applied to levelled ones, off by exactly the tripod's lean.
+_saw_cli = []
+_cli_pts = np.tile(_raw_exp, (3, 1))          # past the 5000-point refusal
+_real_cli = (pipeline.sample_for_solve, colour.load_panorama,
+             colour.solve_yaw)
+pipeline.sample_for_solve = lambda path, meta, frame, **kw: _cli_pts
+colour.load_panorama = lambda p: (_fake_rgb, np.zeros((64, 128), np.float32))
+colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
+                    (_saw_cli.append(np.asarray(pts)), (10.0, 99.0, None))[1])
+try:
+    pipeline.prepare_colour("ghost.pcap", {}, None, photo="fake.jpg",
+                            lean=_L25)
+finally:
+    (pipeline.sample_for_solve, colour.load_panorama,
+     colour.solve_yaw) = _real_cli
+check("prepare_colour solves the CLI path in the levelled frame",
+      _saw_cli and np.allclose(_saw_cli[0], _L25.apply(_cli_pts))
+      and not np.allclose(_saw_cli[0], _cli_pts, atol=1e-6),
+      len(_saw_cli))
+
+# ⛔ A FORCED RE-LEVEL MOVES THE FRAME THE POSE IS DEFINED IN, so the
+# photograph the scan is wearing is repainted -- through `_repaint`, so the
+# grade that judged the PAIRING survives -- and the operator is told the pose
+# was fitted to the old attitude. An identical re-fit repaints nothing.
+_wsrv = align.AlignServer.__new__(align.AlignServer)
+_worn2 = _mscan("worn2", _floored(tip_deg=1.2, seed=61))
+_worn2.photo = "w.jpg"
+_worn2.colour_info = {"ok": True, "photo": "w.jpg", "yaw_deg": 5.0,
+                      "pitch_deg": 0.0, "roll_deg": 0.0, "grade": "sure",
+                      "rung": 1, "given": False, "caution": None,
+                      "candidates": [], "second": None}
+_worn2.setup = registration.Setup(dx=1.0)
+_wsrv.scans = [_worn2]
+_rp_calls = []
+_real_rpaint = align.AlignServer._repaint
+align.AlignServer._repaint = (lambda self, scan, photo, pose, keep:
+                              (_rp_calls.append(pose),
+                               dict(keep, ok=True))[1])
+try:
+    _flvl = _wsrv.level_scan(0, force=True)
+    _flvl2 = _wsrv.level_scan(0, force=True)
+finally:
+    align.AlignServer._repaint = _real_rpaint
+check("a forced re-level repaints the photograph the scan is wearing",
+      _flvl["ok"] and len(_rp_calls) == 1 and _flvl.get("repainted") is True,
+      _flvl.get("error") or len(_rp_calls))
+check("...and says the pose was fitted to the old attitude",
+      "re-running its" in _flvl["text"], _flvl["text"][-80:])
+check("...while an identical re-fit does not repaint a million points",
+      _flvl2["ok"] and len(_rp_calls) == 1 and not _flvl2.get("repainted"),
+      len(_rp_calls))
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

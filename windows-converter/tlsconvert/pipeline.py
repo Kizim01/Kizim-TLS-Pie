@@ -685,7 +685,7 @@ def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
 
 def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
                    camera=(0.0, 0.0, 0.0), per_laser_azimuth=False,
-                   pitch_deg=0.0, roll_deg=0.0):
+                   pitch_deg=0.0, roll_deg=0.0, lean=None):
     """
     (colouriser or None, info). Never raises -- a colour problem is not a
     reason to lose the scan, so it degrades to grey and says why.
@@ -719,6 +719,14 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     if pts.shape[0] < 5000:
         info["reason"] = "too few points to align the photo against"
         return None, info
+
+    # ⭐ SOLVED IN THE LEVELLED FRAME, MATCHING THE FRAME `convert` SAMPLES
+    # COLOUR IN. The panorama is level -- the camera stitches it level from
+    # its own IMU -- and the raw capture is not; see the ordering note at
+    # `convert`'s emit. A pose solved here on raw points would then be
+    # applied to levelled ones, off by exactly the tripod's lean.
+    if lean is not None and not lean.is_identity():
+        pts = lean.apply(pts)
 
     yaw, confidence, _ = colour_mod.solve_yaw(pts, lum, camera=camera)
     info["yaw_deg"] = yaw
@@ -792,7 +800,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         colouriser, colour_info = prepare_colour(
             pcap_path, meta, frame, photo=photo, yaw_deg=yaw_deg,
             camera=camera, per_laser_azimuth=per_laser_azimuth,
-            pitch_deg=pitch_deg, roll_deg=roll_deg)
+            pitch_deg=pitch_deg, roll_deg=roll_deg, lean=lean)
 
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
     own_writer = writer is None
@@ -830,12 +838,6 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
                 xyz, refl = xyz[keep], refl[keep]
                 if xyz.shape[0] == 0:
                     return
-        rgb = (colouriser(xyz) if colouriser is not None
-               else export.intensity_to_grey(refl))
-        # ⛔ COLOUR FIRST, THEN MOVE. The colouriser samples a panorama shot
-        # from THIS scan's own origin, so it has to see the points where the
-        # sensor saw them. Transform first and every colour is looked up from
-        # the wrong direction -- a fully coloured cloud that is quietly wrong.
         # ⛔⛔ THE SCAN'S OWN LEAN COMES FIRST, IN ITS OWN FRAME, AND THE
         # ORDER IS THE MEANING. A `Lean` says the tripod was not level, so the
         # instrument measured the room turned a little about its OWN centre --
@@ -844,13 +846,22 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # world origin, and a scan standing ten metres away would swing right
         # out of the room: the same two numbers, a completely different claim,
         # and one that changes every time the scan is moved.
-        #
-        # ⭐ AND IT IS AFTER THE COLOUR, WITH THE PLACEMENT, FOR THE REASON
-        # DIRECTLY ABOVE. The panorama was shot from this sensor, so the
-        # colouriser has to see the points where the sensor saw them -- leaning
-        # first would look colour up from a direction the camera never pointed.
         if lean is not None and not lean.is_identity():
             xyz = lean.apply(xyz)
+        # ⛔⛔ COLOUR IS LOOKED UP AFTER THE LEAN AND BEFORE THE PLACEMENT,
+        # BECAUSE THE PANORAMA'S HORIZON IS THE CAMERA'S, NOT THE RIG'S. The
+        # 360 camera levels its own stitch from its IMU; the lidar has no
+        # tilt sensor, so the raw capture leans by whatever the tripod did.
+        # The sentence that used to stand here -- "the colouriser has to see
+        # the points where the sensor saw them" -- was true of the LIDAR and
+        # false of the CAMERA, and the camera is the sensor whose picture is
+        # being sampled; obeying it aligned a level photograph to a leaning
+        # cloud. The lean turns about the sensor's own centre, so the rays
+        # still leave the origin; the SETUP is what moves the cloud off its
+        # sensor, and colour stays ahead of that. The pose was solved in this
+        # same frame -- `colour_scan` levels before it solves.
+        rgb = (colouriser(xyz) if colouriser is not None
+               else export.intensity_to_grey(refl))
         if setup is not None and not setup.is_identity():
             xyz = setup.apply(xyz)
         # ⛔ LEVELLING COMES AFTER THE PLACEMENT AND BEFORE THE EDIT, and that

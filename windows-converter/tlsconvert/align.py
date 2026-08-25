@@ -358,6 +358,27 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
 
     camera = (float(camera_x or 0.0), float(camera_y or 0.0),
               float(camera_z or 0.0))
+    # ⭐⭐ THE PHOTOGRAPH LIVES IN THE LEVELLED FRAME, NOT THE RIG'S. The 360
+    # camera levels its own stitch from its IMU, so the panorama's horizon is
+    # gravity's -- while the lidar has no tilt sensor and hands over the room
+    # turned by whatever its tripod did. Solving in the raw frame couples the
+    # axes: `camera_matrix` composes tilt AFTER yaw, so the tilt that matches
+    # a level picture changes with every heading tried, and the ladder fits a
+    # yaw at a tilt that is wrong for it, then a tilt at that wrong yaw. In
+    # the levelled frame the true tilt is the camera's own mounting residual,
+    # a degree or two, whatever the heading -- the axes come apart. The lean
+    # turns about the sensor, so the rays still leave the origin, and the
+    # SAME frame is used to paint, in `pipeline.convert`'s emit and here.
+    lean = getattr(scan, "lean", None)
+    if lean is None or lean.is_identity():
+        world = scan.xyz
+        sample = (scan.sample if scan.sample is not None and len(scan.sample)
+                  else scan.xyz)
+    else:
+        world = lean.apply(scan.xyz)
+        sample = lean.apply(scan.sample
+                            if scan.sample is not None and len(scan.sample)
+                            else scan.xyz)
     # ⭐ A HEADING THE OPERATOR SUPPLIES IS NOT SOLVED, AND NOT JUDGED.
     # The confidence exists to answer "did the solve find anything"; there is
     # no solve here, so reporting a number would invite it to be read as a
@@ -375,8 +396,6 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         info["yaw_deg"], info["given"] = float(yaw), True
         info["grade"] = "given"
     else:
-        sample = (scan.sample if scan.sample is not None and len(scan.sample)
-                  else scan.xyz)
         yaw, confidence, profile = colour_mod.solve_yaw(sample, lum,
                                                         camera=camera)
         info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
@@ -416,7 +435,7 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         grade_solve(info, sample, getattr(scan, "sample_refl", None), lum,
                     camera)
 
-    scan.rgb = colour_mod.sample(scan.xyz, rgb_img, yaw_deg=yaw,
+    scan.rgb = colour_mod.sample(world, rgb_img, yaw_deg=yaw,
                                  camera=camera,
                                  pitch_deg=info["pitch_deg"],
                                  roll_deg=info["roll_deg"])
@@ -426,8 +445,63 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     return info
 
 
+def stand_up(scan):
+    """
+    Fit this one capture's floor and stand it upright ON the grid.
+
+    The instrument's compensator, in software: the tripod's own tip and bank
+    go into `scan.lean`, and the floor's height under the sensor into
+    `setup.dz`, so the ground lands AT the grid rather than a tripod's height
+    beneath it. Shared by the arrival path in `load` and the Level-this-scan
+    button; the guard about WHEN this is safe -- a placed capture's lean is
+    load-bearing -- stays in `level_scan`, because on arrival nothing has
+    been fitted yet and there is nothing to ask.
+    """
+    if getattr(scan, "source", "capture") == "cloud":
+        return {"ok": False,
+                "error": "%s was imported as a finished cloud, so it has "
+                         "no tripod of its own to stand up" % scan.name}
+    xyz = scan.sample if scan.sample is not None else scan.xyz
+    fit = registration.floor_plane(xyz)
+    if fit is None:
+        return {"ok": False,
+                "error": ("no floor could be found in %s — the ground has "
+                          "to be visible within %.0f m of the tripod for "
+                          "this to measure anything"
+                          % (scan.name, registration.FLOOR_FAR_M))}
+    made = registration.lean_from_floor(fit.normal)
+    scan.lean = made
+    # ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. A
+    # capture's zero is the INSTRUMENT, so a cloud that has only been
+    # levelled arrives with its TRIPOD on the ground plane and the floor
+    # hanging a tripod's height underneath -- the grid through the middle
+    # of the room at chest height, which is what it looks like from the
+    # outside. Every tripod's legs were set differently, so this is a
+    # property of the setup exactly as its lean is.
+    #
+    # ⭐ MEASURED THROUGH THE LEAN THAT WAS JUST APPLIED, NOT BESIDE IT.
+    # The pose is Rz(yaw) @ L then the shift, and Rz cannot change a
+    # height, so the floor ends up at (L @ p).z + dz -- one number, taken
+    # from the same plane the lean came from. Measured beside it, the two
+    # would be answers to slightly different questions and would part
+    # company the first time either was recomputed.
+    floor = float((made.matrix() @ np.asarray(fit.point,
+                                              dtype=np.float64))[2])
+    scan.setup.dz = -floor
+    return {"ok": True, "name": scan.name,
+            "was_deg": fit.tilt_deg, "drop_m": float(-floor),
+            "pitch_deg": made.pitch_deg, "roll_deg": made.roll_deg,
+            "points": int(fit.count), "rms": float(fit.rms),
+            "text": ("%s stood up on its own floor — its tripod was "
+                     "%.2f° out and %.2f m above the ground, measured on "
+                     "%s points"
+                     % (scan.name, fit.tilt_deg, abs(floor),
+                        "{:,}".format(int(fit.count))))}
+
+
 def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
-         per_laser_azimuth=False, max_points=viewer.DEFAULT_VIEW_MAX):
+         per_laser_azimuth=False, max_points=viewer.DEFAULT_VIEW_MAX,
+         level=False):
     """
     Decode every capture once, into memory, at a chosen preview density.
 
@@ -485,7 +559,9 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             if colour:
                 found = pipeline.find_photo(path)
                 if found:
-                    colour_scan(scan, found)
+                    got = colour_scan(scan, found)
+                    if not got.get("ok") and scan.colour_info is None:
+                        scan.colour_info = got
             scans.append(scan)
             seen[0] += budget or total
             continue
@@ -497,14 +573,13 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
                 "into a circle." % os.path.basename(meta_path))
         frame = pipeline.rig.frame_for(meta,
                                        per_laser_azimuth=per_laser_azimuth)
-        # Prepared BEFORE the walk, not after: at full density there is no
-        # accumulated cloud left over to colour in one go, and the panorama
-        # lookup only ever needed the capture's own frame anyway.
-        colouriser = None
-        if colour:
-            colouriser, _info = pipeline.prepare_colour(
-                path, meta, frame, photo=pipeline.find_photo(path),
-                per_laser_azimuth=per_laser_azimuth)
+        # ⛔⛔ NO COLOUR DURING THE WALK ANY MORE, AND THE ORDER IS THE POINT.
+        # The photograph used to be solved and applied WHILE the capture
+        # streamed -- before the scan object existed, so before its floor
+        # could be fitted -- which aligned a level picture to a still-leaning
+        # cloud. The surveyor's order of work is decode, stand the capture up
+        # on its floor, THEN bring in the image; colour now happens after the
+        # walk, through `colour_scan`, the same door every re-align uses.
         acc = pipeline.VoxelAccumulator(voxel_m) if voxel_m else None
         buf = viewer.ViewerBuffer(max_points=cap) if acc is None else None
         done = 0
@@ -513,15 +588,13 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
             if acc is not None:
                 acc.add(xyz, refl)
             else:
-                buf.add(xyz, (colouriser(xyz) if colouriser is not None
-                              else export.intensity_to_grey(refl)), refl)
+                buf.add(xyz, export.intensity_to_grey(refl), refl)
             done += xyz.shape[0]
             report("reading %s" % name, done)
         seen[0] += budget or done
         if acc is not None:
             xyz, refl = acc.result()
-            rgb = (colouriser(xyz) if colouriser is not None
-                   else export.intensity_to_grey(refl))
+            rgb = export.intensity_to_grey(refl)
             view_refl = refl
         else:
             xyz, rgb = buf.arrays()
@@ -543,46 +616,25 @@ def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
         scan.view_refl = view_refl
         scan.anchor_deg = (meta.get("zero") or {}).get("head_deg")
         scan.zero_origin = (meta.get("zero") or {}).get("provenance")
-        # The photo was applied while streaming, above; record WHICH one, so the
-        # panel can say so and offer to replace it.
+        # ⭐⭐ LEVEL FIRST, PHOTOGRAPH SECOND, AND ONLY ON ARRIVAL. The image
+        # is level -- the camera stitches it level from its own IMU -- so it
+        # has to meet a cloud that is already standing upright, or the solve
+        # spends its tilt axes reproducing the tripod's error, coupled to a
+        # heading it has not found yet. `level` is False on the paths that
+        # RESTORE state afterwards (a project being opened, a re-read at
+        # another detail): levelling there would write a fresh lean under a
+        # registered placement, which is the exact thing `level_scan`'s guard
+        # exists to refuse.
+        if level:
+            stand_up(scan)          # quiet: no floor in view is ordinary
         found = pipeline.find_photo(path) if colour else None
-        if found and colouriser is not None:
-            scan.photo = found
-            scan.colour_info = {"photo": found, "ok": True,
-                                "name": os.path.basename(found),
-                                "yaw_deg": _info.get("yaw_deg"),
-                                "confidence": _info.get("confidence"),
-                                "reason": None, "given": False,
-                                "camera_z": 0.0, "grade": None,
-                                "caution": None, "candidates": [],
-                                "second": None, "agree_deg": None,
-                                "corroborated": False}
-            # ⛔ GRADED HERE TOO, THROUGH THE SAME FUNCTION. This path applies
-            # the colour while STREAMING the capture, so it never went near
-            # colour_scan -- and a scan opened with its photograph already
-            # beside it arrived ungraded, with no second opinion, while the
-            # identical photograph attached by hand came back "confirmed".
-            from . import colour as colour_mod
-            try:
-                _rgb2, _lum2 = colour_mod.load_panorama(found)
-            except Exception as _exc:                     # noqa: BLE001
-                # A grade is a nicety; a decoded capture is not. Never let the
-                # second opinion be the reason a scan fails to open.
-                scan.colour_info["caution"] = (
-                    "could not re-read %s to grade the alignment (%s)"
-                    % (os.path.basename(found), _exc))
-            else:
-                grade_solve(scan.colour_info, sample, sample_refl, _lum2,
-                            (0.0, 0.0, 0.0))
-        elif found:
-            scan.colour_info = {"photo": found, "ok": False,
-                                "name": os.path.basename(found),
-                                "yaw_deg": _info.get("yaw_deg"),
-                                "confidence": _info.get("confidence"),
-                                "reason": _info.get("reason"), "given": False,
-                                "grade": "doubtful", "caution": None,
-                                "candidates": [], "second": None,
-                                "agree_deg": None, "corroborated": False}
+        if found:
+            got = colour_scan(scan, found)
+            # A refused pairing still reaches the panel WITH ITS REASON --
+            # the old streaming path preserved this, and losing it would
+            # leave a silently grey cloud beside a photograph.
+            if not got.get("ok") and scan.colour_info is None:
+                scan.colour_info = got
         scans.append(scan)
     report("ready")
     return scans
@@ -1505,9 +1557,7 @@ class AlignServer(object):
             return {"ok": False, "error": "there is no scan %d" % i}
         scan = self.scans[i]
         if getattr(scan, "source", "capture") == "cloud":
-            return {"ok": False,
-                    "error": "%s was imported as a finished cloud, so it has "
-                             "no tripod of its own to stand up" % scan.name}
+            return stand_up(scan)       # the refusal, worded once, in there
         others = any(s.setup.sited
                      for j, s in enumerate(self.scans) if j != i)
         placed = scan.setup.sited or (i == 0 and others)
@@ -1517,43 +1567,40 @@ class AlignServer(object):
                               "it now would move it out of the fit it is "
                               "holding. Level it before it is aligned, or "
                               "reset its placement first." % scan.name)}
-        xyz = scan.sample if scan.sample is not None else scan.xyz
-        fit = registration.floor_plane(xyz)
-        if fit is None:
-            return {"ok": False,
-                    "error": ("no floor could be found in %s — the ground has "
-                              "to be visible within %.0f m of the tripod for "
-                              "this to measure anything"
-                              % (scan.name, registration.FLOOR_FAR_M))}
-        made = registration.lean_from_floor(fit.normal)
-        scan.lean = made
-        # ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. A
-        # capture's zero is the INSTRUMENT, so a cloud that has only been
-        # levelled arrives with its TRIPOD on the ground plane and the floor
-        # hanging a tripod's height underneath -- the grid through the middle
-        # of the room at chest height, which is what it looks like from the
-        # outside. Every tripod's legs were set differently, so this is a
-        # property of the setup exactly as its lean is.
-        #
-        # ⭐ MEASURED THROUGH THE LEAN THAT WAS JUST APPLIED, NOT BESIDE IT.
-        # The pose is Rz(yaw) @ L then the shift, and Rz cannot change a
-        # height, so the floor ends up at (L @ p).z + dz -- one number, taken
-        # from the same plane the lean came from. Measured beside it, the two
-        # would be answers to slightly different questions and would part
-        # company the first time either was recomputed.
-        floor = float((made.matrix() @ np.asarray(fit.point,
-                                                  dtype=np.float64))[2])
-        scan.setup.dz = -floor
-        return {"ok": True, "index": i, "name": scan.name,
-                "setup": _placement(scan),
-                "was_deg": fit.tilt_deg, "drop_m": float(-floor),
-                "pitch_deg": made.pitch_deg, "roll_deg": made.roll_deg,
-                "points": int(fit.count), "rms": float(fit.rms),
-                "text": ("%s stood up on its own floor — its tripod was "
-                         "%.2f° out and %.2f m above the ground, measured on "
-                         "%s points"
-                         % (scan.name, fit.tilt_deg, abs(floor),
-                            "{:,}".format(int(fit.count))))}
+        was = scan.lean
+        got = stand_up(scan)
+        if not got.get("ok"):
+            return got
+        got["index"], got["setup"] = i, _placement(scan)
+        # ⛔ THE POSE IS DEFINED IN THE LEVELLED FRAME, SO RE-LEVELLING MOVES
+        # WHAT IT PAINTS. A photograph solved before this press was fitted
+        # against the old attitude; leaving its colours on screen would show
+        # an alignment the numbers no longer describe. Repainted through
+        # `_repaint` so the grade -- which judged the PAIRING, not this fit --
+        # survives, and only when the lean materially changed: the arrival
+        # path re-fits the same floor from the same points, and repainting a
+        # million points to apply an identical answer is noise.
+        moved = (abs(scan.lean.pitch_deg - was.pitch_deg) > 0.01
+                 or abs(scan.lean.roll_deg - was.roll_deg) > 0.01)
+        info = scan.colour_info or {}
+        if moved and scan.photo and info.get("ok"):
+            fresh = self._repaint(
+                scan, scan.photo,
+                {"yaw_deg": info.get("yaw_deg"),
+                 "pitch_deg": info.get("pitch_deg"),
+                 "roll_deg": info.get("roll_deg"),
+                 "camera_z": getattr(scan, "camera_z", 0.0),
+                 "camera_x": getattr(scan, "camera_x", 0.0),
+                 "camera_y": getattr(scan, "camera_y", 0.0)},
+                dict(info))
+            if fresh.get("ok"):
+                scan.colour_info = fresh
+                got["repainted"] = True
+                got["text"] += (". Its photograph was repainted against the "
+                                "new attitude — worth re-running its "
+                                "alignment, since the pose was fitted to "
+                                "the old one")
+        return got
 
     def level_from_floor(self, level=None):
         """
@@ -1903,7 +1950,7 @@ class AlignServer(object):
         try:
             fresh = load(paths, voxel_m=self.align_voxel,
                          colour=bool(colour), progress=self._note,
-                         max_points=per * len(paths))
+                         max_points=per * len(paths), level=True)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
@@ -2517,6 +2564,13 @@ class AlignServer(object):
                                "eye."}
         sample = (scan.sample if scan.sample is not None and len(scan.sample)
                   else scan.xyz)
+        # ⭐ THE SAME FRAME `colour_scan` SOLVES IN. The pose lives in the
+        # LEVELLED frame -- see the note there -- and a refinement handed the
+        # raw points would "improve" the pose right out of the frame it is
+        # worn in.
+        lean = getattr(scan, "lean", None)
+        if lean is not None and not lean.is_identity():
+            sample = lean.apply(sample)
         self._progress = {"stage": "refining %s (%s)"
                                    % (scan.name, colour_mod.RUNGS[want - 1][0]),
                           "n": 0, "total": 1, "busy": True}
@@ -2618,6 +2672,11 @@ class AlignServer(object):
                              "one"}
         sample = (scan.sample if scan.sample is not None and len(scan.sample)
                   else scan.xyz)
+        # ⭐ THE SAME FRAME `colour_scan` SOLVES IN -- see the note there. The
+        # reflectivity below is per-point and rides along untouched.
+        lean = getattr(scan, "lean", None)
+        if lean is not None and not lean.is_identity():
+            sample = lean.apply(sample)
         # ⛔ THE SOLVER'S OWN DECIMATED REFLECTIVITY, NOT THE ONE ON SCREEN.
         # `view_refl` lines up with the displayed points and `sample_refl` with
         # `sample`; handing over the wrong one gives arrays of different
@@ -3300,13 +3359,23 @@ class AlignServer(object):
         photo = getattr(scan, "photo", None) or info.get("photo")
         if not photo or not info.get("ok") or info.get("yaw_deg") is None:
             return None
+        # ⛔⛔ THE SEAT GOES WITH THE POSE, ALL THREE AXES. This used to send
+        # (0, 0, camera_z): the sideways seat the deep polish solves -- the
+        # parallax no rotation can absorb -- was stored, painted on screen,
+        # and then dropped HERE, so `_carry_colour` (which already reads
+        # camera_x/y out of this dict) restored zeros and the exporter
+        # painted the file from a point the rays never left. The fifth
+        # solved-stored-used-and-never-sent value this week.
+        cx = float(getattr(scan, "camera_x", 0.0) or 0.0)
+        cy = float(getattr(scan, "camera_y", 0.0) or 0.0)
+        cz = float(getattr(scan, "camera_z", 0.0) or 0.0)
         return {"photo": photo, "yaw_deg": float(info["yaw_deg"]),
                 "pitch_deg": float(info.get("pitch_deg") or 0.0),
                 "roll_deg": float(info.get("roll_deg") or 0.0),
-                "camera_z": float(getattr(scan, "camera_z", 0.0) or 0.0),
+                "camera_z": cz, "camera_x": cx, "camera_y": cy,
                 "grade": info.get("grade"),
-                "camera": (0.0, 0.0,
-                           float(getattr(scan, "camera_z", 0.0) or 0.0))}
+                "rung": int(info.get("rung") or 0),
+                "camera": (cx, cy, cz)}
 
     def pick_out(self, suggest=None):
         """

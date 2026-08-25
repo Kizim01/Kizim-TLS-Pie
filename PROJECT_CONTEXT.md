@@ -4036,12 +4036,72 @@ will not do it.
 
 Suite **1083 → 1110**, exes **20:37**.
 
+## 2026-08-25, second pass — the photograph meets a LEVEL cloud
+
+**The operator named the pipeline in one sentence: "on import first convert pcap to point cloud, then
+level the point cloud floor to the level grid system, then import the image, then align the image to
+colorise the point cloud."** The physics behind it: the Insta360 levels its own stitch from its IMU, so
+the panorama's horizon is gravity's — while the lidar has no tilt sensor and hands over the room turned
+by whatever its tripod did. Two orderings were wrong at once.
+
+- **⛔⛔ "THE COLOURISER HAS TO SEE THE POINTS WHERE THE SENSOR SAW THEM" WAS TRUE OF THE WRONG
+  SENSOR.** `convert`'s emit stood on that sentence to colour *before* the lean; every solve
+  (`colour_scan`, refine, deep, `prepare_colour`) ran on the raw cloud for the same reason. True of the
+  **lidar**, false of the **camera** — and the camera is the sensor whose picture is being sampled.
+  ⭐ *A justifying sentence names a role ("the sensor"); check which actor actually fills it.* Colour
+  now samples **after the lean and before the placement** everywhere, and the pose lives in the
+  levelled frame at every door: solve, grade, paint, refine, deep, CLI, export.
+
+- **⛔⛔ THE PHOTOGRAPH WAS SOLVED BEFORE THE FLOOR EXISTED.** On import, the pano was solved and
+  applied *while the capture streamed* — before the scan object was built, so before its floor could
+  be fitted — then `levelArrivals` levelled the cloud out from under the fitted pose. The walk-time
+  colouriser is deleted; `load` now goes decode → `stand_up(scan)` (extracted from `level_scan`,
+  shared) → `colour_scan`, the same door every re-align uses — which also killed the hand-rolled
+  `colour_info` block that existed only to compensate for not going through `colour_scan`.
+  ⛔ `level=False` is the **default**: the paths that RESTORE state afterwards (open project, re-read
+  at another detail) must not write a fresh lean under a registered placement. Only `add` opts in.
+
+- **⭐⭐ WHY THE FRAME MATTERS TO THE SOLVER, NOT JUST TO TIDINESS: THE AXES COUPLE.**
+  `camera_matrix` composes tilt after yaw, so on a leaning cloud the tilt that matches a level picture
+  *changes with every heading tried* — the ladder fits a yaw at a tilt wrong for it, then a tilt at
+  that wrong yaw. In the levelled frame the true tilt is the camera's own mounting residual, whatever
+  the heading. Measured on folder 1: the refinement landscape is rough enough that a **0.5° different
+  start converged 2.2° away** (pitch +4.71 against +2.55) — starting near the truth is not a nicety.
+
+- **⛔⛔ AND THE FRAME QUESTION WAS SETTLED BY MEASUREMENT, NOT BY TRUSTING THE BRAND.** The two
+  frames' fitted poses came out numerically identical (0.16° apart) when a level pano demands they
+  differ by the lean (1.28°) — which *looked* like the pano leaning with the tripod. The decider:
+  transplant the raw optimum into the levelled frame (compose with `L.T`, extract the Euler) and score
+  it there — **0.2666 against the levelled frame's own 0.3095**. The levelled data rejects the raw
+  optimum, so the pano really is close to level; the identical numbers were two different rough-basin
+  optima, not one pose in two frames. Real numbers, folder 1 (`TLS_26_08_20_16_03_15`): tripod lean
+  **pitch +1.21° roll +0.42°**, floor drop **1.45 m**, heading 92.5° confirmed + corroborated in both
+  frames, and the levelled-frame camera tilt **+2.55°** is the camera's own mounting lean — the 08-21
+  measurement of 2.44° reproduced (raw fit: 2.42°).
+
+- **⛔ THE SEAT NEVER REACHED THE FILE — FIFTH solved-stored-used-and-never-sent VALUE THIS WEEK.**
+  `colour_pose` sent `camera: (0, 0, camera_z)`; `_carry_colour` *already read* `camera_x/y` out of
+  that dict, so a re-read or reopen silently restored zeros and the merge painted the export without
+  the seat the deep polish had solved. Now all three axes travel, plus the ladder's rung.
+
+- **⛔ A FORCED RE-LEVEL MOVES THE FRAME THE POSE IS DEFINED IN**, so `level_scan` repaints a worn
+  photograph through `_repaint` (the grade judged the *pairing* and survives) and says the pose was
+  fitted to the old attitude — but an identical re-fit repaints nothing, because the arrival path
+  re-fits the same floor from the same points on every ingest.
+
+- **Queued, not built: the image as the vertical datum where no floor is visible** (stairwell,
+  facade). The floor fit is the sharper reference when a floor exists (thousands of points against a
+  degree-class IMU) and needs no chicken-and-egg solve; the image's near-zero solved tilt is now a
+  *witness* that both references agree.
+
+Suite **1110 → 1134**; three deliberate reversions (paint back to raw, `add` loses its opt-in, export
+colours before the lean) each caught by exactly the check built for it.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-25 20:37, selftest 0, CUDA engine found.** They carry
-everything from 08-24 and 08-25 — the Save-as destination, the world grid on at startup, the reopened
-move tray, the slicer-shaped move panel, per-scan levelling **and** the floor drop, the heading-ring
-fix, the camera-seat arms and the photograph panel's own Gizmo button.
+**⚠ THE EXES ARE STALE: built 2026-08-25 20:37, BEFORE the level-frame colour pass above.** A Studio
+run from them still solves and paints the photograph in the raw frame and still colours during the
+walk. Rebuild before judging any image alignment.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.
