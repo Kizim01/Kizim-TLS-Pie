@@ -4099,9 +4099,14 @@ colours before the lean) each caught by exactly the check built for it.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⚠ THE EXES ARE STALE: built 2026-08-25 20:37, BEFORE the level-frame colour pass above.** A Studio
-run from them still solves and paints the photograph in the raw frame and still colours during the
-walk. Rebuild before judging any image alignment.
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-25 22:37, selftest 0, CUDA engine found.** They carry
+everything from 08-24 and 08-25 including the level-frame colour pass: the photograph is solved and
+painted against the LEVELLED cloud at every door, imports go level-first, and the camera seat now
+reaches the export. **Worth trying on folder 1 first (`D:\RESTAURANT SCAN\1`)**: import the pcap
+fresh — the floor should land on the grid on its own — then attach the photograph and look at the
+near edges before touching anything; the heading should come back ~92.5° confirmed. If it is still
+off, press Gizmo and drag the dashed camera arms a few centimetres — the mounting lean measured
++2.55°, so a small tilt on the rings may also be left to take out by eye.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.
