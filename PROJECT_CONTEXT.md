@@ -4129,10 +4129,14 @@ caught, the second by the new check *and* the pre-existing Re-solve check.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⚠ THE EXES ARE STALE: built 2026-08-25 22:37, BEFORE the auto-climb pass above.** A Studio run
-from them still makes the first paint at height zero and tilt zero — the image lands low. Rebuild,
-then re-import folder 1 fresh: the first paint should arrive already fitted (heading ~92.3°
-confirmed, camera a few centimetres up) with nothing to press.
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 00:49, selftest 0, CUDA engine found.** They carry the
+level-frame colour pass AND the auto-climb: on a fresh import the first paint arrives already fitted
+— heading, tilt, camera height and seat — with nothing to press. **Test on folder 1
+(`D:\RESTAURANT SCAN\1`): import the pcap FRESH, not from a saved project** (a saved project restores
+its stored pose rather than re-solving); the floor lands on the grid, and the image should sit on
+the walls with heading ~92.3° confirmed and the camera a few centimetres up. ⚠ An earlier rebuild
+attempt failed with `[WinError 5]` on `TLS-Pie-Studio.exe` because **Studio was open** — the running
+exe locks the file; close Studio before any rebuild.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.
