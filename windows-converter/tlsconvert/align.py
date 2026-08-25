@@ -718,7 +718,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                               body.get("camera_z")))
             if path == "/photo/camera":
                 return self._json(srv.set_camera(body.get("index"),
-                                                 body.get("z")))
+                                                 body.get("z"),
+                                                 body.get("x"),
+                                                 body.get("y")))
             if path == "/add":
                 return self._json(srv.add(body.get("paths") or [],
                                           body.get("colour", True)))
@@ -884,6 +886,13 @@ class AlignServer(object):
                          "agree": info.get("agree_deg"),
                          "corroborated": bool(info.get("corroborated")),
                          "cameraZ": getattr(scan, "camera_z", 0.0),
+                         # ⛔ ALL THREE, BECAUSE THE OTHER TWO WERE SOLVED AND
+                         # THEN NEVER SHOWN. Deep align measures the seat in x
+                         # and y, stores it and colours with it; the page was
+                         # sent only the height, so the number that decides
+                         # whether a picture can line up at all was invisible.
+                         "cameraX": getattr(scan, "camera_x", 0.0),
+                         "cameraY": getattr(scan, "camera_y", 0.0),
                          # ⭐ THE LEAN, AND HOW FAR THE REFINEMENT HAS CLIMBED.
                          # Without the rung the page cannot tell "press it
                          # again" from "there is nothing left", and those two
@@ -2795,9 +2804,23 @@ class AlignServer(object):
                 "error": None if info.get("ok") else info.get("reason"),
                 "scans": self._rebuild()}
 
-    def set_camera(self, index, z):
+    def set_camera(self, index, z, x=None, y=None):
         """
-        Move the camera's optical centre up or down and repaint.
+        Move the camera's optical centre and repaint.
+
+        ⭐⭐ SIDEWAYS AS WELL AS UP, AND THE SIDEWAYS PAIR IS THE ONE NOTHING
+        COULD REACH. `camera_x` and `camera_y` have always been modelled: the
+        scorer takes them, the deep polish SOLVES for them, they are stored on
+        the scan, saved into the project and used on every recolour. They were
+        simply never sent to the page and never settable, so the seat the deep
+        search measured could be neither seen nor corrected.
+
+        ⛔ AND IT IS THE OFFSET NO ROTATION CAN ABSORB. Turning, tipping or
+        banking a panorama moves every ray's DIRECTION; a centre that sat a few
+        centimetres to one side moves where the rays START, which pulls near
+        edges one way and far ones the other. No heading can trade that out --
+        it can only choose which distance is wrong. "It will not line up even
+        with deep align" is what that looks like from the outside.
 
         ⛔ IT KEEPS WHICHEVER PATH THE SCAN IS ALREADY ON. A scan coloured
         from a heading the operator gave must not be quietly re-solved by a
@@ -2809,24 +2832,54 @@ class AlignServer(object):
         scan, photo = self._photo_of(index)
         if scan is None:
             return {"ok": False, "error": photo}
-        try:
-            z = float(z)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "a camera height in metres is needed"}
-        if not (z == z and abs(z) != float("inf")):
-            return {"ok": False, "error": "a camera height in metres is needed"}
-        # ⛔ A METRE IS NOT A PLAUSIBLE ANSWER, and the units are the reason to
-        # say so: this box is in centimetres on screen and metres on the wire,
-        # so a slip of a hundred is the mistake to expect. It is the difference
-        # between two optical centres on ONE tripod.
-        if abs(z) > 0.5:
+        # ⛔ ONE RULE FOR THE THREE, WRITTEN ONCE. The height had its own
+        # validation and its own bound; giving x and y a second copy is how the
+        # three drift apart, and the axis that got it wrong would be whichever
+        # was added last. `None` leaves an axis exactly as it was, so a route
+        # that means to move one cannot silently zero the other two -- the bug
+        # the height itself had before the seat was stored.
+        want = {"z": z, "x": x, "y": y}
+        # ⛔ `None` MEANS "LEAVE THIS AXIS", WHICH MAKES ALL-NONE A REQUEST THAT
+        # ASKS FOR NOTHING -- and that is a malformed call, not a no-op. Caught
+        # by the check that had always demanded a height: making z optional
+        # quietly turned "set the camera to nothing" into a success that
+        # re-coloured the cloud and reported a seat nobody had chosen.
+        if all(v is None for v in want.values()):
             return {"ok": False,
-                    "error": "%.2f m is not a height difference between two "
-                             "things on one tripod -- this is how far the "
-                             "camera's centre sat ABOVE the lidar's, normally "
-                             "a few centimetres. Check the units: this box is "
-                             "in CENTIMETRES." % z}
+                    "error": "a camera offset in metres is needed — give at "
+                             "least one of x, y or z"}
+        got = {}
+        for name in "xyz":
+            v = want[name]
+            if v is None:
+                got[name] = float(getattr(scan, "camera_" + name, 0.0) or 0.0)
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return {"ok": False,
+                        "error": "the camera's %s offset has to be a number "
+                                 "of metres" % name.upper()}
+            if not (v == v and abs(v) != float("inf")):
+                return {"ok": False,
+                        "error": "the camera's %s offset has to be a number "
+                                 "of metres" % name.upper()}
+            # ⛔ A METRE IS NOT A PLAUSIBLE ANSWER, and the units are the reason
+            # to say so: these boxes are in centimetres on screen and metres on
+            # the wire, so a slip of a hundred is the mistake to expect. It is
+            # the gap between two optical centres on ONE tripod.
+            if abs(v) > 0.5:
+                return {"ok": False,
+                        "error": "%.2f m is not a gap between two things on "
+                                 "one tripod -- this is how far the camera's "
+                                 "centre sat from the lidar's, normally a few "
+                                 "centimetres. Check the units: this box is "
+                                 "in CENTIMETRES." % v}
+            got[name] = v
+        z = got["z"]
         scan.camera_z = z
+        scan.camera_x = got["x"]
+        scan.camera_y = got["y"]
         was = scan.colour_info or {}
         keep = (float(was["yaw_deg"])
                 if (was.get("given") and was.get("yaw_deg") is not None)
@@ -4148,7 +4201,7 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
            /* Which scan's PHOTOGRAPH is showing its pose rings, and which of
               the three is being dragged. Separate from the scan's own ring:
               one turns the cloud, these turn the picture on it. */
-           tiltRing:null, tiltAxis:null,
+           tiltRing:null, tiltAxis:null, camAxis:null,
            /* And the SCAN's own tip and bank rings -- a third widget about the
               same tripod, nested inside the turn ring so that the two do not
               fight over the same pixels. */
@@ -5181,6 +5234,103 @@ const TILT_AXES=[
   {key:'pitch', c:'rgba(120,230,150', u:[0,1,0], v:[0,0,1], lab:'tip', f:0.76},
   {key:'roll',  c:'rgba(255,130,190', u:[1,0,0], v:[0,0,1], lab:'bank',
    f:0.54}];
+/* ⭐⭐ AND THREE ARMS FOR THE CAMERA'S SEAT, WHICH IS THE ONE THING NO RING CAN
+   REACH. A ring moves every ray's DIRECTION. A centre that sat a few
+   centimetres to one side of the lidar's moves where the rays START, pulling
+   near edges one way and far ones the other -- so no amount of turning, tipping
+   or banking can take it out, it can only choose which distance is wrong.
+
+   ⛔⛔ DRAWN DELIBERATELY UNLIKE THE SCAN'S ARMS, WHICH SHARE THIS TRIPOD. The
+   two do opposite things -- these move the CAMERA inside a cloud that stays
+   put, those move the CLOUD -- and this file already says, about tip and bank,
+   that two controls a centimetre apart spelled the same and doing opposite
+   things is worse than either choice. So: dashed, shorter, and in the
+   photograph's own colours rather than the placement's red/green/blue.
+
+   ⛔ AND IN CENTIMETRES ON SCREEN. A seat is a few centimetres; a gizmo that
+   moved it in metres would be unusable at the only scale it is ever used at. */
+const CAM_PX=40, CAM_PER_PX=0.0006;   /* metres of seat per pixel dragged */
+const CAM_AXES=[
+  {key:'x', c:'rgba(255,214,10',  v:[1,0,0], lab:'cam X'},
+  {key:'y', c:'rgba(120,230,150', v:[0,1,0], lab:'cam Y'},
+  {key:'z', c:'rgba(255,130,190', v:[0,0,1], lab:'cam Z'}];
+function camArmsOf(){
+  const r=tiltRingsOf(); if(!r) return null;
+  /* ⛔ `r.R` IS A RADIUS IN METRES, not a scale -- `screenRadius` returns the
+     world distance that spans TILT_PX pixels here, and `r.c` is the projected
+     centre. So an arm CAM_PX pixels long is that radius in the same ratio. */
+  const reach=r.R*(CAM_PX/TILT_PX);
+  const at=project(r.o, V.vp); if(!at) return null;
+  const out=[];
+  for(const ax of CAM_AXES){
+    const tip=project([r.o[0]+ax.v[0]*reach,
+                       r.o[1]+ax.v[1]*reach,
+                       r.o[2]+ax.v[2]*reach], V.vp);
+    if(tip) out.push({ax:ax, a:at, b:tip});
+  }
+  return out.length ? {s:r.s, o:r.o, arms:out} : null;
+}
+function camGrip(mx,my){
+  const g=camArmsOf(); if(!g) return null;
+  let best=null;
+  for(const arm of g.arms){
+    const dx=arm.b[0]-arm.a[0], dy=arm.b[1]-arm.a[1];
+    const len=Math.hypot(dx,dy) || 1;
+    let t=((mx-arm.a[0])*dx + (my-arm.a[1])*dy)/(len*len);
+    t=Math.max(0,Math.min(1,t));
+    const px=arm.a[0]+dx*t, py=arm.a[1]+dy*t;
+    const d=Math.hypot(mx-px, my-py);
+    /* ⛔ ONLY THE OUTER HALF GRABS. The inner half of every arm sits on top of
+       the other two and on the tripod marker, so a catch there is a coin toss
+       between three controls -- the same reason the rings are nested. */
+    if(t>0.45 && d<9 && (!best || d<best.d)) best={key:arm.ax.key, d:d};
+  }
+  return best;
+}
+function camDrag(mx,my,from){
+  const g=camArmsOf(); if(!g) return from;
+  if(from===null) return [mx,my];
+  const arm=g.arms.find(a=>a.ax.key===V.camAxis);
+  if(!arm) return from;
+  const dx=arm.b[0]-arm.a[0], dy=arm.b[1]-arm.a[1];
+  const len=Math.hypot(dx,dy) || 1;
+  /* How far the hand travelled ALONG the arm, in pixels, projected. */
+  const along=((mx-from[0])*dx + (my-from[1])*dy)/len;
+  const s=g.s, key='camera'+V.camAxis.toUpperCase();
+  const now=(+s[key]||0) + along*CAM_PER_PX;
+  /* ⛔ CLAMPED WHERE THE SERVER CLAMPS. A gizmo that let the hand run past the
+     bound and then had the request refused would look broken at the edge. */
+  s[key]=Math.max(-0.5, Math.min(0.5, now));
+  invalidate();
+  return [mx,my];
+}
+async function camRelease(){
+  const g=camArmsOf(); if(!g) return;
+  const s=g.s;
+  return setCamera(s.index, +s.cameraZ||0, +s.cameraX||0, +s.cameraY||0);
+}
+function drawCamArms(){
+  const g=camArmsOf(); if(!g) return;
+  oc.save();
+  oc.setLineDash([5,4]);
+  for(const arm of g.arms){
+    const hot=V.camAxis===arm.ax.key;
+    oc.beginPath(); oc.moveTo(arm.a[0],arm.a[1]); oc.lineTo(arm.b[0],arm.b[1]);
+    oc.lineWidth=hot?2.4:1.5; oc.strokeStyle=arm.ax.c+(hot?',.98)':',.72)');
+    oc.stroke();
+    oc.setLineDash([]);
+    oc.beginPath(); oc.arc(arm.b[0],arm.b[1], hot?5:3.5, 0, 6.2832);
+    oc.fillStyle=arm.ax.c+',.95)'; oc.fill();
+    oc.setLineDash([5,4]);
+    if(hot){
+      const cm=((+g.s['camera'+arm.ax.key.toUpperCase()]||0)*100).toFixed(1);
+      oc.font='11px ui-sans-serif,system-ui';
+      oc.fillStyle='rgba(255,255,255,.92)';
+      oc.fillText(arm.ax.lab+' '+cm+' cm', arm.b[0]+9, arm.b[1]-7);
+    }
+  }
+  oc.restore();
+}
 function tiltRingPath(r, ax){
   const pts=[], R=r.R*(ax.f||1);
   for(let i=0;i<=72;i++){
@@ -5273,10 +5423,25 @@ function tiltDrag(mx,my,fromAngle){
   invalidate();
   return now;
 }
-async function tiltRelease(){
+/* ⛔⛔ THE AXIS IS PASSED IN, NOT READ BACK OFF `V`. It used to read
+   `V.tiltAxis`, and the pointer-up handler cleared that flag ON THE SAME LINE,
+   BEFORE this call:
+
+       if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
+
+   so `V.tiltAxis` was always null by the time this ran, the yaw branch could
+   never be taken, and EVERY ring drag ended by sending tip and bank. Tip and
+   bank worked by luck. The heading ring turned the picture on screen and then
+   sent a request that re-coloured at the old heading, so it sprang back --
+   "the image controls do not work", exactly.
+
+   ⭐ Reading it off the mutable flag was the bug's whole opportunity. A
+   release handler that is TOLD which axis it is finishing cannot be undone by
+   a tear-down line somewhere else, and the ordering stops mattering. */
+async function tiltRelease(key){
   const r=tiltRingsOf(); if(!r) return;
   const s=r.s;
-  if(V.tiltAxis==='yaw') return setHeading(s.index, +s.yaw, false);
+  if(key==='yaw') return setHeading(s.index, +s.yaw, false);
   return setTilt(s.index, +s.pitch||0, +s.roll||0);
 }
 
@@ -5361,6 +5526,9 @@ function drawDraft(){
   drawMoveGizmo();
   drawLeanRings();
   drawTiltRings();
+  /* After the rings, so the arms read as sitting on top of them -- which is
+     also the order a press consults them in. */
+  drawCamArms();
   drawNorth();
   drawGizmo();
   labelPairs();
@@ -5510,6 +5678,7 @@ async function loadScan(m){
        control that renders blank with nothing thrown -- which is exactly how
        the photo row was born broken once already. */
     grade:m.grade, caution:m.caution, fits:m.fits||[], cameraZ:m.cameraZ||0,
+    cameraX:m.cameraX||0, cameraY:m.cameraY||0,
     second:m.second, agree:m.agree, corroborated:!!m.corroborated,
     /* The photograph's lean and how far the refinement has climbed. Dropping
        these is what the check above is for, and it caught them being dropped
@@ -7572,6 +7741,8 @@ function photoRow(s){
      centimetres above the lidar's smears colour across near edges in a way no
      heading can fix. In centimetres here and metres on the wire. */
   const cz = ((+s.cameraZ||0)*100).toFixed(1);
+  const cx = ((+s.cameraX||0)*100).toFixed(1);
+  const cy = ((+s.cameraY||0)*100).toFixed(1);
   /* ⭐⭐ ONE BUTTON THAT CAN BE PRESSED AGAIN, AND MEANS SOMETHING DIFFERENT
      EACH TIME. Running the same search twice returns the same answer -- it
      stopped because it was at an optimum -- so a button that repeated itself
@@ -7693,6 +7864,21 @@ function photoRow(s){
          stepBy(1,'›')+step(10,'››')+
          '<button class="mini" onclick="setHeading('+s.index+')">Use</button>'+
          '</div>'+ fitrow +
+         /* ⭐ THE SEAT IS THREE NUMBERS, AND TWO OF THEM WERE INVISIBLE. Deep
+            align solves x and y, stores them and colours with them; only the
+            height was ever shown, so the offset that decides whether a picture
+            CAN line up could be neither read nor corrected. Sideways first,
+            because that is the pair nothing could reach. */
+         '<div class="photo"><span class="grow">camera seat X / Y</span>'+
+         '<input class="deg" id="cx'+s.index+'" type="number" step="0.5" '+
+         'min="-50" max="50" title="How far the camera’s centre sat to '+
+         'the lidar’s RIGHT, in centimetres. No rotation can absorb this '+
+         '— a ring turns every ray, this moves where they start." '+
+         'value="'+cx+'">'+
+         '<input class="deg" id="cy'+s.index+'" type="number" step="0.5" '+
+         'min="-50" max="50" title="How far the camera’s centre sat in '+
+         'FRONT of the lidar’s, in centimetres." value="'+cy+'">'+
+         '<span style="color:var(--faint)">cm</span></div>'+
          '<div class="photo"><span class="grow">camera height</span>'+
          '<input class="deg" id="cz'+s.index+'" type="number" step="0.5" '+
          'min="-200" max="200" value="'+cz+'">'+
@@ -8729,21 +8915,35 @@ function tryFit(index, yaw){
    in metres and a box labelled cm that sends metres would be out by a hundred
    -- which is why the server refuses anything past 2 m outright rather than
    quietly colouring from a point above the ceiling. */
-async function setCamera(index){
-  remember('setting the camera height', undoPose(index));
-  const box=$('cz'+index);
-  const cm = box ? parseFloat(box.value) : NaN;
-  if(!isFinite(cm)) return say('Type a camera height in centimetres.', 'warn');
+/* ⭐ THREE OFFSETS NOW, AND THE BOXES ARE ONLY ONE WAY IN. Called bare it
+   reads the boxes, as it always did; called with numbers it takes them, which
+   is what the arms on the gizmo use. One request either way, so the seat
+   cannot be set by two routes that disagree about what happens next. */
+async function setCamera(index, z, x, y){
+  remember('setting the camera seat', undoPose(index));
+  let cm = {};
+  if(z===undefined){
+    for(const k of ['z','x','y']){
+      const box=$('c'+k+index);
+      const v = box ? parseFloat(box.value) : NaN;
+      if(!isFinite(v))
+        return say('Type the camera offsets in centimetres.', 'warn');
+      cm[k]=v;
+    }
+  } else cm={z:(+z||0)*100, x:(+x||0)*100, y:(+y||0)*100};
   say('re-colouring…'); watch(true);
   try{
-    const j=await post('photo/camera', {index, z:cm/100.0});
-    if(!j.ok) throw new Error(j.error||'could not set the camera height');
+    const j=await post('photo/camera',
+                       {index, z:cm.z/100.0, x:cm.x/100.0, y:cm.y/100.0});
+    if(!j.ok) throw new Error(j.error||'could not set the camera seat');
     await afterColour(j);
-    say('Camera centre set '+cm.toFixed(1)+' cm '+(cm<0?'below':'above')+
-        ' the lidar’s'+(j.resolved ? ' and the heading solved again from '+
-        'the new panorama.' : ' — your heading was kept.'));
+    say('Camera centre set '+cm.z.toFixed(1)+' cm '+(cm.z<0?'below':'above')+
+        ' the lidar’s, and '+Math.hypot(cm.x,cm.y).toFixed(1)+' cm to one '+
+        'side (X '+cm.x.toFixed(1)+', Y '+cm.y.toFixed(1)+')'+
+        (j.resolved ? ', and the heading solved again from the new panorama.'
+                    : ' — your heading was kept.'));
   }catch(e){ watch(false);
-             say('Could not set the camera height: '+e.message, 'bad'); }
+             say('Could not set the camera seat: '+e.message, 'bad'); }
 }
 
 /* Which photograph in this folder belongs to this scan?
@@ -9222,7 +9422,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
-  let tilting=null, leaning=null;
+  let tilting=null, leaning=null, camming=null;
   /* Which of the move gizmo's arms is being dragged, and where the hand was
      last frame. */
   let axis=null;
@@ -9260,6 +9460,13 @@ const DRAW_TOOLS = {lasso:1, rect:1};
       if(i>=0){
         grip=handles()[i];
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
+      } else if(camGrip(e.clientX,e.clientY)){
+        /* ⛔ THE CAMERA'S ARMS COME BEFORE ITS RINGS, for the reason the scan's
+           arms come before the scan's ring: an arm is a thin line the operator
+           aimed at, while a ring passes near everything at its radius. */
+        V.camAxis=camGrip(e.clientX,e.clientY).key;
+        panning=false;
+        camming=camDrag(e.clientX,e.clientY,null);
       } else if(tiltGrip(e.clientX,e.clientY)){
         /* ⛔ THE PHOTOGRAPH'S RINGS COME BEFORE THE SCAN'S. They are only on
            screen while the operator has deliberately asked for them, on one
@@ -9320,6 +9527,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
     drift+=Math.abs(dx)+Math.abs(dy);
     if(lassoing) extendDraft(e.clientX,e.clientY);
+    else if(camming!==null) camming=camDrag(e.clientX,e.clientY,camming);
     else if(tilting!==null)
       tilting=tiltDrag(e.clientX,e.clientY,tilting);
     else if(axis!==null) axis=moveDrag(e.clientX,e.clientY,axis);
@@ -9345,7 +9553,11 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     /* ⛔ SENT ONCE, ON RELEASE. Each pose change re-colours the whole cloud on
        the server; one request per pointermove would queue dozens and land
        somewhere the hand never was. */
-    if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
+    if(tilting!==null){ const was=V.tiltAxis;
+                        tilting=null; V.tiltAxis=null; tiltRelease(was); }
+    /* Same shape, and for the same reason: the seat is sent once, on release,
+       because every change re-colours the whole cloud on the server. */
+    if(camming!==null){ camming=null; V.camAxis=null; camRelease(); }
     /* ⛔ A CUT FOLLOWS THE SCAN IT WAS MADE ON, and the gizmo moves a scan
        exactly as the free drag does -- so it owes the same recompute. */
     if(axis!==null && V.edits.length) recomputeLive();

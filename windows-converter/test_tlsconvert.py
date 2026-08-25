@@ -2554,6 +2554,54 @@ for _junk in (None, "high", float("nan")):
     check("a height of %r is refused" % (_junk,),
           _csrv.set_camera(0, _junk)["ok"] is False)
 
+# --- the camera's SEAT: the two offsets nothing could reach ------------------
+# ⛔⛔ `camera_x` and `camera_y` have always been modelled -- the scorer takes
+# them, the deep polish SOLVES for them, they are stored, saved and used on
+# every recolour -- and the page was sent only the height, so the offset that
+# decides whether a picture CAN line up was invisible and unsettable.
+# ⭐ It is also the one no rotation can absorb: a ring turns every ray's
+# DIRECTION, while a centre a few centimetres to one side moves where the rays
+# START, pulling near edges one way and far ones the other.
+_seat = _csrv.set_camera(0, 0.03, 0.02, -0.015)
+check("THE CAMERA'S SIDEWAYS SEAT CAN BE SET AT ALL",
+      _seat["ok"] and abs(_cscan.camera_x - 0.02) < 1e-9
+      and abs(_cscan.camera_y + 0.015) < 1e-9,
+      (_cscan.camera_x, _cscan.camera_y))
+check("...and the height still lands with it",
+      abs(_cscan.camera_z - 0.03) < 1e-9, _cscan.camera_z)
+# ⛔ ONE RULE FOR THE THREE. Written out per axis they drift, and the axis that
+# got it wrong would be whichever was added last.
+for _ax, _kw in (("x", {"x": 1.7}), ("y", {"y": -1.7})):
+    _o = _csrv.set_camera(0, None, **_kw)
+    check("a metre-scale %s offset is refused the same way the height is" % _ax,
+          _o["ok"] is False and "one tripod" in _o["error"], _o)
+for _ax, _kw in (("x", {"x": "over"}), ("y", {"y": float("nan")})):
+    check("a %s offset that is not a number is refused" % _ax,
+          _csrv.set_camera(0, None, **_kw)["ok"] is False)
+check("...and none of that moved the seat that was already good",
+      abs(_cscan.camera_x - 0.02) < 1e-9 and abs(_cscan.camera_y + 0.015) < 1e-9
+      and abs(_cscan.camera_z - 0.03) < 1e-9,
+      (_cscan.camera_x, _cscan.camera_y, _cscan.camera_z))
+# ⛔ AN AXIS LEFT OUT IS LEFT ALONE -- a route that means to move one must not
+# silently zero the other two, which is the bug the height itself had before
+# the seat was stored.
+_one = _csrv.set_camera(0, None, 0.04)
+check("setting one axis leaves the other two exactly as they were",
+      _one["ok"] and abs(_cscan.camera_x - 0.04) < 1e-9
+      and abs(_cscan.camera_y + 0.015) < 1e-9
+      and abs(_cscan.camera_z - 0.03) < 1e-9,
+      (_cscan.camera_x, _cscan.camera_y, _cscan.camera_z))
+# ⛔ WHICH MAKES ALL-NONE A REQUEST THAT ASKS FOR NOTHING, and that is a
+# malformed call rather than a no-op: without this, making the height optional
+# turned "set the camera to nothing" into a success that re-coloured the cloud
+# and reported a seat nobody had chosen.
+check("...but a request that names no axis at all is refused",
+      _csrv.set_camera(0, None, None, None)["ok"] is False)
+check("...and all three reach the page, not just the height",
+      '"cameraX": getattr(scan, "camera_x"' in _ALIGN_SRC
+      and '"cameraY": getattr(scan, "camera_y"' in _ALIGN_SRC
+      and "cameraX:m.cameraX||0" in _ALIGN_SRC)
+
 # ⛔ AND A SOLVED SCAN IS SOLVED AGAIN, because for that one the height is an
 # input to the answer and not merely to where the colour lands.
 _real_solve2 = colour.solve_yaw
@@ -6763,6 +6811,69 @@ check("...and on a fresh job the scans are stood up before the room is asked",
           "autoFloorLevel();\n  }")
       if "autoFloorLevel();\n  }" in _fsrc else False)
 check("...over an endpoint of its own", 'path == "/level/scan"' in _ALIGN_SRC)
+
+# --- the photograph's gizmo: the ring that turned and never sent -------------
+print("\nthe photograph's rings and the camera's arms")
+# ⛔⛔ THE HEADING RING DID NOTHING, AND IT WAS ONE LINE. `tiltRelease` read
+# `V.tiltAxis` to decide what to send, and the pointer-up handler cleared that
+# flag ON THE SAME LINE, BEFORE the call:
+#     if(tilting!==null){ tilting=null; V.tiltAxis=null; tiltRelease(); }
+# so the yaw branch could never be taken and EVERY ring drag ended by sending
+# tip and bank. Tip and bank worked by luck. The heading ring turned the
+# picture locally and then re-coloured at the OLD heading, so it sprang back --
+# "the image controls do not work", exactly.
+# ⭐ The fix is not the ordering, it is that the release is TOLD which axis it
+# is finishing. A handler that reads mutable state a tear-down line can clear
+# is a handler whose correctness depends on statements somewhere else.
+check("THE RELEASE IS TOLD WHICH RING IT IS FINISHING",
+      "async function tiltRelease(key){" in _ALIGN_SRC
+      and "if(key==='yaw') return setHeading" in _ALIGN_SRC)
+check("...and no longer reads the flag the tear-down clears",
+      "if(V.tiltAxis==='yaw')" not in _fsrc)
+# ⛔ NO CALL ANYWHERE STILL RELIES ON THE FLAG. `_fsrc` has the comments
+# stripped, so what is left is the declaration and the real call sites -- and
+# a bare `tiltRelease()` among them would be one that reads state the tear-down
+# has already cleared.
+check("...at every call site, not just the one that was noticed",
+      "tiltRelease();" not in _fsrc
+      and _fsrc.count("tiltRelease(was)") == _fsrc.count("tiltRelease(") - 1,
+      _fsrc.count("tiltRelease("))
+check("...and the axis is captured BEFORE the flag is cleared",
+      all(_seg.find("const was=V.tiltAxis") < _seg.find("V.tiltAxis=null")
+          for _seg in [_s for _s in _fsrc.split("if(tilting!==null){")[1:]]))
+# ⭐ THE ARMS: the camera's seat, at the tripod, grabbable like the scan's.
+check("there are three arms for the camera's seat",
+      "const CAM_AXES=[" in _ALIGN_SRC and "function camGrip(" in _ALIGN_SRC
+      and "function camDrag(" in _ALIGN_SRC
+      and "function camRelease(" in _ALIGN_SRC
+      and "drawCamArms();" in _ALIGN_SRC)
+# ⛔ DRAWN DELIBERATELY UNLIKE THE SCAN'S ARMS, which share this tripod and do
+# the OPPOSITE thing -- these move the camera inside a cloud that stays put.
+# This file already says that two controls a centimetre apart spelled the same
+# and doing opposite things is worse than either choice.
+_camsrc = _ALIGN_SRC[_ALIGN_SRC.find("const CAM_AXES=["):]
+_camsrc = _camsrc[:_camsrc.find("function tiltRingPath")]
+check("...told apart from the scan's arms, which share the same tripod",
+      "setLineDash([5,4])" in _camsrc
+      and not any(_c in _camsrc for _c in ("rgba(255,105,97",
+                                           "rgba(90,170,255")))
+# ⛔ AND ONLY THE OUTER HALF GRABS: the inner half of every arm lies on top of
+# the other two and on the tripod marker, so a catch there is a coin toss.
+check("...and only the outer half of an arm takes a grab",
+      "t>0.45" in _camsrc)
+# ⛔ CLAMPED WHERE THE SERVER CLAMPS, or the gizmo runs past the bound and the
+# request is refused, which reads as a broken control at the edge.
+check("...and the drag stops where the server would refuse it",
+      "Math.max(-0.5, Math.min(0.5," in _camsrc)
+check("...sent once on release, like every other pose change",
+      "if(camming!==null){ camming=null; V.camAxis=null; camRelease(); }"
+      in _fsrc)
+# ⭐ The arms come before the rings for the reason the scan's arms come before
+# the scan's ring: an arm is a thin line aimed at, a ring passes near
+# everything at its radius.
+check("...and an arm is consulted before the ring it sits inside",
+      _fsrc.find("camGrip(e.clientX,e.clientY)")
+      < _fsrc.find("tiltGrip(e.clientX,e.clientY)"))
 
 # ⛔⛔ AND IT IS STOOD **ON** THE GRID, NOT MERELY STRAIGHTENED. Reported: the
 # scans "land in the centre of the grid". A capture's zero is the INSTRUMENT,
