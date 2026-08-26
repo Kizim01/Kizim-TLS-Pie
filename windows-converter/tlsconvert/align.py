@@ -4322,10 +4322,11 @@ PAGE = r"""<!doctype html>
   <div class="row"><button id="wire" class="on">Box shown</button>
     <button id="gizmo" class="on">World axes</button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
-    Hold <b>Ctrl</b> and drag a blue grip to pull a face in or out, or the
-    green one to turn the box — a bare drag is always the camera.
-    <b>Box shown</b> hides the outline and its grips without switching
-    the clipping off — press it when the outline is in your way.</div>
+    Drag a blue grip to pull a face in or out, or the green one to turn the
+    box — only a drag starting on the dot itself takes it, so everywhere
+    else stays the camera. <b>Box shown</b> hides the outline and its grips
+    without switching the clipping off — press it when the outline is in
+    your way.</div>
   <div id="boxat" style="font-size:10.5px;color:var(--faint);margin-bottom:4px">
   </div>
   <label>Width <span class="num" id="cxv"></span></label>
@@ -4852,7 +4853,13 @@ function project(p, vp){
 }
 function pickHandle(mx,my){
   if(V.nav || !V.wire || !V.scans.length) return -1;
-  let best=-1, bd=15;
+  /* ⛔ THE GRAB ZONE IS THE DOT, NOT A HALO. The dots are drawn 11-13 px
+     across (radius ~6), and the pick radius used to be 15 -- a halo nearly
+     three times the visible dot, seven of which sit over the room once the
+     box is fitted, which is how "activating the clip box changed the camera
+     controls". 9 px is the dot plus a hairline: a drag that starts anywhere
+     you can see cloud is the camera. */
+  let best=-1, bd=9;
   handles().forEach((k,i)=>{
     const s=project(k.p, V.vp); if(!s) return;
     const d=Math.hypot(s[0]-mx, s[1]-my);
@@ -8248,8 +8255,8 @@ const KEYHELP = [
     ['wheel', 'zoom \u2014 it flies through, it does not stop at the surface'],
     ['shift-drag', 'pan'],
     ['wheel button', 'pan \u00b7 hold shift to orbit'],
-    ['ctrl-drag a grip', 'pull a clip-box face or turn it \u2014 a bare '+
-     'drag is always the camera, even with the box on'],
+    ['drag a grip dot', 'pull a clip-box face or turn the box \u2014 only a '+
+     'drag starting on the lit dot takes it; anywhere else is the camera'],
     ['double-click a scan', 'work on that one: the movement controls, its '+
      'ring, new cuts and the photograph tray all follow it'],
     ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0 \u00b7 '+
@@ -9719,13 +9726,15 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     } else if(DRAW_TOOLS[tool]){
       lassoing=true; startDraft(e.clientX,e.clientY);
     } else if(left && !panning && !V.tool){
-      /* ⛔ THE BOX'S GRIPS WAIT FOR CTRL. They used to catch any drag that
-         began within 15 px of one, and a box fitted to the room puts its
-         face grips exactly where an orbit begins -- so switching the clip
-         box on CHANGED what the left button did, which is the operator's
-         complaint verbatim. A bare drag is always the camera, whatever is
-         switched on; ctrl-drag is how you say "I mean the box". */
-      const i = e.ctrlKey ? pickHandle(e.clientX,e.clientY) : -1;
+      /* ⛔ A GRIP IS TAKEN ON ITS DOT, NOT IN A HALO AROUND IT. Two operator
+         reports, one day apart, bound this from both sides: the 15 px pick
+         halo stole orbits ("camera movements change when I activate the
+         clipping box"), and gating the grips behind ctrl read as broken
+         ("can't grab the gizmo"). The grab zone is now the drawn dot itself
+         -- see pickHandle -- and the hover highlight lights exactly that
+         zone, so the one place a drag is not the camera announces itself
+         before the press. */
+      const i=pickHandle(e.clientX,e.clientY);
       if(i>=0){
         grip=handles()[i];
         if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
@@ -9775,9 +9784,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(!down){
       const over = e.target.id==='cv' && !V.tool;
       const was=V.hot, wasRing=V.ring;
-      /* Lit only while ctrl is down, because that is the only time a press
-         would take the grip -- the highlight stays a promise, not a lure. */
-      V.hot = over && e.ctrlKey ? pickHandle(e.clientX,e.clientY) : -1;
+      V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;
       /* Lit only when the ring is what a press would take, so the highlight
          is a promise about the next click rather than a decoration. */
       const wasArm=V.moveHot;
@@ -10259,14 +10266,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
     say('edits cleared; the whole cloud will be saved.'); };
   /* ⭐ THE OUTLINE AND THE CLIPPING ARE SEPARATE ON PURPOSE. Once the box is
      small the outline sits over the very points being inspected, so it can be
-     hidden with the clipping left exactly as it was. (The grips themselves no
-     longer catch a bare drag -- they wait for ctrl -- so this button is about
-     seeing past the outline, not about protecting the camera.) */
+     hidden with the clipping left exactly as it was. (The grips only take a
+     drag that starts on their own dot -- see pickHandle -- so this button is
+     about seeing past the outline, not about protecting the camera.) */
   $('wire').onclick=e=>{ V.wire=!V.wire; V.hot=-1;
     e.target.textContent=V.wire?'Box shown':'Box hidden';
     e.target.classList.toggle('on',V.wire); invalidate();
-    say(V.wire ? 'Box outline and grips back on — hold Ctrl to drag a grip; '+
-                 'a bare drag stays the camera.'
+    say(V.wire ? 'Box outline and grips back on — a grip takes a drag only '+
+                 'when it starts on the lit dot; anywhere else is the camera.'
                : 'Box hidden — clipping is still '+(V.clip?'ON':'off')+
                  ', and the camera has the whole window.'); };
   $('clipflip').onclick=e=>{ V.inside=!V.inside;

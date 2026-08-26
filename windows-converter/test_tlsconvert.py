@@ -1637,18 +1637,23 @@ try:
     # its grips sit over the very points being inspected and steal every drag.
     check("the outline can be hidden with the clipping left on",
           "Box hidden" in _page and "clipping is still" in _page)
-    # ⛔ A BARE DRAG IS ALWAYS THE CAMERA. The grips used to catch any drag
-    # that began within 15 px of one, and a box fitted to the room puts its
-    # face grips exactly where an orbit begins -- so switching the clip box
-    # on CHANGED what the left button did, which was the operator's complaint
-    # verbatim. Ctrl is how you say "I mean the box".
-    check("the box grips wait for ctrl, so a bare drag still orbits",
-          "const i = e.ctrlKey ? pickHandle(e.clientX,e.clientY) : -1;"
-          in _page)
-    check("and the grip highlight is a promise, lit only while ctrl is down",
-          "V.hot = over && e.ctrlKey ? pickHandle" in _page)
-    check("and the help teaches the ctrl gesture",
-          "ctrl-drag a grip" in _page)
+    # ⛔ THE GRAB ZONE IS THE DOT, NOT A HALO. Two operator reports, a day
+    # apart, bound this from both sides: the 15 px pick halo stole orbits
+    # ("camera movements change when I activate the clipping box"), and
+    # gating the grips behind ctrl read as broken ("can't grab the gizmo").
+    # The dots are drawn 11-13 px across, so 9 px is the dot plus a hairline:
+    # a drag that starts anywhere you can see cloud is the camera, and a drag
+    # that starts on the lit dot takes the grip -- directly, no modifier.
+    check("a grip is taken on its dot, not in a halo around it",
+          "let best=-1, bd=9;" in _page)
+    check("and taken directly -- no modifier key guards the grips",
+          "const i=pickHandle(e.clientX,e.clientY);" in _page
+          and "e.ctrlKey ? pickHandle" not in _page)
+    check("and the hover highlight lights exactly the zone a press would "
+          "take, so the one non-camera spot announces itself",
+          "V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;" in _page)
+    check("and the help teaches the dot rule",
+          "drag a grip dot" in _page)
     check("the world axes widget is there, and can be switched off",
           all(t in _page for t in ("drawGizmo", "gizmoClick", "'gizmo'",
                                    "X east")))

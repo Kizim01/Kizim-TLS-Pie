@@ -4245,29 +4245,39 @@ file carrying uncommitted work must be undone by reversing the edit, never by `g
 that restored the last commit and silently discarded the whole uncommitted feature, which had to be
 re-applied from context.
 
-## 2026-08-26, fifth pass — the clip box no longer owns the left button
+## 2026-08-26, fifth pass — the clip-box grips, bounded from both sides in one evening
 
-Operator: *"why does the camera movements change when I activate the clipping box? I want camera
-controls not to change at all."* The camera math (orbit/pan/zoom) never consulted the box — what
-changed was **who got the left button**: with the outline on, any drag beginning within **15 px of
-one of the seven grips** (six face dots + the turn knob on its floating arm) resized or turned the
-box instead of orbiting, and a box fitted to the room puts those grips exactly where an orbit
-naturally begins. `Box hidden` was the old mitigation; the operator asked for the rule instead.
+Operator, first: *"why does the camera movements change when I activate the clipping box? I want
+camera controls not to change at all."* The camera math (orbit/pan/zoom) never consulted the box —
+what changed was **who got the left button**: with the outline on, any drag beginning within
+**15 px of one of the seven grips** (six face dots + the turn knob on its floating arm) resized or
+turned the box instead of orbiting, and a box fitted to the room puts those grips where an orbit
+naturally begins. First fix: **grips gated behind Ctrl** (bare drag always the camera). Operator,
+an hour later: *"clipping box is not functional now, cant grab the gizmo"* — **the gate read as
+breakage**. ⭐ **A modifier key on a direct-manipulation handle is indistinguishable from the
+handle being broken** — nobody reads the blurb before dragging the thing they can see.
 
-**Built: the grips wait for Ctrl.** A bare left drag is always the camera, whatever is switched on
-(`const i = e.ctrlKey ? pickHandle(...) : -1` in pointerdown); the grip hover highlight lights only
-while Ctrl is down, keeping it "a promise about the next click"; the tray blurb, the keys help
-(`ctrl-drag a grip`) and the `Box shown` message all teach the gesture. Scan gizmos (move arms,
-tilt rings, turn ring) are untouched — they only appear when deliberately asked for on a named
-scan, which the clip-box grips did not. Suite **1170 → 1173**; both gates reversion-audited (steal
-restored → its own check fails; hover gate removed → its check fails).
+**The settled rule: the grab zone is the DOT, not a halo.** The dots are drawn 11–13 px across
+(radius ~6) and the old pick radius was 15 — a halo nearly 3× the visible dot, which is what stole
+the orbits. Now `bd=9` in `pickHandle`: a drag starting on the dot takes the grip **directly, no
+modifier**; a drag starting anywhere you can see cloud is the camera; and the hover highlight
+lights exactly the zone a press would take, so the one non-camera spot announces itself first.
+⭐ *Two complaints a day apart were the two sides of one boundary — the fix was to draw the
+boundary exactly where the visible affordance is, not to move the behaviour behind a key.*
+Suite **1173 → 1174** (dot-radius, no-modifier, hover-promise, help checks); both properties
+reversion-audited (halo back to 15 → its check; ctrl gate back in → its check). The operator also
+reported the clip **tray controls** dead in the same breath — the diff never touched them
+(sliders/Fit to view wiring unmodified in both builds, page JS parses clean under `node --check`);
+if that recurs on the 21:48 build get the exact control and the tray's On/Off + Box shown/hidden
+state, or F12 console output.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-26 21:19, selftest 0** (converter unchanged —
-the 21:19 change is Studio-page only). They carry the two-eyed fine-finished climb, the
-follow-the-lean re-solve, AND the ctrl-gated clip-box grips (see "fifth pass" below: a bare drag
-is now ALWAYS the camera; hold **Ctrl** to drag a box grip). Two tests, in order:
+**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-26 21:48, selftest 0** (converter unchanged —
+the change is Studio-page only). They carry the two-eyed fine-finished climb, the follow-the-lean
+re-solve, AND the settled clip-box grip rule (see "fifth pass" below: a grip is taken directly on
+its dot, no modifier; a drag anywhere else is always the camera — the 21:19 Ctrl-gate build was
+rejected by the operator within the hour and is superseded). Two tests, in order:
 1. **Import folder 1's pcap FRESH, not from a saved project**: first paint about **pitch 2.5°,
    camera +7 cm, confirmed**, ~50 s. **Does z +66 mm / pitch 2.5° finally look RIGHT?** Their last
    eye-report ("+6 cm is still a bit low") and every fine measure now agree; the operator has
