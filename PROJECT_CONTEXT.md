@@ -4151,11 +4151,12 @@ Suite **1144 → 1146**; the no-seeds reversion caught by two checks.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⚠ THE EXES ARE STALE: built 2026-08-26 00:49, BEFORE the seeded-height pass above.** A Studio run
-from them climbs into the low basin (+4 cm) and paints the image a little low. Close Studio (the
-running exe locks its own file — a rebuild with it open dies on `[WinError 5]`), rebuild, then
-import folder 1's pcap FRESH, not from a saved project: the first paint should arrive at camera
-**+16.7 cm, pitch +4.8°, confirmed**, with the image on the walls.
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 01:10, selftest 0, CUDA engine found.** They carry the
+level-frame colour pass, the auto-climb AND the seeded height. **Test: import folder 1's pcap
+FRESH, not from a saved project** (a saved project restores its stored pose rather than
+re-solving): the first paint should arrive at camera **+16.7 cm, pitch +4.8°, confirmed**, with the
+image on the walls and nothing to press. ⚠ A rebuild with Studio open dies on `[WinError 5]` — the
+running exe locks its own file; close Studio first.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.
