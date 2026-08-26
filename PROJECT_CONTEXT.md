@@ -4207,8 +4207,8 @@ word), each caught by two checks.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⛔ THE EXES ARE STALE: they carry the seeded coarse ladder (z +16.7 artifact), not the two-eyed
-fine-finished climb — rebuild before the operator tests.** Then: **import folder 1's pcap FRESH,
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 03:35, selftest 0, CUDA engine present.** They carry
+the two-eyed fine-finished climb. **Test: import folder 1's pcap FRESH,
 not from a saved project** (a saved project restores its stored pose rather than re-solving): the
 first paint should arrive at about **pitch 2.5°, camera +7 cm, confirmed**, taking ~50 s, image on
 the walls, nothing to press. **The one question only the operator can answer: does z +66 mm /
