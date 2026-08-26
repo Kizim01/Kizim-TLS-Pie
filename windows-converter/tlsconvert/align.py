@@ -494,6 +494,14 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     return info
 
 
+#: Below this much tip-and-bank movement a solved photograph is left alone:
+#: 0.1 degrees is about 9 mm of paint at five metres, under the solve's own
+#: run-to-run spread, and a re-solve costs the better part of a minute. At or
+#: above it, the frame the pose was fitted in no longer exists and the pose
+#: is stale by exactly the correction -- see `AlignServer._follow_lean`.
+LEAN_RESOLVE_DEG = 0.1
+
+
 def stand_up(scan):
     """
     Fit this one capture's floor and stand it upright ON the grid.
@@ -1248,6 +1256,7 @@ class AlignServer(object):
         jd = wide.keeping(keep, [float(n) for _r, n in seen])
         used = [picked[k] for k in keep]
 
+        was_lean = getattr(scan, "lean", None)
         self._progress = {"stage": "starting", "n": 0, "total": 1, "busy": True}
         try:
             sol = registration.solve_ladder(pool, scan.sample,
@@ -1286,6 +1295,11 @@ class AlignServer(object):
             # longer exists.
             scan.rung = None
 
+        # ⛔⛔ THE PHOTOGRAPH FOLLOWS THE FRAME IT WAS SOLVED IN -- the multi
+        # fit corrects a lean exactly as the pair fit does, and a pose fitted
+        # to the old attitude would go on painting it. See `_follow_lean`.
+        followed = self._follow_lean(scan, was_lean)
+
         names = ", ".join(self.scans[j].name for j in used)
         if refused is not None:
             text = ("onto %d captures (%s) — the fit wanted to move it %.2f m, "
@@ -1295,11 +1309,14 @@ class AlignServer(object):
         else:
             text = "onto %d captures (%s) — %s" % (len(used), names,
                                                    sol.describe())
+        if followed:
+            text += ". " + followed["note"]
         return {"ok": True, "index": index, "setup": _placement(scan),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok and refused is None,
                 "ambiguous": sol.ambiguous, "voxel": sol.voxel,
+                "colour": (followed or {}).get("colour"),
                 "kept_start": kept_hand, "exhausted": False,
                 "used": [{"index": j, "name": self.scans[j].name,
                           "folderNo": _folder_number(self.scans[j].path),
@@ -1389,6 +1406,7 @@ class AlignServer(object):
                             "supports: below 1 cm the VLP-16's own +/-30 mm "
                             "range noise is what would be fitted. Nudge it by "
                             "hand to start over."}
+        was_lean = getattr(scan, "lean", None)
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
         try:
@@ -1457,6 +1475,13 @@ class AlignServer(object):
                                  "moved. Check this pair by eye."}
             scan.setup, scan.lean = new_setup, new_lean
 
+        # ⛔⛔ THE PHOTOGRAPH FOLLOWS THE FRAME IT WAS SOLVED IN. This is the
+        # door through which a scan "gets correctly levelled" in practice --
+        # registration against neighbours whose level is good -- and it is
+        # the door scan 3 walked through wearing colours fitted to its own
+        # floor fit's 2-degree roll error. See `_follow_lean`.
+        followed = self._follow_lean(scan, was_lean)
+
         if refused is not None:
             text = ("onto %s — the search wanted to move it %.2f m, turn it "
                     "%.1f° and tilt it %.1f° from where you put it. That is a "
@@ -1469,13 +1494,15 @@ class AlignServer(object):
         else:
             text = "onto %s, coarse to fine — %s" % (fixed.name,
                                                      sol.describe())
+        if followed:
+            text += ". " + followed["note"]
         return {"ok": True, "index": index, "setup": _placement(scan),
                 "residual": sol.residual, "floor": sol.floor,
                 "baseline": sol.baseline, "improvement": sol.improvement,
                 "trustworthy": sol.ok and refused is None,
                 "ambiguous": sol.ambiguous,
                 "voxel": sol.voxel, "exhausted": False, "target": target,
-                "warning": warn,
+                "warning": warn, "colour": (followed or {}).get("colour"),
                 # ⛔ THE PAGE HAS TO KNOW THE SCAN DID NOT MOVE, because the
                 # advice it prints afterwards is wrong in that one case: it
                 # tells the operator to nudge it and press again, and pressing
@@ -1622,33 +1649,17 @@ class AlignServer(object):
             return got
         got["index"], got["setup"] = i, _placement(scan)
         # ⛔ THE POSE IS DEFINED IN THE LEVELLED FRAME, SO RE-LEVELLING MOVES
-        # WHAT IT PAINTS. A photograph solved before this press was fitted
-        # against the old attitude; leaving its colours on screen would show
-        # an alignment the numbers no longer describe. Repainted through
-        # `_repaint` so the grade -- which judged the PAIRING, not this fit --
-        # survives, and only when the lean materially changed: the arrival
-        # path re-fits the same floor from the same points, and repainting a
-        # million points to apply an identical answer is noise.
-        moved = (abs(scan.lean.pitch_deg - was.pitch_deg) > 0.01
-                 or abs(scan.lean.roll_deg - was.roll_deg) > 0.01)
-        info = scan.colour_info or {}
-        if moved and scan.photo and info.get("ok"):
-            fresh = self._repaint(
-                scan, scan.photo,
-                {"yaw_deg": info.get("yaw_deg"),
-                 "pitch_deg": info.get("pitch_deg"),
-                 "roll_deg": info.get("roll_deg"),
-                 "camera_z": getattr(scan, "camera_z", 0.0),
-                 "camera_x": getattr(scan, "camera_x", 0.0),
-                 "camera_y": getattr(scan, "camera_y", 0.0)},
-                dict(info))
-            if fresh.get("ok"):
-                scan.colour_info = fresh
-                got["repainted"] = True
-                got["text"] += (". Its photograph was repainted against the "
-                                "new attitude — worth re-running its "
-                                "alignment, since the pose was fitted to "
-                                "the old one")
+        # WHAT IT PAINTS. This used to repaint the OLD pose into the new
+        # frame and advise a re-run -- but a pose fitted in a frame that no
+        # longer exists is stale by exactly the correction, so the colours
+        # stayed visibly wrong until the operator noticed the advice. Now the
+        # pairing is RE-SOLVED through the same door every lean change uses;
+        # see `_follow_lean` for the measurements that earned it.
+        followed = self._follow_lean(scan, was)
+        if followed:
+            got["colour"] = followed["colour"]
+            got["repainted"] = followed["colour"] in ("repainted", "resolved")
+            got["text"] += ". " + followed["note"]
         return got
 
     def level_from_floor(self, level=None):
@@ -2275,6 +2286,82 @@ class AlignServer(object):
             if agreed:
                 info["grade"] = "confirmed"
         return info
+
+    def _follow_lean(self, scan, was):
+        """
+        The photograph follows the frame it was solved in -- or says why not.
+
+        ⛔⛔ ALWAYS LEVEL FIRST, THEN PAINT A LEVEL CLOUD -- the operator's
+        own rule, and the arrival path obeys it. What broke on their scan 3
+        was the other half of that promise: the arrival level comes from the
+        scan's OWN floor, and a floor fit can be wrong -- measured there at
+        2.0 degrees of roll (fit rms 4.3 cm, the "floor" a 24 cm-thick band;
+        both independent witnesses, a registration against folder 1 and the
+        bolted camera's own solved tilt, put the true roll near zero). The
+        paint was then solved against that mis-levelled cloud, and when
+        registration later corrected the attitude nothing followed: colours
+        visibly fitted to a tilt that no longer existed, which is exactly
+        what was reported.
+
+        So every door that moves a lean calls this. A material change
+        RE-SOLVES the pairing in the new frame -- measured on scan 3, that
+        alone lifted the heading from doubtful 3.12 to 4.03 and put the
+        camera tilt back on the rig's own mounting residual (2.27/0.45
+        against folder 1's 2.52/0.62; the camera is bolted, so that number
+        travelling between scans is what "the frame is right" looks like).
+        A heading the operator GAVE is an input, not a solve: it is
+        repainted in the new frame and flagged for their eye instead. And a
+        pairing that cannot be re-solved is NAMED as showing the old
+        attitude's fit -- a stale answer is never left standing silently.
+        """
+        photo = getattr(scan, "photo", None)
+        info = dict(getattr(scan, "colour_info", None) or {})
+        after = getattr(scan, "lean", None) or registration.Lean()
+        was = was or registration.Lean()
+        moved = float(np.hypot(after.pitch_deg - was.pitch_deg,
+                               after.roll_deg - was.roll_deg))
+        if not photo or not info.get("ok") or moved <= 0.01:
+            return None
+        if info.get("given") or moved < LEAN_RESOLVE_DEG:
+            fresh = self._repaint(scan, photo,
+                                  {"yaw_deg": info.get("yaw_deg"),
+                                   "pitch_deg": info.get("pitch_deg"),
+                                   "roll_deg": info.get("roll_deg"),
+                                   "camera_z": getattr(scan, "camera_z", 0.0),
+                                   "camera_x": getattr(scan, "camera_x", 0.0),
+                                   "camera_y": getattr(scan, "camera_y", 0.0)},
+                                  info)
+            if not fresh.get("ok"):
+                return None
+            scan.colour_info = fresh
+            return {"colour": "repainted", "moved_deg": float(moved),
+                    "note": ("its photograph was repainted against the new "
+                             "attitude"
+                             + (" — the heading is yours, so re-check it by "
+                                "eye: the frame it was set in has moved "
+                                "%.2f°" % moved
+                                if info.get("given") else ""))}
+        self._progress = {"stage": "re-solving the photograph against the "
+                                   "new attitude (%s)" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            got = colour_scan(scan, photo)
+        except Exception:                                 # noqa: BLE001
+            got = None
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not got or not got.get("ok"):
+            reason = (got or {}).get("reason") or "it refused"
+            return {"colour": "stale", "moved_deg": float(moved),
+                    "note": ("⚠ the level moved %.2f° but its photograph "
+                             "could not be re-solved (%s) — the colours "
+                             "still show the OLD attitude's fit"
+                             % (moved, reason))}
+        return {"colour": "resolved", "moved_deg": float(moved),
+                "note": ("the level moved %.2f°, so its photograph was "
+                         "re-solved against the new attitude (grade: %s)"
+                         % (moved, got.get("grade") or "none"))}
 
     def pick_folder(self):
         from . import desktop

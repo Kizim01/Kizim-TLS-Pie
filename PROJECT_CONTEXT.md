@@ -4205,19 +4205,61 @@ decisive (~25% of score); nothing about z is that sure (flat 0–9 cm).
 Suite **1146 → 1162**; three reversions (climb drops the witness / gate not asked / no fine last
 word), each caught by two checks.
 
+## 2026-08-26, fourth pass — scan 3: the photograph follows the frame it was solved in
+
+**The operator looked at scan 3 and diagnosed it in one sentence: "the solver is using the
+incorrectly tilted point cloud to colorise before the point cloud gets correctly leveled" — and
+they were right, twice over.** The arrival path DOES level first (08-25 pass), but on folder 3 the
+level itself was wrong: `stand_up`'s floor fit measured pitch 1.27 / roll 2.03 with **rms 4.3 cm
+and a floor band 24 cm thick** — stable across halves (so not noise: something in this restaurant
+region biases the plane), and **wrong by 2° of roll**. Two independent witnesses agree:
+registering folder 3 against folder 1 (whose level every witness confirms) gives **pitch 2.32 /
+roll 0.00**, and the photograph — gravity-level, bolted to the rig — re-solved in that frame puts
+the camera tilt at **2.27 / 0.45, reproducing folder 1's mounting residual (2.52 / 0.62)** almost
+exactly. The frame being right is precisely what the mounting number travelling between scans
+looks like. Re-solving in the correct frame also lifted the heading from **doubtful 3.12 to 4.03**
+(still uncorroborated — scan 3's MI witness answers 161° away at 3.0; a genuinely harder pairing
+than folder 1's confirmed 6.9/5.7).
+
+So the missing half of "always level first, then paint": **when a scan's lean changes after the
+photograph was attached, the pairing must be re-solved in the new frame** — and registration
+(auto-align / multi-fit) is exactly the door through which a scan "gets correctly levelled" in
+practice. Built:
+
+- **`AlignServer._follow_lean`** — one home, called by the pair fit, the multi fit and
+  Level-this-scan. A material lean change (≥ `LEAN_RESOLVE_DEG` = 0.1°; ~9 mm of paint at 5 m,
+  under the solve's own run-to-run spread) **re-solves the pairing** with the full attach
+  (two-eyed, fine-finished, freshly graded). A heading the operator GAVE is an input, not a
+  solve — repainted in the new frame and flagged for their eye. A sub-bar change repaints
+  cheaply; a hair's width does nothing; and a pairing that cannot be re-solved is **named as
+  showing the OLD attitude's fit** — a stale answer is never left standing silently. `level_scan`'s
+  old repaint-and-advise block (which left the colours visibly wrong until the advice was read) is
+  replaced by the same door.
+- Open, deliberately untouched: hand tilts via `take_leans` (a nudge stays a nudge — no 40 s stall
+  per ring release), and the room-wide `Level` (applied after colour in the emit; a large room
+  correction would deserve the same treatment — queued).
+
+Suite **1162 → 1170**; four reversions (each of the three doors silenced; the given-gate removed),
+caught by 5, and 3 checks respectively. ⚠ Process scar, worth keeping: **a scratch reversion in a
+file carrying uncommitted work must be undone by reversing the edit, never by `git checkout --`** —
+that restored the last commit and silently discarded the whole uncommitted feature, which had to be
+re-applied from context.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 03:35, selftest 0, CUDA engine present.** They carry
-the two-eyed fine-finished climb. **Test: import folder 1's pcap FRESH,
-not from a saved project** (a saved project restores its stored pose rather than re-solving): the
-first paint should arrive at about **pitch 2.5°, camera +7 cm, confirmed**, taking ~50 s, image on
-the walls, nothing to press. **The one question only the operator can answer: does z +66 mm /
-pitch 2.5° finally look RIGHT** — their last eye-report ("+6 cm is still a bit low") and every
-fine measure now agree with each other, but the operator has never seen this pose. If it still
-reads low, get WHERE (near tables vs far walls vs everywhere) — near-only means height, front-only
-means pitch, everywhere means something no pose parameter can express and the pano's horizon has
-already been ruled out. ⚠ A rebuild with Studio open dies on `[WinError 5]` — the
-running exe locks its own file; close Studio first.
+**⛔ THE EXES ARE STALE — rebuild before the operator tests** (they carry the 03:35 two-eyed climb
+but not the follow-the-lean re-solve). Then two tests, in order:
+1. **Import folder 1's pcap FRESH, not from a saved project**: first paint about **pitch 2.5°,
+   camera +7 cm, confirmed**, ~50 s. **Does z +66 mm / pitch 2.5° finally look RIGHT?** Their last
+   eye-report ("+6 cm is still a bit low") and every fine measure now agree; the operator has
+   never seen this pose. If still low, get WHERE — near-only means height, front-only means pitch,
+   everywhere means something outside the pose span (the pano horizon is measured true).
+2. **Import folder 3 fresh, then Auto-align it onto folder 1** (or multi-fit): the fit corrects
+   its 2° floor-fit roll error and the reply should say "**its photograph was re-solved against
+   the new attitude**" — the colours must visibly follow. Expect scan 3's grade to be *unsure*,
+   not confirmed: its pairing is genuinely harder, that grade is honest.
+⚠ A rebuild with Studio open dies on `[WinError 5]` — the running exe locks its own file; close
+Studio first.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.

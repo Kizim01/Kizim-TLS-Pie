@@ -6018,6 +6018,43 @@ else:
               and "2.50 m" in _ref["text"], _ref["text"])
         check("...and such an answer is never called trustworthy",
               not _ref["trustworthy"])
+
+        # ⛔⛔ AND WHEN THE FIT CORRECTS THE LEAN, THE PHOTOGRAPH FOLLOWS.
+        # This is the door through which a scan "gets correctly levelled" in
+        # practice, and the door the operator's scan 3 walked through wearing
+        # colours fitted to its own floor fit's 2-degree roll error.
+        _fs.scans[2].setup = _hand
+        _fs.scans[2].lean = registration.Lean()
+        _fs.scans[2].rung = None
+        _fs.scans[2].photo = "worn.jpg"
+        _fs.scans[2].colour_info = {"ok": True, "yaw_deg": 4.0,
+                                    "given": False, "grade": "sure"}
+        _fl_calls = []
+        _real_cs2 = align.colour_scan
+        align.colour_scan = (lambda scan, photo, **kw:
+                             (_fl_calls.append(photo),
+                              {"ok": True, "grade": "sure"})[1])
+
+        def _tilter(ref, mov, progress=None, start=None, lean=None,
+                    begin_voxel=None, max_shift=6.0):
+            _s = registration.Solution(start, 0.010, 0.004, 1.0)
+            _s.lean = registration.Lean(1.5, 0.0)
+            _s.voxel = registration.GICP_LADDER[-1]
+            return _s
+
+        registration.solve_ladder = _tilter
+        try:
+            _fol = _fs.solve(2, start=_hand.as_dict(), target=1)
+        finally:
+            registration.solve_ladder = _real_ladder
+            align.colour_scan = _real_cs2
+        check("A FIT THAT CORRECTS THE LEAN RE-SOLVES THE PHOTOGRAPH",
+              _fol.get("ok") and _fol.get("colour") == "resolved"
+              and _fl_calls == ["worn.jpg"]
+              and "re-solved against the new attitude" in _fol["text"],
+              (_fol.get("colour"), _fol.get("error") or _fol.get("text")))
+        _fs.scans[2].photo = None
+        _fs.scans[2].colour_info = None
     finally:
         _fs.stop()
 
@@ -6361,6 +6398,38 @@ if registration.have_gicp():
           _ref2.get("text"))
     check("...and the scan did not move", abs(_msrv.scans[1].setup.dx - 3.5)
           < 1e-9 and abs(_msrv.scans[1].setup.dy - 1.0) < 1e-9)
+
+    # ⛔⛔ AND WHEN THE MULTI FIT CORRECTS THE LEAN, THE PHOTOGRAPH FOLLOWS --
+    # same door, wider fit. See `_follow_lean` for the scan-3 measurements.
+    _msrv.scans[1].setup = registration.Setup(3.5, 1.0, 0.0, 0.0)
+    _msrv.scans[1].lean = registration.Lean()
+    _msrv.scans[1].photo = "m.jpg"
+    _msrv.scans[1].colour_info = {"ok": True, "yaw_deg": 8.0,
+                                  "given": False, "grade": "sure"}
+    _mfl = []
+    _real_mcs = align.colour_scan
+    align.colour_scan = (lambda scan, photo, **kw:
+                         (_mfl.append(photo),
+                          {"ok": True, "grade": "unsure"})[1])
+    _tilted = registration.Solution(registration.Setup(3.5, 1.0, 0.0, 0.0),
+                                    0.001, 0.001, 1.0)
+    _tilted.lean = registration.Lean(0.0, 1.8)
+    _tilted.voxel = registration.GICP_LADDER[-1]
+    registration.solve_ladder = lambda *a, **k: _tilted
+    try:
+        _mfol = _msrv.solve_multi(1)
+    finally:
+        registration.solve_ladder = _real_ladder
+        align.colour_scan = _real_mcs
+    check("A MULTI FIT THAT CORRECTS THE LEAN RE-SOLVES THE PHOTOGRAPH",
+          _mfol.get("ok") and _mfol.get("colour") == "resolved"
+          and _mfl == ["m.jpg"]
+          and "re-solved against the new attitude" in _mfol["text"],
+          (_mfol.get("colour"), _mfol.get("error") or _mfol.get("text")))
+    _msrv.scans[1].photo = None
+    _msrv.scans[1].colour_info = None
+    _msrv.scans[1].lean = registration.Lean()
+    _msrv.scans[1].setup = registration.Setup(3.5, 1.0, 0.0, 0.0)
 
 # ⛔⛔ THE TILT HAD NO LIMIT AT ALL, AND THE LIVE PROJECT IS WHAT SHOWED IT.
 # Translation was held to a metre and the turn to twenty degrees, and between
@@ -7467,9 +7536,11 @@ check("prepare_colour solves the CLI path in the levelled frame",
       len(_saw_cli))
 
 # ⛔ A FORCED RE-LEVEL MOVES THE FRAME THE POSE IS DEFINED IN, so the
-# photograph the scan is wearing is repainted -- through `_repaint`, so the
-# grade that judged the PAIRING survives -- and the operator is told the pose
-# was fitted to the old attitude. An identical re-fit repaints nothing.
+# photograph the scan is wearing is RE-SOLVED against the new attitude -- a
+# pose fitted in a frame that no longer exists is stale by exactly the
+# correction, and repainting the old numbers (the previous behaviour) kept
+# the colours visibly wrong until the operator read the advice. An identical
+# re-fit re-solves nothing.
 _wsrv = align.AlignServer.__new__(align.AlignServer)
 _worn2 = _mscan("worn2", _floored(tip_deg=1.2, seed=61))
 _worn2.photo = "w.jpg"
@@ -7479,24 +7550,84 @@ _worn2.colour_info = {"ok": True, "photo": "w.jpg", "yaw_deg": 5.0,
                       "candidates": [], "second": None}
 _worn2.setup = registration.Setup(dx=1.0)
 _wsrv.scans = [_worn2]
-_rp_calls = []
+_rp_calls, _cs_calls = [], []
 _real_rpaint = align.AlignServer._repaint
+_real_lcs = align.colour_scan
 align.AlignServer._repaint = (lambda self, scan, photo, pose, keep:
                               (_rp_calls.append(pose),
                                dict(keep, ok=True))[1])
+align.colour_scan = (lambda scan, photo, **kw:
+                     (_cs_calls.append(photo),
+                      {"ok": True, "grade": "sure"})[1])
 try:
     _flvl = _wsrv.level_scan(0, force=True)
     _flvl2 = _wsrv.level_scan(0, force=True)
 finally:
     align.AlignServer._repaint = _real_rpaint
-check("a forced re-level repaints the photograph the scan is wearing",
-      _flvl["ok"] and len(_rp_calls) == 1 and _flvl.get("repainted") is True,
-      _flvl.get("error") or len(_rp_calls))
-check("...and says the pose was fitted to the old attitude",
-      "re-running its" in _flvl["text"], _flvl["text"][-80:])
-check("...while an identical re-fit does not repaint a million points",
-      _flvl2["ok"] and len(_rp_calls) == 1 and not _flvl2.get("repainted"),
-      len(_rp_calls))
+    align.colour_scan = _real_lcs
+check("a forced re-level RE-SOLVES the photograph the scan is wearing",
+      _flvl["ok"] and _cs_calls == ["w.jpg"] and not _rp_calls
+      and _flvl.get("colour") == "resolved"
+      and _flvl.get("repainted") is True,
+      _flvl.get("error") or (_cs_calls, _rp_calls))
+check("...and says so, because the pose was fitted to the old attitude",
+      "re-solved against the new attitude" in _flvl["text"],
+      _flvl["text"][-90:])
+check("...while an identical re-fit does not re-solve a million points",
+      _flvl2["ok"] and len(_cs_calls) == 1 and not _flvl2.get("repainted"),
+      len(_cs_calls))
+
+# ⛔⛔ ONE DOOR FOR EVERY LEAN CHANGE -- measured into existence on the
+# operator's scan 3: its own floor fit was 2.0 degrees of roll wrong (rms
+# 4.3 cm, the "floor" a 24 cm-thick band), the photograph was solved against
+# that frame, and when registration later corrected the attitude the colours
+# stayed fitted to a tilt that no longer existed. Re-solving in the corrected
+# frame lifted the heading from doubtful 3.12 to 4.03 and put the camera
+# tilt back on the rig's own bolted mounting residual (2.27/0.45 against
+# folder 1's 2.52/0.62).
+print("\nthe photograph follows the frame it was solved in")
+
+_fw = align.AlignServer.__new__(align.AlignServer)
+_fw._progress = {}
+_fwsc = _mscan("follow", _lc_pts)
+_fwsc.photo = "f.jpg"
+_fwsc.colour_info = {"ok": True, "yaw_deg": 3.0, "given": False}
+_fw_cs, _fw_rp = [], []
+_real_fw = (align.colour_scan, align.AlignServer._repaint)
+align.colour_scan = (lambda scan, photo, **kw:
+                     (_fw_cs.append(photo),
+                      {"ok": True, "grade": "unsure"})[1])
+align.AlignServer._repaint = (lambda self, scan, photo, pose, keep:
+                              (_fw_rp.append(pose), dict(keep, ok=True))[1])
+try:
+    _fwsc.lean = registration.Lean(1.5, 0.0)
+    _r1 = _fw._follow_lean(_fwsc, registration.Lean())
+    _r2 = _fw._follow_lean(_fwsc, registration.Lean(1.46, 0.0))
+    _r3 = _fw._follow_lean(_fwsc, registration.Lean(1.495, 0.0))
+    _fwsc.colour_info = {"ok": True, "yaw_deg": 3.0, "given": True}
+    _r4 = _fw._follow_lean(_fwsc, registration.Lean())
+    _fwsc.colour_info = {"ok": True, "yaw_deg": 3.0, "given": False}
+    align.colour_scan = lambda scan, photo, **kw: {"ok": False,
+                                                   "reason": "too sparse"}
+    _r5 = _fw._follow_lean(_fwsc, registration.Lean())
+finally:
+    align.colour_scan, align.AlignServer._repaint = _real_fw
+check("A MATERIAL LEAN CHANGE RE-SOLVES THE PAIRING",
+      _r1 is not None and _r1["colour"] == "resolved"
+      and _fw_cs == ["f.jpg"], _r1)
+check("...a sub-bar change repaints instead of spending a minute",
+      _r2 is not None and _r2["colour"] == "repainted", _r2)
+check("...a hair's width moves nothing", _r3 is None, _r3)
+check("...a heading the operator GAVE is repainted, never re-solved",
+      _r4 is not None and _r4["colour"] == "repainted"
+      and "yours" in _r4["note"], _r4)
+check("...the minute was spent exactly once across all of that",
+      len(_fw_cs) == 1 and len(_fw_rp) == 2, (_fw_cs, len(_fw_rp)))
+check("...and a pairing that cannot be re-solved is NAMED as stale, "
+      "never left standing silently",
+      _r5 is not None and _r5["colour"] == "stale"
+      and "OLD attitude" in _r5["note"] and "too sparse" in _r5["note"],
+      _r5)
 
 # --- the first paint already knows where the camera sits --------------------
 #
