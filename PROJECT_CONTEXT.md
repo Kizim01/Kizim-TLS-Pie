@@ -4245,10 +4245,29 @@ file carrying uncommitted work must be undone by reversing the edit, never by `g
 that restored the last commit and silently discarded the whole uncommitted feature, which had to be
 re-applied from context.
 
+## 2026-08-26, fifth pass — the clip box no longer owns the left button
+
+Operator: *"why does the camera movements change when I activate the clipping box? I want camera
+controls not to change at all."* The camera math (orbit/pan/zoom) never consulted the box — what
+changed was **who got the left button**: with the outline on, any drag beginning within **15 px of
+one of the seven grips** (six face dots + the turn knob on its floating arm) resized or turned the
+box instead of orbiting, and a box fitted to the room puts those grips exactly where an orbit
+naturally begins. `Box hidden` was the old mitigation; the operator asked for the rule instead.
+
+**Built: the grips wait for Ctrl.** A bare left drag is always the camera, whatever is switched on
+(`const i = e.ctrlKey ? pickHandle(...) : -1` in pointerdown); the grip hover highlight lights only
+while Ctrl is down, keeping it "a promise about the next click"; the tray blurb, the keys help
+(`ctrl-drag a grip`) and the `Box shown` message all teach the gesture. Scan gizmos (move arms,
+tilt rings, turn ring) are untouched — they only appear when deliberately asked for on a named
+scan, which the clip-box grips did not. Suite **1170 → 1173**; both gates reversion-audited (steal
+restored → its own check fails; hover gate removed → its check fails).
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 20:43, selftest 0.** They carry the two-eyed
-fine-finished climb AND the follow-the-lean re-solve. Two tests, in order:
+**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-26 21:19, selftest 0** (converter unchanged —
+the 21:19 change is Studio-page only). They carry the two-eyed fine-finished climb, the
+follow-the-lean re-solve, AND the ctrl-gated clip-box grips (see "fifth pass" below: a bare drag
+is now ALWAYS the camera; hold **Ctrl** to drag a box grip). Two tests, in order:
 1. **Import folder 1's pcap FRESH, not from a saved project**: first paint about **pitch 2.5°,
    camera +7 cm, confirmed**, ~50 s. **Does z +66 mm / pitch 2.5° finally look RIGHT?** Their last
    eye-report ("+6 cm is still a bit low") and every fine measure now agree; the operator has

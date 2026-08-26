@@ -1637,6 +1637,18 @@ try:
     # its grips sit over the very points being inspected and steal every drag.
     check("the outline can be hidden with the clipping left on",
           "Box hidden" in _page and "clipping is still" in _page)
+    # ⛔ A BARE DRAG IS ALWAYS THE CAMERA. The grips used to catch any drag
+    # that began within 15 px of one, and a box fitted to the room puts its
+    # face grips exactly where an orbit begins -- so switching the clip box
+    # on CHANGED what the left button did, which was the operator's complaint
+    # verbatim. Ctrl is how you say "I mean the box".
+    check("the box grips wait for ctrl, so a bare drag still orbits",
+          "const i = e.ctrlKey ? pickHandle(e.clientX,e.clientY) : -1;"
+          in _page)
+    check("and the grip highlight is a promise, lit only while ctrl is down",
+          "V.hot = over && e.ctrlKey ? pickHandle" in _page)
+    check("and the help teaches the ctrl gesture",
+          "ctrl-drag a grip" in _page)
     check("the world axes widget is there, and can be switched off",
           all(t in _page for t in ("drawGizmo", "gizmoClick", "'gizmo'",
                                    "X east")))
