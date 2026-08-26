@@ -440,14 +440,16 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         # lidar on the same tripod, so a paint from height zero is knowably
         # wrong on every scan -- the picture lands LOW on everything near,
         # by atan(height/range), and the camera's own mounting lean does the
-        # same in front. "The image is too low" was this, seen from outside:
-        # measured on the operator's folder 1, the ladder finds +6.1 cm and
-        # +2.45 deg and lifts the fit from 0.288 to 0.318 in seconds. So the
-        # whole ladder is climbed AT ATTACH, on the ladder's own rules: it
-        # only ever adopts a trial that beat what it held, so it cannot make
-        # the solved heading worse -- and the GRADE is already written by the
-        # global sweep above, which a refinement must never touch. A failed
-        # rung leaves the pose it started from standing.
+        # same in front. "The image is too low" was this, seen from outside.
+        # So the whole ladder is climbed AT ATTACH, on the ladder's own
+        # rules: it only ever adopts a trial that beat what it held, so it
+        # cannot make the solved heading worse -- judged with the
+        # reflectivity's second eye where that witness earned a vote, and
+        # finished on the fine grid (see the notes in `colour.climb_pose`:
+        # the coarse grid's cell width MANUFACTURED a height basin on folder
+        # 1 that every finer measure rejected). The GRADE is already written
+        # by the global sweep above, which a refinement must never touch. A
+        # failed rung leaves the pose it started from standing.
         # ⛔ ONLY WHEN THE WHOLE POSE IS THE PROGRAM'S TO FIND. A camera the
         # operator has set -- Re-solve after typing a height into the box --
         # is an INPUT to the solve, not a starting guess for the ladder to
@@ -456,8 +458,19 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         # attach, which is exactly the case the climb exists for.
         if not any(camera):
             step = max(1, len(sample) // 600_000)
-            pose = colour_mod.climb_pose(sample[::step], lum,
-                                         info["yaw_deg"])
+            # ⭐ THE CLIMB GETS THE REFLECTIVITY, AND THE WITNESS'S OWN
+            # CONFIDENCE RIDES ALONG -- the global sweep above just measured
+            # it. Where that witness earned a vote the whole ladder judges
+            # with two eyes, silhouettes AND reflectivity; the gate and the
+            # reason live at `colour.ladder_objective`. The refl is strided
+            # exactly as the points are, or the pairs stop being pairs.
+            refl = getattr(scan, "sample_refl", None)
+            if refl is not None and len(refl) != len(sample):
+                refl = None
+            pose = colour_mod.climb_pose(
+                sample[::step], lum, info["yaw_deg"],
+                refl=(None if refl is None else refl[::step]),
+                mi_confidence=(info.get("second") or {}).get("confidence"))
             yaw = float(pose["yaw_deg"])
             camera = (float(pose.get("camera_x") or 0.0),
                       float(pose.get("camera_y") or 0.0),
@@ -467,6 +480,8 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
             info["roll_deg"] = float(pose.get("roll_deg") or 0.0)
             info["camera_x"], info["camera_y"], info["camera_z"] = camera
             info["rung"] = int(pose.get("rung") or 0)
+            info["judged"] = list(pose.get("judged") or ["edge"])
+            info["polished"] = bool(pose.get("polished"))
             scan.camera_x, scan.camera_y, scan.camera_z = camera
 
     scan.rgb = colour_mod.sample(world, rgb_img, yaw_deg=yaw,
@@ -2608,6 +2623,14 @@ class AlignServer(object):
         self._progress = {"stage": "refining %s (%s)"
                                    % (scan.name, colour_mod.RUNGS[want - 1][0]),
                           "n": 0, "total": 1, "busy": True}
+        # ⭐ THE PRESS JUDGES WITH THE SAME EYES THE ATTACH CLIMBED WITH. If
+        # the attach was two-eyed and the press were edge-only, every press
+        # would walk the pose from one judge's optimum toward the other's --
+        # the exact two-judges failure the deep search's fixed standardisation
+        # exists to prevent, arriving through a button.
+        refl = getattr(scan, "sample_refl", None)
+        if refl is not None and len(refl) != len(sample):
+            refl = None
         try:
             rgb_img, lum = colour_mod.load_panorama(photo)
             got = colour_mod.refine_pose(
@@ -2618,7 +2641,8 @@ class AlignServer(object):
                 yaw_deg=float(info["yaw_deg"]),
                 pitch_deg=float(info.get("pitch_deg") or 0.0),
                 roll_deg=float(info.get("roll_deg") or 0.0),
-                rung=want)
+                rung=want, refl=refl,
+                mi_confidence=(info.get("second") or {}).get("confidence"))
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not refine (%s)" % exc}
         finally:
@@ -2638,14 +2662,25 @@ class AlignServer(object):
         fresh["refined"] = {k: got[k] for k in
                             ("improved", "gain", "score", "was", "turned_deg",
                              "tilted_deg", "raised_m", "evaluations",
-                             "railed", "exhausted")}
+                             "railed", "exhausted", "judged")}
         scan.colour_info = fresh
         name, what = colour_mod.RUNGS[want - 1]
+        two_eyed = "mi" in (got.get("judged") or [])
         if got["improved"]:
-            note = ("fitted %s. The match strengthened by %.1f%%, the heading "
-                    "moved %.2f°" % (what, 100.0 * got["gain"]
-                                       / max(abs(got["was"]), 1e-9),
-                                       got["turned_deg"]))
+            # ⛔ NO PERCENTAGE FROM THE TWO-EYED JUDGE. Its score is a
+            # standardised SUM, which passes through zero, and a gain divided
+            # by a near-zero "was" prints as a thousand per cent of nothing.
+            # The pose movements are the honest numbers either way.
+            if two_eyed:
+                note = ("fitted %s, judged by silhouettes and reflectivity "
+                        "together. The heading moved %.2f°"
+                        % (what, got["turned_deg"]))
+            else:
+                note = ("fitted %s. The match strengthened by %.1f%%, the "
+                        "heading moved %.2f°"
+                        % (what, 100.0 * got["gain"]
+                           / max(abs(got["was"]), 1e-9),
+                           got["turned_deg"]))
             if want >= 2:
                 note += ", the lean by %.2f°" % got["tilted_deg"]
             if want >= 3:

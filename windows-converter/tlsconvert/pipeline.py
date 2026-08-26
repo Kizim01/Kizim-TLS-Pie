@@ -714,8 +714,9 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
         return colour_mod.Colouriser(rgb, yaw_deg, camera,
                                      pitch_deg, roll_deg), info
 
-    pts = sample_for_solve(pcap_path, meta, frame,
-                           per_laser_azimuth=per_laser_azimuth)
+    pts, refl = sample_for_solve(pcap_path, meta, frame,
+                                 per_laser_azimuth=per_laser_azimuth,
+                                 with_refl=True)
     if pts.shape[0] < 5000:
         info["reason"] = "too few points to align the photo against"
         return None, info
@@ -724,13 +725,28 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     # COLOUR IN. The panorama is level -- the camera stitches it level from
     # its own IMU -- and the raw capture is not; see the ordering note at
     # `convert`'s emit. A pose solved here on raw points would then be
-    # applied to levelled ones, off by exactly the tripod's lean.
+    # applied to levelled ones, off by exactly the tripod's lean. The
+    # reflectivity rides along untouched: a lean moves points, not pairs.
     if lean is not None and not lean.is_identity():
         pts = lean.apply(pts)
 
     yaw, confidence, _ = colour_mod.solve_yaw(pts, lum, camera=camera)
     info["yaw_deg"] = yaw
     info["confidence"] = confidence
+
+    # ⭐ THE SECOND OPINION RUNS HERE TOO. Studio's attach corroborates the
+    # edge solve with the reflectivity witness; a straight CLI convert used
+    # to solve with one method and climb with one eye, so the same folder
+    # could paint two different pictures depending on which door it came in
+    # through. The witness's confidence also gates the ladder's second eye.
+    mi_conf = None
+    if refl is not None and len(refl) == len(pts):
+        mi_yaw, mi_conf, _q = colour_mod.solve_yaw_mi(pts, refl, lum,
+                                                      camera=camera)
+        agreed, apart = colour_mod.corroborates(yaw, confidence,
+                                                mi_yaw, mi_conf)
+        info["second"] = {"yaw_deg": mi_yaw, "confidence": mi_conf}
+        info["agree_deg"], info["corroborated"] = apart, agreed
 
     # ⛔ REFUSE RATHER THAN GUESS. A photo from a different room, or a different
     # setup of the same room, still colours every point and still looks
@@ -753,10 +769,13 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     # the operator gave is an input, not a starting guess to overwrite.
     if any(camera):
         return colour_mod.Colouriser(rgb, yaw, camera), info
-    pose = colour_mod.climb_pose(pts, lum, yaw)
+    pose = colour_mod.climb_pose(pts, lum, yaw, refl=refl,
+                                 mi_confidence=mi_conf)
     info["yaw_deg"] = float(pose["yaw_deg"])
     info["pitch_deg"] = float(pose.get("pitch_deg") or 0.0)
     info["roll_deg"] = float(pose.get("roll_deg") or 0.0)
+    info["judged"] = list(pose.get("judged") or ["edge"])
+    info["polished"] = bool(pose.get("polished"))
     camera = (float(pose.get("camera_x") or 0.0),
               float(pose.get("camera_y") or 0.0),
               float(pose.get("camera_z") or 0.0))

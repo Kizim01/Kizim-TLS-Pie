@@ -1304,8 +1304,76 @@ RUNGS = [
 #: data says so.
 SEED_HEIGHTS = (0.0, 0.06, 0.12, 0.18, 0.24, 0.30)
 
+#: How many headings the ladder's judge sweeps to set its scale -- the same
+#: shape `deep_refine` already uses for its fine grid. Standardised ONCE,
+#: against a fixed reference sweep, never re-standardised as the search moves:
+#: otherwise "this pose beats that one" would depend on the order they were
+#: tried in, and the ladder's never-worse promise would quietly stop being one.
+LADDER_SCALE_BINS = 72
 
-def climb_pose(xyz, lum, yaw_deg, seed_stride=3):
+#: The climb's closing fine polish. The budget is headroom, not a target --
+#: folder 1 converged at 247 evaluations of the 600 -- and the deadline is
+#: the attach's protection against a pathological cloud: a polish that runs
+#: out of either leaves the coarse answer standing rather than hanging an
+#: import. Measured 18.4 s on folder 1 with the widened position cache.
+LADDER_POLISH_BUDGET = 600
+LADDER_POLISH_SECONDS = 60.0
+
+
+def ladder_objective(scorer, mi_confidence=None, pitch_deg=0.0, roll_deg=0.0,
+                     camera_z=None):
+    """
+    The refinement ladder's judge when the reflectivity has earned a vote:
+    depth silhouettes AND the mutual information between what the laser
+    measured and what the camera saw, standardised onto one scale. Returns
+    None when the ladder should judge with edges alone.
+
+    ⭐⭐ WHY THE LADDER GETS A SECOND EYE AT ALL. The edge score sees only
+    GEOMETRY: a poster on a flat wall, the grain of a floor, a painted door
+    flush in its frame are all invisible to a depth silhouette -- and all of
+    them pin the pose in the photograph. That is the evidence the field
+    settled on: koide3's direct_visual_lidar_calibration registers the
+    cloud's INTENSITY rendering against the image pixel-by-pixel as its fine
+    stage and calls the direct route more robust than edge matching, and
+    OmniColor colourises lidar maps from a 360 camera by optimising on the
+    picture itself for the same reason -- edge features fail exactly where a
+    room is textureless. The machinery was already in this file
+    (`PoseScorer.mutual`, the deep search's second eye); the automatic ladder
+    was the one judge still looking with one.
+
+    ⛔ THE VOTE IS EARNED, NOT ASSUMED, AND THE BAR IS THE DEEP SEARCH'S OWN.
+    `mi_confidence` is the reflectivity witness's global-sweep confidence,
+    already measured at attach and carried with the pairing. Below
+    DEEP_TERM_MIN_CONFIDENCE the witness is noise on this cloud -- and noise
+    inside a weighted sum is indistinguishable from evidence, it just moves
+    the answer in a direction nobody can audit. An exported cloud carries no
+    reflectivity at all, and judges exactly as before.
+
+    ⛔ AND THE GRADE IS STILL NOBODY'S HERE TO TOUCH. A second eye on the FIT
+    says nothing more about the PAIRING than one eye did: a wrong photograph
+    refined by two measures is wrong with more decimal places.
+    """
+    if scorer is None or getattr(scorer, "refl", None) is None:
+        return None
+    if (mi_confidence is None
+            or float(mi_confidence) < DEEP_TERM_MIN_CONFIDENCE):
+        return None
+    obj = DeepObjective(scorer, weights={"edge": 1.0, "mi": 1.0,
+                                         "beacon": 0.0})
+    _y, prof, _per = obj.sweep(pitch_deg, roll_deg, camera_z,
+                               bins=LADDER_SCALE_BINS)
+    if prof is None or not obj.have.get("mi"):
+        return None
+    mi_stats = obj.stats.get("mi")
+    if not mi_stats or mi_stats[1] <= 0:
+        # A flat mutual-information profile has no scale to standardise onto;
+        # pretending otherwise would divide by nothing dressed as evidence.
+        return None
+    return obj
+
+
+def climb_pose(xyz, lum, yaw_deg, seed_stride=3, refl=None,
+               mi_confidence=None):
     """
     The full pose from a solved heading: seed the height, then climb.
 
@@ -1317,19 +1385,44 @@ def climb_pose(xyz, lum, yaw_deg, seed_stride=3):
     `rung` says how far it actually got, 0 meaning the sweep's answer came
     back untouched. It never raises.
 
+    ⭐ WHEN `refl` ARRIVES WITH A CONFIDENT WITNESS, THE WHOLE CLIMB IS
+    JUDGED WITH TWO EYES -- see `ladder_objective`. The seeds too, on
+    purpose: the seeds exist to pick the height-pitch BASIN, and the basin
+    choice is exactly where an extra witness is worth the most, because the
+    two basins differ through the parallax of near surfaces, which the
+    reflectivity sees and a silhouette may not. `judged` in the returned
+    pose names the eyes that actually voted.
+
     ⛔ THE GRADE IS NOT THIS FUNCTION'S TO TOUCH. A climb raises the score by
     construction, so it can never be evidence that the photograph belongs to
     the scan; the caller keeps whatever judged the pairing.
     """
     pose = {"yaw_deg": float(yaw_deg), "pitch_deg": 0.0, "roll_deg": 0.0,
             "camera_x": 0.0, "camera_y": 0.0, "camera_z": 0.0}
+    if refl is not None and len(refl) != len(xyz):
+        refl = None                    # a mismatched witness is no witness
     coarse = xyz[::seed_stride] if seed_stride and seed_stride > 1 else xyz
+    coarse_refl = (refl[::seed_stride]
+                   if refl is not None and seed_stride and seed_stride > 1
+                   else refl)
+    # ⭐ ONE SCORER AND ONE JUDGE PER PHASE, SHARED ACROSS THE CALLS. The six
+    # seeds used to rebuild an identical prefiltered panorama six times; and
+    # a standardised judge MUST be shared, because its scale is set once by a
+    # reference sweep and two independently-swept judges would rank the same
+    # two poses differently. Built under try because the climb never raises:
+    # a failure here degrades to per-rung construction, exactly as before.
+    try:
+        seed_sc = PoseScorer(coarse, lum, refl=coarse_refl)
+        seed_obj = ladder_objective(seed_sc, mi_confidence)
+    except Exception:                                     # noqa: BLE001
+        seed_sc, seed_obj = None, None
     best = None
     for z in SEED_HEIGHTS:
         try:
             got = refine_pose(coarse, lum, camera=(0.0, 0.0, float(z)),
                               yaw_deg=pose["yaw_deg"], pitch_deg=0.0,
-                              roll_deg=0.0, rung=2)
+                              roll_deg=0.0, rung=2,
+                              scorer=seed_sc, objective=seed_obj)
         except Exception:                                 # noqa: BLE001
             continue
         if not got.get("ok"):
@@ -1343,6 +1436,14 @@ def climb_pose(xyz, lum, yaw_deg, seed_stride=3):
         pose["pitch_deg"] = float(got.get("pitch_deg") or 0.0)
         pose["roll_deg"] = float(got.get("roll_deg") or 0.0)
         pose["camera_z"] = float(got.get("camera_z") or 0.0)
+    try:
+        sc = PoseScorer(xyz, lum, refl=refl)
+        obj = ladder_objective(sc, mi_confidence,
+                               pitch_deg=pose["pitch_deg"],
+                               roll_deg=pose["roll_deg"],
+                               camera_z=pose["camera_z"])
+    except Exception:                                     # noqa: BLE001
+        sc, obj = None, None
     rungs = 0
     for rung in range(1, len(RUNGS) + 1):
         try:
@@ -1351,24 +1452,79 @@ def climb_pose(xyz, lum, yaw_deg, seed_stride=3):
                                       pose["camera_z"]),
                               yaw_deg=pose["yaw_deg"],
                               pitch_deg=pose["pitch_deg"],
-                              roll_deg=pose["roll_deg"], rung=rung)
+                              roll_deg=pose["roll_deg"], rung=rung,
+                              scorer=sc, objective=obj)
         except Exception:                                 # noqa: BLE001
             break
         if not got.get("ok"):
             break
         pose, rungs = dict(pose, **got), rung
     pose["rung"] = rungs
+    pose["judged"] = (list(obj.used()) if obj is not None
+                      else (list(seed_obj.used()) if seed_obj is not None
+                            else ["edge"]))
+    # ⭐⭐ AND THE LAST WORD BELONGS TO THE FINE GRID -- the attach finally
+    # gets what `deep_align` always had. The coarse grid's cell is a degree
+    # of longitude, and on folder 1 that bluntness MANUFACTURED a basin: the
+    # coarse edge score put the camera at z +167 mm / pitch +4.8, and every
+    # finer look disagreed -- fine edges, fine MI and coarse MI all put the
+    # optimum near pitch 2.5 (the fine pitch cliffs are 25% of the score;
+    # nothing about z is that sure). Polishing from the coarse answer lands
+    # at yaw 92.56 / pitch 2.47 / z +40 mm / seat (-8, -6) mm with BOTH eyes
+    # at their best measured values (edge 0.2749, MI 0.2061), and beats the
+    # old basin's own polish (0.2552 / 0.1925) on both. ~18 s on folder 1.
+    #
+    # ⛔ THE FINE JUDGE INHERITS THE LADDER'S GATING, deciding nothing for
+    # itself: the reflectivity votes here exactly when it voted on the rungs.
+    # And a polish that fails -- time, sparsity, anything -- leaves the
+    # coarse answer standing, on the climb's own never-raise rules. The
+    # rung is reported as the top of the ladder afterwards, because every
+    # width the press could add has now been searched at a finer grid than
+    # the press would use; what is left is a judgement by eye.
+    if rungs:
+        try:
+            fined = deep_refine(
+                xyz, lum, refl=(refl if obj is not None else None),
+                camera=(pose["camera_x"], pose["camera_y"],
+                        pose["camera_z"]),
+                yaw_deg=pose["yaw_deg"], pitch_deg=pose["pitch_deg"],
+                roll_deg=pose["roll_deg"],
+                weights={"edge": 1.0,
+                         "mi": (1.0 if obj is not None else 0.0),
+                         "beacon": 0.0},
+                budget=LADDER_POLISH_BUDGET,
+                deadline=time.time() + LADDER_POLISH_SECONDS)
+        except Exception:                                 # noqa: BLE001
+            fined = None
+        if fined and fined.get("ok"):
+            for k in ("yaw_deg", "pitch_deg", "roll_deg",
+                      "camera_z", "camera_x", "camera_y"):
+                pose[k] = float(fined[k])
+            pose["rung"] = len(RUNGS)
+            pose["polished"] = True
     return pose
 
 
 def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 roll_deg=0.0, rung=0, span_deg=2.0, floor_deg=0.01,
-                budget=600, scorer=None):
+                budget=600, scorer=None, refl=None, mi_confidence=None,
+                objective=None):
     """
     Improve a pose that is already close. Returns a dict; never raises.
 
     `rung` is how many entries of RUNGS are in play, so 1 moves the heading
     only and 3 moves everything. The caller raises it by one each press.
+
+    ⭐ GIVEN `refl` AND A CONFIDENT WITNESS, IT JUDGES WITH TWO EYES. The
+    default judge is the edge cosine alone; hand it the cloud's reflectivity
+    and the witness's global-sweep confidence and it builds the two-eyed
+    judge itself (see `ladder_objective` -- the gate and the scale live
+    there). A caller running several searches that must rank poses on ONE
+    scale builds the judge once and passes it as `objective`, the way
+    `climb_pose` does. `judged` in the report names the eyes that voted.
+    `budget` counts POSES TRIED whichever judge is in the chair, measured
+    from this call's own start, so a shared scorer does not arrive with the
+    budget already spent by an earlier rung.
 
     ⛔⛔ IT CANNOT RETURN A WORSE POSE THAN IT WAS GIVEN, AND THAT IS
     STRUCTURAL RATHER THAN CHECKED. A pattern search only ever adopts a trial
@@ -1390,12 +1546,33 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
              "camera_x": float(camera[0] if len(camera) > 0 else 0.0),
              "camera_y": float(camera[1] if len(camera) > 1 else 0.0)}
     rung = max(1, min(int(rung or 1), len(RUNGS)))
-    sc = scorer or PoseScorer(xyz, lum, camera=camera)
+    sc = scorer or PoseScorer(xyz, lum, camera=camera, refl=refl)
+    if objective is None:
+        objective = ladder_objective(sc, mi_confidence,
+                                     pitch_deg=start["pitch_deg"],
+                                     roll_deg=start["roll_deg"],
+                                     camera_z=start["camera_z"])
 
-    if sc.filled() < MIN_FILLED_FRACTION:
+    # The gate is asked AT THE STARTING HEIGHT -- for every caller that built
+    # the scorer at its own camera this is exactly the old behaviour, and for
+    # a shared scorer it stops the answer depending on where the SCORER was
+    # born rather than where this search stands.
+    if sc.filled(start["camera_z"]) < MIN_FILLED_FRACTION:
         return dict(start, ok=False, improved=False, rung=rung,
                     reason="this cloud's panorama is too sparse to refine "
                            "against -- the same bar the solve itself sets")
+
+    def judge(p):
+        if objective is not None:
+            return objective(p["yaw_deg"], p["pitch_deg"], p["roll_deg"],
+                             p["camera_z"], p["camera_x"], p["camera_y"])
+        return sc.score(p["yaw_deg"], p["pitch_deg"], p["roll_deg"],
+                        p["camera_z"], p["camera_x"], p["camera_y"])
+
+    def spent():
+        return objective.calls if objective is not None else sc.evaluations
+
+    base = spent()
 
     # (name, half-range about the STARTING value, whether this rung uses it)
     axes = [("yaw_deg", MAX_REFINE_YAW_DEG, True),
@@ -1407,13 +1584,11 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
     live = [(n, lim) for n, lim, on in axes if on]
 
     best = dict(start)
-    best_score = sc.score(best["yaw_deg"], best["pitch_deg"],
-                          best["roll_deg"], best["camera_z"],
-                          best["camera_x"], best["camera_y"])
+    best_score = judge(best)
     first = best_score
     railed = []
     step = float(span_deg)
-    while step >= floor_deg and sc.evaluations < budget:
+    while step >= floor_deg and spent() - base < budget:
         moved = False
         for name, lim in live:
             # The height is in metres; the same step in degrees would ask for
@@ -1432,13 +1607,11 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                     if name not in railed:
                         railed.append(name)
                     continue
-                got = sc.score(trial["yaw_deg"], trial["pitch_deg"],
-                               trial["roll_deg"], trial["camera_z"],
-                               trial["camera_x"], trial["camera_y"])
+                got = judge(trial)
                 if got > best_score:
                     best, best_score, moved = trial, got, True
                     break
-                if sc.evaluations >= budget:
+                if spent() - base >= budget:
                     break
         if not moved:
             step *= 0.5
@@ -1455,12 +1628,16 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 seated_m=float(math.hypot(
                     best["camera_x"] - start["camera_x"],
                     best["camera_y"] - start["camera_y"])),
-                evaluations=int(sc.evaluations),
+                evaluations=int(spent() - base),
+                # ⭐ WHICH EYES VOTED, so the caller and the operator can see
+                # whether the reflectivity witness took part or stood down.
+                judged=(list(objective.used()) if objective is not None
+                        else ["edge"]),
                 # ⛔ A RAIL IS REPORTED, NOT SWALLOWED. A pose sitting exactly on
                 # a bound is the solver saying it wanted to go further, which is
                 # evidence about the pair rather than a tidy answer.
                 railed=list(railed),
-                exhausted=bool(sc.evaluations >= budget))
+                exhausted=bool(spent() - base >= budget))
 
 
 # --- the deep alignment ----------------------------------------------------
@@ -1513,10 +1690,18 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
 DEEP_LON_BINS = 180
 DEEP_LAT_BINS = 45
 
-#: How many camera heights the scorer keeps built at once. See the note in
+#: How many camera POSITIONS the scorer keeps built at once. See the note in
 #: `PoseScorer.__init__`: a pattern search probes an axis both ways and then
 #: returns, so a cache of one turns two questions into three rebuilds.
-CACHE_HEIGHTS = 4
+#:
+#: ⛔ SIZED FOR THE SEAT ERA, NOT THE HEIGHT ERA. Four covered a search that
+#: moved only z: the incumbent and both probes. The polish now moves z, x and
+#: y together, whose working set is the incumbent plus SIX probes -- and at
+#: four, every probe evicted a panorama the same step was about to ask for
+#: again. Measured on folder 1's fine polish: 24.8 s at 4, 18.4 s at 12, the
+#: identical pose out of both. A cached position at the fine grid is a few
+#: megabytes, so twelve of them cost less than one photograph.
+CACHE_HEIGHTS = 12
 
 #: How many distinct bumps of the sweep are followed up, besides the pose the
 #: operator already has. ⛔ The incumbent is ALWAYS one of the candidates: that
@@ -1748,15 +1933,26 @@ class DeepObjective(object):
     def __call__(self, yaw_deg, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
                  camera_x=None, camera_y=None):
         self.calls += 1
-        got = self.raw(yaw_deg, pitch_deg, roll_deg, camera_z,
-                       camera_x, camera_y)
+        # ⭐ A TERM THAT CANNOT VOTE IS NOT EVALUATED. A weight of zero used
+        # to mean "computed, multiplied by nothing, discarded" -- an image
+        # resampling per pose paid for silence. The sum is arithmetically
+        # identical (a skipped term contributed exactly 0.0); only the wasted
+        # work goes. `raw` stays complete on purpose: it is the REPORTING
+        # face, and a stood-down term's actual value is still worth printing.
+        fns = {"edge": self.sc.score, "mi": self.sc.mutual,
+               "beacon": self.sc.beacon}
         total = 0.0
         for t in self.TERMS:
-            if t not in self.stats or got[t] is None:
+            if t not in self.stats or not self.weights.get(t, 0.0):
                 continue
             mean, sd = self.stats[t]
-            if sd > 0:
-                total += self.weights.get(t, 0.0) * (float(got[t]) - mean) / sd
+            if sd <= 0:
+                continue
+            got = fns[t](yaw_deg, pitch_deg, roll_deg, camera_z,
+                         camera_x, camera_y)
+            if got is None:
+                continue
+            total += self.weights[t] * (float(got) - mean) / sd
         return total
 
 

@@ -4166,8 +4166,13 @@ for _z in (0.0, 0.02, -0.02, 0.0, 0.02):
 # something that was in hand moments earlier.
 check("going back to a height already visited does not rebuild the cloud",
       _cs.builds == 3, _cs.builds)
-check("and only a few heights are kept, so a long search cannot grow "
-      "without bound", colour.CACHE_HEIGHTS <= 8)
+# ⛔ THE BOUND MUST ADMIT THE SEAT-ERA WORKING SET. The polish probes z, x
+# and y together -- the incumbent plus six probes -- and a cache smaller
+# than that evicts a panorama the same step is about to ask for again
+# (measured on folder 1's fine polish: 24.8 s at 4, 18.4 s at 12). Bounded
+# still, because a cached position at the fine grid is a few megabytes.
+check("and only a few positions are kept, so a long search cannot grow "
+      "without bound", 7 <= colour.CACHE_HEIGHTS <= 16, colour.CACHE_HEIGHTS)
 
 # --- the retroreflector term -----------------------------------------------
 #
@@ -7233,26 +7238,30 @@ _rsrv._progress = {}
 _rsrv._rebuild = lambda: []
 _rs = _mscan("worn", _lc_pts, lean=registration.Lean(2.0, 1.0))
 _rs.photo = "fake.jpg"
+_rs.sample_refl = np.arange(len(_lc_pts), dtype=float)
 _rs.colour_info = {"ok": True, "photo": "fake.jpg", "yaw_deg": 10.0,
                    "pitch_deg": 0.0, "roll_deg": 0.0, "rung": 0,
                    "camera_x": 0.0, "camera_y": 0.0, "camera_z": 0.0,
                    "grade": "sure", "given": False, "caution": None,
-                   "candidates": [], "second": None}
+                   "candidates": [],
+                   "second": {"yaw_deg": 9.0, "confidence": 6.5}}
 _rsrv.scans = [_rs]
 _pose_fake = {"ok": True, "camera_z": 0.0, "camera_x": 0.0, "camera_y": 0.0,
               "yaw_deg": 10.0, "pitch_deg": 0.0, "roll_deg": 0.0,
               "improved": False, "gain": 0.0, "score": 1.0, "was": 1.0,
               "turned_deg": 0.0, "tilted_deg": 0.0, "raised_m": 0.0,
               "evaluations": 1, "railed": False, "exhausted": False,
+              "judged": ["edge"],
               "solo": {}, "stood_down": [], "used": [], "far": False,
               "seconds": 0.1, "candidates": []}
-_saw_refine, _saw_deep = [], []
+_saw_refine, _saw_refkw, _saw_deep = [], [], []
 _real_rd = (colour.refine_pose, colour.deep_align)
 _want_rs = registration.Lean(2.0, 1.0).apply(np.asarray(_lc_pts))
 _patch_colour()
 colour.refine_pose = (lambda pts, lum, **kw:
                       (_saw_refine.append(np.asarray(pts)),
-                       dict(_pose_fake))[1])
+                       _saw_refkw.append(dict(kw)),
+                       dict(_pose_fake))[2])
 colour.deep_align = (lambda pts, lum, **kw:
                      (_saw_deep.append(np.asarray(pts)),
                       dict(_pose_fake))[1])
@@ -7266,6 +7275,11 @@ check("Auto-align refines in the levelled frame",
       _r_ref.get("ok") and _saw_refine
       and np.allclose(_saw_refine[0], _want_rs, atol=1e-4),
       _r_ref.get("error"))
+check("...and the press hands the judge the same eyes the attach used",
+      _saw_refkw
+      and np.array_equal(_saw_refkw[0].get("refl"), _rs.sample_refl)
+      and close(_saw_refkw[0].get("mi_confidence") or 0.0, 6.5, 1e-9),
+      None if not _saw_refkw else sorted(_saw_refkw[0]))
 check("...and Deep align searches the same frame",
       _r_deep.get("ok") and _saw_deep
       and np.allclose(_saw_deep[0], _want_rs, atol=1e-4),
@@ -7435,7 +7449,9 @@ _saw_cli = []
 _cli_pts = np.tile(_raw_exp, (3, 1))          # past the 5000-point refusal
 _real_cli = (pipeline.sample_for_solve, colour.load_panorama,
              colour.solve_yaw)
-pipeline.sample_for_solve = lambda path, meta, frame, **kw: _cli_pts
+pipeline.sample_for_solve = (lambda path, meta, frame, **kw:
+                             ((_cli_pts, np.zeros(len(_cli_pts)))
+                              if kw.get("with_refl") else _cli_pts))
 colour.load_panorama = lambda p: (_fake_rgb, np.zeros((64, 128), np.float32))
 colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
                     (_saw_cli.append(np.asarray(pts)), (10.0, 99.0, None))[1])
@@ -7499,10 +7515,11 @@ _ca_pose = {"ok": True, "yaw_deg": 40.8, "pitch_deg": 2.4, "roll_deg": -0.2,
             "camera_z": 0.06, "camera_x": 0.001, "camera_y": -0.002,
             "score": 1.0}
 _real_climb = (colour.load_panorama, colour.solve_yaw, colour.peaks,
-               colour.sample, colour.refine_pose, align.grade_solve)
+               colour.sample, colour.refine_pose, align.grade_solve,
+               colour.deep_refine)
 
 
-def _patch_climb(refine=None):
+def _patch_climb(refine=None, deep=None):
     colour.load_panorama = lambda p: (_fake_rgb,
                                       np.zeros((64, 128), np.float32))
     colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
@@ -7514,6 +7531,11 @@ def _patch_climb(refine=None):
     colour.refine_pose = refine or (lambda pts, lum, **kw:
                                     (_ca_refines.append(dict(kw)),
                                      dict(_ca_pose))[1])
+    # ⛔ THE FINE POLISH IS PATCHED OUT BY DEFAULT. These checks pin the
+    # COARSE ladder's wiring, and the real deep_refine would spend seconds
+    # per test polishing a fake image; a refusal leaves the coarse answer
+    # standing, which is exactly the contract. The polish has its own checks.
+    colour.deep_refine = deep or (lambda *a, **kw: {"ok": False})
     def _grade(info, pts, refl, lum, camera):
         info["grade"] = "sure"
     align.grade_solve = _grade
@@ -7521,7 +7543,8 @@ def _patch_climb(refine=None):
 
 def _restore_climb():
     (colour.load_panorama, colour.solve_yaw, colour.peaks,
-     colour.sample, colour.refine_pose, align.grade_solve) = _real_climb
+     colour.sample, colour.refine_pose, align.grade_solve,
+     colour.deep_refine) = _real_climb
 
 
 _patch_climb()
@@ -7617,6 +7640,177 @@ check("THE HEIGHT IS SEEDED ACROSS THE MOUNT'S RANGE, NOT SLID TO",
 check("...and the seed the data scored best is the one that wins",
       _seed_best in colour.SEED_HEIGHTS)
 
+# ⭐⭐ THE LADDER'S SECOND EYE. The refinement used to judge with depth
+# silhouettes alone, and a poster on a flat wall -- invisible to a silhouette,
+# pinned in the photograph -- said nothing. Given the reflectivity and a
+# witness that cleared the deep search's own bar, the judge is edges AND
+# mutual information, standardised onto one scale; it stands down to edges
+# alone the moment either half of that sentence fails. The photograph and
+# the reflectivity below both derive from the room's depth, so the two eyes
+# agree about where the camera pointed -- the honest case the gate admits.
+print("\ncolour: the ladder's second eye")
+
+_te_pts = np.asarray(room)[::6]
+_te_refl = np.log1p(np.linalg.norm(_te_pts, axis=1)) * 60.0
+_te_lum = render_lum(room, 25.0)
+_te_sc = colour.PoseScorer(_te_pts, _te_lum, refl=_te_refl)
+_te_obj = colour.ladder_objective(_te_sc, mi_confidence=6.0)
+check("THE LADDER JUDGES WITH TWO EYES WHEN THE WITNESS SPOKE",
+      _te_obj is not None and _te_obj.used() == ["edge", "mi"],
+      None if _te_obj is None else _te_obj.used())
+check("...a witness under the deep search's own bar stands the eye down",
+      colour.ladder_objective(_te_sc, mi_confidence=2.9) is None)
+check("...and a cloud with no reflectivity judges exactly as before",
+      colour.ladder_objective(colour.PoseScorer(_te_pts, _te_lum),
+                              mi_confidence=9.0) is None)
+
+_te_got = colour.refine_pose(_te_pts, _te_lum, yaw_deg=23.0, rung=1,
+                             scorer=_te_sc, objective=_te_obj)
+check("the two-eyed rung names its eyes and never hands back worse",
+      _te_got.get("ok") and _te_got.get("judged") == ["edge", "mi"]
+      and _te_got["score"] >= _te_got["was"] - 1e-12,
+      (_te_got.get("judged"), _te_got.get("improved")))
+check("...and walks the heading toward the photograph's own",
+      abs(_te_got["yaw_deg"] - 25.0) < abs(23.0 - 25.0), _te_got["yaw_deg"])
+_te_one = colour.refine_pose(_te_pts, _te_lum, yaw_deg=23.0, rung=1,
+                             scorer=_te_sc, mi_confidence=2.0)
+check("...while a quiet witness leaves the rung one-eyed, and says so",
+      _te_one.get("ok") and _te_one.get("judged") == ["edge"],
+      _te_one.get("judged"))
+
+# ⭐ THE CLIMB SEATS ONE JUDGE AND EVERY RUNG GETS IT. A standardised judge's
+# scale is set once by a reference sweep; two independently-swept judges
+# would rank the same two poses differently, so the ladder must pass ONE
+# through rather than let each rung build its own.
+
+
+class _FakeJudge(object):
+    def used(self):
+        return ["edge", "mi"]
+
+
+_cw_judge = _FakeJudge()
+_cw_seen = []
+_real_cw = (colour.refine_pose, colour.ladder_objective, colour.deep_refine)
+colour.refine_pose = (lambda pts, lum, **kw:
+                      (_cw_seen.append(kw.get("objective")),
+                       dict(_ca_pose))[1])
+colour.ladder_objective = (
+    lambda scorer, mi_confidence=None, **kw:
+    (_cw_judge if (getattr(scorer, "refl", None) is not None
+                   and (mi_confidence or 0.0)
+                   >= colour.DEEP_TERM_MIN_CONFIDENCE) else None))
+colour.deep_refine = lambda *a, **kw: {"ok": False}
+try:
+    _cw_pose = colour.climb_pose(np.asarray(_lc_pts),
+                                 np.zeros((8, 16), np.float32), 10.0,
+                                 refl=np.arange(len(_lc_pts), dtype=float),
+                                 mi_confidence=7.0)
+    _cw_first = list(_cw_seen)
+    _cw_seen[:] = []
+    _cw_none = colour.climb_pose(np.asarray(_lc_pts),
+                                 np.zeros((8, 16), np.float32), 10.0)
+finally:
+    (colour.refine_pose, colour.ladder_objective,
+     colour.deep_refine) = _real_cw
+check("THE CLIMB SEATS ONE JUDGE AND EVERY RUNG GETS IT",
+      len(_cw_first) == len(colour.SEED_HEIGHTS) + len(colour.RUNGS)
+      and all(o is _cw_judge for o in _cw_first)
+      and _cw_pose.get("judged") == ["edge", "mi"],
+      (len(_cw_first), _cw_pose.get("judged")))
+check("...a refused polish leaves the coarse answer standing",
+      _cw_pose.get("polished") is None
+      and close(_cw_pose["camera_z"], 0.06, 1e-9),
+      (_cw_pose.get("polished"), _cw_pose.get("camera_z")))
+check("...and with nothing to hand, every rung judges with edges alone",
+      all(o is None for o in _cw_seen)
+      and _cw_none.get("judged") == ["edge"], _cw_none.get("judged"))
+
+# ⭐⭐ THE LAST WORD BELONGS TO THE FINE GRID -- the attach's climb ends where
+# deep_align always ended. Folder 1 is the reason: the coarse grid's
+# one-degree cell MANUFACTURED a height basin (z +167 mm, pitch +4.8) that
+# the fine edges, the fine MI and the coarse MI all rejected; polishing from
+# the coarse answer lands at pitch 2.5 / z +66 mm with both eyes at their
+# best measured values, and beats the old basin's own polish on both.
+_fp_seen = []
+_fp_pose = {"ok": True, "yaw_deg": 40.9, "pitch_deg": 2.1, "roll_deg": 0.3,
+            "camera_z": 0.055, "camera_x": -0.004, "camera_y": -0.006,
+            "score": 5.0}
+_real_fp = (colour.refine_pose, colour.ladder_objective, colour.deep_refine)
+colour.refine_pose = lambda pts, lum, **kw: dict(_ca_pose)
+colour.ladder_objective = (
+    lambda scorer, mi_confidence=None, **kw:
+    (_cw_judge if (getattr(scorer, "refl", None) is not None
+                   and (mi_confidence or 0.0)
+                   >= colour.DEEP_TERM_MIN_CONFIDENCE) else None))
+colour.deep_refine = (lambda *a, **kw:
+                      (_fp_seen.append(dict(kw)), dict(_fp_pose))[1])
+try:
+    _fp_got = colour.climb_pose(np.asarray(_lc_pts),
+                                np.zeros((8, 16), np.float32), 10.0,
+                                refl=np.arange(len(_lc_pts), dtype=float),
+                                mi_confidence=7.0)
+    _fp_none = colour.climb_pose(np.asarray(_lc_pts),
+                                 np.zeros((8, 16), np.float32), 10.0)
+finally:
+    (colour.refine_pose, colour.ladder_objective,
+     colour.deep_refine) = _real_fp
+check("THE LAST WORD BELONGS TO THE FINE GRID",
+      _fp_got.get("polished") is True
+      and _fp_got.get("rung") == len(colour.RUNGS)
+      and close(_fp_got["camera_z"], 0.055, 1e-9)
+      and close(_fp_got["pitch_deg"], 2.1, 1e-9),
+      (_fp_got.get("polished"), _fp_got.get("camera_z")))
+check("...and the fine judge inherits the ladder's gating, deciding nothing",
+      len(_fp_seen) == 2
+      and _fp_seen[0].get("weights") == {"edge": 1.0, "mi": 1.0,
+                                         "beacon": 0.0}
+      and _fp_seen[0].get("refl") is not None
+      and _fp_seen[1].get("weights") == {"edge": 1.0, "mi": 0.0,
+                                         "beacon": 0.0}
+      and _fp_seen[1].get("refl") is None,
+      [w.get("weights") for w in _fp_seen])
+
+# ⭐ AND THE ATTACH HANDS THE CLIMB WHAT THE JUDGE NEEDS: the reflectivity,
+# strided exactly as the points are, and the witness's own confidence from
+# the sweep that just measured it.
+_aw_scan = _mscan("cam5", _lc_pts)
+_aw_scan.sample_refl = np.arange(len(_lc_pts), dtype=float)
+_aw_climbs = []
+_real_aw = (colour.load_panorama, colour.solve_yaw, colour.peaks,
+            colour.sample, colour.climb_pose, align.grade_solve)
+colour.load_panorama = lambda p: (_fake_rgb, np.zeros((64, 128), np.float32))
+colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
+                    (41.0, 9.0, None))
+colour.peaks = lambda profile: [{"yaw_deg": 41.0, "confidence": 9.0}]
+colour.sample = lambda pts, img, **kw: np.full((len(pts), 3), 7, np.uint8)
+colour.climb_pose = (lambda pts, lum, yaw, **kw:
+                     (_aw_climbs.append(dict(kw)),
+                      dict(_ca_pose, rung=4, judged=["edge", "mi"],
+                           polished=True))[1])
+
+
+def _grade_second(info, pts, refl, lum, camera):
+    info["grade"] = "sure"
+    info["second"] = {"yaw_deg": 40.7, "confidence": 7.7}
+
+
+align.grade_solve = _grade_second
+try:
+    _aw_info = align.colour_scan(_aw_scan, "fake.jpg")
+finally:
+    (colour.load_panorama, colour.solve_yaw, colour.peaks,
+     colour.sample, colour.climb_pose, align.grade_solve) = _real_aw
+check("the attach hands the climb the reflectivity and its witness",
+      len(_aw_climbs) == 1
+      and np.array_equal(_aw_climbs[0].get("refl"), _aw_scan.sample_refl)
+      and close(_aw_climbs[0].get("mi_confidence") or 0.0, 7.7, 1e-9),
+      _aw_climbs and {k: type(v).__name__ for k, v in _aw_climbs[0].items()})
+check("...and keeps the eyes and the polish in the record it shows",
+      _aw_info.get("judged") == ["edge", "mi"]
+      and _aw_info.get("polished") is True,
+      (_aw_info.get("judged"), _aw_info.get("polished")))
+
 # ⭐ THE CLI's SELF-SOLVE CLIMBS TOO, so a straight convert paints the same
 # picture Studio would -- and a --camera-z the operator gave is respected.
 _cli_cols = []
@@ -7632,20 +7826,30 @@ class _RecColouriser(object):
 
 
 _real_cli2 = (pipeline.sample_for_solve, colour.load_panorama,
-              colour.solve_yaw, colour.refine_pose, colour.Colouriser)
-pipeline.sample_for_solve = lambda path, meta, frame, **kw: _cli_pts
+              colour.solve_yaw, colour.solve_yaw_mi, colour.climb_pose,
+              colour.Colouriser)
+_cli_refl = np.arange(len(_cli_pts), dtype=float)
+_cli_climbs = []
+pipeline.sample_for_solve = (lambda path, meta, frame, **kw:
+                             ((_cli_pts, _cli_refl) if kw.get("with_refl")
+                              else _cli_pts))
 colour.load_panorama = lambda p: (_fake_rgb, np.zeros((64, 128), np.float32))
 colour.solve_yaw = (lambda pts, lum, camera=(0, 0, 0), refl=None:
                     (41.0, 99.0, None))
-colour.refine_pose = lambda pts, lum, **kw: dict(_ca_pose)
+colour.solve_yaw_mi = (lambda pts, refl, lum, camera=(0, 0, 0), bins=None:
+                       (40.5, 6.0, None))
+colour.climb_pose = (lambda pts, lum, yaw, **kw:
+                     (_cli_climbs.append(dict(kw)),
+                      dict(_ca_pose, rung=4, judged=["edge", "mi"]))[1])
 colour.Colouriser = _RecColouriser
 try:
-    pipeline.prepare_colour("ghost.pcap", {}, None, photo="fake.jpg")
+    _cli_i1 = pipeline.prepare_colour("ghost.pcap", {}, None,
+                                      photo="fake.jpg")[1]
     pipeline.prepare_colour("ghost.pcap", {}, None, photo="fake.jpg",
                             camera=(0.0, 0.0, 0.05))
 finally:
-    (pipeline.sample_for_solve, colour.load_panorama,
-     colour.solve_yaw, colour.refine_pose, colour.Colouriser) = _real_cli2
+    (pipeline.sample_for_solve, colour.load_panorama, colour.solve_yaw,
+     colour.solve_yaw_mi, colour.climb_pose, colour.Colouriser) = _real_cli2
 check("the CLI's self-solve climbs the same ladder",
       len(_cli_cols) == 2 and _cli_cols[0][0] == 40.8
       and _cli_cols[0][1] == (0.001, -0.002, 0.06)
@@ -7653,6 +7857,16 @@ check("the CLI's self-solve climbs the same ladder",
 check("...and a --camera-z the operator gave is an input, not a guess",
       _cli_cols[1][0] == 41.0 and _cli_cols[1][1] == (0.0, 0.0, 0.05),
       _cli_cols[1:])
+check("...the CLI's climb gets the reflectivity and its witness too",
+      len(_cli_climbs) == 1 and _cli_climbs[0].get("refl") is _cli_refl
+      and close(_cli_climbs[0].get("mi_confidence") or 0.0, 6.0, 1e-9),
+      _cli_climbs)
+check("...and the CLI records the second opinion beside the first, so a "
+      "convert can say 'confirmed' the way Studio does",
+      (_cli_i1.get("second") or {}).get("confidence") == 6.0
+      and _cli_i1.get("corroborated") is True
+      and _cli_i1.get("judged") == ["edge", "mi"],
+      (_cli_i1.get("second"), _cli_i1.get("corroborated")))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

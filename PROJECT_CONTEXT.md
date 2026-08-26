@@ -4149,13 +4149,74 @@ tilt settle into whichever basin the start was in.
 
 Suite **1144 → 1146**; the no-seeds reversion caught by two checks.
 
+## 2026-08-26, third pass — the intensity map joins the judge, and impeaches the answer
+
+**The operator asked whether the solver could match the cloud's INTENSITY map against the image,
+"look at other git for ideas".** The survey says that instinct is the state of the art: koide3's
+`direct_visual_lidar_calibration` registers the cloud's intensity rendering against the image
+pixel-by-pixel as its *fine* stage and calls the direct route more robust than edge matching;
+OmniColor colourises lidar maps from a 360 camera by optimising on the picture itself, noting edge
+features fail exactly where a room is textureless. This program already had the machinery
+(`solve_yaw_mi`, `PoseScorer.mutual`, the deep search's second eye) — **the automatic ladder was
+the one judge still looking with one eye.**
+
+Built, all through one home:
+
+- **`colour.ladder_objective`** — the ladder's two-eyed judge (edges + reflectivity MI,
+  standardised once against a 72-bin reference sweep, beacon excluded). **The vote is earned**: it
+  stands down to edges alone unless the reflectivity witness's own global-sweep confidence clears
+  `DEEP_TERM_MIN_CONFIDENCE` — the deep search's own bar.
+- `refine_pose(refl=, mi_confidence=, objective=)` builds or accepts the judge and reports
+  `judged`; budget now counts poses from the call's own base, so a shared scorer doesn't arrive
+  spent. `climb_pose` seats ONE judge per phase and hands it to every seed and rung (two
+  independently-swept judges would rank the same two poses differently). The attach, the
+  operator's Auto-align press and the CLI all pass the witness through — and the CLI now runs
+  `solve_yaw_mi` too, so a straight convert can say "confirmed" the way Studio does.
+- `DeepObjective.__call__` no longer evaluates weight-zero terms (identical sum, wasted resample
+  gone); `CACHE_HEIGHTS` 4 → 12 (the polish probes z, x, y together — working set seven — and at
+  four it evicted a panorama the same step was about to ask for; 24.8 s → 18.4 s on folder 1).
+
+**Then the measurement overturned yesterday's answer.** The two-eyed coarse ladder landed in the
+LOW basin (z +1.7 cm / pitch 2.6°) — the reflectivity dissented from the coarse edge score's
+z +16.7 cm / pitch +4.8°. A transect between the basins at BOTH grids settled it: **at the fine
+grid every eye agrees** — fine edge falls monotonically from the low pose to the high one, fine MI
+likewise, coarse MI likewise; **only the coarse edge score prefers the high basin. The 2°-cell
+grid had MANUFACTURED that basin**, and yesterday's "+16.7 cm confirmed" was its artifact. (The
+pano's own horizon was checked and is true: a pure image-row shift peaks at exactly zero for both
+eyes — the "uniformly too low" hypothesis of a stitch bias is refuted.) The fine pitch cliffs are
+decisive (~25% of score); nothing about z is that sure (flat 0–9 cm).
+
+- **So the climb now ends where `deep_align` always ended: THE LAST WORD BELONGS TO THE FINE
+  GRID** — `climb_pose` closes with a `deep_refine` polish (720×180, same gated eyes, budget 600 /
+  60 s; a refused polish leaves the coarse answer standing; the rung then reads full, because the
+  press has nothing coarser left to add). Import of folder 1 is now ~50 s (was 23) — the price of
+  the fine last word.
+- Folder 1's first paint, end to end: **yaw 92.23, pitch 2.52°, roll 0.62°, z +66 mm, seat
+  (−10, −41) mm — fine edge 0.2829, fine MI 0.2070, the best pose measured all session on BOTH
+  eyes** (the old answer scores 0.2032 / 0.1842 there; polish from the old basin stalls at z +126
+  and loses on both). z +66 also finally satisfies the operator's eye-constraint — they called
+  ~+6 cm "almost right, a bit more".
+- ⭐ *The second eye was brought in to corroborate the answer and instead impeached it — a
+  solver's optimum can be an artifact of its own resolution, so check the answer on a finer grid
+  than the one that found it.*
+- ⭐ *When two judges disagree, walk the line between their answers and watch each one's shape —
+  the transect cost eleven evaluations and settled what argument could not.*
+
+Suite **1146 → 1162**; three reversions (climb drops the witness / gate not asked / no fine last
+word), each caught by two checks.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 01:10, selftest 0, CUDA engine found.** They carry the
-level-frame colour pass, the auto-climb AND the seeded height. **Test: import folder 1's pcap
-FRESH, not from a saved project** (a saved project restores its stored pose rather than
-re-solving): the first paint should arrive at camera **+16.7 cm, pitch +4.8°, confirmed**, with the
-image on the walls and nothing to press. ⚠ A rebuild with Studio open dies on `[WinError 5]` — the
+**⛔ THE EXES ARE STALE: they carry the seeded coarse ladder (z +16.7 artifact), not the two-eyed
+fine-finished climb — rebuild before the operator tests.** Then: **import folder 1's pcap FRESH,
+not from a saved project** (a saved project restores its stored pose rather than re-solving): the
+first paint should arrive at about **pitch 2.5°, camera +7 cm, confirmed**, taking ~50 s, image on
+the walls, nothing to press. **The one question only the operator can answer: does z +66 mm /
+pitch 2.5° finally look RIGHT** — their last eye-report ("+6 cm is still a bit low") and every
+fine measure now agree with each other, but the operator has never seen this pose. If it still
+reads low, get WHERE (near tables vs far walls vs everywhere) — near-only means height, front-only
+means pitch, everywhere means something no pose parameter can express and the pano's horizon has
+already been ruled out. ⚠ A rebuild with Studio open dies on `[WinError 5]` — the
 running exe locks its own file; close Studio first.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
