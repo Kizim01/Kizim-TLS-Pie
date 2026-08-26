@@ -4127,16 +4127,35 @@ way up was knowing to press Auto-align three times.
 Suite **1134 → 1144**; two reversions (climb removed; climb ignoring the operator's camera) both
 caught, the second by the new check *and* the pre-existing Re-solve check.
 
+## 2026-08-26, second pass — "up a bit still": the height is SEEDED, not slid to
+
+**The operator pressed the new build and said the image still needs to go up a bit.** That was a
+measurement, not a complaint: the ladder's height answer (+3.8 cm) was short. A score sweep found
+**two basins** — z +4 cm / pitch +2.5° scoring 0.324, and **z +16.7 cm / pitch +4.83° scoring
+0.330** — and the ladder cannot cross the ridge between them, because **height and pitch trade
+against each other**: both lift the picture on what is in front, and they separate only through the
+range-dependent parallax of near surfaces. A tilt fitted at height zero and a height fitted at that
+tilt settle into whichever basin the start was in.
+
+- **`colour.climb_pose` is now the one home for the automatic climb** (both attaches call it — two
+  copies of the loop had already appeared, which is how one stops matching the other). It first
+  refits the tilt at each of `SEED_HEIGHTS` (0 → 30 cm, upward-only because the rig mounts the
+  camera above the lidar), keeps the seed the data scores best, then climbs the full ladder from
+  there. The height rung can still walk DOWN from any seed.
+- Fresh import of folder 1: **23 s** (+6 s for the seeds), first paint **z +16.7 cm, pitch +4.83°,
+  rung 4, grade confirmed** — the basin the eye had been asking for by name.
+- ⭐ *When the operator says "a bit more" after an optimiser has answered, suspect a second basin
+  before suspecting their eye* — the sweep that settled it cost eleven evaluations.
+
+Suite **1144 → 1146**; the no-seeds reversion caught by two checks.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 00:49, selftest 0, CUDA engine found.** They carry the
-level-frame colour pass AND the auto-climb: on a fresh import the first paint arrives already fitted
-— heading, tilt, camera height and seat — with nothing to press. **Test on folder 1
-(`D:\RESTAURANT SCAN\1`): import the pcap FRESH, not from a saved project** (a saved project restores
-its stored pose rather than re-solving); the floor lands on the grid, and the image should sit on
-the walls with heading ~92.3° confirmed and the camera a few centimetres up. ⚠ An earlier rebuild
-attempt failed with `[WinError 5]` on `TLS-Pie-Studio.exe` because **Studio was open** — the running
-exe locks the file; close Studio before any rebuild.
+**⚠ THE EXES ARE STALE: built 2026-08-26 00:49, BEFORE the seeded-height pass above.** A Studio run
+from them climbs into the low basin (+4 cm) and paints the image a little low. Close Studio (the
+running exe locks its own file — a rebuild with it open dies on `[WinError 5]`), rebuild, then
+import folder 1's pcap FRESH, not from a saved project: the first paint should arrive at camera
+**+16.7 cm, pitch +4.8°, confirmed**, with the image on the walls.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores
 modules as compressed bytecode, so `grep` finds neither new strings *nor* ones present for weeks, and
 it will happily tell you a shipped fix is missing.

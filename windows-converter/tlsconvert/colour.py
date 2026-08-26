@@ -1290,6 +1290,77 @@ RUNGS = [
 ]
 
 
+#: The mounting heights the automatic climb starts from, in metres above the
+#: lidar's centre. ⛔⛔ A LADDER RUNG CANNOT CROSS THIS RIDGE ON ITS OWN:
+#: height and pitch trade against each other in the objective -- both lift
+#: the picture on what is in front, and they separate only through the
+#: range-dependent parallax of near surfaces -- so a tilt fitted at height
+#: zero and a height fitted at that tilt settle into whichever basin the
+#: start was in. Measured on the operator's folder 1: the ladder alone sat at
+#: z +0.04 / pitch +2.5 scoring 0.324 while the true optimum was z +0.17 /
+#: pitch +4.8 scoring 0.330 -- "the image needs to go up a bit still", said
+#: twice, was this basin. Upward-only because the rig mounts the camera
+#: ABOVE the lidar; the height rung can still walk DOWN from any seed if the
+#: data says so.
+SEED_HEIGHTS = (0.0, 0.06, 0.12, 0.18, 0.24, 0.30)
+
+
+def climb_pose(xyz, lum, yaw_deg, seed_stride=3):
+    """
+    The full pose from a solved heading: seed the height, then climb.
+
+    One home for the automatic climb both attaches use (`align.colour_scan`
+    and `pipeline.prepare_colour`) -- two copies is how one of them stops
+    matching the other. On the ladder's own rules: `refine_pose` only adopts
+    a trial that beat what it held, so this cannot make the heading worse,
+    and any failure leaves the best pose so far standing -- the returned
+    `rung` says how far it actually got, 0 meaning the sweep's answer came
+    back untouched. It never raises.
+
+    ⛔ THE GRADE IS NOT THIS FUNCTION'S TO TOUCH. A climb raises the score by
+    construction, so it can never be evidence that the photograph belongs to
+    the scan; the caller keeps whatever judged the pairing.
+    """
+    pose = {"yaw_deg": float(yaw_deg), "pitch_deg": 0.0, "roll_deg": 0.0,
+            "camera_x": 0.0, "camera_y": 0.0, "camera_z": 0.0}
+    coarse = xyz[::seed_stride] if seed_stride and seed_stride > 1 else xyz
+    best = None
+    for z in SEED_HEIGHTS:
+        try:
+            got = refine_pose(coarse, lum, camera=(0.0, 0.0, float(z)),
+                              yaw_deg=pose["yaw_deg"], pitch_deg=0.0,
+                              roll_deg=0.0, rung=2)
+        except Exception:                                 # noqa: BLE001
+            continue
+        if not got.get("ok"):
+            continue
+        score = float(got.get("score") or 0.0)
+        if best is None or score > best[0]:
+            best = (score, got)
+    if best is not None:
+        got = best[1]
+        pose["yaw_deg"] = float(got.get("yaw_deg", pose["yaw_deg"]))
+        pose["pitch_deg"] = float(got.get("pitch_deg") or 0.0)
+        pose["roll_deg"] = float(got.get("roll_deg") or 0.0)
+        pose["camera_z"] = float(got.get("camera_z") or 0.0)
+    rungs = 0
+    for rung in range(1, len(RUNGS) + 1):
+        try:
+            got = refine_pose(xyz, lum,
+                              camera=(pose["camera_x"], pose["camera_y"],
+                                      pose["camera_z"]),
+                              yaw_deg=pose["yaw_deg"],
+                              pitch_deg=pose["pitch_deg"],
+                              roll_deg=pose["roll_deg"], rung=rung)
+        except Exception:                                 # noqa: BLE001
+            break
+        if not got.get("ok"):
+            break
+        pose, rungs = dict(pose, **got), rung
+    pose["rung"] = rungs
+    return pose
+
+
 def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 roll_deg=0.0, rung=0, span_deg=2.0, floor_deg=0.01,
                 budget=600, scorer=None):

@@ -753,22 +753,7 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     # the operator gave is an input, not a starting guess to overwrite.
     if any(camera):
         return colour_mod.Colouriser(rgb, yaw, camera), info
-    pose = {"yaw_deg": float(yaw), "pitch_deg": 0.0, "roll_deg": 0.0,
-            "camera_x": float(camera[0]), "camera_y": float(camera[1]),
-            "camera_z": float(camera[2])}
-    try:
-        for rung in range(1, len(colour_mod.RUNGS) + 1):
-            got = colour_mod.refine_pose(
-                pts, lum,
-                camera=(pose["camera_x"], pose["camera_y"],
-                        pose["camera_z"]),
-                yaw_deg=pose["yaw_deg"], pitch_deg=pose["pitch_deg"],
-                roll_deg=pose["roll_deg"], rung=rung)
-            if not got.get("ok"):
-                break
-            pose = got
-    except Exception:                                     # noqa: BLE001
-        pass              # the sweep's answer stands; the climb was a bonus
+    pose = colour_mod.climb_pose(pts, lum, yaw)
     info["yaw_deg"] = float(pose["yaw_deg"])
     info["pitch_deg"] = float(pose.get("pitch_deg") or 0.0)
     info["roll_deg"] = float(pose.get("roll_deg") or 0.0)

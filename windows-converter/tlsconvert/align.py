@@ -455,25 +455,9 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         # chose. A zero camera is the untouched default on every fresh
         # attach, which is exactly the case the climb exists for.
         if not any(camera):
-            pose = {"yaw_deg": info["yaw_deg"], "pitch_deg": 0.0,
-                    "roll_deg": 0.0, "camera_z": camera[2],
-                    "camera_x": camera[0], "camera_y": camera[1]}
             step = max(1, len(sample) // 600_000)
-            climbed = 0
-            try:
-                for rung in range(1, len(colour_mod.RUNGS) + 1):
-                    got = colour_mod.refine_pose(
-                        sample[::step], lum,
-                        camera=(pose["camera_x"], pose["camera_y"],
-                                pose["camera_z"]),
-                        yaw_deg=pose["yaw_deg"],
-                        pitch_deg=pose["pitch_deg"],
-                        roll_deg=pose["roll_deg"], rung=rung)
-                    if not got.get("ok"):
-                        break
-                    pose, climbed = got, rung
-            except Exception:                             # noqa: BLE001
-                pass      # the sweep's answer stands; the climb was a bonus
+            pose = colour_mod.climb_pose(sample[::step], lum,
+                                         info["yaw_deg"])
             yaw = float(pose["yaw_deg"])
             camera = (float(pose.get("camera_x") or 0.0),
                       float(pose.get("camera_y") or 0.0),
@@ -482,7 +466,7 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
             info["pitch_deg"] = float(pose.get("pitch_deg") or 0.0)
             info["roll_deg"] = float(pose.get("roll_deg") or 0.0)
             info["camera_x"], info["camera_y"], info["camera_z"] = camera
-            info["rung"] = climbed
+            info["rung"] = int(pose.get("rung") or 0)
             scan.camera_x, scan.camera_y, scan.camera_z = camera
 
     scan.rgb = colour_mod.sample(world, rgb_img, yaw_deg=yaw,

@@ -7496,7 +7496,8 @@ print("\nthe first paint knows where the camera sits")
 _ca_scan = _mscan("cam", _lc_pts)
 _ca_refines, _ca_paints = [], []
 _ca_pose = {"ok": True, "yaw_deg": 40.8, "pitch_deg": 2.4, "roll_deg": -0.2,
-            "camera_z": 0.06, "camera_x": 0.001, "camera_y": -0.002}
+            "camera_z": 0.06, "camera_x": 0.001, "camera_y": -0.002,
+            "score": 1.0}
 _real_climb = (colour.load_panorama, colour.solve_yaw, colour.peaks,
                colour.sample, colour.refine_pose, align.grade_solve)
 
@@ -7529,7 +7530,8 @@ try:
 finally:
     _restore_climb()
 check("THE ATTACH CLIMBS THE WHOLE LADDER ITSELF",
-      _ca_info.get("ok") and len(_ca_refines) == len(colour.RUNGS),
+      _ca_info.get("ok")
+      and len(_ca_refines) == len(colour.SEED_HEIGHTS) + len(colour.RUNGS),
       len(_ca_refines))
 check("...and the FIRST paint is made at the climbed pose, not the sweep's",
       _ca_paints and _ca_paints[0]["yaw_deg"] == 40.8
@@ -7584,6 +7586,36 @@ check("a failed rung leaves the sweep's answer standing",
       and _ca_paints[0]["yaw_deg"] == 41.0
       and _ca3_info.get("rung") == 0
       and _ca_paints[0]["camera"] == (0.0, 0.0, 0.0), _ca_paints[:1])
+
+# ⛔⛔ THE HEIGHT IS SEEDED, NOT SLID TO. Height and pitch trade against each
+# other, so a tilt fitted at height zero and a height fitted at that tilt
+# settle into whichever basin the start was in -- measured on folder 1 the
+# ladder alone sat at +4 cm scoring 0.324 while the true optimum was +17 cm
+# scoring 0.330, which the operator saw as "the image needs to go up a bit
+# still", said twice. The climb tries every SEED_HEIGHT and keeps the best.
+_seed_best = 0.18
+
+
+def _seeded_refine(pts, lum, camera=(0.0, 0.0, 0.0), **kw):
+    z = float(camera[2])
+    return {"ok": True, "yaw_deg": kw.get("yaw_deg", 0.0),
+            "pitch_deg": 3.0, "roll_deg": 0.0,
+            "camera_z": z, "camera_x": 0.0, "camera_y": 0.0,
+            "score": 1.0 - abs(z - _seed_best)}
+
+
+_ca4 = _mscan("cam4", _lc_pts)
+_patch_climb(refine=_seeded_refine)
+try:
+    _ca4_info = align.colour_scan(_ca4, "fake.jpg")
+finally:
+    _restore_climb()
+check("THE HEIGHT IS SEEDED ACROSS THE MOUNT'S RANGE, NOT SLID TO",
+      abs(_ca4.camera_z - _seed_best) < 1e-9
+      and abs((_ca4_info or {}).get("camera_z", 0) - _seed_best) < 1e-9,
+      _ca4.camera_z)
+check("...and the seed the data scored best is the one that wins",
+      _seed_best in colour.SEED_HEIGHTS)
 
 # ⭐ THE CLI's SELF-SOLVE CLIMBS TOO, so a straight convert paints the same
 # picture Studio would -- and a --camera-z the operator gave is respected.
