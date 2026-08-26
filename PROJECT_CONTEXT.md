@@ -4247,8 +4247,8 @@ re-applied from context.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⛔ THE EXES ARE STALE — rebuild before the operator tests** (they carry the 03:35 two-eyed climb
-but not the follow-the-lean re-solve). Then two tests, in order:
+**✅ THE EXES ARE CURRENT: rebuilt 2026-08-26 20:43, selftest 0.** They carry the two-eyed
+fine-finished climb AND the follow-the-lean re-solve. Two tests, in order:
 1. **Import folder 1's pcap FRESH, not from a saved project**: first paint about **pitch 2.5°,
    camera +7 cm, confirmed**, ~50 s. **Does z +66 mm / pitch 2.5° finally look RIGHT?** Their last
    eye-report ("+6 cm is still a bit low") and every fine measure now agree; the operator has
