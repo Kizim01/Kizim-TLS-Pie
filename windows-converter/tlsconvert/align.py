@@ -5958,10 +5958,44 @@ function invalidate(){ need=true; }
    the submission); a frame after an idle gap starts the count over. */
 let drawT=0, slowN=0, slowTold=false;
 
+/* ⭐⭐ NO FRAME EVER DRAWS THE WHOLE PROJECT. The rush twin alone was not
+   enough: the full-detail redraw on release was a single 46-million-point
+   frame (measured, studio.log 2026-08-27), and the NEXT grab had to wait
+   behind it -- "works for one bit of a turn, then hangs" is that frame.
+   So the full cloud is never drawn in one go again: every scene frame draws
+   the twins, and the full-detail chunks REFINE in on the idle frames that
+   follow, at most one chunk per frame, accumulating in the kept drawing
+   buffer (preserveDrawingBuffer). Identical points land on identical pixels
+   at identical depth, so the sharpening is seamless -- and a new drag simply
+   resets the queue: the most it ever waits behind is ONE chunk. This is
+   Potree's "progressive rendering" in miniature. */
+let fillQ=[], fillAt=0;
+
 function draw(){
   requestAnimationFrame(draw);
-  if(!need){ drawT=0; return; }
+  if(!need){
+    if(fillAt<fillQ.length){
+      /* one full-detail chunk per idle frame; the scene's global uniforms
+         and viewport still stand from the frame that queued these */
+      const e=fillQ[fillAt++], s=e.s, comps=s.rgb?3:1;
+      gl.useProgram(prog);
+      gl.uniformMatrix4fv(loc.uModel,false,model(s));
+      gl.uniform3fv(loc.uScale,s.scale);
+      gl.uniform3fv(loc.uOffset,s.offset);
+      gl.uniform3fv(loc.uTint,s.tintf);
+      gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
+      gl.bindBuffer(gl.ARRAY_BUFFER,e.c.pos);
+      gl.vertexAttribPointer(loc.aPos,3,gl.SHORT,false,0,0);
+      gl.bindBuffer(gl.ARRAY_BUFFER,e.c.col);
+      gl.vertexAttribPointer(loc.aCol,comps,gl.UNSIGNED_BYTE,true,0,0);
+      gl.bindBuffer(gl.ARRAY_BUFFER,e.c.live);
+      gl.vertexAttribPointer(loc.aLive,1,gl.UNSIGNED_BYTE,false,0,0);
+      gl.drawArrays(gl.POINTS,0,e.c.n);
+    }
+    drawT=0; return;
+  }
   need=false;
+  fillQ=[]; fillAt=0;
   const t0=performance.now();
   if(drawT && t0-drawT>90){
     if(++slowN===30 && !slowTold){
@@ -6010,8 +6044,9 @@ function draw(){
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
     const comps=s.rgb?3:1;
-    /* while the hand moves, the strided twin; the full cloud on release */
-    for(const c of ((V.rush && s.coarse) ? s.coarse.chunks : s.chunks)){
+    /* the twin, always -- a scene frame stays cheap whatever the project
+       weighs; the real points refine in on the idle frames after it */
+    for(const c of (s.coarse ? s.coarse.chunks : s.chunks)){
       gl.bindBuffer(gl.ARRAY_BUFFER,c.pos);
       gl.vertexAttribPointer(loc.aPos,3,gl.SHORT,false,0,0);
       gl.bindBuffer(gl.ARRAY_BUFFER,c.col);
@@ -6020,6 +6055,8 @@ function draw(){
       gl.vertexAttribPointer(loc.aLive,1,gl.UNSIGNED_BYTE,false,0,0);
       gl.drawArrays(gl.POINTS,0,c.n);
     }
+    if(!V.rush && s.coarse)
+      for(const c of s.chunks) fillQ.push({s:s, c:c});
   }
   drawWorldGrid(vp);
   drawBox(vp);
@@ -6231,7 +6268,14 @@ async function boot(){
      headless server holding gigabytes. */
   setInterval(()=>{ post('alive', {}).catch(()=>{}); }, 10000);
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
-  gl=cv.getContext('webgl',{antialias:false,depth:true});
+  /* preserveDrawingBuffer carries the scene between frames so the full
+     detail can refine in chunk by chunk; high-performance asks a dual-GPU
+     laptop for the discrete card (the 08-27 log showed the view on the AMD
+     integrated chip while the RTX sat idle -- Windows gives WebView2 the
+     power-saving GPU by default). */
+  gl=cv.getContext('webgl',{antialias:false,depth:true,
+                            preserveDrawingBuffer:true,
+                            powerPreference:'high-performance'});
   if(!gl) return fail('This browser has no WebGL.');
   /* ⭐ WHICH RENDERER THE WINDOW ACTUALLY GOT, ON THE RECORD. The solver's
      card is already on screen (the topbar chip); the VIEW's card never was,
@@ -6252,6 +6296,20 @@ async function boot(){
         'move will crawl. Close and reopen Studio first; if this warning '+
         'comes back, reboot the machine — a graphics driver reset can '+
         'leave the card refused until then.', 'warn');
+  /* ⭐ AND THE WRONG CARD IS SAID OUT LOUD TOO. On this laptop the solver
+     runs CUDA on the NVIDIA card while Windows hands the WebView2 window
+     the AMD integrated chip (studio.log, 2026-08-27) -- so the machine's
+     strongest GPU sits idle exactly where the most pixels are pushed. The
+     context above asks for high-performance; when Windows still says no,
+     the one reliable lever is the per-app setting, so it is spelled out. */
+  else if(CUDA && V.glName!=='unknown' && !/nvidia|geforce|rtx/i.test(V.glName))
+    say('The view is drawn by the LOW-POWER card ('+V.glName.slice(0,40)+
+        '…) while the NVIDIA card sits idle — Windows picks this for '+
+        'WebView2 windows. To move the view onto the NVIDIA card: Windows '+
+        'Settings → System → Display → Graphics, Add an app → browse to '+
+        'msedgewebview2.exe (inside Program Files (x86) / Microsoft / '+
+        'EdgeWebView / Application), set it to High performance, and '+
+        'restart Studio.', 'warn');
   try{ buildGL(); }catch(e){ return fail('Shader failed: '+e.message); }
   /* ⛔⛔ A LOST GRAPHICS CONTEXT IS AN EVENT, NOT AN ENDING. A driver reset
      mid-drag used to take the whole window down in silence (2026-08-27,
@@ -7058,7 +7116,66 @@ function showEdits(){
    through all of them on export, which nothing on screen would show. */
 function pushEdit(e){
   e.scan = cutScope();
-  V.edits.push(e); showEdits(); recomputeLive(); dirty();
+  V.edits.push(e); showEdits();
+  /* ⭐⭐ A NEW DELETE ONLY TURNS POINTS OFF, SO ONLY THE NEW DELETE IS RUN.
+     recomputeLive re-tests EVERY edit against EVERY point -- the right thing
+     after an undo, and quadratic pain while cutting: by the fifth lasso on a
+     46-million-point project each new cut re-ran the previous four too
+     ("slow to delete points"). Drops applied last always win in the full
+     algorithm, so appending one and marking only its own insides reaches the
+     identical mask. A KEEP flips the baseline and still recomputes fully. */
+  if(e.mode==='keep') recomputeLive(); else applyDrop(e);
+  dirty();
+}
+
+/* One drop edit against the mask as it stands. Dead points skip the world
+   transform entirely (their _wx is set to NaN, which no comparison passes),
+   so cutting gets FASTER as the model gets cleaner; scans outside the
+   edit's share are never walked, and only touched scans re-upload. */
+function applyDrop(e){
+  const who=(e.scan==null)?null:e.scan;
+  const box = e.kind==='box' ? Object.assign({}, e.box, {scan:who}) : null;
+  const las = box ? null : {matrix:e.matrix, polygon:e.poly,
+                            keep:false, scan:who};
+  if(!(V.total>0)){
+    V.total=0; V.alive=0;
+    for(const s of V.scans){
+      V.total+=s.points;
+      for(let i=0;i<s.points;i++) if(s.live[i]) V.alive++;
+    }
+  }
+  for(const s of V.scans){
+    if(!(who==null || (Array.isArray(who) ? who.indexOf(s.index)>=0
+                                          : who===s.index))) continue;
+    const n=s.points, live=s.live, A=affine(s);
+    let touched=false;
+    for(let base=0;base<n;base+=BLOCK){
+      const k=Math.min(BLOCK,n-base);
+      const seg=live.subarray(base,base+k);
+      let anybody=false;
+      for(let i=0;i<k;i++){
+        if(!seg[i]){ _wx[i]=NaN; continue; }
+        anybody=true;
+        const j=(base+i)*3;
+        const x=s.raw[j]*s.scale[0]+s.offset[0];
+        const y=s.raw[j+1]*s.scale[1]+s.offset[1];
+        const z=s.raw[j+2]*s.scale[2]+s.offset[2];
+        _wx[i]=A[0]*x+A[1]*y+A[2]*z+A[3];
+        _wy[i]=A[4]*x+A[5]*y+A[6]*z+A[7];
+        _wz[i]=A[8]*x+A[9]*y+A[10]*z+A[11];
+      }
+      if(!anybody) continue;
+      let before=0; for(let i=0;i<k;i++) if(seg[i]) before++;
+      if(box) markBox(seg,k,box,0); else markLasso(seg,k,las,0);
+      let after=0; for(let i=0;i<k;i++) if(seg[i]) after++;
+      if(after!==before){ touched=true; V.alive-=(before-after); }
+    }
+    if(touched) upload(s);
+  }
+  $('stat').textContent = V.scans.length+' scan'+
+    (V.scans.length===1?'':'s')+' · '+V.alive.toLocaleString()+' of '+
+    V.total.toLocaleString()+' points kept';
+  invalidate();
 }
 function whoSuffix(){
   if(V.editWho>=0) return ' from '+whoName(V.editWho)+' only';
@@ -7195,11 +7312,22 @@ function markBox(seg,k,b,to){
 function markLasso(seg,k,l,to){
   const m=l.matrix, p=l.polygon, np=p.length;
   if(np<3) return;
+  /* ⭐ THE OUTLINE'S OWN BOUNDS FIRST. The crossing test walks every polygon
+     edge per point; most points of a big cloud land nowhere near the
+     outline, and a freehand lasso can carry dozens of vertices -- so the
+     cheap rectangle turns the common case from np comparisons into four. */
+  let bx0=1e9, by0=1e9, bx1=-1e9, by1=-1e9;
+  for(const q of p){
+    if(q[0]<bx0)bx0=q[0]; if(q[0]>bx1)bx1=q[0];
+    if(q[1]<by0)by0=q[1]; if(q[1]>by1)by1=q[1];
+  }
   for(let i=0;i<k;i++){
     const w=_wx[i]*m[3]+_wy[i]*m[7]+_wz[i]*m[11]+m[15];
     if(w<=1e-9) continue;                 /* behind the eye: never enclosed */
     const x=(_wx[i]*m[0]+_wy[i]*m[4]+_wz[i]*m[8]+m[12])/w;
+    if(x<bx0||x>bx1) continue;
     const y=(_wx[i]*m[1]+_wy[i]*m[5]+_wz[i]*m[9]+m[13])/w;
+    if(y<by0||y>by1) continue;
     let inside=false;
     for(let a=0,b=np-1;a<np;b=a++){
       if((p[a][1]>y)!==(p[b][1]>y)){
@@ -7398,6 +7526,43 @@ function pickPoint(mx,my){
     }
   }
   return tight || wide;
+}
+/* ⭐ WHICH CLOUD IS UNDER THE CURSOR, cheaply -- for picking a SCAN, not a
+   point. pickPoint walks every point of every cloud because a pair pick has
+   to be exact; identifying whose cloud a double-click landed on does not,
+   so this walks a stride that caps each scan near 200k tests and takes a
+   generous radius. Reported 2026-08-27: after an import the move controls
+   sat on the last arrival and the only way to re-aim them was the scan
+   list -- double-clicking the cloud itself is where the hand already is. */
+function scanUnder(mx,my){
+  if(!V.vp) return null;
+  const q=clipCtx();
+  let best=null, bd=PICK_WIDE*PICK_WIDE*9;
+  for(const s of V.scans){
+    if(!shown(s.index)) continue;
+    const m=mul(V.vp, model(s)), n=s.points, raw=s.raw,
+          sc=s.scale, of=s.offset, live=s.live, A=affine(s);
+    const step=Math.max(1, Math.ceil(n/200000));
+    for(let i=0;i<n;i+=step){
+      if(live[i]<0.5) continue;
+      const j=i*3;
+      const x=raw[j]*sc[0]+of[0], y=raw[j+1]*sc[1]+of[1],
+            z=raw[j+2]*sc[2]+of[2];
+      const w=m[3]*x+m[7]*y+m[11]*z+m[15];
+      if(w<=1e-6) continue;
+      const px=((m[0]*x+m[4]*y+m[8]*z+m[12])/w*0.5+0.5)*innerWidth;
+      const dx=px-mx; if(dx<-PICK_WIDE*3||dx>PICK_WIDE*3) continue;
+      const py=(0.5-(m[1]*x+m[5]*y+m[9]*z+m[13])/w*0.5)*innerHeight;
+      const dy=py-my; if(dy<-PICK_WIDE*3||dy>PICK_WIDE*3) continue;
+      const d2=dx*dx+dy*dy;
+      if(d2>=bd) continue;
+      const wx=A[0]*x+A[1]*y+A[2]*z+A[3], wy=A[4]*x+A[5]*y+A[6]*z+A[7],
+            wz=A[8]*x+A[9]*y+A[10]*z+A[11];
+      if(clipHides(q,wx,wy,wz)) continue;   /* clipped away: not on screen */
+      bd=d2; best=s;
+    }
+  }
+  return best;
 }
 /* Which cloud the next click has to land on. Alternating strictly is what makes
    a pair a pair; two picks off the SAME cloud would fit perfectly and mean
@@ -10235,6 +10400,17 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     rushT=setTimeout(()=>{ V.rush=false; invalidate(); }, 200);
     zoom(Math.exp(e.deltaY*0.0012));
   }, {passive:false});
+  /* ⭐ DOUBLE-CLICK A CLOUD TO WORK ON IT -- the same pickScan the list rows
+     already offer, reachable without leaving the view. Yields to a live
+     tool (its clicks are picks), to the world-axes widget and to the clip
+     grips, exactly as a single press does. */
+  addEventListener('dblclick', e=>{
+    if(e.target.id!=='cv' || V.tool) return;
+    if(gizmoZone(e.clientX,e.clientY)) return;
+    if(pickHandle(e.clientX,e.clientY)>=0) return;
+    const s=scanUnder(e.clientX,e.clientY);
+    if(s) pickScan(s.index);
+  });
   addEventListener('keydown', e=>{
     const t=(e.target.tagName||'').toLowerCase();
     /* ⛔⛔ CTRL-Z REACHES THE JOB EVEN FROM A NUMBER BOX, AND THAT IS NOT THE

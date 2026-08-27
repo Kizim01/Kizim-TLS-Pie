@@ -1744,8 +1744,55 @@ try:
           and "const coarse=makeCoarse" in _page
           and "s.coarse=makeCoarse" in re.search(
               r"function reChunk\(s\)\{.*?\n\}", _page, re.S).group(0))
-    check("the draw loop switches to the twin during a rush",
-          "(V.rush && s.coarse) ? s.coarse.chunks : s.chunks" in _page)
+    # ⭐⭐ NO FRAME EVER DRAWS THE WHOLE PROJECT. The twin alone was not
+    # enough ("works for one bit of a turn, then hangs"): the full-detail
+    # redraw on release was one 46M-point frame and the next grab waited
+    # behind it. Scene frames draw the twins and QUEUE the real chunks;
+    # idle frames refine one chunk each into the preserved drawing buffer,
+    # and a new drag resets the queue -- the most it waits behind is one
+    # chunk.
+    check("scene frames draw the twin and queue the full chunks for later",
+          "for(const c of (s.coarse ? s.coarse.chunks : s.chunks))" in _page
+          and "if(!V.rush && s.coarse)" in _page
+          and "fillQ.push({s:s, c:c})" in _page)
+    check("idle frames refine one chunk each, and a scene frame resets "
+          "the queue",
+          "if(fillAt<fillQ.length){" in _page
+          and "fillQ=[]; fillAt=0;" in _page)
+    check("the drawing buffer is preserved so refinement can accumulate, "
+          "and the context asks for the discrete GPU",
+          "preserveDrawingBuffer:true" in _page
+          and "powerPreference:'high-performance'" in _page)
+    check("the view being on the low-power card is said out loud, with "
+          "the Windows setting that moves it",
+          "LOW-POWER card" in _page and "msedgewebview2.exe" in _page)
+    # ⭐⭐ A NEW DELETE RUNS ONLY ITSELF. recomputeLive re-tests every edit
+    # against every point -- right after an undo, quadratic while cutting
+    # ("slow to delete points"). Drops applied last always win, so appending
+    # one and marking only its insides reaches the identical mask; keeps
+    # still recompute fully, and dead points skip the transform via NaN.
+    check("a drop edit is applied incrementally; a keep still recomputes",
+          "if(e.mode==='keep') recomputeLive(); else applyDrop(e);" in _page)
+    check("...dead points skip the world transform and untouched scans "
+          "skip the re-upload",
+          "if(!seg[i]){ _wx[i]=NaN; continue; }" in _page
+          and "if(touched) upload(s);" in _page)
+    check("the lasso test rejects on the outline's own bounds before "
+          "walking its edges",
+          "if(x<bx0||x>bx1) continue;" in _page
+          and "if(y<by0||y>by1) continue;" in _page)
+    # ⭐ DOUBLE-CLICK A CLOUD TO WORK ON IT -- the list rows' pickScan,
+    # reachable from the view; a strided walk identifies the cloud without
+    # paying pickPoint's every-point cost.
+    check("double-clicking a cloud picks that scan for the move controls",
+          "addEventListener('dblclick'" in _page
+          and "scanUnder(e.clientX,e.clientY)" in _page
+          and "pickScan(s.index)" in _page)
+    check("...but yields to a live tool, the axes widget and the grips",
+          re.search(r"addEventListener\('dblclick'.*?pickScan",
+                    _page, re.S).group(0).count("return") >= 3)
+    check("...and the scan identification walks a stride, not every point",
+          "Math.ceil(n/200000)" in _page)
     check("a view-moving press starts the rush; lasso and pick do not",
           "V.rush = !lassoing && picking===null;" in _page)
     check("release and the wheel's settle timer both end it with a "
