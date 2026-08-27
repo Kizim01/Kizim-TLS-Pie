@@ -41,6 +41,7 @@ handle buried in the wall it is there to cut through.
 import http.server
 import json
 import os
+import re
 import socketserver
 import threading
 import time
@@ -1145,19 +1146,98 @@ class AlignServer(object):
         self._progress = {"stage": stage, "n": n, "total": total,
                           "busy": self._progress.get("busy", False)}
 
-    def nearest_to(self, index):
+    def walk_order(self):
         """
-        The open scan whose tripod stands closest to this one's, or None.
+        Each scan's place in the CAPTURE sequence, or None if it is not known.
 
-        ⭐⭐ WHY THIS IS NOT A CONVENIENCE. A survey is a WALK: twenty-five
-        tripod positions down a restaurant, each overlapping the one before it
-        and sharing nothing at all with the one at the far end. Registration
-        against a fixed first scan therefore stops working a few positions in
-        -- not because the solver is weak but because there is no common
-        surface left to fit. Every terrestrial package registers a walk
-        SEQUENTIALLY for that reason, and this program could only ever fit to
-        scan 1.
+        ⭐ THE WALK IS ALREADY WRITTEN DOWN. `shoot.apply` files each capture
+        into a folder named for its position, so the order the operator walked
+        the building in is on disk before this program is opened; failing that,
+        these captures are named for the moment they were taken. Either gives
+        the sequence outright, and no part of it is inferred from geometry --
+        which is the point, because the scan asking the question has no
+        geometry yet.
+
+        ⛔ ALL OR NOTHING, DELIBERATELY. A part-known order would rank some
+        scans by the walk and the rest by accident, and a target chosen by
+        accident is exactly what this is here to stop. Mixed or duplicated
+        keys return None and the caller falls back to the tripod rule.
         """
+        folders = [_folder_number(s.path) for s in self.scans]
+        keys = None
+        if all(f is not None and str(f).isdigit() for f in folders) \
+                and len(set(str(f) for f in folders)) == len(folders):
+            keys = [int(f) for f in folders]
+        else:
+            names = [os.path.basename(s.path or "") for s in self.scans]
+            stamped = [n for n in names
+                       if re.match(r"^TLS_\d\d(_\d\d){5}\.", n)]
+            if len(stamped) == len(names) == len(set(names)):
+                keys = sorted(range(len(names)), key=lambda i: names[i])
+                rank = [0] * len(keys)
+                for r, i in enumerate(keys):
+                    rank[i] = r
+                return rank
+        if keys is None:
+            return None
+        order = sorted(range(len(keys)), key=lambda i: keys[i])
+        rank = [0] * len(order)
+        for r, i in enumerate(order):
+            rank[i] = r
+        return rank
+
+    def default_target(self, index):
+        """
+        What a press with no chosen target fits onto -- and by WHICH RULE.
+
+        ⛔⛔ AN UNPLACED SCAN CANNOT BE ASKED WHAT IS NEAR IT, AND THE OLD
+        ANSWER WAS ALWAYS THE REFERENCE. Tripod distance was measured from
+        where the scan sits, and a scan nobody has placed sits at the ORIGIN
+        -- where the reference sits too, winning the tie by 0.00 m every
+        single time. So the very first press on every scan, which is the one
+        press that has to work, fitted it to scan 1: precisely the failure
+        `nearest_to` was written to prevent, arriving through `nearest_to`.
+        Measured on the operator's own job (2026-08-27), folder 13 standing
+        0.72 m from folder 12 and ten metres from the reference: onto the
+        reference, residual 0.383 m, not trustworthy, ambiguous; onto folder
+        12, residual 0.031 m. **Twelve times better, and the difference was
+        entirely which scan it was pointed at.**
+
+        ⭐⭐ SO AN UNPLACED SCAN IS AIMED BY THE WALK, NOT BY GEOMETRY IT DOES
+        NOT HAVE. The capture order is the one thing known about a scan before
+        it is placed, and on a walk it IS adjacency -- consecutive captures
+        overlap by construction, which is why every multi-scan pipeline treats
+        temporally adjacent pairs as its reliable edges (Open3D's pose graph
+        calls them odometry edges and trusts local registration on them alone).
+        Checked against all 18 captures of the live job: the capture-order
+        neighbour is among the two or three nearest tripods every time.
+
+        ⭐ A PLACED SCAN STILL ANSWERS WITH ITS TRIPOD, because then the
+        question is fair -- it has a position, and the nearest cloud to it is
+        a real statement about the room rather than about the origin.
+        """
+        here = self.scans[index].setup
+        if not here.sited:
+            rank = self.walk_order()
+            if rank is not None:
+                mine, best, gap = rank[index], None, None
+                for j in range(len(self.scans)):
+                    # Only onto something that IS somewhere: the reference by
+                    # definition, anything else only once it has been placed.
+                    if j == index or (j and not self.scans[j].setup.sited):
+                        continue
+                    d = abs(rank[j] - mine)
+                    # The capture already walked past wins a tie -- on an
+                    # import it is the one that has just been placed.
+                    if gap is None or d < gap or (d == gap
+                                                  and rank[j] < mine):
+                        best, gap = j, d
+                if best is not None:
+                    return best, "walk"
+        return self._nearest_tripod(index), "tripod"
+
+    def _nearest_tripod(self, index):
+        """The open scan whose tripod stands closest to this one's, or None."""
         here = self.scans[index].setup
         best, gap = None, None
         for j, other in enumerate(self.scans):
@@ -1172,6 +1252,24 @@ class AlignServer(object):
                                                  and j == 0):
                 best, gap = j, d
         return best
+
+    def nearest_to(self, index):
+        """
+        The scan a press with no chosen target fits onto.
+
+        ⭐⭐ WHY THIS IS NOT A CONVENIENCE. A survey is a WALK: twenty-five
+        tripod positions down a restaurant, each overlapping the one before it
+        and sharing nothing at all with the one at the far end. Registration
+        against a fixed first scan therefore stops working a few positions in
+        -- not because the solver is weak but because there is no common
+        surface left to fit. Every terrestrial package registers a walk
+        SEQUENTIALLY for that reason, and this program could only ever fit to
+        scan 1.
+
+        See `default_target`, which owns the choice and names the rule it
+        used; this keeps the plain answer for callers that only want the scan.
+        """
+        return self.default_target(index)[0]
 
     def neighbours_of(self, index, limit=None, reach=None):
         """
@@ -1468,8 +1566,9 @@ class AlignServer(object):
                              "would move the whole survey rather than place "
                              "anything. Align the others to it, or to each "
                              "other."}
+        rule = None
         if target is None:
-            target = self.nearest_to(index)
+            target, rule = self.default_target(index)
         try:
             target = int(target)
             fixed = self.scans[target]
@@ -1590,6 +1689,14 @@ class AlignServer(object):
         else:
             text = "onto %s, coarse to fine — %s" % (fixed.name,
                                                      sol.describe())
+        # ⛔ WHICH SCAN IT CHOSE AND WHY, because the operator can change it.
+        # A fit is only as good as the cloud it was fitted to, and "Auto-align
+        # does not work here" is most often the right search aimed at the
+        # wrong target -- which is invisible unless the choice is stated.
+        if rule == "walk":
+            text += (". Aimed at the capture beside it in the walk: this scan "
+                     "had no position yet, so what is NEAR it could not be "
+                     "asked — pick another under Align to if that is wrong")
         if followed:
             text += ". " + followed["note"]
         return {"ok": True, "index": index, "setup": _placement(scan),
@@ -1598,6 +1705,7 @@ class AlignServer(object):
                 "trustworthy": sol.ok and refused is None,
                 "ambiguous": sol.ambiguous,
                 "voxel": sol.voxel, "exhausted": False, "target": target,
+                "target_rule": rule,
                 "warning": warn, "colour": (followed or {}).get("colour"),
                 # ⛔ THE PAGE HAS TO KNOW THE SCAN DID NOT MOVE, because the
                 # advice it prints afterwards is wrong in that one case: it
@@ -5979,6 +6087,11 @@ function draw(){
          and viewport still stand from the frame that queued these */
       const e=fillQ[fillAt++], s=e.s, comps=s.rgb?3:1;
       gl.useProgram(prog);
+      /* ⛔ THE SIZE GOES BACK. The scene frame left it grown for the twin,
+         and full-detail points drawn at the twin's size would be a blurrier
+         picture than the one they are meant to sharpen. */
+      gl.uniform1f(loc.uPS, V.basePS);
+      gl.uniform1f(loc.uPSmax, V.baseMax);
       gl.uniformMatrix4fv(loc.uModel,false,model(s));
       gl.uniform3fv(loc.uScale,s.scale);
       gl.uniform3fv(loc.uOffset,s.offset);
@@ -6018,8 +6131,12 @@ function draw(){
   V.vp=vp;               /* kept so the grips can be hit-tested off-frame */
   gl.useProgram(prog);
   gl.uniformMatrix4fv(loc.uVP,false,vp);
-  gl.uniform1f(loc.uPS, cv.height*0.11*V.psize);
-  gl.uniform1f(loc.uPSmax, Math.max(1.0,6.0*V.psize));
+  /* kept for the refinement frames, which draw full-detail chunks and must
+     put the size back after a twin has grown it */
+  V.basePS = cv.height*0.11*V.psize;
+  V.baseMax = Math.max(1.0,6.0*V.psize);
+  gl.uniform1f(loc.uPS, V.basePS);
+  gl.uniform1f(loc.uPSmax, V.baseMax);
   gl.uniform1f(loc.uMode, V.mode);
   gl.uniform1f(loc.uZlo, V.ext.lo[2]);
   gl.uniform1f(loc.uZhi, V.ext.hi[2]);
@@ -6044,6 +6161,10 @@ function draw(){
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
     const comps=s.rgb?3:1;
+    /* a stand-in point covers the area of the K it stands for, or the
+       surface goes porous and the cloud behind shows through it */
+    gl.uniform1f(loc.uPS, s.coarse ? V.basePS*s.coarse.grow : V.basePS);
+    gl.uniform1f(loc.uPSmax, s.coarse ? V.baseMax*s.coarse.grow : V.baseMax);
     /* the twin, always -- a scene frame stays cheap whatever the project
        weighs; the real points refine in on the idle frames after it */
     for(const c of (s.coarse ? s.coarse.chunks : s.chunks)){
@@ -6197,8 +6318,20 @@ function makeCoarse(pos,col,live,comps,name){
   /* Only the live mask is kept on the CPU: it is the one array that changes
      after upload (cuts), and `upload` refreshes it from the full mask. The
      sampled positions and colours live on the GPU alone -- recovery rebuilds
-     them from s.raw exactly as reChunk rebuilds the full chunks. */
-  return {step:K, live:l, chunks:makeChunks(p,c,l,comps,name+' rush')};
+     them from s.raw exactly as reChunk rebuilds the full chunks.
+
+     ⛔⛔ AND THE POINTS GROW TO COVER WHAT THEY STAND IN FOR. Drawing one
+     point in K at the SAME size does not thin the picture evenly -- it
+     punches holes in every surface, and through the holes of the near cloud
+     you see the far one. Two clouds of one wall then interleave as two
+     speckle patterns, which is indistinguishable from them not lining up:
+     reported 2026-08-27 as "scan 2 doesn't align perfectly like it used to",
+     on a pair whose fit measured 3.7 cm and had not changed at all. A point
+     covers area, so keeping the coverage means sqrt(K) on the diameter --
+     Potree calls this adaptive point size and it is why its LOD levels do
+     not look porous. */
+  return {step:K, grow:Math.sqrt(K), live:l,
+          chunks:makeChunks(p,c,l,comps,name+' rush')};
 }
 
 /* A recovered context gets fresh buffers from the arrays the page KEPT --
@@ -9927,15 +10060,15 @@ async function alignArrivals(from){
   say('Imported and aligned'+(bad.length ? ', except '+bad.join(', ')+
       ' — place those by hand' : '')+
       (roomed.length
-        ? '. Each scan was fitted to the scan nearest it and then refined '+
-          'against every placed capture within reach'+
+        ? '. Each scan was fitted to the capture beside it in the walk and '+
+          'then refined against every placed capture within reach'+
           (roomed.length===placed ? '' :
            ' ('+roomed.length+' of '+placed+' had enough placed captures '+
            'near them for that second fit; the rest kept the pair fit)')+
           '. Press Auto-align on a scan to refine it further.'
-        : '. Each scan was fitted to the scan nearest it — the room-wide '+
-          'second fit needs at least two placed captures within reach. '+
-          'Press Auto-align on a scan to refine it further.'),
+        : '. Each scan was fitted to the capture beside it in the walk — the '+
+          'room-wide second fit needs at least two placed captures within '+
+          'reach. Press Auto-align on a scan to refine it further.'),
       bad.length ? 'warn' : null);
 }
 
@@ -9966,8 +10099,9 @@ async function ingest(paths){
              scan, and would have been a flat untruth on screen. A survey is a
              walk: position twenty shares no surface with position one, so
              there was never anything to fit it to. */
-          ? '. Each scan is solved against the one NEAREST it, or against '+
-            'whichever you name in Align to.'
+          ? '. A scan with no position yet is solved against the capture '+
+            'BESIDE IT IN THE WALK, and one already placed against the scan '+
+            'nearest it — or against whichever you name in Align to.'
           : '. Add a second scan from elsewhere in the room to align to it.')+
         /* The box staying put is the point -- but a box that now hides half of
            what was just loaded has to say so, or the new cloud looks as though

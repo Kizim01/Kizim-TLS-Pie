@@ -1759,6 +1759,19 @@ try:
           "the queue",
           "if(fillAt<fillQ.length){" in _page
           and "fillQ=[]; fillAt=0;" in _page)
+    # ⛔⛔ A STAND-IN POINT COVERS WHAT IT STANDS FOR. One point in K at the
+    # same size punches holes in every surface, and through the near cloud's
+    # holes you see the far one -- two clouds of one wall interleave as two
+    # speckle patterns, which is indistinguishable from them not lining up.
+    # Reported 2026-08-27 as "scan 2 doesn't align perfectly like it used
+    # to", on a pair whose fit measured 3.7 cm and had not changed at all.
+    # Area, so sqrt(K) on the diameter (Potree's adaptive point size).
+    check("a rush twin's points grow to cover the K they stand in for",
+          "grow:Math.sqrt(K)" in _page
+          and "V.basePS*s.coarse.grow" in _page)
+    check("...and the refinement frames put the size back",
+          "gl.uniform1f(loc.uPS, V.basePS);" in re.search(
+              r"if\(fillAt<fillQ\.length\)\{.*?\n    \}", _page, re.S).group(0))
     check("the drawing buffer is preserved so refinement can accumulate, "
           "and the context asks for the discrete GPU",
           "preserveDrawingBuffer:true" in _page
@@ -3473,6 +3486,69 @@ finally:
     pipeline.convert, export.writer_for = _real_convert2, _real_writer2
 check("the real convert is restored afterwards (export pose)",
       pipeline.convert is _real_convert2)
+
+
+# --- which scan a press with no chosen target fits onto ---------------------
+#
+# ⛔⛔ AN UNPLACED SCAN SITS AT THE ORIGIN, AND SO DOES THE REFERENCE. Tripod
+# distance was measured from where the scan sits, so the reference won the tie
+# by 0.00 m every time and the FIRST press on every scan -- the one press that
+# has to work -- fitted it to scan 1. That is exactly the failure `nearest_to`
+# was written to prevent, arriving through `nearest_to`. Measured on the
+# operator's own job (2026-08-27): folder 13, standing 0.72 m from folder 12
+# and ten metres from the reference, fitted onto the reference gave residual
+# 0.383 m (not trustworthy, ambiguous); onto folder 12 it gave 0.031 m.
+# Twelve times better, and the only difference was which scan it aimed at.
+_wdir = os.path.join(tmp, "walk")
+
+
+def _walk_scan(folder, stem):
+    """A capture filed in a numbered folder, as a sorted shoot leaves it."""
+    here = os.path.join(_wdir, str(folder))
+    os.makedirs(here, exist_ok=True)
+    path = os.path.join(here, stem + ".pcap")
+    with open(path, "wb") as fh:
+        fh.write(b"a real file, not a real capture")
+    pts = np.zeros((8, 3), np.float32)
+    return align.Scan(path, pts, np.full((8, 3), 128, np.uint8), pts)
+
+
+_wsrv = align.AlignServer([_walk_scan(1, "one"), _walk_scan(2, "two"),
+                           _walk_scan(3, "three"), _walk_scan(4, "four")],
+                          out_path=None)
+check("the walk order is read off the numbered folders, not invented",
+      _wsrv.walk_order() == [0, 1, 2, 3], _wsrv.walk_order())
+
+# Folders 2 and 3 placed, well away from the origin; 4 not placed yet.
+for _i, (_x, _y) in ((1, (10.0, 0.0)), (2, (12.0, 0.0))):
+    _wsrv.scans[_i].setup = registration.Setup.from_dict(
+        {"x_m": _x, "y_m": _y, "yaw_deg": 5.0})
+_wt, _wr = _wsrv.default_target(3)
+check("an unplaced scan is aimed at the capture beside it in the walk, "
+      "NOT at the reference it happens to share the origin with",
+      (_wt, _wr) == (2, "walk"), (_wt, _wr))
+check("...and the old entry point still answers with just the scan",
+      _wsrv.nearest_to(3) == 2, _wsrv.nearest_to(3))
+
+# Placed, and standing beside the reference: the tripod question is fair now.
+_wsrv.scans[3].setup = registration.Setup.from_dict(
+    {"x_m": 0.4, "y_m": 0.0, "yaw_deg": 1.0})
+_wt2, _wr2 = _wsrv.default_target(3)
+check("a PLACED scan still answers with its nearest tripod, because by then "
+      "it has a position and the question means something",
+      (_wt2, _wr2) == (0, "tripod"), (_wt2, _wr2))
+
+# ⛔ ALL OR NOTHING. A part-known order would rank some scans by the walk and
+# the rest by accident, and a target chosen by accident is what this exists
+# to stop -- so an unnumbered capture takes the whole rule out.
+_wsrv2 = align.AlignServer([_walk_scan(7, "seven"),
+                            _posed_scan("loose", 10.0, photo=False)],
+                           out_path=None)
+check("a shoot that is not fully numbered has no walk order, so the tripod "
+      "rule stands rather than a guessed one",
+      _wsrv2.walk_order() is None
+      and _wsrv2.default_target(1)[1] == "tripod",
+      _wsrv2.walk_order())
 
 
 # --- the photograph can lean, not only turn --------------------------------
