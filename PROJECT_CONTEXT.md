@@ -4406,12 +4406,51 @@ capture within reach (`MULTI_REACH_M` 8 m, up to `MULTI_MAX` 4 voters), with the
 Import now costs two solves per arrival — acceptable because the option is opt-in and the blurb
 says so; the FFT-the-correlation queued item is unrelated (that is the colour drift, not GICP).
 
+## 2026-08-27, tenth pass — the rush twin: sluggish rotation answered with decimation, not CUDA
+
+Operator: *"rotating and moving the cloud is really slggish and slow compared to how it was
+before, can we use cuda to accelerate?"* — reported the day align-on-import made it easy to open
+a whole walk at once, which is the tell: **nothing in the draw path changed** (checked the diffs
+of every commit since the last smooth session — the rAF loop is `need`-gated, buffers upload
+once), **the project on screen got bigger**. Rotation redraws every point of every scan each
+frame, so the camera's feel degrades with project size.
+
+**CUDA is not the lever, and that is recorded because it was asked for by name**: the canvas is
+drawn by WebView2's own GPU process (ANGLE → Direct3D, on the same RTX 3050 Ti when healthy);
+no CUDA kernel can paint it — the `dist\cuda-engine` accelerates the SOLVER's per-point passes,
+a different pipeline. The fix (`e0007a7`, suite 1229 → 1238) is the industry-standard one:
+CloudCompare ships it as **"decimate clouds over N points when moved"**, Potree's octree LOD is
+the same idea with more machinery.
+
+- **`makeCoarse`**: every scan >500k points gets a strided twin capped at 250k, built at load
+  AND at context recovery. The stride walks capture order — a spinning head sweeps the room
+  every rotation, so every Kth point is spatially even, not a wedge.
+- **`V.rush`**: set by every view-moving press (orbit, pan, scan/box/gizmo drags), cleared on
+  release with a full-detail `invalidate()`; wheel zooms use a 200 ms settle timer (no release
+  event). Lasso and pair picks keep full detail — their drags leave the cloud still.
+- **`upload()` refreshes the twin's live mask** (sampled at the twin's stride) or a delete
+  would flicker back into view the moment the camera moved.
+- **The renderer is on the record**: after the 08-27 crash, Chromium can hand the page a
+  SOFTWARE rasteriser (SwiftShader) that looks exactly like "the program got slow". The page
+  logs `renderer: <name>` to studio.log every boot (`WEBGL_debug_renderer_info`), warns on
+  screen when it is software (restart → reboot advice), and files one `gl-slow` line after 30
+  consecutive frames over 90 ms (gap between drawn frames — `drawArrays` returns before the GPU
+  works, so timing the body would time the submission). Also established: pywebview runs
+  `private_mode=True` → WebView2 gets a FRESH temp profile every launch, so no persistent GPU
+  cache / crash-fallback state survives a restart of Studio.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-27 18:57, Converter 18:58, selftest 0.** They
+**✅ THE EXES ARE CURRENT: Studio 2026-08-27 21:47:04, Converter 21:47:37, selftest 0.** They
 carry the dot-grip rule (fifth pass), the stitch lift (sixth), the crash trail + GL recovery +
-zombie guard (seventh), the full-code-check fixes (eighth) AND the room-fit-on-import (ninth).
-If Studio dies again, open `%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST. Three tests:
+zombie guard (seventh), the full-code-check fixes (eighth), the room-fit-on-import (ninth) AND
+the rush twin (tenth). If Studio dies again, open `%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST —
+it now also names the WebGL renderer at every boot: **if that line says SwiftShader, the
+slowness is Windows software-rendering the window, not the program**. Four tests:
+00. **Rotation feel on the 21:47 build**: orbiting a big project should be fluid (the cloud
+    thins subtly while the hand moves and snaps to full detail on release). If it is STILL
+    sluggish, open studio.log and read the `renderer:` line and any `gl-slow` line — those two
+    say whether it is software rendering (reboot) or something new.
 0. **Align on import, on a fresh restart of Studio**: import two or more scans with "Align each
    one as it arrives" ticked — each should say "aligning …" then "fitting … to the room so far",
    and the closing message should name which scans got the second fit. The first arrival after
