@@ -1651,7 +1651,12 @@ try:
           and "e.ctrlKey ? pickHandle" not in _page)
     check("and the hover highlight lights exactly the zone a press would "
           "take, so the one non-camera spot announces itself",
-          "V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;" in _page)
+          # The promise sharpened on review: shift-presses pan whatever they
+          # start on and presses inside the world-axes circle are
+          # gizmoClick's, so the highlight yields to both.
+          "V.hot = (over && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))"
+          in _page
+          and "? pickHandle(e.clientX,e.clientY) : -1;" in _page)
     check("and the help teaches the dot rule",
           "drag a grip dot" in _page)
     check("the world axes widget is there, and can be switched off",
@@ -8057,9 +8062,14 @@ check("a blank photograph refuses: nothing correlated, nothing measured",
 
 _sd_rgb = np.dstack([_sd_lum.astype(np.uint8)] * 3)
 _lr, _ll = colour.lift_image(_sd_rgb, _sd_low, 4)
-check("lift_image rolls both faces of the photograph together, up",
-      np.array_equal(_ll, np.roll(_sd_low, -4, axis=0))
-      and np.array_equal(_lr, np.roll(_sd_rgb, -4, axis=0)))
+# ⛔ THE VACATED POLE BAND IS EDGE-REPLICATED, NOT WRAPPED: a plain np.roll
+# painted the floor disc under the tripod with ceiling pixels.
+check("lift_image rolls both faces up together, edge-replicating the pole",
+      np.array_equal(_ll[:-4], np.roll(_sd_low, -4, axis=0)[:-4])
+      and np.array_equal(_lr[:-4], np.roll(_sd_rgb, -4, axis=0)[:-4])
+      and np.array_equal(_ll[-4:],
+                         np.broadcast_to(_ll[-5], _ll[-4:].shape))
+      and not np.array_equal(_ll[-4:], np.roll(_sd_low, -4, axis=0)[-4:]))
 check("and a zero lift is the identity, not a copy",
       colour.lift_image(None, _sd_lum, 0)[1] is _sd_lum)
 
@@ -8087,6 +8097,27 @@ _st0 = colour.settle_drift(room, _sd_refl, _sd_lum, None, 25.0)
 check("...and a true image is left exactly alone",
       _st0.get("ok") and not _st0.get("moved") and _st0.get("up_px") == 0,
       (_st0.get("moved"), _st0.get("up_px")))
+
+# ⛔⛔ A YAW-ONLY CORRECTION COUNTS AS MOVEMENT. Both callers gate the whole
+# pose update on `moved`; when it was bool(up_px) alone, a photograph whose
+# content sat right-of-true but not low had its heading measured, folded in,
+# and thrown away -- half of the operator complaint the feature exists for.
+_sd_side = np.roll(_sd_lum, 2, axis=1)          # content 1.0 deg RIGHT
+_sty = colour.settle_drift(room, _sd_refl, _sd_side, None, 25.0)
+check("a sideways-only drift is a movement: the folded yaw is reported",
+      _sty.get("ok") and _sty.get("moved")
+      and (_sty.get("up_px") or 0) <= 1
+      and 0.5 < ((_sty.get("yaw_deg") or 0) - 25.0) < 1.5,
+      {k: _sty.get(k) for k in ("ok", "moved", "up_px", "yaw_deg")})
+
+# ⛔ THE WRONG-PAIRING CLAMP JUDGES THE TOTAL, DOOR LIFT INCLUDED --
+# without already_px a mis-paired photo could ratchet past it re-solve by
+# re-solve, each increment under the bar.
+_str = colour.settle_drift(room, _sd_refl, _sd_low, None, 25.0,
+                           already_px=int(2.6 * 2))
+check("a lift whose TOTAL passes the bound is refused as a wrong pairing",
+      not _str.get("ok") and "wrong" in (_str.get("reason") or ""),
+      _str.get("reason"))
 
 # ⛔ EVERY DOOR THE PHOTOGRAPH COMES THROUGH, NAMED. The lift is a property
 # of the image; a door that reloads it and forgets the lift paints or judges
@@ -8121,6 +8152,27 @@ check("the deep press judges the lifted image too",
       and "lift_image" in _ALIGN_SRC[_lift_deep - 400:_lift_deep])
 check("the page says when a horizon was lifted, at both solve doors",
       _page.count("liftNote(i)") >= 2 and "function liftNote" in _page)
+# ⛔ THE LIFT BELONGS TO ONE PHOTOGRAPH. Applied to whatever image came
+# through the door, a REPLACEMENT photo inherited the old one's lift with
+# no path that could ever correct it (its inherited camera seat skips the
+# climb and the settle both).
+check("the door honours a stored lift only for the photo it was measured on",
+      'stored.get("photo") == photo' in _cs_src
+      or 'stored.get("photo") == photo' in inspect.getsource(
+          align.colour_scan))
+_cc_src = inspect.getsource(align.AlignServer._carry_colour)
+check("a reopened project's seed names its photo, and a failed restore "
+      "looks like no colour, not a graded one",
+      '"photo": pose.get("photo")' in _cc_src
+      and '.get("ok")' in _cc_src
+      and "scan.colour_info = None" in _cc_src)
+_pc_src = inspect.getsource(pipeline.prepare_colour)
+check("the CLI records the door lift and accumulates the settle's on top",
+      'info["image_up_px"] = int(image_up_px or 0)' in _pc_src
+      and 'int(image_up_px or 0) + int(got["up_px"])' in _pc_src
+      and "already_px=" in _pc_src)
+check("...and the attach hands the settle its door lift for the total clamp",
+      "already_px=up_px" in inspect.getsource(align.colour_scan))
 
 # --- the crash leaves a trail -----------------------------------------------
 #
@@ -8178,6 +8230,59 @@ check("...and watches the page's pulse, two strikes, then exits the zombie",
 # the server has no page and must not be executed for it.
 check("...and a page that never pulsed is not a zombie",
       "if last is None:" in _STUDIO_SRC)
+# ⛔⛔ THE KILL NEEDS THE RENDERER PROCESSES TO BE GONE. A page can be
+# silent for three LIVE reasons -- a blocking confirm() dialog freezes its
+# timers for as long as the operator deliberates, an F12 breakpoint does
+# the same, and a double sleep-wake presents stale clocks -- and in all
+# three the WebView2 processes exist. The one dead shape (08-27) had none.
+check("...and the kill requires the WebView2 processes to be GONE",
+      "_webview_alive" in _STUDIO_SRC
+      and "msedgewebview2" in _STUDIO_SRC
+      and "return True" in _STUDIO_SRC)
+check("...and a fresh pulse since the last look resets the strikes, "
+      "however stale the clock says it is",
+      "if last != seen:" in _STUDIO_SRC)
+check("...and an import failure is logged by the wrapper itself",
+      "import failed" in _STUDIO_SRC
+      and _STUDIO_SRC.find("_LOG_FALLBACK") <
+      _STUDIO_SRC.find("from tlsconvert import align"))
+check("...and the wrapper and the server name the same log file",
+      '"TLS-Pie", "studio.log"' in _STUDIO_SRC
+      and align.LOG_FILE.endswith(os.path.join("TLS-Pie", "studio.log")))
+check("...and the session-end line does not certify 'cleanly' for a "
+      "window that never came up",
+      "NEVER came up" in _STUDIO_SRC
+      and "window session ended" in _STUDIO_SRC
+      and 'pid %d exiting cleanly"' not in _STUDIO_SRC)
+
+# ⛔ THE DIAGNOSTICS ARM BEFORE ANYTHING THAT CAN FAIL: armed after the GL
+# setup, a machine whose graphics were broken enough to fail boot -- the
+# 08-27 condition -- reported nothing and was exempt from the zombie guard.
+check("the pulse and the fault reporters arm before the GL setup",
+      0 < _page.find("post('alive'") < _page.find("getContext('webgl'")
+      and 0 < _page.find("unhandledrejection")
+      < _page.find("getContext('webgl'"))
+check("fail() itself files the message it shows",
+      "tellServer('fail', m)" in _page)
+# ⛔ HONEST RECOVERY: a loss before boot finished must not claim
+# "everything is still here", a successful recovery clears the error
+# overlay fail() may have raised, and the server is asked how many scans it
+# holds so a mid-rebuild loss cannot silently shorten the session.
+check("recovery is honest about the boot window and the scan count",
+      "V.bootDone" in _page
+      and "reopen Studio" in _page
+      and "style.display='none'" in _page
+      and "fetch('scans')" in _page
+      and '"/scans"' in _ALIGN_SRC)
+check("a rebuild puts each placement back as its scan arrives, not after "
+      "the loop",
+      _page.find("if(setups[i]) s.setup=setups[i];")
+      < _page.find("V.scans.push(s)"))
+check("the grip highlight yields to shift and to the world-axes widget",
+      "!e.shiftKey && !gizmoZone(" in _page
+      and "function gizmoZone" in _page)
+check("...and a press that took no grip unlights the dot for the drag",
+      "if(!grip) V.hot=-1;" in _page)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

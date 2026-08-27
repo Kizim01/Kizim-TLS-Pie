@@ -4336,11 +4336,53 @@ held the exe lock). Suite **1197 → 1207**; preventDefault and the pulse stamp 
 studio.log now says what the page saw last, and a "context lost → recovered" line instead of a
 dead window would itself prove it was a GPU reset.
 
+## 2026-08-27, eighth pass — the full code check: six finders, five verified bug clusters, all fixed
+
+The operator asked for a full code check; six review agents swept the package from independent
+angles (cleanup, removed-behavior, drift numerics, GL recovery, cross-file lift tracing, zombie
+guard/pointer). Verified and **fixed** (suite **1207 → 1224**, both key fixes reversion-audited):
+
+- **⛔⛔ A yaw-only drift correction was measured, folded, and thrown away** — `settle_drift` set
+  `moved = bool(up_px)` and both callers gate the whole pose update on `moved`, so a photograph
+  sitting right-of-true but not low kept its wrong heading (half the operator complaint). A folded
+  yaw now counts as movement. *(Found independently by two agents.)*
+- **⛔⛔ A replacement photograph inherited the old photo's lift forever** — the door applied the
+  scan's stored lift to whatever image came through, and the inherited camera seat skips the climb
+  that could have corrected it. The lift is now keyed on the photo it was measured on; a new
+  photo starts from zero. `_carry_colour`'s seed carries the photo, and a **failed** restore now
+  reads as no colour again instead of a graded pairing with no photograph.
+- **⛔⛔ Two kill-paths through the zombie guard**: a blocking `confirm()` dialog freezes the
+  page's timers (an operator deliberating 11 minutes got `os._exit`), and strikes accumulated
+  across separate sleep episodes. The kill now additionally requires **zero WebView2 descendant
+  processes** (the one thing true in the dead shape and false in every live one; enumeration
+  doubt reads as alive), and any fresh pulse between checks resets the count.
+- **⛔ The diagnostics armed after the thing they diagnose** — the `/alive` pulse and the fault
+  reporters started only after GL boot succeeded, exempting a graphics-broken machine from both;
+  an import failure in the bundle died unlogged; the end line certified "exiting cleanly" for a
+  window that never came up. All three re-ordered/reworded; `fail()` itself now files its message.
+- **⛔ GL recovery over-promised**: a loss before boot finished (or mid-rebuild) claimed "every
+  scan and cut is still here" over a partial session, and one failed recovery left a permanent
+  opaque overlay. Recovery is now honest (boot-window losses say reopen; scan count checked
+  against the server via new `GET /scans`; the overlay clears on real recovery), and `rebuildFrom`
+  re-applies each placement as its scan arrives instead of after the loop.
+- Smaller: `lift_image` edge-replicates the vacated pole band (np.roll painted the floor disc
+  with ceiling pixels); the wrong-pairing clamp judges the TOTAL lift (`already_px`) so re-solves
+  cannot ratchet past it; `prepare_colour` records the door lift from the door and accumulates;
+  the grip hover-promise yields to shift and the world-axes widget and unlights on a non-grip
+  press.
+
+**Recorded as queued, not fixed** (quality, not correctness): `paint_drift` duplicates
+`field_panorama`/`_edges` inline and costs ~1.4 s/call where an FFT correlation would be ms
+(settle ~5 s/attach); the lift application is copy-pasted at five doors (a `load_panorama(path,
+up_px)` parameter is the one-home shape); `settle_drift` round-trips pitch/roll/camera it never
+changes; `reChunk` re-derives the TLSV layout `loadScan` already computed; `sortShoot`'s
+`confirm()` may be suppressed inside the WebView (returns false = silently cancels always).
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-27 17:35, selftest 0** (Converter 03:14 —
-untouched by the seventh pass). They carry the dot-grip rule (fifth pass), the stitch lift (sixth)
-AND the crash trail + GL recovery + zombie guard (seventh). If Studio dies again, open
+**✅ THE EXES ARE CURRENT: Studio AND Converter rebuilt 2026-08-27 18:26, selftest 0.** They
+carry the dot-grip rule (fifth pass), the stitch lift (sixth), the crash trail + GL recovery +
+zombie guard (seventh) AND the full-code-check fixes (eighth). If Studio dies again, open
 `%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST. Two tests:
 1. **Import folder 1's pcap FRESH, not from a saved project**: the attach message should now end
    with "**the photograph's own horizon sat ~0.5–0.8° low in its stitch, so the image was lifted

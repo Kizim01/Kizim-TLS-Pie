@@ -25,7 +25,26 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tlsconvert import align, desktop                    # noqa: E402
+# ⛔ THE ONE FAILURE THE LOG CANNOT LEARN ABOUT FROM `align` IS `align`
+# FAILING TO IMPORT -- the selftest comment below names a missing bundled
+# module as the specific silent death to fear in a windowed build. So the
+# import is bracketed with an inline logger that must agree with
+# align.LOG_FILE on the path; the suite checks both name the same file.
+_LOG_FALLBACK = os.path.join(os.environ.get("LOCALAPPDATA")
+                             or os.path.expanduser("~"),
+                             "TLS-Pie", "studio.log")
+try:
+    from tlsconvert import align, desktop                # noqa: E402
+except Exception:
+    try:
+        os.makedirs(os.path.dirname(_LOG_FALLBACK), exist_ok=True)
+        with open(_LOG_FALLBACK, "a", encoding="utf-8") as _fh:
+            _fh.write("%s  import failed:\n    %s\n"
+                      % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                         traceback.format_exc().replace("\n", "\n    ")))
+    except Exception:                                    # noqa: BLE001
+        pass
+    raise
 
 # ⛔ BEFORE ANYTHING PRINTS. A --windowed build has sys.stdout is None, so a
 # single print() kills the program before its window opens. See the note on
@@ -68,31 +87,119 @@ def _arm_crash_log():
     threading.excepthook = _thread_hook
 
 
+def _webview_alive():
+    """
+    Is any WebView2 process a descendant of this one?
+
+    ⛔⛔ THE DISCRIMINATOR THE SILENCE TEST CANNOT BE. A silent page can mean
+    three live things -- a blocking confirm() dialog freezes every JS timer
+    for as long as the operator deliberates, an F12 breakpoint does the
+    same, and a machine waking from its second sleep can present ten minutes
+    of wall-clock silence from a page that pulsed at every awake moment. In
+    all three the renderer processes EXIST. In the one dead shape this guard
+    was built for (2026-08-27: renderer crashed, window gone, server
+    headless at 1.9 GB) there were ZERO WebView2 processes. So the kill
+    requires their absence, and any doubt -- an enumeration error, a denied
+    snapshot -- reads as alive: the failure mode of not killing a zombie is
+    a stale process, the failure mode of killing a live session is lost
+    work mid-dialog.
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        class _PE32(ctypes.Structure):
+            _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
+                        ("th32ProcessID", wt.DWORD),
+                        ("th32DefaultHeapID",
+                         ctypes.POINTER(ctypes.c_ulong)),
+                        ("th32ModuleID", wt.DWORD),
+                        ("cntThreads", wt.DWORD),
+                        ("th32ParentProcessID", wt.DWORD),
+                        ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", wt.DWORD),
+                        ("szExeFile", ctypes.c_char * 260)]
+
+        k32 = ctypes.windll.kernel32
+        k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k32.Process32First.argtypes = [ctypes.c_void_p,
+                                       ctypes.POINTER(_PE32)]
+        k32.Process32Next.argtypes = [ctypes.c_void_p,
+                                      ctypes.POINTER(_PE32)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        snap = k32.CreateToolhelp32Snapshot(0x2, 0)      # all processes
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return True
+        rows = []
+        try:
+            entry = _PE32()
+            entry.dwSize = ctypes.sizeof(_PE32)
+            ok = k32.Process32First(snap, ctypes.byref(entry))
+            while ok:
+                rows.append((int(entry.th32ProcessID),
+                             int(entry.th32ParentProcessID),
+                             bytes(entry.szExeFile).split(b"\0")[0].lower()))
+                ok = k32.Process32Next(snap, ctypes.byref(entry))
+        finally:
+            k32.CloseHandle(snap)
+        kids = {}
+        for pid, ppid, name in rows:
+            kids.setdefault(ppid, []).append((pid, name))
+        seen, queue = set(), [os.getpid()]
+        while queue:
+            here = queue.pop()
+            if here in seen:
+                continue
+            seen.add(here)
+            for pid, name in kids.get(here, ()):
+                if b"msedgewebview2" in name:
+                    return True
+                queue.append(pid)
+        return False
+    except Exception:                                     # noqa: BLE001
+        return True
+
+
 def _watch_page(server):
     """
     Exit when the window is gone but the process was left behind.
 
-    The page pulses /alive every ten seconds. If a pulse has EVER arrived
-    and then none does for ten minutes -- checked twice, a minute apart, so
-    waking from sleep gets a full minute to resume before the second look --
-    the window is dead and this process is a zombie holding gigabytes.
-    Exiting is the fix, not a risk: the operator's work is in the project
-    file and the server alone can save nothing for them.
+    The page pulses /alive every ten seconds. The kill needs three things
+    at once: a page that HAD come up has been silent ten minutes with no
+    fresh pulse between checks, twice a minute apart, AND no WebView2
+    process descends from this one (`_webview_alive` -- the discriminator
+    that keeps a blocked dialog, a breakpoint, or a double sleep-wake from
+    being killed as a zombie). Exiting then is the fix, not a risk: the
+    operator's work is in the project file and a windowless server can save
+    nothing for them.
     """
     strikes = 0
+    seen = None
     while True:
         time.sleep(60)
         last = getattr(server, "last_alive", None)
         if last is None:                # the page never came up: not ours
             continue
+        if last != seen:
+            # ⛔ A FRESH PULSE SINCE THE LAST LOOK RESETS THE COUNT, however
+            # stale the clock says it is -- two sleeps with a brief wake
+            # between them otherwise accumulate one strike per episode and
+            # kill a session that pulsed at every moment it was awake.
+            seen = last
+            strikes = 0
+            continue
         if time.time() - last < 600:
+            strikes = 0
+            continue
+        if _webview_alive():
             strikes = 0
             continue
         strikes += 1
         if strikes >= 2:
             align.log_event("window silent for 10+ minutes on two checks "
-                            "-- exiting the headless server (was the "
-                            "2026-08-27 zombie shape)")
+                            "with no WebView2 processes left -- exiting "
+                            "the headless server (the 2026-08-27 zombie "
+                            "shape)")
             os._exit(2)
 
 
@@ -187,8 +294,15 @@ def main(argv=None):
     try:
         desktop.show(server.url, title="TLS-Pie Studio")
     finally:
-        align.log_event("window closed, pid %d exiting cleanly"
-                        % os.getpid())
+        # ⛔ NOT "exiting cleanly" -- desktop.show also returns when the
+        # native window FAILED and the browser fallback was taken, and a
+        # log line certifying a clean exit for that session would misfile
+        # the exact startup failure this log exists to expose. Whether the
+        # page ever pulsed tells the two apart.
+        align.log_event("window session ended, pid %d, page %s"
+                        % (os.getpid(),
+                           "was seen" if server.last_alive
+                           else "NEVER came up"))
         server.stop()
     return 0
 

@@ -709,6 +709,14 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     # Studio's export hands both over together, so the file is painted from
     # the image the screen showed, not one 0.8 degrees below it.
     rgb, lum = colour_mod.lift_image(rgb, lum, image_up_px)
+    # ⛔ AND IT IS IN THE RECORD FROM THE DOOR. This dict is what `convert`
+    # returns as the file's colour record; a nonzero lift that painted the
+    # file but never reached the record is the solved-stored-never-sent
+    # shape, one door out. The settle below ACCUMULATES onto it.
+    info["image_up_px"] = int(image_up_px or 0)
+    info["image_up_deg"] = (0.0 if not image_up_px
+                            else round(int(image_up_px) * 180.0
+                                       / lum.shape[0], 2))
 
     if yaw_deg is not None:
         info["yaw_deg"] = float(yaw_deg)
@@ -790,7 +798,7 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     # which door it came in through. See `colour.paint_drift`.
     got = colour_mod.settle_drift(pts, refl, lum, rgb, info["yaw_deg"],
                                   info["pitch_deg"], info["roll_deg"],
-                                  camera)
+                                  camera, already_px=int(image_up_px or 0))
     if got.get("ok") and got.get("moved"):
         lum, rgb = got["lum"], got["rgb"]
         info["yaw_deg"] = float(got["yaw_deg"])
@@ -798,8 +806,12 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
         info["roll_deg"] = float(got["roll_deg"])
         camera = (float(got["camera_x"]), float(got["camera_y"]),
                   float(got["camera_z"]))
-        info["image_up_px"] = int(got["up_px"])
-        info["image_up_deg"] = float(round(got["up_deg"], 2))
+        # The TOTAL, door lift plus this settle's increment -- colour_scan
+        # keeps the same sum, and a consumer re-feeding this record into a
+        # later convert must get the whole lift, not the last step of it.
+        info["image_up_px"] = int(image_up_px or 0) + int(got["up_px"])
+        info["image_up_deg"] = round(info["image_up_px"] * 180.0
+                                     / lum.shape[0], 2)
         info["paint_drift"] = got.get("drift")
     return colour_mod.Colouriser(rgb, info["yaw_deg"], camera,
                                  info["pitch_deg"], info["roll_deg"]), info

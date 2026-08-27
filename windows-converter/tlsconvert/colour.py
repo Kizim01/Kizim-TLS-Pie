@@ -2311,12 +2311,28 @@ def lift_image(rgb, lum, up_px):
     k = int(up_px or 0)
     if not k:
         return rgb, lum
-    return ((None if rgb is None else np.roll(rgb, -k, axis=0)),
-            (None if lum is None else np.roll(lum, -k, axis=0)))
+
+    def _shift(img):
+        # ⛔ THE VACATED BAND IS EDGE-REPLICATED, NOT WRAPPED. np.roll alone
+        # sends the rows shifted off one pole to the OPPOSITE pole, so a
+        # 13-px lift painted the floor disc under the tripod with ceiling
+        # pixels. The pole rows are the least-sampled directions there are;
+        # repeating the last true row is invisible, wrapping is not.
+        if img is None:
+            return None
+        out = np.roll(img, -k, axis=0)
+        m = abs(k)
+        if k > 0:
+            out[-m:] = out[-m - 1]
+        else:
+            out[:m] = out[m]
+        return out
+
+    return _shift(rgb), _shift(lum)
 
 
 def settle_drift(xyz, refl, lum, rgb, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
-                 camera=(0.0, 0.0, 0.0)):
+                 camera=(0.0, 0.0, 0.0), already_px=0):
     """
     Measure the paint drift and correct it: the CONTENT gets the last word.
 
@@ -2356,18 +2372,34 @@ def settle_drift(xyz, refl, lum, rgb, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
                     and abs(drift["dlon_deg"]) < DRIFT_SETTLE_DEG):
                 break
             want = up_px + int(round(drift["dlat_deg"] * px_per_deg))
-            if abs(want / px_per_deg) > DRIFT_MAX_DEG:
+            # ⛔ THE CLAMP JUDGES THE TOTAL, DOOR LIFT INCLUDED. Judging only
+            # this call's increment let a mis-paired photograph RATCHET: 2.4
+            # degrees stored, re-solve, 2.0 more measured on top -- each
+            # under the bar, the total past the exact refusal it exists for.
+            if abs((int(already_px) + want) / px_per_deg) > DRIFT_MAX_DEG:
                 return {"ok": False,
                         "reason": "the content sits %.1f degrees off, which "
                                   "is not a stitch defect but a wrong "
-                                  "pairing" % (want / px_per_deg)}
+                                  "pairing"
+                                  % ((int(already_px) + want) / px_per_deg)}
             k = want - up_px
             if k:
                 rgb, lum = lift_image(rgb, lum, k)
                 up_px = want
             pose["yaw_deg"] = float((pose["yaw_deg"]
                                      + drift["dlon_deg"]) % 360.0)
-        moved = bool(up_px)
+            # No lift was possible and the longitude is already settled:
+            # the next iteration would measure the identical state.
+            if not k and abs(drift["dlon_deg"]) < DRIFT_SETTLE_DEG:
+                break
+        # ⛔⛔ A YAW-ONLY CORRECTION COUNTS AS MOVEMENT. `moved` used to be
+        # bool(up_px) alone, and both callers gate the whole pose update on
+        # it -- so a photograph whose content sat right-of-true but not low
+        # had its heading measured, folded in, and then thrown away. That is
+        # half of the operator complaint this feature exists for.
+        turned = abs(((pose["yaw_deg"] - float(yaw_deg)) + 180.0) % 360.0
+                     - 180.0) > 1e-6
+        moved = bool(up_px) or turned
         if moved:
             # The record shows where the content LANDED, not the reading
             # that prompted the last lift.

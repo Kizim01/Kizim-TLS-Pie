@@ -383,8 +383,15 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     # express, which the operator saw as "the image needs to go up a bit".
     # A re-solve or repaint that reloaded the photograph without it would
     # quietly drop the paint back by exactly the lift.
-    up_px = int((getattr(scan, "colour_info", None) or {})
-                .get("image_up_px") or 0)
+    # ⛔ KEYED ON THE PHOTOGRAPH, NOT THE SCAN. The lift is a property of one
+    # image's stitch (they differ per shot: 0.80 vs 0.58 degrees on this
+    # rig), and the stored value used to be applied to whatever photo came
+    # through the door -- a REPLACEMENT photo inherited the old one's lift
+    # with no path that could ever correct it, because the camera seat it
+    # also inherited skips the climb. A new photograph starts from zero.
+    stored = getattr(scan, "colour_info", None) or {}
+    up_px = (int(stored.get("image_up_px") or 0)
+             if stored.get("photo") == photo else 0)
     rgb_img, lum = colour_mod.lift_image(rgb_img, lum, up_px)
 
     camera = (float(camera_x or 0.0), float(camera_y or 0.0),
@@ -524,7 +531,7 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
                 sample[::step],
                 (None if refl is None else refl[::step]),
                 lum, rgb_img, yaw, info["pitch_deg"], info["roll_deg"],
-                camera)
+                camera, already_px=up_px)
             if got.get("ok") and got.get("moved"):
                 lum, rgb_img = got["lum"], got["rgb"]
                 up_px += int(got["up_px"])
@@ -785,6 +792,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(srv.page, "text/html; charset=utf-8")
         elif path == "/progress":
             self._json(srv.progress())
+        elif path == "/scans":
+            # How many scans the server holds -- the page compares after a
+            # graphics recovery, because a loss mid-rebuild can silently
+            # drop the tail of the list client-side.
+            self._json({"n": len(srv.scans)})
         elif path.startswith("/points/"):
             try:
                 i = int(path.rsplit("/", 1)[1].split(".")[0])
@@ -3401,15 +3413,25 @@ class AlignServer(object):
         # ⛔ THE STITCH LIFT IS SEEDED BEFORE THE REPAINT READS IT. A fresh
         # decode has no colour_info, and `colour_scan` reads the lift from
         # there -- without this line a reopened project painted 0.8 degrees
-        # below the pose it faithfully restored.
-        scan.colour_info = {"image_up_px": int(pose.get("image_up_px") or 0)}
+        # below the pose it faithfully restored. The photo rides along
+        # because the door only honours a lift for the image it belongs to.
+        scan.colour_info = {"image_up_px": int(pose.get("image_up_px") or 0),
+                            "photo": pose.get("photo")}
         colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
                     camera_x=scan.camera_x, camera_y=scan.camera_y,
                     yaw=pose.get("yaw_deg"), pitch=pose.get("pitch_deg"),
                     roll=pose.get("roll_deg"))
-        if scan.colour_info is not None:
+        # ⛔ A FAILED RESTORE LOOKS LIKE NO COLOUR, exactly as before this
+        # seed existed. colour_scan assigns colour_info only on success, so
+        # on a refusal the seed dict would survive -- and stamping a grade
+        # onto it would show the page a "confirmed" pairing with no
+        # photograph and no reason. The pose dict in the project still holds
+        # the lift for the next successful repaint.
+        if (scan.colour_info or {}).get("ok"):
             scan.colour_info["grade"] = pose.get("grade") or "given"
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
+        else:
+            scan.colour_info = None
 
     # --- projects ---------------------------------------------------------
     def save_project(self, path, state):
@@ -4602,7 +4624,9 @@ const DETAIL = [{v:0, t:'Full — every return'}, {v:0.005, t:'5 mm'},
                 {v:0.10, t:'10 cm'}, {v:0.25, t:'25 cm'}];
 
 function fail(m){ const e=document.getElementById('err');
-  e.style.display='grid'; e.textContent=m; }
+  e.style.display='grid'; e.textContent=m;
+  /* the one thing a windowed build can still do with an error is file it */
+  tellServer('fail', m); }
 function $(id){ return document.getElementById(id); }
 
 /* ---- camera (same behaviour as the single-scan viewer) ---- */
@@ -5104,6 +5128,13 @@ function drawGizmo(){
     oc.fillText(s.name.slice(0,16)+' turned '+
                 (+s.setup.yaw_deg).toFixed(1)+'°', cx, cy+GIZ.r+36);
   }
+}
+/* Inside the world-axes widget's circle, where gizmoClick will swallow the
+   press -- the hover highlight must not promise a grip there. */
+function gizmoZone(mx,my){
+  if(!V.gizmo) return false;
+  const [cx,cy]=gizmoAt();
+  return Math.hypot(mx-cx,my-cy) <= GIZ.r+16;
 }
 function gizmoClick(mx,my){
   if(!V.gizmo) return false;
@@ -6130,6 +6161,17 @@ async function boot(){
      record having run is a setting the operator cannot change. */
   saveTrays();
   addEventListener('click', closeMenus);
+  /* ⛔ THE DIAGNOSTICS ARM BEFORE ANYTHING THAT CAN FAIL. Armed after the
+     GL setup, a machine whose graphics were broken enough to fail boot --
+     the very condition of the 08-27 incident -- reported nothing and was
+     exempt from the zombie guard, because the pulse never started. */
+  addEventListener('error', e=>tellServer('js-error',
+      (e.message||'?')+' @'+(e.filename||'')+':'+(e.lineno||0)));
+  addEventListener('unhandledrejection', e=>tellServer('promise',
+      String((e.reason && e.reason.message) || e.reason || '?')));
+  /* The wrapper watches this pulse so a dead window cannot leave a
+     headless server holding gigabytes. */
+  setInterval(()=>{ post('alive', {}).catch(()=>{}); }, 10000);
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
   if(!gl) return fail('This browser has no WebGL.');
@@ -6151,19 +6193,36 @@ async function boot(){
       buildGL();
       for(const s of V.scans) reChunk(s);
       invalidate();
+      /* ⛔ HONEST ABOUT WHAT SURVIVED. A loss during the initial download
+         aborts boot before the draw loop starts, and a loss during a
+         rebuild can drop the scans that had not loaded yet -- claiming
+         "everything is still here" over either would be false exactly when
+         it matters. Boot-window losses are told to reopen; otherwise the
+         error overlay (which fail() may have raised) is cleared and the
+         server is asked how many scans it holds. */
+      if(!V.bootDone){
+        const e2=$('err');
+        if(e2){ e2.style.display='grid';
+                e2.textContent='The graphics reset while the clouds were '+
+                  'loading, so this session came up incomplete — close '+
+                  'and reopen Studio. Nothing on disk is affected.'; }
+        tellServer('webgl', 'context restored BEFORE boot finished — '+
+                            'told the operator to reopen');
+        return;
+      }
+      const e3=$('err'); if(e3) e3.style.display='none';
       tellServer('webgl', 'context restored, '+V.scans.length+' scans '+
                           're-uploaded');
-      say('Graphics recovered — every scan and cut is still here.');
-    }catch(e){ fail('Could not recover the graphics: '+e.message); }
+      fetch('scans').then(r=>r.json()).then(j=>{
+        if(j && j.n!==undefined && j.n!==V.scans.length)
+          say('Graphics recovered, but only '+V.scans.length+' of '+j.n+
+              ' scans survived the reset — reopen the project to bring '+
+              'the rest back.', 'warn');
+        else
+          say('Graphics recovered — every scan and cut is still here.');
+      }).catch(()=>{ say('Graphics recovered.'); });
+    }catch(e4){ fail('Could not recover the graphics: '+e4.message); }
   });
-  /* Faults a windowed build cannot print, filed with the server. */
-  addEventListener('error', e=>tellServer('js-error',
-      (e.message||'?')+' @'+(e.filename||'')+':'+(e.lineno||0)));
-  addEventListener('unhandledrejection', e=>tellServer('promise',
-      String((e.reason && e.reason.message) || e.reason || '?')));
-  /* The wrapper watches this pulse so a dead window cannot leave a
-     headless server holding gigabytes. */
-  setInterval(()=>{ post('alive', {}).catch(()=>{}); }, 10000);
 
   try{
     $('stat').textContent = META.length ? 'downloading points…' : '';
@@ -6178,6 +6237,9 @@ async function boot(){
   syncSliders(); syncClipSliders(); showTurn(); clipLabels(); showPlumb();
   showOut();
   recentre(); draw();
+  /* Boot finished: the draw loop is running and every startup scan is in.
+     The graphics-recovery path claims full recovery only past this point. */
+  V.bootDone=true;
   if(OPEN) openProject(OPEN);
   else if(PENDING.length) ingest(PENDING);
   else {
@@ -8958,8 +9020,15 @@ async function rebuildFrom(meta){
     gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
   }
   V.scans=[];
-  for(const m of meta) V.scans.push(await loadScan(m));
-  V.scans.forEach((s,i)=>{ if(setups[i]) s.setup=setups[i]; });
+  /* ⛔ THE PLACEMENT GOES BACK ON EACH SCAN AS IT ARRIVES, not after the
+     loop: a throw mid-list (a GPU reset during a fetch) used to abort
+     before the placements were reapplied, so even the scans that HAD
+     loaded came back standing at identity. */
+  for(let i=0;i<meta.length;i++){
+    const s=await loadScan(meta[i]);
+    if(setups[i]) s.setup=setups[i];
+    V.scans.push(s);
+  }
 }
 
 /* Attach a 360 photo to one scan: pick it, file it, solve it, repaint.
@@ -9950,6 +10019,9 @@ const DRAW_TOOLS = {lasso:1, rect:1};
         ring=turnScan(e.clientX,e.clientY,null,e.shiftKey);
       }
     }
+    /* A press that did not take a grip must not leave one lit through the
+       drag -- pointermove skips hover updates while the button is down. */
+    if(!grip) V.hot=-1;
     moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
              ring===null && tilting===null && axis===null && leaning===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
@@ -9958,7 +10030,11 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(!down){
       const over = e.target.id==='cv' && !V.tool;
       const was=V.hot, wasRing=V.ring;
-      V.hot = over ? pickHandle(e.clientX,e.clientY) : -1;
+      /* ⛔ SHIFT AND THE WIDGET BREAK THE PROMISE, so they unlight it: a
+         shift-press pans whatever it starts on, and a press inside the
+         world-axes circle is gizmoClick's before the grips are asked. */
+      V.hot = (over && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))
+              ? pickHandle(e.clientX,e.clientY) : -1;
       /* Lit only when the ring is what a press would take, so the highlight
          is a promise about the next click rather than a decoration. */
       const wasArm=V.moveHot;
