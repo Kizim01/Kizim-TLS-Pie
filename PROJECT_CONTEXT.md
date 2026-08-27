@@ -4378,12 +4378,45 @@ up_px)` parameter is the one-home shape); `settle_drift` round-trips pitch/roll/
 changes; `reChunk` re-derives the TLSV layout `loadScan` already computed; `sortShoot`'s
 `confirm()` may be suppressed inside the WebView (returns false = silently cancels always).
 
+## 2026-08-27, ninth pass — align on import fits to the room, not only to the previous scan
+
+Operator report: *"when i load a new scan and i press the option to align scan on import it
+alignes to only the previous scan."* True by construction — `alignArrivals` ran ONE pair solve
+per arrival against `nearest_to`, so a walk of imports built a CHAIN (scan 12 placed against 11,
+against 10…), every link carrying its predecessor's error forward, while the room-wide
+`solve/multi` sat one button away ("Fit to its neighbours") and was never consulted on import.
+
+**Fixed (`7fbdef2`, suite 1224 → 1229):** the import loop now follows each pair fit with the same
+multi fit the button runs — pair FIRST, because the room fit refuses an unplaced cloud ("which
+scans are near it is a question only a placed scan can ask"), then the refit onto every placed
+capture within reach (`MULTI_REACH_M` 8 m, up to `MULTI_MAX` 4 voters), with the pair answer as
+`start` and the leans on the wire. Three structural points:
+
+- **The room fit refusing is a NORMAL import, not a failed one** — with one scan placed there is
+  nothing for neighbours to agree about, and a no-GICP build has no multi solver. The pair fit
+  stands, the scan is never marked bad, and the closing message says which fit each scan got
+  ("N of M had enough placed captures near them for that second fit; the rest kept the pair fit").
+- **`solve_multi`'s refine limit applies here too** (±1 m / 20° / 8° tilt from the pair answer) —
+  a multi answer wildly different from the pair fit is a DIFFERENT ANSWER and is refused, which
+  is the safe reading at import: per-arrival drift is one link's worth, well inside the limit.
+- Import blurb rewritten: **two solves per scan**, no more "coarse fit only" promise. Five new
+  checks, reversion-audited (gutting the `start`/leans wire → check FAILs; misspelling the multi
+  call → loud ValueError, cannot be waved through).
+
+Import now costs two solves per arrival — acceptable because the option is opt-in and the blurb
+says so; the FFT-the-correlation queued item is unrelated (that is the colour drift, not GICP).
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio AND Converter rebuilt 2026-08-27 18:26, selftest 0.** They
+**✅ THE EXES ARE CURRENT: Studio 2026-08-27 18:57, Converter 18:58, selftest 0.** They
 carry the dot-grip rule (fifth pass), the stitch lift (sixth), the crash trail + GL recovery +
-zombie guard (seventh) AND the full-code-check fixes (eighth). If Studio dies again, open
-`%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST. Two tests:
+zombie guard (seventh), the full-code-check fixes (eighth) AND the room-fit-on-import (ninth).
+If Studio dies again, open `%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST. Three tests:
+0. **Align on import, on a fresh restart of Studio**: import two or more scans with "Align each
+   one as it arrives" ticked — each should say "aligning …" then "fitting … to the room so far",
+   and the closing message should name which scans got the second fit. The first arrival after
+   the reference can only get the pair fit (one placed capture is not a room) — that is by
+   design, not a fault.
 1. **Import folder 1's pcap FRESH, not from a saved project**: the attach message should now end
    with "**the photograph's own horizon sat ~0.5–0.8° low in its stitch, so the image was lifted
    to meet the room**" — and the paint should finally sit RIGHT: not low, not right of the
