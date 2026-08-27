@@ -4307,10 +4307,41 @@ re-added fires its own).
 pose it hands over varies run-to-run with machine load (yaw 92.48–92.88 observed); the lift
 adapts to whichever pose arrives, but reproducibility of the climb itself is unfinished business.
 
+## 2026-08-27, seventh pass — "drag to move crashed the program": the crash left no trail, so the trail was built
+
+Operator: *"drag to move crashed the program."* Forensics before code: **no WER report, no
+Application-error event, no log anywhere** — but two TLS-Pie-Studio processes were still alive
+from 07:57 (the child at **1.86 GB**) with **zero WebView2 processes**, and the WebView2 profile's
+Crashpad `watson_metadata` was touched at **08:07:59**. So: **the WebView2 renderer crashed
+mid-drag** (GPU reset or renderer death — no dump was kept), the window vanished wordlessly, and
+`desktop.show()` never returned, leaving a headless server holding gigabytes. The drag itself is
+pure client (a `uModel` uniform per frame; `nudge` never even calls the server), so the crash was
+the RENDERER's, not the code path's — and a windowed build has no console, so **three diagnostics
+were missing at once**: the page could not survive a lost GL context, the page's faults reached no
+log, and nothing noticed the window was gone.
+
+**Built (all three):** (1) **WebGL context loss is now an event, not an ending** — `buildGL()` is
+the one home for everything the context owns, `makeChunks` the one chunk-upload home shared by
+first load and recovery, and on `webglcontextrestored` every scan re-uploads from the arrays the
+page already kept (positions held for the lasso, live mask holds the cuts) — the session continues
+where it stood, with a message. `preventDefault` on the lost event is load-bearing: without it
+restore never fires. (2) **One log file** — `%LOCALAPPDATA%\TLS-Pie\studio.log`: the wrapper arms
+`faulthandler` + `sys.excepthook` + `threading.excepthook` into it, and the page reports js-errors,
+unhandled rejections and GL loss/restore to a new `/client/error` route. (3) **The zombie guard**
+— the page pulses `/alive` every 10 s; the wrapper exits the process if a page that HAD come up
+goes silent 10+ minutes on two checks a minute apart (sleep-wake gets a full minute to resume; a
+page that never pulsed — CLI use — is exempt). The 08:07 zombies were killed by hand (they also
+held the exe lock). Suite **1197 → 1207**; preventDefault and the pulse stamp reversion-audited.
+⚠ The RENDERER crash's root cause is **not established** — no dump survived. If it recurs, the
+studio.log now says what the page saw last, and a "context lost → recovered" line instead of a
+dead window would itself prove it was a GPU reset.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio AND Converter rebuilt 2026-08-27 03:13/03:14, selftest 0.**
-They carry the clip-box dot-grip rule (fifth pass) AND the stitch lift (sixth pass). Two tests:
+**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-27 17:35, selftest 0** (Converter 03:14 —
+untouched by the seventh pass). They carry the dot-grip rule (fifth pass), the stitch lift (sixth)
+AND the crash trail + GL recovery + zombie guard (seventh). If Studio dies again, open
+`%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST. Two tests:
 1. **Import folder 1's pcap FRESH, not from a saved project**: the attach message should now end
    with "**the photograph's own horizon sat ~0.5–0.8° low in its stitch, so the image was lifted
    to meet the room**" — and the paint should finally sit RIGHT: not low, not right of the

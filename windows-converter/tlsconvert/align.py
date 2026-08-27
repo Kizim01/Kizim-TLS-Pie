@@ -77,6 +77,27 @@ DEFAULT_ALIGN_VOXEL = 0.0
 PROJECT_EXT = ".tlspie"
 PROJECT_VERSION = 1
 
+#: Where Studio writes what it cannot show. ⛔⛔ A WINDOWED BUILD HAS NOWHERE
+#: TO SAY ANYTHING -- stdout and stderr go to the void -- so on 2026-08-27
+#: the WebView2 renderer died mid-drag (Crashpad handed Windows a report at
+#: 08:07:59), the window vanished wordlessly, and the server lived on
+#: headless at 1.9 GB with nothing anywhere to say what had happened. Every
+#: diagnostic below writes HERE, so the next crash leaves a trail.
+LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA")
+                       or os.path.expanduser("~"), "TLS-Pie")
+LOG_FILE = os.path.join(LOG_DIR, "studio.log")
+
+
+def log_event(text):
+    """One line into the studio log, timestamped. Never raises."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                   str(text).replace("\n", "\n    ")))
+    except Exception:                                     # noqa: BLE001
+        pass
+
 
 def project_paths(entry, project_path):
     """
@@ -782,6 +803,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "bad JSON"}, 400)
         path = self.path.split("?", 1)[0]
         try:
+            if path == "/alive":
+                srv.last_alive = time.time()
+                return self._json({"ok": True})
+            if path == "/client/error":
+                return self._json(srv.client_error(body))
             if path == "/solve":
                 srv.take_leans(body.get("leans"))
                 return self._json(srv.solve(int(body.get("index", 1)),
@@ -958,6 +984,10 @@ class AlignServer(object):
         self.project_path = None
         self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
+        # When the page last said it was alive; None until it first does.
+        # The desktop wrapper watches this so a dead window cannot leave a
+        # headless server holding gigabytes -- see `tlspie_studio`.
+        self.last_alive = None
         meta = self._rebuild()
         # ⭐ CAPTURES NAMED ON THE COMMAND LINE ARE PENDING, NOT PRE-LOADED.
         # Decoding them before the window existed meant the operator stared at
@@ -1073,6 +1103,21 @@ class AlignServer(object):
         return meta
 
     # --- endpoints --------------------------------------------------------
+    def client_error(self, body):
+        """
+        The page's own faults, filed where a person can find them.
+
+        A windowed build has no console, so a JavaScript error, a rejected
+        promise or a lost WebGL context used to happen in perfect silence --
+        and a graphics crash took the whole window with it, wordlessly. The
+        page reports them here and they land in the studio log with
+        everything the wrapper writes, one file to open when "it crashed".
+        """
+        kind = str((body or {}).get("kind") or "client")[:40]
+        text = str((body or {}).get("text") or "")[:2000]
+        log_event("page %s: %s" % (kind, text))
+        return {"ok": True}
+
     def progress(self):
         """
         What the solver is doing, for a page that would otherwise just hang.
@@ -5956,20 +6001,7 @@ async function loadScan(m){
      so without this copy the only way to preview a lasso would be to ask the
      server, at which point dragging an outline stops feeling like an editor. */
   const live=new Uint8Array(n).fill(1);
-  const chunks=[];
-  for(let s=0;s<n;s+=CHUNK){
-    const k=Math.min(CHUNK,n-s);
-    const pb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,pb);
-    gl.bufferData(gl.ARRAY_BUFFER,pos.subarray(s*3,(s+k)*3),gl.STATIC_DRAW);
-    const cb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,cb);
-    gl.bufferData(gl.ARRAY_BUFFER,col.subarray(s*comps,(s+k)*comps),
-                  gl.STATIC_DRAW);
-    const vb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vb);
-    gl.bufferData(gl.ARRAY_BUFFER,live.subarray(s,s+k),gl.DYNAMIC_DRAW);
-    const e=gl.getError();
-    if(e!==gl.NO_ERROR) throw new Error('GL error '+e+' uploading '+m.name);
-    chunks.push({pos:pb,col:cb,live:vb,n:k,at:s});
-  }
+  const chunks=makeChunks(pos,col,live,comps,m.name);
   let lo=[1e9,1e9,1e9], hi=[-1e9,-1e9,-1e9], reach=[];
   const step=Math.max(1,Math.floor(n/20000));
   for(let i=0;i<n;i+=step){
@@ -6023,6 +6055,67 @@ function link(vs,fs){
   return p;
 }
 
+/* One scan's GPU buffers. ⛔ SHARED BY FIRST LOAD AND CONTEXT RECOVERY --
+   two copies of this loop would be two chances for one of them to upload a
+   stale live mask after a cut. */
+function makeChunks(pos,col,live,comps,name){
+  const n=live.length, chunks=[];
+  for(let s0=0;s0<n;s0+=CHUNK){
+    const k=Math.min(CHUNK,n-s0);
+    const pb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+    gl.bufferData(gl.ARRAY_BUFFER,pos.subarray(s0*3,(s0+k)*3),gl.STATIC_DRAW);
+    const cb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,cb);
+    gl.bufferData(gl.ARRAY_BUFFER,col.subarray(s0*comps,(s0+k)*comps),
+                  gl.STATIC_DRAW);
+    const vb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+    gl.bufferData(gl.ARRAY_BUFFER,live.subarray(s0,s0+k),gl.DYNAMIC_DRAW);
+    const e=gl.getError();
+    if(e!==gl.NO_ERROR) throw new Error('GL error '+e+' uploading '+name);
+    chunks.push({pos:pb,col:cb,live:vb,n:k,at:s0});
+  }
+  return chunks;
+}
+
+/* A recovered context gets fresh buffers from the arrays the page KEPT --
+   the positions were already held for the lasso, the live mask holds the
+   cuts, and the colours live in the same ArrayBuffer as the positions. */
+function reChunk(s){
+  const n=s.points, comps=s.rgb?3:1;
+  const col=new Uint8Array(s.raw.buffer, s.raw.byteOffset + n*6, n*comps);
+  s.chunks=makeChunks(s.raw, col, s.live, comps, s.name);
+}
+
+/* ⛔ EVERYTHING THE GL CONTEXT OWNS IS BUILT HERE, in one place, so a
+   context that comes BACK can be refitted exactly as one that boots. */
+function buildGL(){
+  gl.enable(gl.DEPTH_TEST);
+  prog=link(VS,FS);
+  lprog=link(LVS,LFS);
+  loc={};
+  for(const u of ['uVP','uModel','uScale','uOffset','uTint','uPS','uPSmax',
+                  'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipC',
+                  'uClipH','uClipRT','uOrtho','uOrthoW'])
+    loc[u]=gl.getUniformLocation(prog,u);
+  loc.aPos=gl.getAttribLocation(prog,'aPos');
+  loc.aCol=gl.getAttribLocation(prog,'aCol');
+  loc.aLive=gl.getAttribLocation(prog,'aLive');
+  gl.enableVertexAttribArray(loc.aPos);
+  gl.enableVertexAttribArray(loc.aCol);
+  gl.enableVertexAttribArray(loc.aLive);
+  lloc={uVP:gl.getUniformLocation(lprog,'uVP'),
+        uCol:gl.getUniformLocation(lprog,'uCol'),
+        uSize:gl.getUniformLocation(lprog,'uSize'),
+        aP:gl.getAttribLocation(lprog,'aP')};
+  lbuf=gl.createBuffer();
+}
+
+/* The page's own faults go to the server's log -- a windowed build has no
+   console, so anything not sent there happens in perfect silence. */
+function tellServer(kind, text){
+  try{ post('client/error', {kind:kind, text:String(text)}).catch(()=>{}); }
+  catch(_e){ }
+}
+
 async function boot(){
   /* ⛔ THE BAR IS BUILT BEFORE ANYTHING ELSE CAN FAIL. Loading the clouds can
      end in `fail()`, and an operator staring at an error with no menus has no
@@ -6040,27 +6133,37 @@ async function boot(){
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
   if(!gl) return fail('This browser has no WebGL.');
-  gl.enable(gl.DEPTH_TEST);
-  try{
-    prog=link(VS,FS);
-    lprog=link(LVS,LFS);
-  }catch(e){ return fail('Shader failed: '+e.message); }
-  loc={};
-  for(const u of ['uVP','uModel','uScale','uOffset','uTint','uPS','uPSmax',
-                  'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipC',
-                  'uClipH','uClipRT','uOrtho','uOrthoW'])
-    loc[u]=gl.getUniformLocation(prog,u);
-  loc.aPos=gl.getAttribLocation(prog,'aPos');
-  loc.aCol=gl.getAttribLocation(prog,'aCol');
-  loc.aLive=gl.getAttribLocation(prog,'aLive');
-  gl.enableVertexAttribArray(loc.aPos);
-  gl.enableVertexAttribArray(loc.aCol);
-  gl.enableVertexAttribArray(loc.aLive);
-  lloc={uVP:gl.getUniformLocation(lprog,'uVP'),
-        uCol:gl.getUniformLocation(lprog,'uCol'),
-        uSize:gl.getUniformLocation(lprog,'uSize'),
-        aP:gl.getAttribLocation(lprog,'aP')};
-  lbuf=gl.createBuffer();
+  try{ buildGL(); }catch(e){ return fail('Shader failed: '+e.message); }
+  /* ⛔⛔ A LOST GRAPHICS CONTEXT IS AN EVENT, NOT AN ENDING. A driver reset
+     mid-drag used to take the whole window down in silence (2026-08-27,
+     "drag to move crashed the program" -- the renderer died at 08:07:59
+     and the server lived on headless). Without preventDefault the restored
+     event never fires; with it, the arrays the page already keeps are
+     re-uploaded and the session continues where it stood. */
+  cv.addEventListener('webglcontextlost', e=>{
+    e.preventDefault();
+    need=false;
+    tellServer('webgl', 'context lost');
+    say('The graphics context was lost — recovering…', 'warn');
+  });
+  cv.addEventListener('webglcontextrestored', ()=>{
+    try{
+      buildGL();
+      for(const s of V.scans) reChunk(s);
+      invalidate();
+      tellServer('webgl', 'context restored, '+V.scans.length+' scans '+
+                          're-uploaded');
+      say('Graphics recovered — every scan and cut is still here.');
+    }catch(e){ fail('Could not recover the graphics: '+e.message); }
+  });
+  /* Faults a windowed build cannot print, filed with the server. */
+  addEventListener('error', e=>tellServer('js-error',
+      (e.message||'?')+' @'+(e.filename||'')+':'+(e.lineno||0)));
+  addEventListener('unhandledrejection', e=>tellServer('promise',
+      String((e.reason && e.reason.message) || e.reason || '?')));
+  /* The wrapper watches this pulse so a dead window cannot leave a
+     headless server holding gigabytes. */
+  setInterval(()=>{ post('alive', {}).catch(()=>{}); }, 10000);
 
   try{
     $('stat').textContent = META.length ? 'downloading points…' : '';

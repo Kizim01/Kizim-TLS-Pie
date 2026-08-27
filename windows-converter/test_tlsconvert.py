@@ -8122,5 +8122,62 @@ check("the deep press judges the lifted image too",
 check("the page says when a horizon was lifted, at both solve doors",
       _page.count("liftNote(i)") >= 2 and "function liftNote" in _page)
 
+# --- the crash leaves a trail -----------------------------------------------
+#
+# ⛔⛔ ON 2026-08-27 "DRAG TO MOVE CRASHED THE PROGRAM" AND NOTHING ANYWHERE
+# SAID WHY. The WebView2 renderer died (Crashpad handed Windows a report at
+# 08:07:59), the window vanished wordlessly -- a windowed build has no
+# console -- and the python server lived on headless at 1.9 GB for hours.
+# Three diagnostics were missing at once: the page could not survive a lost
+# graphics context, the page's faults reached no log, and nothing noticed
+# the window was gone. Each is pinned here.
+print("\nthe crash leaves a trail")
+_lost_at = _page.find("'webglcontextlost'")
+check("the page catches a lost graphics context and prevents the default",
+      _lost_at > 0 and "e.preventDefault();" in _page[_lost_at:_lost_at + 200])
+_rest_at = _page.find("'webglcontextrestored'")
+check("...and a restored context rebuilds programs AND re-uploads every scan",
+      _rest_at > 0 and "buildGL()" in _page[_rest_at:_rest_at + 300]
+      and "reChunk(s)" in _page[_rest_at:_rest_at + 300])
+check("...from ONE chunk-upload home shared with first load",
+      _page.count("makeChunks(") >= 3, _page.count("makeChunks("))
+check("the page pulses /alive so a dead window cannot hide",
+      "post('alive'" in _page and "setInterval" in _page)
+check("the page's own faults are sent to the server's log",
+      "unhandledrejection" in _page and "function tellServer" in _page
+      and "post('client/error'" in _page)
+check("the server files them and stamps the pulse",
+      'if path == "/alive":' in _ALIGN_SRC
+      and '"/client/error"' in _ALIGN_SRC
+      and "srv.last_alive = time.time()" in _ALIGN_SRC)
+
+# The filing itself, run for real into a scratch log.
+_log_was = (align.LOG_DIR, align.LOG_FILE)
+align.LOG_DIR = tempfile.mkdtemp(prefix="tlslog")
+align.LOG_FILE = os.path.join(align.LOG_DIR, "studio.log")
+try:
+    _ce = align.AlignServer.client_error(None, {"kind": "webgl",
+                                                "text": "context lost"})
+    _logged = open(align.LOG_FILE, encoding="utf-8").read()
+finally:
+    align.LOG_DIR, align.LOG_FILE = _log_was
+check("client_error writes the fault where a person can find it",
+      _ce.get("ok") and "page webgl: context lost" in _logged, _logged[-120:])
+
+_STUDIO_SRC = open(os.path.join(os.path.dirname(align.__file__), "..",
+                                "tlspie_studio.py"), encoding="utf-8").read()
+check("the wrapper arms faulthandler and both excepthooks into the log",
+      "faulthandler.enable" in _STUDIO_SRC
+      and "sys.excepthook" in _STUDIO_SRC
+      and "threading.excepthook" in _STUDIO_SRC
+      and "_arm_crash_log()" in _STUDIO_SRC)
+check("...and watches the page's pulse, two strikes, then exits the zombie",
+      "target=_watch_page" in _STUDIO_SRC
+      and "strikes >= 2" in _STUDIO_SRC and "os._exit(2)" in _STUDIO_SRC)
+# ⛔ The watcher must not fire on a page that NEVER came up -- a CLI use of
+# the server has no page and must not be executed for it.
+check("...and a page that never pulsed is not a zombie",
+      "if last is None:" in _STUDIO_SRC)
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

@@ -16,8 +16,11 @@ the other way round. WebView2 and tkinter both want the thread that created
 them, so a window opened from a worker hangs rather than failing cleanly.
 """
 
+import faulthandler
 import os
 import sys
+import threading
+import time
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +31,69 @@ from tlsconvert import align, desktop                    # noqa: E402
 # single print() kills the program before its window opens. See the note on
 # desktop.silence_missing_console.
 desktop.silence_missing_console()
+
+# ⛔⛔ A WINDOWED BUILD CRASHES IN PERFECT SILENCE, AND ON 2026-08-27 IT DID:
+# "drag to move crashed the program" left no traceback, no dump and no log
+# anywhere -- the WebView2 renderer died (Crashpad handed Windows a report at
+# 08:07:59), the window vanished, and the server lived on headless at 1.9 GB.
+# Everything below exists so the NEXT failure leaves a trail in one file:
+# %LOCALAPPDATA%\TLS-Pie\studio.log.
+_crash_fh = None
+
+
+def _arm_crash_log():
+    global _crash_fh
+    try:
+        os.makedirs(align.LOG_DIR, exist_ok=True)
+        # The handle is kept open for the life of the process: faulthandler
+        # writes into it from inside a hard fault, when open() is no longer
+        # something to count on.
+        _crash_fh = open(align.LOG_FILE, "a", encoding="utf-8")
+        faulthandler.enable(file=_crash_fh)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+    def _hook(exc_type, exc, tb):
+        align.log_event("unhandled: "
+                        + "".join(traceback.format_exception(exc_type, exc,
+                                                             tb)))
+    sys.excepthook = _hook
+
+    def _thread_hook(args):
+        align.log_event("thread %s: " % (args.thread.name if args.thread
+                                         else "?")
+                        + "".join(traceback.format_exception(
+                            args.exc_type, args.exc_value,
+                            args.exc_traceback)))
+    threading.excepthook = _thread_hook
+
+
+def _watch_page(server):
+    """
+    Exit when the window is gone but the process was left behind.
+
+    The page pulses /alive every ten seconds. If a pulse has EVER arrived
+    and then none does for ten minutes -- checked twice, a minute apart, so
+    waking from sleep gets a full minute to resume before the second look --
+    the window is dead and this process is a zombie holding gigabytes.
+    Exiting is the fix, not a risk: the operator's work is in the project
+    file and the server alone can save nothing for them.
+    """
+    strikes = 0
+    while True:
+        time.sleep(60)
+        last = getattr(server, "last_alive", None)
+        if last is None:                # the page never came up: not ours
+            continue
+        if time.time() - last < 600:
+            strikes = 0
+            continue
+        strikes += 1
+        if strikes >= 2:
+            align.log_event("window silent for 10+ minutes on two checks "
+                            "-- exiting the headless server (was the "
+                            "2026-08-27 zombie shape)")
+            os._exit(2)
 
 
 def _bundle_dir():
@@ -109,13 +175,20 @@ def main(argv=None):
     # start. The captures go in as PENDING and the page asks for them the moment
     # it loads, so the same progress bar covers a double-click, a Browse and a
     # file association alike.
+    _arm_crash_log()
+    align.log_event("studio started, pid %d, opening %s"
+                    % (os.getpid(), paths or "nothing"))
     server = align.AlignServer([], out_path=out, pending=captures,
                                open_project=(projects[0] if projects else None))
+    threading.Thread(target=_watch_page, args=(server,), daemon=True,
+                     name="page-watch").start()
     print("Ready. Merged output will go to %s" % out)
     sys.stdout.flush()
     try:
         desktop.show(server.url, title="TLS-Pie Studio")
     finally:
+        align.log_event("window closed, pid %d exiting cleanly"
+                        % os.getpid())
         server.stop()
     return 0
 
