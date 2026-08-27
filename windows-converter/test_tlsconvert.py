@@ -1699,6 +1699,38 @@ try:
           "hold shift to orbit" in _page and
           "the left button belongs to it now" in _page)
 
+    # ⛔⛔ ALIGN-ON-IMPORT FITS TO THE ROOM, NOT ONLY TO THE PREVIOUS SCAN.
+    # Reported by the operator on 2026-08-27: each arrival got one pair fit
+    # against its nearest scan, so a walk of imports built a CHAIN, every link
+    # carrying its predecessor's error forward. The import loop now follows
+    # the pair fit with the same multi fit the "Fit to its neighbours" button
+    # runs -- pair first, because the room fit cannot start from an unplaced
+    # cloud -- and the order is checked, not just the presence.
+    _arr = re.search(r"async function alignArrivals\(from\)\{.*?\n\}",
+                     _page, re.S).group(0)
+    check("the import loop runs the pair fit and then the room fit, in "
+          "that order",
+          "post('solve'," in _arr and "post('solve/multi'" in _arr
+          and _arr.index("post('solve',") < _arr.index("post('solve/multi'"))
+    check("the room fit starts from the pair fit's answer and carries the "
+          "leans, like the button it mirrors",
+          "start:sc.setup" in _arr and "leans:leansWire()" in _arr)
+    # ⛔ With one scan placed there is nothing for neighbours to agree about,
+    # so the room fit REFUSING is a normal import, not a failed one: the pair
+    # fit must stand and the scan must not be reported as unplaceable.
+    check("a refused room fit keeps the pair fit rather than marking the "
+          "scan bad",
+          "the pair fit stands" in _arr
+          and "bad.push" not in _arr[_arr.index("post('solve/multi'"):
+                                     _arr.index("the pair fit stands")])
+    check("and the closing message says which fit each scan actually got",
+          "kept the pair fit" in _arr
+          and "at least two placed captures" in _arr)
+    check("the import blurb no longer promises only the coarse fit",
+          "the coarse fit only: press <b>Auto-align</b> afterwards"
+          not in _page
+          and "two solves for every scan" in _page)
+
     # ⛔⛔ THE TEST THAT WOULD HAVE CAUGHT IT. Routing read `V.tool==='pair'` to
     # pick and "any other tool at all" to drag an outline, so the levelling and
     # plumb tools -- which pick points -- silently started a LASSO and answered

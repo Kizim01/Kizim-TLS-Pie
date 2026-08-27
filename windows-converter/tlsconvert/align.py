@@ -4166,8 +4166,10 @@ PAGE = r"""<!doctype html>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
     A sorted shoot puts each capture and its photograph in one numbered folder,
     so the first of these is nearly always what you want. <b>Aligning on import
-    costs a solve for every scan</b>, so it is off until you ask — and it is
-    the coarse fit only: press <b>Auto-align</b> afterwards to refine it.</div>
+    costs two solves for every scan</b>, so it is off until you ask — each
+    arrival is fitted to the scan nearest it and then refined against every
+    placed capture within reach, so it sits in the room built so far, not just
+    against the previous scan. Press <b>Auto-align</b> to refine further.</div>
   <div class="row"><button id="browse" class="go">Browse…</button></div>
   <input type="text" id="addpath" placeholder="…or paste a .pcap path"
          style="margin-top:7px">
@@ -9630,25 +9632,60 @@ function importOpts(){
    nearest it -- which is what a survey is: a walk, where every tripod overlaps
    the one before it and shares nothing with the one at the far end.
 
+   ⭐⭐ AND THEN ONTO THE ROOM, NOT JUST ONTO THE LINK. The pair fit alone
+   built a CHAIN -- scan 12 placed against 11, which was placed against 10,
+   every link carrying its predecessor's error forward -- and that is exactly
+   what the operator saw: "align on import aligns to only the previous scan".
+   So each arrival, once the pair fit has given it a place to stand, is
+   refitted onto EVERY placed capture within reach (the same fit as the
+   "Fit to its neighbours" button), and the neighbours constrain each other.
+   The pair fit stays because the room fit cannot start from nothing: which
+   captures are near a scan is a question only a placed scan can ask.
+
+   ⛔ THE ROOM FIT FAILING IS NOT THE IMPORT FAILING. With one scan placed
+   there is nothing for neighbours to agree about, and a build without GICP
+   has no multi solver at all -- in both cases the pair fit stands and the
+   closing message says which fit each scan actually got.
+
    ⛔ AND ONE THAT WILL NOT FIT MUST NOT STOP THE REST. Import is the wrong
    place to lose twenty good solves to a single scan of a blank corridor; the
    failure is reported at the end and the scan simply stays where it was put. */
 async function alignArrivals(from){
-  const bad=[];
+  const bad=[], roomed=[];
+  let placed=0;
   for(let i=Math.max(1,from); i<V.scans.length; i++){
     const sc=V.scans[i];
     say('aligning '+sc.name+' ('+i+' of '+(V.scans.length-1)+')…');
     try{
       const j=await post('solve', {index:sc.index});
-      if(j && j.ok){ sc.setup=j.setup; syncSliders(); invalidate(); }
-      else bad.push(sc.name);
+      if(!(j && j.ok)){ bad.push(sc.name); continue; }
+      sc.setup=j.setup; syncSliders(); invalidate();
+      placed++;
+      say('fitting '+sc.name+' to the room so far…');
+      try{
+        const m=await post('solve/multi',
+          {index:sc.index, start:sc.setup, leans:leansWire()});
+        if(m && m.ok){
+          sc.setup=m.setup; roomed.push(sc.name);
+          syncSliders(); invalidate();
+        }
+      }catch(e){ /* the pair fit stands; the closing message says so */ }
     }catch(e){ bad.push(sc.name); }
   }
   editsFollow(); dirty();
   say('Imported and aligned'+(bad.length ? ', except '+bad.join(', ')+
       ' — place those by hand' : '')+
-      '. This was the coarse fit only: press Auto-align on a scan to refine '+
-      'it, and again to refine further.', bad.length ? 'warn' : null);
+      (roomed.length
+        ? '. Each scan was fitted to the scan nearest it and then refined '+
+          'against every placed capture within reach'+
+          (roomed.length===placed ? '' :
+           ' ('+roomed.length+' of '+placed+' had enough placed captures '+
+           'near them for that second fit; the rest kept the pair fit)')+
+          '. Press Auto-align on a scan to refine it further.'
+        : '. Each scan was fitted to the scan nearest it — the room-wide '+
+          'second fit needs at least two placed captures within reach. '+
+          'Press Auto-align on a scan to refine it further.'),
+      bad.length ? 'warn' : null);
 }
 
 async function ingest(paths){
