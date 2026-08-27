@@ -2150,6 +2150,242 @@ def deep_refine(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                 evaluations=int(obj.calls))
 
 
+#: The paint-drift measure: how far the photograph's CONTENT sits from the
+#: laser's, read patch by patch and averaged.  1440x360 is a quarter-degree
+#: cell; 12x3 patches over the band the lidar actually fills; the search
+#: radius caps a single measurement at 2.5 deg of longitude / 5 of latitude.
+DRIFT_LON_BINS, DRIFT_LAT_BINS = 1440, 360
+DRIFT_PATCH_LON, DRIFT_PATCH_LAT = 12, 3
+DRIFT_SEARCH_PX = 10
+#: Patches that must vote before the mean means anything.
+DRIFT_MIN_PATCHES = 8
+#: Below this the paint is content-true: 0.2 deg is under 2 cm at five
+#: metres, inside the solve's own run-to-run spread.
+DRIFT_SETTLE_DEG = 0.2
+#: A lift past this is not a stitch defect, it is a wrong pairing -- refuse.
+DRIFT_MAX_DEG = 3.0
+
+
+def _peak_frac(line, at):
+    """
+    Sub-cell peak position along one axis of a correlation surface.
+
+    The standard parabola through the peak and its two neighbours; zero at a
+    rail, beside an unvisited cell, or on a flat top, so it can only refine
+    an answer the integer search already gave, never move it.
+    """
+    if at <= 0 or at >= len(line) - 1:
+        return 0.0
+    l, c, r = float(line[at - 1]), float(line[at]), float(line[at + 1])
+    if l <= -1e8 or r <= -1e8:
+        return 0.0
+    d = l - 2.0 * c + r
+    if d >= 0.0:
+        return 0.0
+    return float(np.clip(0.5 * (l - r) / d, -0.5, 0.5))
+
+
+def paint_drift(xyz, refl, lum, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
+                camera=(0.0, 0.0, 0.0)):
+    """
+    Where the photograph's content sits relative to the laser's, in degrees.
+
+    ⭐⭐ THIS IS THE MEASURE THAT MATCHES THE OPERATOR'S EYE, AND THE GLOBAL
+    SCORES CANNOT REPLACE IT. The pose scorer's cosine and the MI are summed
+    over the whole sphere at once, so they are dominated by wherever the
+    gradients are largest -- and measured on folder 1 they actively PREFERRED
+    a photograph whose content sat 0.8 degrees low (edge 0.2013 unshifted
+    against 0.1848 shifted true). Thirty-six local correlation surfaces,
+    pooled into one consensus before any peak is taken, read the same image
+    as 0.8 degrees low -- and so did the operator, twice. A uniform latitude
+    offset is OUTSIDE THE POSE SPAN (pitch raises the front but lowers the
+    back; height moves near things more than far), which is why no amount of
+    climbing could ever paint it right and the error kept being smeared into
+    pitch/height compromises instead.
+
+    Returns {"ok", "dlon_deg", "dlat_deg", "patches"}: positive dlat means
+    the photo content sits LOW by that much (it must move up), positive dlon
+    means it sits RIGHT (it must move left, which is yaw INCREASING -- the
+    image is sampled at lon+yaw, so a bigger yaw slides content left).
+    Never raises.
+    """
+    try:
+        if refl is None or len(refl) != len(xyz) or len(xyz) < 5000:
+            return {"ok": False, "reason": "no reflectivity to measure with"}
+        LON, LAT = DRIFT_LON_BINS, DRIFT_LAT_BINS
+        d, _rng = directions(xyz, camera)
+        lon = np.arctan2(d[:, 0], d[:, 1])
+        lat = np.arcsin(np.clip(d[:, 2], -1.0, 1.0))
+        u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * LON, 0,
+                    LON - 1).astype(np.int64)
+        v = np.clip((0.5 - lat / math.pi) * LAT, 0, LAT - 1).astype(np.int64)
+        flat = v * LON + u
+        vals = np.log1p(np.maximum(np.asarray(refl, dtype=np.float64), 0))
+        tot = np.bincount(flat, weights=vals, minlength=LON * LAT)
+        cnt = np.bincount(flat, minlength=LON * LAT)
+        mask = (cnt.reshape(LAT, LON) > 0)
+        laser = fill_holes(np.where(cnt > 0, tot / np.maximum(cnt, 1),
+                                    0.0).reshape(LAT, LON), mask)
+
+        def _e(img):
+            gy, gx = np.gradient(img)
+            e = np.hypot(gx, gy)
+            e -= e.mean()
+            n = np.linalg.norm(e)
+            return e / (n if n > 0 else 1.0)
+
+        ER = _e(laser)
+        ES = _e(image_at_pose(np.asarray(lum, dtype=np.float64),
+                              grid_directions(LON, LAT),
+                              yaw_deg, pitch_deg, roll_deg))
+        # The poles are excluded: the lidar never fills them, so a patch
+        # there would vote with the hole-fill's invention.
+        rows = np.linspace(int(LAT * 0.22), int(LAT * 0.82),
+                           DRIFT_PATCH_LAT + 1).astype(int)
+        cols = np.linspace(0, LON, DRIFT_PATCH_LON + 1).astype(int)
+        bar = np.abs(ER).sum() / (DRIFT_PATCH_LON * DRIFT_PATCH_LAT) * 0.3
+        R = DRIFT_SEARCH_PX
+        # ⛔⛔ THE PATCH SURFACES ARE POOLED BEFORE ANY PEAK IS TAKEN. The
+        # first build took each patch's own argmax and averaged the 36
+        # answers -- and on folder 1 that estimator was MULTI-MODAL: single
+        # patches locked onto repeating texture, the mean sat between modes,
+        # the reading barely moved through the first ten pixels of a real
+        # lift, and worse, it was coupled to yaw (a 0.3 degree yaw change
+        # swung the latitude reading half a degree, so the settle loop
+        # oscillated 92.67 -> 92.86 -> 92.55 -> 92.88 and never landed).
+        # Summing the surfaces first lets the true offset reinforce across
+        # every patch while each patch's private locks cancel: measured on
+        # the same data the pooled reading is stable to 0.001 degrees across
+        # a 0.8 degree yaw sweep and falls 1:1 with a known lift.
+        surf = np.zeros((2 * R + 1, 2 * R + 1))
+        voted = 0
+        for i in range(DRIFT_PATCH_LAT):
+            r0, r1 = rows[i], rows[i + 1]
+            for j in range(DRIFT_PATCH_LON):
+                c0, c1 = cols[j], cols[j + 1]
+                a = ER[r0:r1, c0:c1]
+                # a patch with next to no laser texture cannot vote
+                if float(np.abs(a).sum()) < bar:
+                    continue
+                voted += 1
+                for dr in range(-R, R + 1):
+                    if r0 + dr < 0 or r1 + dr > LAT:
+                        continue
+                    for dc in range(-R, R + 1):
+                        b = np.take(ES[r0 + dr:r1 + dr],
+                                    np.arange(c0 + dc, c1 + dc) % LON,
+                                    axis=1)
+                        surf[dr + R, dc + R] += float((a * b).sum())
+        if voted < DRIFT_MIN_PATCHES:
+            return {"ok": False,
+                    "reason": "only %d patches had texture to measure on"
+                              % voted, "patches": voted}
+        at = np.unravel_index(int(np.argmax(surf)), surf.shape)
+        if float(surf[at]) <= 0.0:
+            return {"ok": False, "reason": "nothing correlated at all",
+                    "patches": voted}
+        # The half-degree cell is coarser than the drift being corrected; a
+        # parabola through the pooled peak reads to a fraction of a cell.
+        fr = _peak_frac(surf[:, at[1]], at[0])
+        fc = _peak_frac(surf[at[0], :], at[1])
+        return {"ok": True,
+                "dlon_deg": float((at[1] - R + fc) * 360.0 / LON),
+                "dlat_deg": float((at[0] - R + fr) * 180.0 / LAT),
+                "patches": voted}
+    except Exception as exc:                              # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}
+
+
+def lift_image(rgb, lum, up_px):
+    """
+    The stitch correction, applied to the photograph itself.
+
+    ⛔ ONE HOME, USED AT EVERY DOOR THE PHOTOGRAPH COMES THROUGH. The lift is
+    a property of the IMAGE (the camera stitched its horizon below the middle
+    row), so a press that reloads the photograph and forgets it would judge
+    and paint 0.8 degrees below the pose it was handed -- the exact
+    solved-stored-and-never-sent shape this project keeps paying for.
+    Longitude needs no such correction: a stitch offset in longitude is
+    exactly a heading, and yaw already absorbs it.
+    """
+    k = int(up_px or 0)
+    if not k:
+        return rgb, lum
+    return ((None if rgb is None else np.roll(rgb, -k, axis=0)),
+            (None if lum is None else np.roll(lum, -k, axis=0)))
+
+
+def settle_drift(xyz, refl, lum, rgb, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
+                 camera=(0.0, 0.0, 0.0)):
+    """
+    Measure the paint drift and correct it: the CONTENT gets the last word.
+
+    The climb's judges cannot see a uniform latitude offset (see
+    `paint_drift`), so after they finish, this measures where the content
+    actually sits, lifts the image and folds the longitude into yaw until
+    both read under DRIFT_SETTLE_DEG.
+
+    ⛔⛔ NO POLISH RUNS AFTER THE LIFT, AND THAT IS THE POINT, NOT AN
+    ECONOMY. The first build re-polished on the corrected image "to let
+    pitch and height re-settle" -- and the end-to-end run on folder 1
+    watched the polish drag the content straight back down to a residual of
+    0.81 degrees, because its judge is the same global score that measurably
+    PREFERS the droop. A judge that fights the corrector must not speak
+    after it. What the polish would have bought is small and known: the
+    corrected full re-climb moved pitch by 0.11 degrees and height by 20 mm,
+    both under anything the eye can see at five metres.
+
+    Returns a dict with the corrected images and pose; {"ok": False} leaves
+    everything exactly as handed in.  Never raises.
+    """
+    try:
+        h = int(lum.shape[0])
+        px_per_deg = h / 180.0
+        pose = {"yaw_deg": float(yaw_deg),
+                "pitch_deg": float(pitch_deg or 0.0),
+                "roll_deg": float(roll_deg or 0.0)}
+        cam = tuple(float(v) for v in camera)
+        up_px = 0
+        drift = None
+        for _ in range(3):
+            drift = paint_drift(xyz, refl, lum, pose["yaw_deg"],
+                                pose["pitch_deg"], pose["roll_deg"], cam)
+            if not drift.get("ok"):
+                return {"ok": False, "reason": drift.get("reason")}
+            if (abs(drift["dlat_deg"]) < DRIFT_SETTLE_DEG
+                    and abs(drift["dlon_deg"]) < DRIFT_SETTLE_DEG):
+                break
+            want = up_px + int(round(drift["dlat_deg"] * px_per_deg))
+            if abs(want / px_per_deg) > DRIFT_MAX_DEG:
+                return {"ok": False,
+                        "reason": "the content sits %.1f degrees off, which "
+                                  "is not a stitch defect but a wrong "
+                                  "pairing" % (want / px_per_deg)}
+            k = want - up_px
+            if k:
+                rgb, lum = lift_image(rgb, lum, k)
+                up_px = want
+            pose["yaw_deg"] = float((pose["yaw_deg"]
+                                     + drift["dlon_deg"]) % 360.0)
+        moved = bool(up_px)
+        if moved:
+            # The record shows where the content LANDED, not the reading
+            # that prompted the last lift.
+            drift = paint_drift(xyz, refl, lum, pose["yaw_deg"],
+                                pose["pitch_deg"], pose["roll_deg"], cam)
+        return {"ok": True, "moved": moved, "lum": lum, "rgb": rgb,
+                "up_px": int(up_px),
+                "up_deg": float(up_px / px_per_deg),
+                "yaw_deg": pose["yaw_deg"], "pitch_deg": pose["pitch_deg"],
+                "roll_deg": pose["roll_deg"],
+                "camera_x": cam[0], "camera_y": cam[1], "camera_z": cam[2],
+                "drift": (None if not (drift or {}).get("ok") else
+                          {"dlon_deg": drift["dlon_deg"],
+                           "dlat_deg": drift["dlat_deg"]})}
+    except Exception as exc:                              # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}
+
+
 def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                pitch_deg=0.0, roll_deg=0.0, weights=None,
                seconds=DEEP_SECONDS, budget=DEEP_BUDGET, seeds=DEEP_SEEDS,

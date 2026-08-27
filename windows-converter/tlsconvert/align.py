@@ -355,6 +355,16 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         info["reason"] = "could not read %s (%s)" % (info["name"], exc)
         return info
     info["warning"] = colour_mod.aspect_warning(rgb_img)
+    # ⭐⭐ THE STITCH LIFT IS A PROPERTY OF THE PHOTOGRAPH AND IT IS APPLIED
+    # AT THE DOOR, before anything solves or paints. Measured on this rig the
+    # camera stitches its horizon 0.6-1.1 degrees BELOW the image's middle
+    # row (folder 1: 0.80, folder 3: 0.58) -- an offset no camera pose can
+    # express, which the operator saw as "the image needs to go up a bit".
+    # A re-solve or repaint that reloaded the photograph without it would
+    # quietly drop the paint back by exactly the lift.
+    up_px = int((getattr(scan, "colour_info", None) or {})
+                .get("image_up_px") or 0)
+    rgb_img, lum = colour_mod.lift_image(rgb_img, lum, up_px)
 
     camera = (float(camera_x or 0.0), float(camera_y or 0.0),
               float(camera_z or 0.0))
@@ -483,6 +493,35 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
             info["judged"] = list(pose.get("judged") or ["edge"])
             info["polished"] = bool(pose.get("polished"))
             scan.camera_x, scan.camera_y, scan.camera_z = camera
+
+            # ⭐⭐ THE CONTENT GETS THE LAST WORD. The climb's judges are
+            # summed over the whole sphere and measurably PREFER a photograph
+            # whose content sits low (see `colour.paint_drift`), so after
+            # they finish, where the content actually sits is measured patch
+            # by patch and the image is lifted to meet the room.
+            got = colour_mod.settle_drift(
+                sample[::step],
+                (None if refl is None else refl[::step]),
+                lum, rgb_img, yaw, info["pitch_deg"], info["roll_deg"],
+                camera)
+            if got.get("ok") and got.get("moved"):
+                lum, rgb_img = got["lum"], got["rgb"]
+                up_px += int(got["up_px"])
+                yaw = float(got["yaw_deg"])
+                camera = (float(got["camera_x"]), float(got["camera_y"]),
+                          float(got["camera_z"]))
+                info["yaw_deg"] = yaw
+                info["pitch_deg"] = float(got["pitch_deg"])
+                info["roll_deg"] = float(got["roll_deg"])
+                info["camera_x"], info["camera_y"], info["camera_z"] = camera
+                scan.camera_x, scan.camera_y, scan.camera_z = camera
+                info["paint_drift"] = got.get("drift")
+
+    # Stored even when nothing new was measured, so a repaint at a given
+    # heading carries the lift a solve once earned instead of dropping it.
+    info["image_up_px"] = int(up_px)
+    info["image_up_deg"] = (0.0 if not up_px
+                            else round(up_px * 180.0 / lum.shape[0], 2))
 
     scan.rgb = colour_mod.sample(world, rgb_img, yaw_deg=yaw,
                                  camera=camera,
@@ -2589,6 +2628,9 @@ class AlignServer(object):
                 camera = _seat_of(sc)
                 try:
                     _rgb, lum = colour_mod.load_panorama(photo)
+                    _rgb, lum = colour_mod.lift_image(
+                        _rgb, lum,
+                        (sc.colour_info or {}).get("image_up_px"))
                     yaw, conf, prof = colour_mod.solve_yaw(sample, lum,
                                                            camera=camera)
                 except Exception as exc:                  # noqa: BLE001
@@ -2720,6 +2762,9 @@ class AlignServer(object):
             refl = None
         try:
             rgb_img, lum = colour_mod.load_panorama(photo)
+            # ⛔ THE PRESS JUDGES THE LIFTED IMAGE THE POSE WAS FITTED ON.
+            rgb_img, lum = colour_mod.lift_image(
+                rgb_img, lum, info.get("image_up_px"))
             got = colour_mod.refine_pose(
                 sample, lum,
                 camera=(float(info.get("camera_x") or 0.0),
@@ -2850,6 +2895,9 @@ class AlignServer(object):
         report("starting", 0, 5)
         try:
             rgb_img, lum = colour_mod.load_panorama(photo)
+            # ⛔ THE SEARCH JUDGES THE LIFTED IMAGE THE POSE WAS FITTED ON.
+            rgb_img, lum = colour_mod.lift_image(
+                rgb_img, lum, info.get("image_up_px"))
             got = colour_mod.deep_align(
                 sample, lum, refl=refl,
                 camera=(float(info.get("camera_x") or 0.0),
@@ -3305,6 +3353,11 @@ class AlignServer(object):
         scan.camera_z = float(pose.get("camera_z") or 0.0)
         scan.camera_x = float(pose.get("camera_x") or 0.0)
         scan.camera_y = float(pose.get("camera_y") or 0.0)
+        # ⛔ THE STITCH LIFT IS SEEDED BEFORE THE REPAINT READS IT. A fresh
+        # decode has no colour_info, and `colour_scan` reads the lift from
+        # there -- without this line a reopened project painted 0.8 degrees
+        # below the pose it faithfully restored.
+        scan.colour_info = {"image_up_px": int(pose.get("image_up_px") or 0)}
         colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
                     camera_x=scan.camera_x, camera_y=scan.camera_y,
                     yaw=pose.get("yaw_deg"), pitch=pose.get("pitch_deg"),
@@ -3531,6 +3584,10 @@ class AlignServer(object):
                 "camera_z": cz, "camera_x": cx, "camera_y": cy,
                 "grade": info.get("grade"),
                 "rung": int(info.get("rung") or 0),
+                # The stitch lift travels with the pose it was measured
+                # under, or the exporter paints from an image 0.8 degrees
+                # below the one on screen.
+                "image_up_px": int(info.get("image_up_px") or 0),
                 "camera": (cx, cy, cz)}
 
     def pick_out(self, suggest=None):
@@ -3655,6 +3712,7 @@ class AlignServer(object):
                     photo=pose.get("photo"), yaw_deg=pose.get("yaw_deg"),
                     pitch_deg=pose.get("pitch_deg") or 0.0,
                     roll_deg=pose.get("roll_deg") or 0.0,
+                    image_up_px=pose.get("image_up_px") or 0,
                     camera=tuple(pose.get("camera") or (0.0, 0.0, 0.0)),
                     setup=(None if only.setup.is_identity() else only.setup),
                     lean=(None if only.lean.is_identity() else only.lean),
@@ -9288,9 +9346,21 @@ async function usePhoto(index, path){
     say('Attached '+(i.name||'it')+' at '+
         (i.yaw_deg==null?'?':(+i.yaw_deg).toFixed(2))+'\u00b0'+
         (i.corroborated ? ' \u2014 confirmed by both methods.'
-                        : '. '+(i.caution||'Look at the result.')),
+                        : '. '+(i.caution||'Look at the result.'))+
+        liftNote(i),
         i.corroborated ? null : 'warn');
   }catch(e){ watch(false); say('Could not attach it: '+e.message, 'bad'); }
+}
+
+/* The stitch lift, said out loud when it happened: the operator has watched
+   this picture land low for weeks, and a paint that finally sits right with
+   no word about why would read as luck. */
+function liftNote(i){
+  const up=+((i&&i.image_up_deg)||0);
+  if(Math.abs(up)<0.3) return '';
+  return ' The photograph\u2019s own horizon sat '+Math.abs(up).toFixed(1)+
+         '\u00b0 '+(up>0?'low':'high')+' in its stitch, so the image was '+
+         (up>0?'lifted':'lowered')+' to meet the room.';
 }
 
 /* Ask the program what it thinks, again. */
@@ -9304,7 +9374,8 @@ async function resolve(index){
     const i=j.info||{};
     say('Solved again: heading '+(i.yaw_deg==null?'?':(+i.yaw_deg).toFixed(2))+
         '°, confidence '+(i.confidence==null?'?':(+i.confidence).toFixed(1))+
-        '. '+(i.caution || 'The other fits, if any, are listed beside it.'),
+        '. '+(i.caution || 'The other fits, if any, are listed beside it.')+
+        liftNote(i),
         i.grade==='sure' ? null : 'warn');
   }catch(e){ watch(false); say('Could not solve it: '+e.message, 'bad'); }
 }

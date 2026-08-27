@@ -8016,5 +8016,111 @@ check("...and the CLI records the second opinion beside the first, so a "
       and _cli_i1.get("judged") == ["edge", "mi"],
       (_cli_i1.get("second"), _cli_i1.get("corroborated")))
 
+# --- the stitch lift: the content gets the last word ------------------------
+#
+# ⛔⛔ A UNIFORM LATITUDE OFFSET IS OUTSIDE THE POSE SPAN, AND THE GLOBAL
+# JUDGES ARE BIASED ON EXACTLY THAT AXIS. Measured on folder 1: the operator
+# said "up a bit and to the left", the patch measure read the photograph's
+# content 0.80 degrees low and 0.42 right, the pano's stitch horizon was the
+# cause -- and the global edge cosine PREFERRED the droop (0.2013 unshifted
+# vs 0.1848 true), which is why the earlier "horizon is true" probe, asked
+# through those eyes, was told yes. These checks pin the measure that matches
+# the eye, the lift that corrects it, and every door the lift must survive.
+print("\ncolour: the paint drift measure and the stitch lift")
+_sd_refl = (np.log1p(colour.directions(room)[1]) * 60.0).astype(np.float32)
+_sd_lum = render_lum(room, 25.0, h=360, w=720)
+_sd0 = colour.paint_drift(room, _sd_refl, _sd_lum, 25.0)
+check("a true pose measures near-zero drift",
+      _sd0.get("ok") and abs(_sd0["dlat_deg"]) < 0.5
+      and abs(_sd0["dlon_deg"]) < 0.5, _sd0)
+_sd_low = np.roll(_sd_lum, 4, axis=0)          # content planted 2.0 deg LOW
+_sd1 = colour.paint_drift(room, _sd_refl, _sd_low, 25.0)
+check("content planted two degrees low reads as +2 in dlat",
+      _sd1.get("ok") and 1.2 < _sd1["dlat_deg"] < 2.8
+      and abs(_sd1["dlon_deg"]) < 0.6, _sd1)
+# ⛔ THE READING MUST NOT RIDE ON YAW. The per-patch-mean estimator this
+# replaced was coupled to the heading -- a 0.3 degree yaw change swung the
+# latitude reading half a degree on folder 1, and the settle loop oscillated
+# instead of landing. The pooled surface reads the same droop at any nearby
+# heading.
+_sd1b = colour.paint_drift(room, _sd_refl, _sd_low, 25.4)
+check("...and the latitude reading holds still under a 0.4 deg yaw change",
+      _sd1b.get("ok") and abs(_sd1b["dlat_deg"] - _sd1["dlat_deg"]) < 0.2,
+      (_sd1.get("dlat_deg"), _sd1b.get("dlat_deg")))
+check("...because the patch surfaces are POOLED before any peak is taken",
+      "surf[dr + R, dc + R] += " in inspect.getsource(colour.paint_drift))
+check("no reflectivity refuses rather than inventing a drift",
+      not colour.paint_drift(room, None, _sd_lum, 25.0).get("ok"))
+check("a blank photograph refuses: nothing correlated, nothing measured",
+      not colour.paint_drift(room, _sd_refl,
+                             np.zeros_like(_sd_lum), 25.0).get("ok"))
+
+_sd_rgb = np.dstack([_sd_lum.astype(np.uint8)] * 3)
+_lr, _ll = colour.lift_image(_sd_rgb, _sd_low, 4)
+check("lift_image rolls both faces of the photograph together, up",
+      np.array_equal(_ll, np.roll(_sd_low, -4, axis=0))
+      and np.array_equal(_lr, np.roll(_sd_rgb, -4, axis=0)))
+check("and a zero lift is the identity, not a copy",
+      colour.lift_image(None, _sd_lum, 0)[1] is _sd_lum)
+
+# ⛔⛔ NO POLISH MAY RUN AFTER THE LIFT. The first build re-polished on the
+# corrected image, and the end-to-end run on folder 1 watched that polish
+# drag the content straight back to a 0.81 degree residual -- its judge is
+# the same global score that prefers the droop. The corrector speaks last.
+_dr_calls = []
+_real_dr = colour.deep_refine
+colour.deep_refine = lambda *a, **k: (_dr_calls.append(1),
+                                      {"ok": False})[1]
+try:
+    _st = colour.settle_drift(room, _sd_refl, _sd_low, None, 25.0)
+finally:
+    colour.deep_refine = _real_dr
+check("settle_drift lifts a low image back to true (2 deg = 4 px here)",
+      _st.get("ok") and _st.get("moved") and 3 <= (_st.get("up_px") or 0) <= 6,
+      {k: _st.get(k) for k in ("ok", "moved", "up_px", "up_deg", "reason")})
+check("...and no polish runs after the lift -- the judge that prefers the "
+      "droop must not speak last", not _dr_calls, len(_dr_calls))
+check("...and the residual it reports is small",
+      abs(((_st.get("drift") or {}).get("dlat_deg") or 9.0)) < 0.6,
+      _st.get("drift"))
+_st0 = colour.settle_drift(room, _sd_refl, _sd_lum, None, 25.0)
+check("...and a true image is left exactly alone",
+      _st0.get("ok") and not _st0.get("moved") and _st0.get("up_px") == 0,
+      (_st0.get("moved"), _st0.get("up_px")))
+
+# ⛔ EVERY DOOR THE PHOTOGRAPH COMES THROUGH, NAMED. The lift is a property
+# of the image; a door that reloads it and forgets the lift paints or judges
+# 0.8 degrees below the pose it was handed -- the solved-stored-never-sent
+# shape, which this project has now paid for six times.
+print("\nthe stitch lift is wired at every door")
+_cs_src = inspect.getsource(align.colour_scan)
+check("the attach measures and settles the drift after the climb",
+      "settle_drift(" in _cs_src and "image_up_px" in _cs_src)
+check("...and applies a stored lift at the door, before anything solves",
+      0 < _cs_src.find("lift_image(") < _cs_src.find("solve_yaw("))
+for _fn, _what in ((align.AlignServer.colour_pose,
+                    "the exporter's pose carries the lift"),
+                   (align.AlignServer._carry_colour,
+                    "a reopened project seeds the lift before repainting"),
+                   (pipeline._pose_kwargs,
+                    "a merge hands each capture its own lift"),
+                   (pipeline.prepare_colour,
+                    "the CLI door takes and applies the lift"),
+                   (pipeline.convert,
+                    "convert forwards the lift to the colour step")):
+    check(_what, "image_up_px" in inspect.getsource(_fn))
+check("the CLI's own solve settles the drift too",
+      "settle_drift(" in inspect.getsource(pipeline.prepare_colour))
+_lift_refine = _ALIGN_SRC.find("colour_mod.refine_pose(")
+_lift_deep = _ALIGN_SRC.find("colour_mod.deep_align(")
+check("the refine press judges the lifted image the pose was fitted on",
+      _lift_refine > 0
+      and "lift_image" in _ALIGN_SRC[_lift_refine - 400:_lift_refine])
+check("the deep press judges the lifted image too",
+      _lift_deep > 0
+      and "lift_image" in _ALIGN_SRC[_lift_deep - 400:_lift_deep])
+check("the page says when a horizon was lifted, at both solve doors",
+      _page.count("liftNote(i)") >= 2 and "function liftNote" in _page)
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

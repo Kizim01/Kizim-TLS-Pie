@@ -4271,22 +4271,54 @@ reported the clip **tray controls** dead in the same breath — the diff never t
 if that recurs on the 21:48 build get the exact control and the tray's On/Off + Box shown/hidden
 state, or F12 console output.
 
+## 2026-08-27, sixth pass — the stitch lift: the operator's eye was right and both judges were biased
+
+Operator: *"D:\RESTAURANT SCAN\1 image still does not solve correctly, needs to be up abit and to
+the left."* Measured instead of asked: rendering the cloud's own edge panorama against the
+photograph patch-by-patch at 2× the fine grid read the content **0.80° low and 0.42° right** —
+the eye confirmed by instrument. Then the finding that reframes three weeks of "too low":
+**the camera stitches its pano horizon 0.6–1.1° BELOW the image's middle row** (folder 1 ≈0.8°,
+folder 3 ≈0.58° — systematic, not per-shot), and **a uniform latitude offset is OUTSIDE THE POSE
+SPAN** (pitch raises the front but lowers the back; height moves near things more than far), so
+every climb could only smear it into pitch/height compromises. Worse, **the global judges are
+biased on exactly this axis**: the edge cosine PREFERS the droop (0.2013 unshifted vs 0.1848
+true), which is why the pass-3 "horizon is true" probe — asked through those eyes — was told yes.
+⭐ *A judge that is happy at every resolution while the eye still objects is a judge whose axis
+does not span the defect.*
+
+**Built: `colour.paint_drift` + `settle_drift` + `lift_image`.** After the climb, where the
+content actually sits is measured (36 patch correlation surfaces **POOLED into one consensus
+surface before any peak is taken** — the per-patch-mean first draft was multi-modal AND coupled to
+yaw, oscillating 92.67→92.86→92.55→92.88 without landing; pooled, the reading is stable to 0.001°
+across a 0.8° yaw sweep and falls 1:1 with a known lift, sub-cell by parabola), the image is
+lifted to meet the room, and the longitude folds into yaw. ⛔⛔ **NO polish runs after the lift**
+— the first draft re-polished on the corrected image and the end-to-end run watched the polish
+drag the content straight back to a 0.81° residual, because its judge prefers the droop: **the
+corrector speaks last**. End-to-end on folder 1: **residual (−0.015°, −0.013°)** — content-true.
+The lift is a property of the IMAGE and travels through every door: attach, both press paths,
+joint solve, project save/reopen (`_carry_colour` seeds it), export (`colour_pose` →
+`convert` → `prepare_colour`), merge, CLI. The page says it out loud: *"the photograph's own
+horizon sat 0.8° low in its stitch, so the image was lifted to meet the room."*
+Suite **1174 → 1197**; five reversion audits (settle unwired, door lift dropped, lift sign
+flipped — the wrong direction ran the drift into the DRIFT_MAX_DEG wrong-pairing refusal, exactly
+the runaway that clamp exists for — pooling reverted to overwrite fired SIX checks, polish
+re-added fires its own).
+⚠ Open, queued: the climb's polish has a WALL-CLOCK deadline (`LADDER_POLISH_SECONDS`), so the
+pose it hands over varies run-to-run with machine load (yaw 92.48–92.88 observed); the lift
+adapts to whichever pose arrives, but reproducibility of the climb itself is unfinished business.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio rebuilt 2026-08-26 21:48, selftest 0** (converter unchanged —
-the change is Studio-page only). They carry the two-eyed fine-finished climb, the follow-the-lean
-re-solve, AND the settled clip-box grip rule (see "fifth pass" below: a grip is taken directly on
-its dot, no modifier; a drag anywhere else is always the camera — the 21:19 Ctrl-gate build was
-rejected by the operator within the hour and is superseded). Two tests, in order:
-1. **Import folder 1's pcap FRESH, not from a saved project**: first paint about **pitch 2.5°,
-   camera +7 cm, confirmed**, ~50 s. **Does z +66 mm / pitch 2.5° finally look RIGHT?** Their last
-   eye-report ("+6 cm is still a bit low") and every fine measure now agree; the operator has
-   never seen this pose. If still low, get WHERE — near-only means height, front-only means pitch,
-   everywhere means something outside the pose span (the pano horizon is measured true).
-2. **Import folder 3 fresh, then Auto-align it onto folder 1** (or multi-fit): the fit corrects
-   its 2° floor-fit roll error and the reply should say "**its photograph was re-solved against
-   the new attitude**" — the colours must visibly follow. Expect scan 3's grade to be *unsure*,
-   not confirmed: its pairing is genuinely harder, that grade is honest.
+**✅ THE EXES ARE CURRENT: Studio AND Converter rebuilt 2026-08-27 03:13/03:14, selftest 0.**
+They carry the clip-box dot-grip rule (fifth pass) AND the stitch lift (sixth pass). Two tests:
+1. **Import folder 1's pcap FRESH, not from a saved project**: the attach message should now end
+   with "**the photograph's own horizon sat ~0.5–0.8° low in its stitch, so the image was lifted
+   to meet the room**" — and the paint should finally sit RIGHT: not low, not right of the
+   features. If anything still looks off, get WHERE and which way.
+2. **The clip box, on the 03:13 build**: grips grab when the drag starts ON the lit dot (no
+   modifier); a drag anywhere else is the camera. If the tray controls still seem dead, get the
+   exact control pressed, the On/Off + Box shown/hidden state, and any F12 console output —
+   the wiring is untouched in the diff and parses clean, so a repeat needs specifics.
 ⚠ A rebuild with Studio open dies on `[WinError 5]` — the running exe locks its own file; close
 Studio first.
 ⚠ **Verify a rebuild by mtime and `--selftest`, never by grepping the exe** — PyInstaller stores

@@ -685,7 +685,7 @@ def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
 
 def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
                    camera=(0.0, 0.0, 0.0), per_laser_azimuth=False,
-                   pitch_deg=0.0, roll_deg=0.0, lean=None):
+                   pitch_deg=0.0, roll_deg=0.0, lean=None, image_up_px=0):
     """
     (colouriser or None, info). Never raises -- a colour problem is not a
     reason to lose the scan, so it degrades to grey and says why.
@@ -705,6 +705,10 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
                                                      exc)
         return None, info
     info["warning"] = colour_mod.aspect_warning(rgb)
+    # ⭐ THE STITCH LIFT ARRIVES WITH THE POSE IT WAS MEASURED UNDER --
+    # Studio's export hands both over together, so the file is painted from
+    # the image the screen showed, not one 0.8 degrees below it.
+    rgb, lum = colour_mod.lift_image(rgb, lum, image_up_px)
 
     if yaw_deg is not None:
         info["yaw_deg"] = float(yaw_deg)
@@ -779,6 +783,24 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     camera = (float(pose.get("camera_x") or 0.0),
               float(pose.get("camera_y") or 0.0),
               float(pose.get("camera_z") or 0.0))
+
+    # ⭐ THE CONTENT GETS THE LAST WORD HERE TOO -- a straight CLI convert
+    # measures and lifts the stitch droop exactly as Studio's attach does,
+    # or the same folder would paint two different pictures depending on
+    # which door it came in through. See `colour.paint_drift`.
+    got = colour_mod.settle_drift(pts, refl, lum, rgb, info["yaw_deg"],
+                                  info["pitch_deg"], info["roll_deg"],
+                                  camera)
+    if got.get("ok") and got.get("moved"):
+        lum, rgb = got["lum"], got["rgb"]
+        info["yaw_deg"] = float(got["yaw_deg"])
+        info["pitch_deg"] = float(got["pitch_deg"])
+        info["roll_deg"] = float(got["roll_deg"])
+        camera = (float(got["camera_x"]), float(got["camera_y"]),
+                  float(got["camera_z"]))
+        info["image_up_px"] = int(got["up_px"])
+        info["image_up_deg"] = float(round(got["up_deg"], 2))
+        info["paint_drift"] = got.get("drift")
     return colour_mod.Colouriser(rgb, info["yaw_deg"], camera,
                                  info["pitch_deg"], info["roll_deg"]), info
 
@@ -800,7 +822,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             colouriser=None, progress=None, viewer_sink=None,
             setup=None, writer=None, edit=None, level=None,
             photo=LOOK_BESIDE, pitch_deg=0.0, roll_deg=0.0,
-            clean_spec=None, lean=None):
+            clean_spec=None, lean=None, image_up_px=0):
     """
     Convert one capture. Returns a dict describing what happened.
 
@@ -836,7 +858,8 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         colouriser, colour_info = prepare_colour(
             pcap_path, meta, frame, photo=photo, yaw_deg=yaw_deg,
             camera=camera, per_laser_azimuth=per_laser_azimuth,
-            pitch_deg=pitch_deg, roll_deg=roll_deg, lean=lean)
+            pitch_deg=pitch_deg, roll_deg=roll_deg, lean=lean,
+            image_up_px=image_up_px)
 
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
     own_writer = writer is None
@@ -1037,6 +1060,7 @@ def _pose_kwargs(colours, i):
             "yaw_deg": pose.get("yaw_deg"),
             "pitch_deg": float(pose.get("pitch_deg") or 0.0),
             "roll_deg": float(pose.get("roll_deg") or 0.0),
+            "image_up_px": int(pose.get("image_up_px") or 0),
             "camera": tuple(pose.get("camera") or (0.0, 0.0, 0.0))}
 
 
