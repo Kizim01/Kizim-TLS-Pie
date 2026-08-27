@@ -5952,10 +5952,27 @@ function shader(t,src){ const s=gl.createShader(t);
   return s; }
 function invalidate(){ need=true; }
 
+/* Sustained slowness leaves one line in the log: 30 back-to-back drawn
+   frames over 90 ms. Measured as the gap between CONSECUTIVE drawn frames
+   (drawArrays returns before the GPU works, so timing the body would time
+   the submission); a frame after an idle gap starts the count over. */
+let drawT=0, slowN=0, slowTold=false;
+
 function draw(){
   requestAnimationFrame(draw);
-  if(!need) return;
+  if(!need){ drawT=0; return; }
   need=false;
+  const t0=performance.now();
+  if(drawT && t0-drawT>90){
+    if(++slowN===30 && !slowTold){
+      slowTold=true;
+      let np=0;
+      for(const s of V.scans) if(shown(s.index)) np+=s.points;
+      tellServer('gl-slow', '30 consecutive frames over 90ms with '+np+
+                 ' points on '+(V.glName||'?')+(V.rush?' (during rush)':''));
+    }
+  } else if(drawT) slowN=0;
+  drawT=t0;
   const dpr=Math.min(devicePixelRatio||1,2);
   const w=Math.floor(innerWidth*dpr), h=Math.floor(innerHeight*dpr);
   if(cv.width!==w||cv.height!==h){ cv.width=w; cv.height=h; }
@@ -5993,7 +6010,8 @@ function draw(){
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
     const comps=s.rgb?3:1;
-    for(const c of s.chunks){
+    /* while the hand moves, the strided twin; the full cloud on release */
+    for(const c of ((V.rush && s.coarse) ? s.coarse.chunks : s.chunks)){
       gl.bindBuffer(gl.ARRAY_BUFFER,c.pos);
       gl.vertexAttribPointer(loc.aPos,3,gl.SHORT,false,0,0);
       gl.bindBuffer(gl.ARRAY_BUFFER,c.col);
@@ -6035,6 +6053,7 @@ async function loadScan(m){
      server, at which point dragging an outline stops feeling like an editor. */
   const live=new Uint8Array(n).fill(1);
   const chunks=makeChunks(pos,col,live,comps,m.name);
+  const coarse=makeCoarse(pos,col,live,comps,m.name);
   let lo=[1e9,1e9,1e9], hi=[-1e9,-1e9,-1e9], reach=[];
   const step=Math.max(1,Math.floor(n/20000));
   for(let i=0;i<n;i+=step){
@@ -6053,7 +6072,7 @@ async function loadScan(m){
      and nothing logged. `points/` is fetched here too, which is why the route
      cross-check has to look at do_GET as well as do_POST. */
   return {index:m.index, name:m.name, points:n, total:(m.total||n),
-          rgb, scale, offset, chunks, raw:pos, live,
+          rgb, scale, offset, chunks, coarse, raw:pos, live,
           subsampled:!!m.subsampled,
           setup:m.setup, tint:m.tint, lo, hi,
           tintf:m.tint.map(v=>v/255),
@@ -6109,6 +6128,42 @@ function makeChunks(pos,col,live,comps,name){
   return chunks;
 }
 
+/* ⭐⭐ THE RUSH TWIN: EVERY Kth POINT, BUILT ONCE, DRAWN WHILE THE HAND MOVES.
+   Rotating the view redraws every point of every scan each frame, so the
+   feel of the camera degrades with the size of the project -- reported the
+   day align-on-import made it easy to open a whole walk at once. This is the
+   standard answer, not an invention: CloudCompare ships it as "decimate
+   clouds over N points when moved" and Potree's octree LOD is the same idea
+   with more machinery. Each big scan gets a strided twin capped at RUSH_KEEP
+   points; camera drags and wheel zooms draw the twin, and the full cloud
+   returns the moment the hand stops. The stride walks CAPTURE order -- a
+   spinning head sweeps the whole room every rotation, so every Kth point is
+   spatially even, not a wedge.
+   ⛔ CUDA IS NOT THE LEVER HERE, and that is worth recording because it was
+   asked for by name: the canvas is drawn by WebView2's own GPU process
+   (ANGLE on Direct3D, on the same RTX when healthy) and no CUDA kernel can
+   paint it. The card is already doing the work; the fix is asking it for
+   fewer points while the view is in motion. */
+const RUSH_KEEP=250000, RUSH_MIN=500000;
+function makeCoarse(pos,col,live,comps,name){
+  const n=live.length;
+  if(n<RUSH_MIN) return null;
+  const K=Math.ceil(n/RUSH_KEEP), m=Math.floor(n/K);
+  const p=new Int16Array(m*3), c=new Uint8Array(m*comps),
+        l=new Uint8Array(m);
+  for(let i=0;i<m;i++){
+    const j=i*K;
+    p[i*3]=pos[j*3]; p[i*3+1]=pos[j*3+1]; p[i*3+2]=pos[j*3+2];
+    for(let a=0;a<comps;a++) c[i*comps+a]=col[j*comps+a];
+    l[i]=live[j];
+  }
+  /* Only the live mask is kept on the CPU: it is the one array that changes
+     after upload (cuts), and `upload` refreshes it from the full mask. The
+     sampled positions and colours live on the GPU alone -- recovery rebuilds
+     them from s.raw exactly as reChunk rebuilds the full chunks. */
+  return {step:K, live:l, chunks:makeChunks(p,c,l,comps,name+' rush')};
+}
+
 /* A recovered context gets fresh buffers from the arrays the page KEPT --
    the positions were already held for the lasso, the live mask holds the
    cuts, and the colours live in the same ArrayBuffer as the positions. */
@@ -6116,6 +6171,7 @@ function reChunk(s){
   const n=s.points, comps=s.rgb?3:1;
   const col=new Uint8Array(s.raw.buffer, s.raw.byteOffset + n*6, n*comps);
   s.chunks=makeChunks(s.raw, col, s.live, comps, s.name);
+  s.coarse=makeCoarse(s.raw, col, s.live, comps, s.name);
 }
 
 /* ⛔ EVERYTHING THE GL CONTEXT OWNS IS BUILT HERE, in one place, so a
@@ -6177,6 +6233,25 @@ async function boot(){
   cv=$('cv'); ov=$('ov'); oc=ov.getContext('2d');
   gl=cv.getContext('webgl',{antialias:false,depth:true});
   if(!gl) return fail('This browser has no WebGL.');
+  /* ⭐ WHICH RENDERER THE WINDOW ACTUALLY GOT, ON THE RECORD. The solver's
+     card is already on screen (the topbar chip); the VIEW's card never was,
+     and the two can differ: after a driver reset like the 08-27 crash,
+     Chromium can hand the page a SOFTWARE rasteriser (SwiftShader) that
+     draws every frame on the CPU -- which looks exactly like "the program
+     got slow", with nothing anywhere saying why. The name goes to the studio
+     log every boot, and a software renderer is said out loud. */
+  try{
+    const di=gl.getExtension('WEBGL_debug_renderer_info');
+    V.glName=String(gl.getParameter(di ? di.UNMASKED_RENDERER_WEBGL
+                                       : gl.RENDERER));
+  }catch(e){ V.glName='unknown'; }
+  tellServer('gl', 'renderer: '+V.glName);
+  if(/swiftshader|llvmpipe|software|basic render/i.test(V.glName))
+    say('⚠ Windows handed this window a SOFTWARE renderer ('+V.glName+
+        ') — the graphics card is not drawing the points, so every view '+
+        'move will crawl. Close and reopen Studio first; if this warning '+
+        'comes back, reboot the machine — a graphics driver reset can '+
+        'leave the card refused until then.', 'warn');
   try{ buildGL(); }catch(e){ return fail('Shader failed: '+e.message); }
   /* ⛔⛔ A LOST GRAPHICS CONTEXT IS AN EVENT, NOT AN ENDING. A driver reset
      mid-drag used to take the whole window down in silence (2026-08-27,
@@ -7080,6 +7155,17 @@ function upload(s){
   for(const c of s.chunks){
     gl.bindBuffer(gl.ARRAY_BUFFER,c.live);
     gl.bufferSubData(gl.ARRAY_BUFFER,0,s.live.subarray(c.at,c.at+c.n));
+  }
+  /* ⛔ THE RUSH TWIN CARRIES THE CUTS TOO, or a delete would flicker back
+     into view the moment the camera moved. Same mask, sampled at the twin's
+     own stride. */
+  if(s.coarse){
+    const K=s.coarse.step, l=s.coarse.live;
+    for(let i=0;i<l.length;i++) l[i]=s.live[i*K];
+    for(const c of s.coarse.chunks){
+      gl.bindBuffer(gl.ARRAY_BUFFER,c.live);
+      gl.bufferSubData(gl.ARRAY_BUFFER,0,l.subarray(c.at,c.at+c.n));
+    }
   }
 }
 /* The same test pipeline.Box.inside runs, in the same turn order. */
@@ -9973,7 +10059,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
-  let tilting=null, leaning=null, camming=null;
+  let tilting=null, leaning=null, camming=null, rushT=null;
   /* Which of the move gizmo's arms is being dragged, and where the hand was
      last frame. */
   let axis=null;
@@ -10061,6 +10147,11 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(!grip) V.hot=-1;
     moving = !V.nav && V.grab && left && !panning && !grip && !lassoing &&
              ring===null && tilting===null && axis===null && leaning===null;
+    /* ⭐ EVERY VIEW-MOVING PRESS DRAWS THE RUSH TWIN. A lasso and a pair pick
+       leave the cloud still (their feedback is the 2D overlay), so they keep
+       full detail; everything else -- orbit, pan, a scan or box drag, every
+       gizmo -- redraws the cloud continuously and gets the twin. */
+    V.rush = !lassoing && picking===null;
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -10132,10 +10223,17 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     axis=null; V.moveAxis=null;
     leaning=null; V.leanAxis=null;
     down=false; moving=false; grip=null; lassoing=false;
+    /* the hand stopped: the next frame is the full cloud again */
+    if(V.rush){ V.rush=false; invalidate(); }
     cv.classList.remove('drag'); });
   addEventListener('wheel', e=>{
     if(e.target.id!=='cv') return;
-    e.preventDefault(); zoom(Math.exp(e.deltaY*0.0012));
+    e.preventDefault();
+    /* A wheel zoom is a burst with no release event, so the rush ends on a
+       short settle timer instead: full detail 200 ms after the last notch. */
+    V.rush=true; clearTimeout(rushT);
+    rushT=setTimeout(()=>{ V.rush=false; invalidate(); }, 200);
+    zoom(Math.exp(e.deltaY*0.0012));
   }, {passive:false});
   addEventListener('keydown', e=>{
     const t=(e.target.tagName||'').toLowerCase();

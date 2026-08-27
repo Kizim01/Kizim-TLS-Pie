@@ -1731,6 +1731,48 @@ try:
           not in _page
           and "two solves for every scan" in _page)
 
+    # ⭐⭐ THE RUSH TWIN: FEWER POINTS WHILE THE HAND MOVES, EVERY POINT AT
+    # REST. Reported 2026-08-27, the day align-on-import made it easy to open
+    # a whole walk at once: "rotating and moving the cloud is really sluggish".
+    # Rotation redraws every point of every scan per frame, so the camera's
+    # feel degrades with project size; the standard fix (CloudCompare's
+    # "decimate clouds over N points when moved", Potree's LOD) is a strided
+    # twin drawn during interaction. CUDA was asked for by name and is not the
+    # lever -- the canvas is drawn by WebView2's own GPU process.
+    check("big scans get a strided rush twin, built at load and at recovery",
+          "function makeCoarse" in _page
+          and "const coarse=makeCoarse" in _page
+          and "s.coarse=makeCoarse" in re.search(
+              r"function reChunk\(s\)\{.*?\n\}", _page, re.S).group(0))
+    check("the draw loop switches to the twin during a rush",
+          "(V.rush && s.coarse) ? s.coarse.chunks : s.chunks" in _page)
+    check("a view-moving press starts the rush; lasso and pick do not",
+          "V.rush = !lassoing && picking===null;" in _page)
+    check("release and the wheel's settle timer both end it with a "
+          "full-detail redraw",
+          "if(V.rush){ V.rush=false; invalidate(); }" in _page
+          and "rushT=setTimeout(()=>{ V.rush=false; invalidate(); }" in _page)
+    check("the cuts reach the twin, or a delete would flicker back during "
+          "a drag",
+          "l[i]=s.live[i*K]" in re.search(
+              r"function upload\(s\)\{.*?\n\}", _page, re.S).group(0))
+    # ⭐ WHICH RENDERER THE WINDOW GOT, ON THE RECORD. After a driver reset
+    # Chromium can hand the page SwiftShader -- software rasterising that
+    # looks exactly like "the program got slow". The name is logged every
+    # boot, before the GL setup that could fail, and software is said aloud.
+    check("the page logs its actual WebGL renderer at boot",
+          "UNMASKED_RENDERER_WEBGL" in _page
+          and "tellServer('gl', 'renderer: '+V.glName)" in _page)
+    check("...and a software renderer is announced, not endured",
+          "SOFTWARE renderer" in _page)
+    check("...probed after the context exists and before the shaders build",
+          _page.index("UNMASKED_RENDERER_WEBGL")
+          > _page.index("getContext('webgl'")
+          and _page.index("UNMASKED_RENDERER_WEBGL")
+          < _page.index("try{ buildGL(); }"))
+    check("sustained slow frames leave one line in the log",
+          "gl-slow" in _page and "slowTold" in _page)
+
     # ⛔⛔ THE TEST THAT WOULD HAVE CAUGHT IT. Routing read `V.tool==='pair'` to
     # pick and "any other tool at all" to drag an outline, so the levelling and
     # plumb tools -- which pick points -- silently started a LASSO and answered
