@@ -4439,9 +4439,48 @@ the same idea with more machinery.
   `private_mode=True` → WebView2 gets a FRESH temp profile every launch, so no persistent GPU
   cache / crash-fallback state survives a restart of Studio.
 
+## 2026-08-27, eleventh pass — the log answered: wrong GPU + 46.5M points; no frame draws it all now
+
+The tenth pass's instrumentation paid for itself the same evening. *"Still super sluggish — works
+for one bit of a turn but if I want to turn it more it hangs"* → studio.log:
+`renderer: ANGLE (AMD, AMD Radeon(TM) Graphics ...)` — **the window is drawn by the INTEGRATED
+chip, the RTX sits idle** (Windows gives WebView2 the power-saving GPU) — and
+`gl-slow: ... 46501002 points`. The hang was the **full-detail redraw on release**: one
+46M-point frame the next grab had to wait behind. Fixed (`dabad71`, suite 1238 → 1247):
+
+- **Progressive refinement** — scene frames draw the rush twins and QUEUE the real chunks;
+  idle frames refine ONE 4M chunk each into the preserved drawing buffer
+  (`preserveDrawingBuffer:true`; identical points → identical pixels/depth, seamless); a new
+  drag resets the queue, so the most any grab waits behind is one chunk. No frame ever draws
+  the whole project again. (Potree's "progressive rendering" in miniature.)
+- **The GPU is asked for and named**: `powerPreference:'high-performance'` on the context, and
+  when the renderer is still non-NVIDIA while CUDA is on, the page says which card is drawing
+  and spells the fix: **Windows Settings → System → Display → Graphics → add
+  `msedgewebview2.exe` (Program Files (x86)/Microsoft/EdgeWebView/Application) → High
+  performance → restart Studio.** That setting is the reliable lever; `powerPreference` may or
+  may not be honoured — the next boot's `renderer:` line says which card won.
+- **"Slow to delete points"** — `recomputeLive` re-tests EVERY edit against EVERY point
+  (quadratic while cutting). A new DROP now runs only itself via `applyDrop` (drops applied
+  last always win → identical mask; keeps/undo still recompute fully); dead points skip the
+  transform (`_wx[i]=NaN` — no comparison passes), out-of-share scans are never walked,
+  untouched scans skip re-upload, and `markLasso` rejects on the outline's bbox before the
+  crossing test. Cutting gets FASTER as the model gets cleaner.
+- **"Move controls only on the last scan imported"** — double-clicking a cloud picks that scan
+  (`scanUnder`: strided ~200k-test identification, clip-aware; yields to live tools, the axes
+  widget, the grips). Same `pickScan` the list rows already had — now reachable where the hand
+  is.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-27 21:47:04, Converter 21:47:37, selftest 0.** They
+**✅ THE EXES ARE CURRENT: Studio 2026-08-27 22:23:42, Converter 22:24:08, selftest 0.**
+**FIRST THING TO TELL THE OPERATOR: the view is on the WRONG GPU** — do the Windows Graphics
+setting above once, restart Studio, and check studio.log's `renderer:` line says NVIDIA.
+Then: turning should never hang (worst wait = one 4M chunk), the cloud sharpens over ~a second
+at rest, lasso deletes should be far quicker (and quicker still as more is cut), and
+double-click re-aims the move controls.
+
+<!-- superseded by the eleventh pass, kept for the build trail -->
+**Older: Studio 2026-08-27 21:47:04, Converter 21:47:37, selftest 0.** They
 carry the dot-grip rule (fifth pass), the stitch lift (sixth), the crash trail + GL recovery +
 zombie guard (seventh), the full-code-check fixes (eighth), the room-fit-on-import (ninth) AND
 the rush twin (tenth). If Studio dies again, open `%LOCALAPPDATA%\TLS-Pie\studio.log` FIRST —
