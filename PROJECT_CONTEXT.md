@@ -4470,14 +4470,66 @@ chip, the RTX sits idle** (Windows gives WebView2 the power-saving GPU) — and
   widget, the grips). Same `pickScan` the list rows already had — now reachable where the hand
   is.
 
+## 2026-08-27, twelfth pass — an unplaced scan was ALWAYS aimed at the reference (12× worse fits)
+
+⛔⛔ **THE BIGGEST ALIGNMENT FINDING SINCE THE JUDGE WENT BLIND.** Operator: *"auto align is also
+not working when the scans are close."* Measured on their own job before changing anything:
+
+**An unplaced scan sits at the ORIGIN — and so does the reference**, which therefore won
+`nearest_to`'s tripod tie by 0.00 m *every single time*. So the FIRST press on every scan — the
+one press that has to work — fitted it to scan 1. That is precisely the failure `nearest_to` was
+written to prevent, **arriving through `nearest_to`**. Their walk is 18 captures, tripods
+0.72–3.6 m apart, folder 9 sitting **12.09 m** from the reference; "when the scans are close"
+is a dense cluster far from scan 1.
+
+| folder 13 (0.72 m from folder 12, ~10 m from the reference) | residual | verdict | time |
+|---|---|---|---|
+| onto the reference (what the button did) | **0.383 m** | not trustworthy, ambiguous | 20.2 s |
+| onto folder 12 (the capture beside it) | **0.031 m** | same fit as an explicit target | 6.3 s |
+
+**12× better and 3× faster, and the only difference was which scan it was pointed at.**
+
+**Fixed (`184276c`, suite 1247 → 1254):** an unplaced scan is aimed by the **CAPTURE ORDER** —
+the one thing known about it before it is placed. `walk_order()` reads the sequence off the
+numbered folders a sorted shoot already wrote (falling back to the `TLS_yy_mm_dd_hh_mm_ss`
+names), never inferring it from geometry the scan does not have; `default_target()` returns
+`(index, rule)` and `solve` names the rule on screen. Consecutive captures overlap by
+construction — **Open3D's pose graph calls these odometry edges and trusts local registration on
+them alone**; checked against all 18 captures, the capture-order neighbour is among the two or
+three nearest tripods every time. ⭐ A **placed** scan still answers with its nearest tripod,
+because by then the question is fair. ⛔ The order is **all-or-nothing**: a part-numbered shoot
+keeps the tripod rule rather than ranking half the scans by accident.
+
+**Same pass — "scan 2 doesn't align perfectly like it used to" was NOT a geometry regression.**
+Proven before touching anything: that pair measures **3.7 cm against a 0.6 cm sampling floor**,
+trustworthy, and the placement is **bit-identical** with and without the ninth pass's room fit
+(which refuses in 0.0 s on a two-scan job); `registration.py` is untouched all session and
+pipeline.py's only changes are colour. What changed is **what is drawn**: the rush twin drew one
+point in K at unchanged size, which does not thin a surface evenly — **it punches holes in it**,
+and through the near cloud's holes you see the far one, so two clouds of one wall interleave as
+two speckle patterns, *indistinguishable from them not lining up*. Points now grow by **sqrt(K)**
+to cover what they stand in for (Potree's adaptive point size); refinement frames put the size
+back. ⭐⭐ **A rendering shortcut that changes how two surfaces INTERLEAVE is an alignment bug
+report waiting to happen — thin by coverage, not by count.**
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-27 22:23:42, Converter 22:24:08, selftest 0.**
-**FIRST THING TO TELL THE OPERATOR: the view is on the WRONG GPU** — do the Windows Graphics
-setting above once, restart Studio, and check studio.log's `renderer:` line says NVIDIA.
-Then: turning should never hang (worst wait = one 4M chunk), the cloud sharpens over ~a second
-at rest, lasso deletes should be far quicker (and quicker still as more is cut), and
-double-click re-aims the move controls.
+**✅ THE EXES ARE CURRENT: Studio 2026-08-27 23:22:39, Converter 23:22:59, selftest 0.**
+
+**⭐⭐ FIRST THING TO TELL THE OPERATOR: THE VIEW IS ON THE WRONG GPU** — Windows draws the
+WebView2 window on the AMD integrated chip while the RTX sits idle (studio.log's `renderer:`
+line, 2026-08-27). One-time fix, and only they can do it: **Settings → System → Display →
+Graphics → Add an app → `msedgewebview2.exe`** (in `C:\Program Files (x86)\Microsoft\
+EdgeWebView\Application\<version>\` — that folder holds seven other exes, this is the one) **→
+High performance → restart Studio**, then check the log's next `renderer:` line says NVIDIA.
+
+Then on the 23:22 build: turning never hangs (worst wait = one 4M chunk), the cloud sharpens
+over ~a second at rest and no longer goes porous while moving, lasso deletes are far quicker
+(quicker still as more is cut), double-click re-aims the move controls, and **Auto-align on a
+fresh scan now aims at the capture beside it in the walk and says so.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-27 22:23:42, Converter 22:24:08, selftest 0.**
 
 <!-- superseded by the eleventh pass, kept for the build trail -->
 **Older: Studio 2026-08-27 21:47:04, Converter 21:47:37, selftest 0.** They
