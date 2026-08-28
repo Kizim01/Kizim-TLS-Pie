@@ -5035,9 +5035,109 @@ Suites **1309 → 1348**. THREE reversion audits, **28 of 30 breaks caught** —
    passed the first time it ran because the comment beside the change quotes that expression.
    Comments are stripped before counting now. Third time in two days.
 
+## 2026-08-28, nineteenth pass — a circle and a polygon, and what they cost (almost nothing)
+
+Asked for by name: *"for cutting points i would like a circle tool, and a polygon tool."*
+
+### ⭐⭐ NEITHER IS A NEW KIND OF CUT, AND THAT IS THE WHOLE STORY
+
+The rectangle was **already a four-point polygon** fed through `commitLasso`. So a circle is that
+with sixty-four points and a polygon is that with however many corners were clicked. **Nothing on
+the server, in `editPlan` or in the exporter learned anything** — pinned by a check, so a later
+change cannot quietly give one of them a path of its own.
+
+Read the existing shape of a feature before pricing a new one against it. Two tools that sounded
+like two new cut kinds were two new ways of producing an outline the program already knew.
+
+### The circle: a DRAG, from its CENTRE
+
+⭐ A marquee is placed by its edges because that is where a rectangle's meaning is. A circle goes
+over a tripod, a bin, a person — you place it by the thing in the MIDDLE and drag until it is
+covered. `CIRCLE_SEGS = 64` is written down once rather than at the point of use, because the whole
+list travels to the exporter as a polygon.
+
+### The polygon: CLICKS, and all from ONE viewpoint
+
+It went in `PICK_TOOLS`, not `DRAW_TOOLS`, and the distinction is the BUTTON rather than the shape:
+a draw tool owns the press (down, drag, up, done), while the polygon needs the operator to click,
+look, and click again — so it takes each corner on RELEASE and lets anything that travelled fall
+through to the camera, exactly as pair-picking does.
+
+⛔⛔ **EVERY CORNER MUST BE PLACED FROM ONE VIEWPOINT, and that is not a shortcoming of the
+tool — it is what a screen-space cut IS.** The lasso obeys the same rule; it simply never gets the
+chance to break it, because a drag ends when the hand lifts. A CLICKED polygon can outlive an
+orbit, and corners placed before it would describe a column through somewhere nobody pointed at: a
+cut that looks deliberate and lands in the wrong part of the room. So the matrix is frozen at the
+first corner and the outline is ABANDONED the moment the camera disagrees.
+
+- ⭐ **The MATRIX is compared, not a flag.** A dozen things move the view — orbit, pan, zoom,
+  roam, recentre, fit, the ortho toggle, a restored view — and a flag would have to be set in every
+  one, which means missed in one. What the outline depends on is the matrix it was drawn against.
+- Checked in `drawDraft`, which runs whenever the picture changes, so the abandon happens at the
+  instant the camera moves rather than after three more corners.
+- Enter closes an open polygon BEFORE committing anything — it is the same key that cuts a
+  finished outline, so it would otherwise reach past the thing being drawn onto what came before.
+- The closing double-click is read AHEAD of the live-tool guard, which hands every double-click to
+  an armed tool; and the duplicate corner a double-click leaves is dropped in `polyClose`.
+- A corner does NOT go through `takePick`: that searches the cloud and refuses when nothing is
+  under the cursor, but the useful corners are out in empty space, off the edge of the thing.
+
+### ⛔ TWO THINGS FIXED ON THE WAY
+
+- **The "too small to enclose anything" test was rectangle-only.** It read `path[1]` and `path[2]`,
+  so a circle dragged to nothing — sixty-four points on one spot — would have sailed straight past
+  it into a cut of nothing. It is the **bounding box** now, the one measurement every shape has.
+  ⛔ Small in **BOTH** axes, not either: a deliberate sliver down a wall is narrow in one and means
+  something.
+- **The obvious shortcut letters were already taken** — C is camera-only, P is pick pairs — and
+  moving either would break a habit to save a mnemonic. **E** for the ellipse every drawing program
+  calls it, **N** for the n-gon, both added to the key help, which would otherwise lie.
+
+### The audits, and the two misses that were mine
+
+Suites **1348 → 1378**; across the day **1309 → 1378** and **42 of 44 breaks caught over four
+reversion audits**. The shapes audit was 14 of 14 — including the circle drawn corner-to-corner,
+which is the plausible WRONG version a bounding-box habit produces (centre at the midpoint, radii
+spread 25..75 instead of a flat 50).
+
+⛔ **A CONSTANT RESTATED IN A HARNESS TESTS THE HARNESS.** Writing `const CIRCLE_SEGS = 64;` into
+the node fixture would have gone on reading 64 however the shipped constant changed. The shipped
+LINE is lifted out of the source with a regex and injected instead, which keeps the 64 in the
+assertion an independent claim about the program.
+
+### ⚠ THINGS SAID TO THE OPERATOR THIS PASS THAT ARE NOT IN THE CODE
+
+- **Auto-align is slower on the BLIND path and that is the seeder.** 18 seeds became 22, each a
+  coarse GICP fit. The queued `PLAN_KEEP=4 → 2` question is now the difference between a 4-minute
+  and a ~3-minute suite AND a felt delay for the operator — the measurement to run is whether the
+  WINNING seed was ever ranked 3rd or 4th across the 9 pairs. Hinted solves are untouched.
+- ⚠⚠ **I OVERSTATED THE NOISE FLOOR ON 08-28 AND SAID SO.** The 2–5 cm scan-to-scan gap was
+  called "the VLP-16's own ±3 cm range noise"; it actually contains **two** scans' noise PLUS
+  residual registration error, so true single-scan σ is smaller. **Queued: measure it** — repeated
+  returns off one surface from one setup. It bears on money: the rig is STATIC during a sweep, so
+  random noise averages as √N, and two sweeps would beat a Livox Mid-360 for no hardware and no
+  port.
+- **Sensor questions answered, both NO.** Livox Mid-360: quotes *precision* where Velodyne quotes
+  *accuracy* (not the same measurement), upward-biased −7°..+52° FOV breaks the side-mount
+  (`MOUNT_ROLL_DEG=90`) the rig depends on, non-repetitive scanning has no rings for the per-laser
+  azimuth or pan/anchor model, and it is a different protocol — a capture-path rewrite. And **no
+  Puck is quieter**: ±3 cm is the figure across the whole Velodyne line (LITE, Hi-Res, Ultra Puck,
+  Alpha Prime); the variants sell channels, FOV and range, and this rig gets vertical coverage from
+  the MOTOR, which is the one thing they sell.
+- **What the program can load from another device**: LAS, LAZ (via `laspy`, chunked) and
+  **binary little-endian PLY of exactly `x y z r g b`** — ASCII or extra properties are refused by
+  name. ⚠ **No E57**, which is what most terrestrial scanners and CloudCompare hand you. And the
+  real constraint is not the format: `sensor_centred()` refuses a cloud whose origin is no longer
+  the instrument's place, because colour is sampled along the ray FROM that origin and a merged
+  cloud would come out fully coloured and completely wrong with nothing on screen to say so.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-28 19:32:19, Converter 19:31:38, tlsconvert 19:32:54, selftest 0**
+**✅ THE EXES: Studio 2026-08-28 22:55:00, Converter 22:54:19, tlsconvert 22:55:35, selftest 0**
+— and THIS build carries the circle and polygon cut tools on top of everything below.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 19:32:19, Converter 19:31:38, tlsconvert 19:32:54, selftest 0**
 — and THIS build carries the arrival re-aim, the `openProject` selection fix and BOTH Ctrl-Z
 fixes, on top of the slider rush fix, the floor-plan seeder and the project-tray default.
 
@@ -5124,6 +5224,9 @@ their own data; nothing since the 09:55 build has been exercised in Studio):
 - ✅ **CLOSED 2026-08-28: the auto-align thread.** The operator said it is fixed and to drop
   it. Do NOT ask them for the screenshot the seventeenth pass was waiting on.
 - **The Project tray now opens by default** (right-hand panel, with everything else).
+- ⚠ **QUEUED AND IT BEARS ON MONEY: measure the TRUE single-scan noise.** The 2–5 cm figure
+  quoted on 08-28 contains two scans' noise plus registration error. The rig is static during a
+  sweep, so averaging two sweeps is √2 for free — measure before buying any sensor.
 - ⚠ **STILL WANTED: "make this the reference"** — swap which scan is fixed and re-express the
   others against it. It is what picking scan 1 was reaching for, and CloudCompare, Cyclone and
   Scene all have it.
