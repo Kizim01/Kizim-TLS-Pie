@@ -9188,9 +9188,24 @@ function trayState(){
        from the outside. Nothing had been removed; the door had never been open.
        ⭐ Same shape as the export: a working feature with no way in reads as a
        broken one, and the report you get names the symptom, not the cause. */
-    for(const id of ['scans','add','move','autoalign','photo'])
+    /* ⭐ `project` JOINED THIS LIST on 2026-08-28, asked for by name: it
+       carries the job's name and whether there are unsaved changes, which is
+       the one thing you want visible the whole time rather than something to
+       go and open. */
+    for(const id of ['scans','project','add','move','autoalign','photo'])
       st[id].open = true;
-  }else if(!got.moveback){
+  }else{
+   if(!got.projectv1){
+    /* ⛔ A DEFAULT REACHES NOBODY WHO ALREADY HAS A SAVED ARRANGEMENT --
+       the same reason `moveback` below exists, and the reason this is a
+       SEPARATE `if` rather than another link in that chain: `moveback` is
+       already true for everyone who has launched since it landed, so an
+       `else if` here would never run for exactly the operators it is for.
+       ⛔ The fold state is kept: opening a tray somebody had folded away
+       should give them back the tray they folded, not a fresh one. */
+    st.project = {open:true, shut:!!((st.project || {}).shut)};
+   }
+   if(!got.moveback){
     /* ⛔ AND A DEFAULT DOES NOT REACH ANYONE WHO ALREADY HAS A SAVED ONE. The
        arrangement is kept across reloads on purpose, so every operator who has
        ever used this program would go on not having the move controls. This
@@ -9198,14 +9213,21 @@ function trayState(){
        order, folds, everything else shut -- exactly as they left it. Bumping
        TRAYKEY instead would have thrown all of that away to fix one tray. */
     st.move = {open:true, shut:false};
+   }
   }
   for(const [id] of TRAYS) if(!st[id]) st[id] = {open:false, shut:false};
-  return {trays:st, order:trayOrder(got && got.order), moveback:true};
+  /* ⛔ THE FLAGS COME BACK SET, and that is load-bearing: a migration that
+     does not record having run is a setting the operator cannot change. Without
+     it this would re-open `project` on every launch, putting a tray back each
+     morning after it had been deliberately shut. */
+  return {trays:st, order:trayOrder(got && got.order), moveback:true,
+          projectv1:true};
 }
 function saveTrays(){
   try{
     localStorage.setItem(TRAYKEY,
-      JSON.stringify({trays:V.trays, order:V.order, moveback:true}));
+      JSON.stringify({trays:V.trays, order:V.order, moveback:true,
+                      projectv1:true}));
   }catch(e){}
 }
 

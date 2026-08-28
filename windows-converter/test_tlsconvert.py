@@ -7207,7 +7207,32 @@ check("...and an arrangement saved before today gets it back too",
 # hauls the tray back open each morning after it was deliberately shut: a
 # migration that does not record having run is a setting nobody can change.
 check("...once, so shutting it again sticks",
-      "order:V.order, moveback:true}" in _wsrc)
+      "moveback:true," in _wsrc and "projectv1:true}" in _wsrc)
+
+# ⭐ THE PROJECT TRAY OPENS BY DEFAULT -- asked for by name on 2026-08-28.
+# It carries the job's name and whether there are unsaved changes, which is the
+# one thing worth having in view the whole time rather than something to go and
+# open.
+check("a fresh install opens the project tray",
+      "'project'" in _tray_default, _tray_default[:240])
+# ⛔⛔ A SEPARATE `if`, NOT ANOTHER LINK IN THE `moveback` CHAIN. `moveback`
+# is already true for every operator who has launched since it landed, so an
+# `else if` here would never run for exactly the people this migration is for
+# -- it would reach only a brand-new install, which already gets it from the
+# list above, and the migration would be dead code that looks alive.
+_mig = _wsrc[_wsrc.find("}else{"):_wsrc.find("for(const [id] of TRAYS) if(!st[id])")]
+check("...and so does an arrangement saved before today",
+      "if(!got.projectv1){" in _mig
+      and "st.project = {open:true" in _mig,
+      _mig[:200])
+check("...through its own gate, not chained behind moveback, which is already "
+      "set for everyone this is for",
+      "else if(!got.projectv1)" not in _wsrc
+      and _mig.find("if(!got.projectv1)") < _mig.find("if(!got.moveback)"))
+# ⛔ AND IT KEEPS THE FOLD. Opening a tray somebody had folded away should
+# give them back the tray they folded, not a fresh one.
+check("...keeping the fold state the operator left it in",
+      "shut:!!((st.project || {}).shut)" in _wsrc)
 
 # ⛔⛔ THE PAGE AND THE EXPORTER ARE TWO IMPLEMENTATIONS OF ONE SENTENCE, and
 # this program has been bitten before by them drifting. Both must rotate about
