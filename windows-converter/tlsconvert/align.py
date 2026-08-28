@@ -4389,14 +4389,6 @@ PAGE = r"""<!doctype html>
          style="margin-top:7px">
   <div class="row"><button id="add">Add pasted path</button></div>
   </div></div>
-<div class="tray" id="ty_detail"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'detail')"><span class="fold">▾</span><b class="grow">Preview detail</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('detail')">✕</button></div><div class="traybody">
-  <label>Preview detail <span class="num" id="detv">Full</span></label>
-  <input type="range" id="det" min="0" max="5" step="1" value="0">
-  <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
-  </div>
-  <div class="row"><button id="applydet" class="go">Re-read at this detail
-    </button></div>
-  </div></div>
 <div class="tray" id="ty_move"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'move')"><span class="fold">▾</span><b class="grow">Move a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('move')">✕</button></div><div class="traybody">
   <div class="blurb">Put each cloud where it was standing. Auto-align fits the picked scan onto its neighbour in one press — several starting headings, then coarse to fine — and it finds the tripod’s tip and bank as well as its turn.</div>
   <label>Moving scan</label>
@@ -4750,16 +4742,32 @@ PAGE = r"""<!doctype html>
     <b>Camera</b> (C) gives the whole window to the view — no grips, no
     tools, nothing to catch a drag. Picking any tool leaves it again.</div>
   </div></div>
-<div class="tray" id="ty_colour"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'colour')"><span class="fold">▾</span><b class="grow">Colour and point size</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('colour')">✕</button></div><div class="traybody">
+<div class="tray" id="ty_colour"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'colour')"><span class="fold">▾</span><b class="grow">Colour, point size and detail</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('colour')">✕</button></div><div class="traybody">
   <label>Colour</label>
-  <div class="row"><button id="mode" class="on">By scan</button>
+  <!-- starts on the photograph's colour; `on` lights only for the by-scan
+       tint, so the class is absent here on purpose -->
+  <div class="row"><button id="mode">Photo / intensity</button>
     <button id="showb" title="Cycle through showing one cloud at a time. The
       per-cloud Hide buttons in the scan list are usually easier, and this is
       released as soon as one of them is used.">All</button>
     <button id="showall" title="Bring every hidden cloud back.">Show all
       </button></div>
-  <label>Point size <span class="num" id="psv">1.0</span></label>
-  <input type="range" id="ps" min="0.2" max="8" step="0.05" value="1.2">
+  <label>Point size <span class="num" id="psv">0.20</span></label>
+  <input type="range" id="ps" min="0.2" max="8" step="0.05" value="0.2">
+  <!-- ⭐ HOW MANY POINTS ARE READ, BESIDE HOW BIG THEY ARE DRAWN. These are
+       the two halves of one question -- "what am I looking at" -- and they
+       sat in trays at opposite ends of the menu, so tuning the picture meant
+       hunting for the other half. Asked for by the operator, 2026-08-28. The
+       ids and every handler are unchanged: this is the same control moved,
+       not a second one, because two controls onto one setting is how they
+       drift apart. -->
+  <label style="margin-top:8px">Load detail <span class="num" id="detv">Full
+    </span></label>
+  <input type="range" id="det" min="0" max="5" step="1" value="0">
+  <div id="shown" style="font-size:10.5px;color:var(--faint);margin-top:4px">
+  </div>
+  <div class="row"><button id="applydet" class="go">Re-read at this detail
+    </button></div>
   </div></div>
 </div>
 <canvas id="ov"></canvas>
@@ -4770,8 +4778,15 @@ const DEVICE = __DEVICE__, CUDA = __CUDA__;
 const META = __META__, CHUNK = __CHUNK__, OUT = __OUT__,
       PENDING = __PENDING__, OPEN = __OPEN__;
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
-const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:1.2,
-           mode:0, only:-1, clip:false, grab:false, active:1, scans:[],
+/* ⭐ THE JOB OPENS ON THE SMALLEST POINTS AND ON THE PHOTOGRAPH'S COLOUR.
+   Asked for by the operator, 2026-08-28, and both are what a survey is
+   actually looked at with: fat points hide the very detail a scan was taken
+   for, and the by-scan tint answers "which cloud is this" -- a question worth
+   one press when you need it, not the state you start every session in. The
+   colour mode falls back to intensity on its own where a cloud has no
+   photograph, so this is safe before anything is coloured. */
+const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:0.2,
+           mode:2, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
            tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
@@ -6267,10 +6282,20 @@ function draw(){
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
     const comps=s.rgb?3:1;
-    /* a stand-in point covers the area of the K it stands for, or the
-       surface goes porous and the cloud behind shows through it */
-    gl.uniform1f(loc.uPS, s.coarse ? V.basePS*s.coarse.grow : V.basePS);
-    gl.uniform1f(loc.uPSmax, s.coarse ? V.baseMax*s.coarse.grow : V.baseMax);
+    /* ⛔⛔ GROWN ONLY WHILE THE HAND IS MOVING, AND THE REASON IS WHAT COVERS
+       WHAT. A stand-in point has to cover the area of the K it stands for or
+       the surface goes porous -- but a GROWN twin point cannot be painted out
+       by the real point it stands for, because the real one is drawn at the
+       ordinary size INSIDE it and leaves the fat rim standing. That is the
+       "I can see the quick LOD points, they don't disappear when the full
+       cloud snaps back" of 2026-08-28, and it was introduced by the growth
+       itself: at equal size a twin point and its full-detail twin are the
+       same point, same place, same colour, same depth, so one paints out the
+       other exactly. While rushing, nothing refines on top and the whole
+       frame is uniformly grown, so the coverage is free. */
+    const grow = (V.rush && s.coarse) ? s.coarse.grow : 1.0;
+    gl.uniform1f(loc.uPS, V.basePS*grow);
+    gl.uniform1f(loc.uPSmax, V.baseMax*grow);
     /* the twin, always -- a scene frame stays cheap whatever the project
        weighs; the real points refine in on the idle frames after it */
     for(const c of (s.coarse ? s.coarse.chunks : s.chunks)){
@@ -8516,7 +8541,11 @@ async function openProject(path){
     }
     if(j.view){
       V.detail=j.view.detail|0; V.exdet=j.view.exdet|0; V.mode=j.view.mode|0;
-      V.psize=j.view.psize||1.2; V.gizmo=j.view.gizmo!==false;
+      /* ⛔ A REOPENED PROJECT KEEPS THE SIZE IT WAS SAVED WITH, and the
+         fallback is the new default rather than the old one -- a project
+         written before point size was recorded should open like a fresh one,
+         not like a build from before the operator asked for this. */
+      V.psize=j.view.psize||0.2; V.gizmo=j.view.gizmo!==false;
       $('det').value=V.detail; $('ex').value=V.exdet;
       $('detv').textContent=detailText(V.detail);
       $('exv').textContent=detailText(V.exdet);
@@ -8889,7 +8918,10 @@ const TRAYS = [
   ['project','Scans','Project'],
   ['sort','Scans','Sort a shoot'],
   ['add','Scans','Add a scan'],
-  ['detail','Scans','Preview detail'],
+  /* ⛔ 'detail' IS GONE FROM HERE ON PURPOSE, not by accident: the load-detail
+     slider now lives in 'colour' beside the point size, which is the other
+     half of the same question. A stale entry would put an empty tray in the
+     Scans menu and a menu item that opens nothing. */
   ['move','Place','Move a scan'],
   ['autoalign','Place','Auto-align'],
   ['pairs','Place','Align from pairs'],
@@ -8903,7 +8935,7 @@ const TRAYS = [
   ['cut','Cut','Delete points'],
   ['export','Export','Write the cloud out'],
   ['view','View','View'],
-  ['colour','View','Colour and point size']];
+  ['colour','View','Colour, point size and detail']];
 const MENUS = ['Scans','Place','Straighten','Photographs','Clean','Cut',
                'Export','View'];
 /* What each menu is FOR, in one line, because a title alone does not say

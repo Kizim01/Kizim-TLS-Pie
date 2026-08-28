@@ -1606,6 +1606,35 @@ try:
     check("a successful colour switches the view to show it",
           "V.mode=2" in _page.replace(" ", ""))
 
+    # ⭐ HOW THE JOB OPENS, asked for by the operator 2026-08-28: the smallest
+    # points and the photograph's colour. Fat points hide the detail a scan
+    # was taken for, and the by-scan tint answers "which cloud is this" --
+    # worth one press when needed, not the state every session starts in.
+    check("a job opens on the smallest points the slider offers",
+          "psize:0.2," in _page
+          and re.search(r'id="ps"[^>]*min="0\.2"[^>]*value="0\.2"', _page)
+          is not None)
+    check("...and on the photograph's colour, with the button already saying "
+          "so and unlit (the lamp is the by-scan tint's)",
+          "mode:2," in _page
+          and '<button id="mode">Photo / intensity</button>' in _page)
+    check("...and a project saved before point size was recorded opens like "
+          "a fresh job, not like the old default",
+          "V.psize=j.view.psize||0.2;" in _page)
+    # ⛔ ONE CONTROL MOVED, NOT A SECOND ONE ADDED. Load detail now sits beside
+    # point size -- the two halves of "what am I looking at" -- so the tray it
+    # used to live in is gone, and its menu entry with it: a stale entry would
+    # open an empty tray. Two controls onto one setting is how they drift.
+    check("load detail sits in the same tray as point size and colour",
+          _page.count('id="det"') == 1 and _page.count('id="applydet"') == 1
+          and 0 < _page.index('id="ps"') < _page.index('id="det"')
+          < _page.index("</div></div>\n</div>\n<canvas"))
+    check("...and the tray it left is gone from the menu, not left empty",
+          'id="ty_detail"' not in _page
+          and "['detail','Scans'" not in _page)
+    check("...and the tray says what it now holds",
+          "Colour, point size and detail" in _page)
+
     check("the crop controls are on the page",
           all(t in _page for t in ("keepbox", "cutbox", "clearedit")))
     check("so are the delete tools and undo",
@@ -1768,7 +1797,18 @@ try:
     # Area, so sqrt(K) on the diameter (Potree's adaptive point size).
     check("a rush twin's points grow to cover the K they stand in for",
           "grow:Math.sqrt(K)" in _page
-          and "V.basePS*s.coarse.grow" in _page)
+          and "const grow = (V.rush && s.coarse) ? s.coarse.grow : 1.0;"
+          in _page)
+    # ⛔⛔ AND ONLY WHILE THE HAND MOVES, because of what covers what. A GROWN
+    # twin point cannot be painted out by the real point it stands for -- the
+    # real one is drawn at ordinary size INSIDE it and leaves the fat rim
+    # standing, which is "I can see the quick LOD points, they don't
+    # disappear when the full cloud snaps back" (2026-08-28), introduced by
+    # the growth itself. At equal size the two are the same point, same
+    # place, colour and depth, so one paints out the other exactly.
+    check("...but NOT at rest, or the fat rims survive every refinement",
+          "V.basePS*grow" in _page and "V.baseMax*grow" in _page
+          and "V.basePS*s.coarse.grow" not in _page)
     check("...and the refinement frames put the size back",
           "gl.uniform1f(loc.uPS, V.basePS);" in re.search(
               r"if\(fillAt<fillQ\.length\)\{.*?\n    \}", _page, re.S).group(0))
@@ -4588,9 +4628,23 @@ for _key in ("'C'", "'L'", "'Ctrl-Z'", "'Esc'"):
 
 # --- dragging a tray above or below another --------------------------------
 print("\nrearranging the trays")
+# ⛔⛔ THE MARKUP, THE HANDLES AND THE WORKFLOW LIST MUST NAME THE SAME TRAYS.
+# This was a bare count of 19 and it FIRED when a tray was folded into another
+# (2026-08-28, load detail moving beside point size) -- correctly, but a count
+# only says the number changed. The real invariant is that the three lists
+# agree: a tray in the markup with no entry cannot be opened from the menu,
+# and an entry with no markup is a menu item that opens nothing.
+_tray_list = re.findall(
+    r"\['([a-z]+)','[A-Za-z]+',",
+    _ALIGN_SRC.split("const TRAYS = [")[1].split("]];")[0])
+_tray_markup = re.findall(r'class="tray" id="ty_([a-z]+)"', _ALIGN_SRC)
+check("every tray in the panel is in the workflow list, and every entry in "
+      "the list is a tray that exists",
+      sorted(_tray_list) == sorted(_tray_markup),
+      (sorted(set(_tray_list) ^ set(_tray_markup)),))
 check("a tray's title is a drag handle",
-      _ALIGN_SRC.count('onpointerdown="trayGrab(') == 19,
-      _ALIGN_SRC.count('onpointerdown="trayGrab('))
+      _ALIGN_SRC.count('onpointerdown="trayGrab(') == len(_tray_markup),
+      (_ALIGN_SRC.count('onpointerdown="trayGrab('), len(_tray_markup)))
 # ⛔ A HEADER THAT IS BOTH A BUTTON AND A HANDLE CANNOT KEEP AN onclick: every
 # drag ends in a click too, so every re-ordering would also fold what it moved.
 check("and folding moved off click, onto a press that did not travel",
