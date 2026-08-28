@@ -49,6 +49,16 @@ MIN_IMPROVEMENT = 2.0
 # just as well; beating that rival by less than this is a coin toss.
 AMBIGUITY_MARGIN = 1.25
 
+#: How many genuinely different candidates `solve_ladder` refines before it
+#: decides. ⛔ ONE WAS NOT ENOUGH AND THE COST OF THREE IS NEARLY NOTHING WHERE
+#: IT IS NOT NEEDED: `_apart` asks 2.5 m or 45 degrees, and a hinted press fans
+#: only +/-10 degrees about a single placement, so its seeds collapse to one
+#: candidate and pay nothing. A blind search in a room of repeating booths has
+#: several distinct minima and a real choice to make -- and used to make it on
+#: the COARSE rung alone, discarding the true answer before anything was
+#: refined. `solve` keeps three on its own path for the same reason.
+LADDER_KEEP = 3
+
 
 class Setup(object):
     """Where a scan's tripod stood, relative to the reference scan's."""
@@ -993,7 +1003,16 @@ def refine_refused(setup, lean, from_setup, from_lean):
 #: tight; with no placement at all every heading is equally plausible, so it
 #: is the whole circle at the coarsest step worth trying.
 FAN_NEAR_DEG = (0.0, 4.0, -4.0, 10.0, -10.0)
-FAN_BLIND_DEG = tuple(float(d) for d in range(0, 360, 45))
+#: ⛔⛔ THE BLIND SPACING IS SIZED TO THE REACH, WHICH 45 DEGREES WAS NOT.
+#: A seed can only correspond a surface at range r when the arc it is wrong by
+#: fits inside the reach: 2*r*sin(spacing/2) <= FAN_REACH_M. At 45 degrees
+#: (worst case 22.5 off) that is r <= 3.85 m -- so in a restaurant, where most
+#: of what a capture sees is further away than that, a true heading falling
+#: mid-gap is in NO seed's basin and whichever wrong basin is nearest wins.
+#: The near fan above was always sized correctly (3 degrees mid-gap -> 28 m);
+#: only the blind one was out, by an order of magnitude. At 20 degrees the
+#: covered range is r <= 8.6 m, which spans the room these captures see.
+FAN_BLIND_DEG = tuple(float(d) for d in range(0, 360, 20))
 #: How far the coarse rung may reach for a correspondence when the start is
 #: blind or badly off. Four voxels (40 cm) cannot see across a metre of miss.
 FAN_REACH_M = 1.5
@@ -1099,43 +1118,85 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
         sol.lean = lean0
         return sol
     tried.sort(key=lambda t: t.residual)
-    sol = tried[0]
-    rival = next((t for t in tried[1:] if _apart(t.setup, sol.setup)), None)
-
     lean0 = lean or Lean()
-    # ⛔ THE FAN'S WINNER WAS PRICED ON THE THINNED CLOUD, so if there is no
-    # finer rung to re-solve it on (a ladder entered at its own bottom), one
-    # pass over the full clouds puts every number that leaves this function
-    # back on the same scale as everything downstream compares it to.
-    if len(rungs) == 1:
-        full = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
-                          voxel=rungs[0], guard=False, judge=jd)
-        if full is not None and full.residual == full.residual:
-            sol = full
-    for i, v in enumerate(rungs[1:], start=1):
-        if progress:
-            progress("refining at %.0f cm" % (v * 100), i, len(rungs) + 2)
-        finer = solve_gicp(xyz_ref, xyz_mov, start=sol.setup, lean=sol.lean,
-                           voxel=v, judge=jd)
-        if finer is not None and finer.residual == finer.residual:
-            # ⛔⛔ kept_start HERE MEANS "THE COARSER RUNG'S ANSWER STOOD",
-            # AND THAT IS NOT WHAT THE FLAG SAYS TO THE OPERATOR. describe()
-            # renders it as "Your own alignment was already the better fit, so
-            # nothing was moved" -- about a pose that came off rung one, after
-            # the scan had in fact been moved a third of a metre. The guard
-            # BEHAVIOUR is right (a finer rung must never make things worse);
-            # the CLAIM survives only if the pose really is the placement the
-            # operator made, tilt included.
-            if finer.kept_start:
-                a, b = finer.setup, true_start
-                finer.kept_start = (
-                    b is not None
-                    and abs(a.dx - b.dx) < 1e-4 and abs(a.dy - b.dy) < 1e-4
-                    and abs(a.dz - b.dz) < 1e-4
-                    and abs((a.yaw_deg - b.yaw_deg + 180) % 360 - 180) < 1e-4
-                    and abs(finer.lean.pitch_deg - lean0.pitch_deg) < 1e-4
-                    and abs(finer.lean.roll_deg - lean0.roll_deg) < 1e-4)
-            sol = finer
+
+    # ⛔⛔ SEVERAL DISTINCT CANDIDATES GO DOWN THE LADDER, AND THE ANSWER IS
+    # RE-RANKED AFTER THEY ARRIVE. This function used to commit to the fan's
+    # coarse winner outright and merely RE-PRICE the runner-up at its old
+    # coarse pose -- so `margin` divided a four-rung answer by a one-rung one
+    # and was inflated by pure refinement, and a true answer that lost the
+    # coarse fan by a hair was reported as beaten two and a half times over.
+    # Measured on the operator's own restaurant (2026-08-28): blind fits came
+    # back WRONG five times in seven, off by 58 to 179 degrees, and the worst
+    # of them carried a margin of 2.50 -- the truth was not the runner-up, it
+    # was discarded here, one line above, before anything was refined.
+    #
+    # ⭐ `solve` HAS CARRIED THIS FIX ALL ALONG ("REFINE SEVERAL RIVALS, NOT
+    # THE FIRST ONE. Coarse rank is a poor guide to what a candidate refines
+    # to") and this path -- the one that actually runs whenever GICP is
+    # importable -- never learned it.
+    #
+    # ⭐ AND IT IS NEARLY FREE WHERE IT IS NOT NEEDED. `_apart` asks for 2.5 m
+    # or 45 degrees, and a hinted press fans only +/-10 degrees about one
+    # placement, so every seed collapses into one candidate and the cost is
+    # exactly what it was. Only a blind search, which has a genuine choice to
+    # make, pays for making it properly.
+    picks = [tried[0]]
+    for t in tried[1:]:
+        if len(picks) >= LADDER_KEEP:
+            break
+        if all(_apart(t.setup, p.setup) for p in picks):
+            picks.append(t)
+
+    def _down(cand, report):
+        """One candidate, refined down every remaining rung."""
+        s = cand
+        # ⛔ THE FAN'S WINNER WAS PRICED ON THE THINNED CLOUD, so if there is
+        # no finer rung to re-solve it on (a ladder entered at its own
+        # bottom), one pass over the full clouds puts every number that
+        # leaves this function back on the scale everything downstream
+        # compares it to.
+        if len(rungs) == 1:
+            full = solve_gicp(xyz_ref, xyz_mov, start=s.setup, lean=s.lean,
+                              voxel=rungs[0], guard=False, judge=jd)
+            if full is not None and full.residual == full.residual:
+                s = full
+        for i, v in enumerate(rungs[1:], start=1):
+            if progress and report:
+                progress("refining at %.0f cm" % (v * 100), i, len(rungs) + 2)
+            finer = solve_gicp(xyz_ref, xyz_mov, start=s.setup, lean=s.lean,
+                               voxel=v, judge=jd)
+            if finer is not None and finer.residual == finer.residual:
+                # ⛔⛔ kept_start HERE MEANS "THE COARSER RUNG'S ANSWER
+                # STOOD", AND THAT IS NOT WHAT THE FLAG SAYS TO THE OPERATOR.
+                # describe() renders it as "Your own alignment was already
+                # the better fit, so nothing was moved" -- about a pose that
+                # came off rung one, after the scan had in fact been moved a
+                # third of a metre. The guard BEHAVIOUR is right (a finer
+                # rung must never make things worse); the CLAIM survives only
+                # if the pose really is the placement the operator made, tilt
+                # included.
+                if finer.kept_start:
+                    a, b = finer.setup, true_start
+                    finer.kept_start = (
+                        b is not None
+                        and abs(a.dx - b.dx) < 1e-4
+                        and abs(a.dy - b.dy) < 1e-4
+                        and abs(a.dz - b.dz) < 1e-4
+                        and abs((a.yaw_deg - b.yaw_deg + 180) % 360 - 180)
+                        < 1e-4
+                        and abs(finer.lean.pitch_deg - lean0.pitch_deg) < 1e-4
+                        and abs(finer.lean.roll_deg - lean0.roll_deg) < 1e-4)
+                s = finer
+        return s
+
+    refined = [_down(p, i == 0) for i, p in enumerate(picks)]
+    # ⛔ RE-RANKED ON WHAT THEY REFINED TO, NOT ON WHERE THEY STARTED. This is
+    # the whole point: coarse rank is a poor guide, so the candidate that
+    # ends up fitting best is the answer even if it did not enter first.
+    refined.sort(key=lambda t: t.residual)
+    sol = refined[0]
+    rival = next((t for t in refined[1:] if _apart(t.setup, sol.setup)), None)
 
     # ⛔ THE RIVAL -- AND THE OPERATOR'S OWN PLACEMENT -- ARE RE-PRICED AT
     # THE RUNG THE WINNER WAS PRICED AT. The fan's residuals came off the

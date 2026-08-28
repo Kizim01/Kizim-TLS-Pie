@@ -10747,6 +10747,15 @@ const DRAW_TOOLS = {lasso:1, rect:1};
        full detail; everything else -- orbit, pan, a scan or box drag, every
        gizmo -- redraws the cloud continuously and gets the twin. */
     V.rush = !lassoing && picking===null;
+    /* ⛔ THE WHEEL'S SETTLE TIMER MUST NOT FIRE INSIDE THIS DRAG. It is a
+       one-shot "the wheel has stopped" alarm that knows nothing about the
+       button, so zooming and then immediately orbiting -- or spinning the
+       wheel mid-orbit, which is the common one -- let it clear V.rush 200 ms
+       later for the rest of the drag: the twin then draws UNGROWN and, since
+       every pointermove re-arms `need`, no idle frame ever refines it. The
+       wall goes porous and stays porous, which is the exact complaint the
+       growth was added to fix. */
+    clearTimeout(rushT);
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -10795,7 +10804,31 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     } else if(panning) pan(dx,dy);
     else orbit(dx,dy);
   });
+  /* ⛔⛔ THE DRAG FLAGS COME DOWN WHATEVER HAPPENS. They were cleared in
+     exactly one place -- the tail of the pointerup handler -- so any other
+     ending left them set: a `pointercancel` (pen or touch on a touchscreen
+     laptop, or the OS taking the pointer away) delivers no pointerup at all,
+     and a throw anywhere in the first half of that handler, which calls
+     finishDraft() and recomputeLive(), skips the tail. Either way `V.rush`
+     stays true, so the view is stuck on the coarse twin with no idle frame
+     ever coming to refine it, and `down` stays true, so every later mouse
+     move orbits the camera with no button held. One teardown, called from
+     the end of the drag and from a `finally`. */
+  function endDrag(){
+    axis=null; V.moveAxis=null;
+    leaning=null; V.leanAxis=null;
+    tilting=null; V.tiltAxis=null;
+    camming=null; V.camAxis=null;
+    ring=null; picking=null;
+    down=false; moving=false; grip=null; lassoing=false;
+    clearTimeout(rushT);
+    /* the hand stopped: the next frame is the full cloud again */
+    if(V.rush){ V.rush=false; invalidate(); }
+    cv.classList.remove('drag');
+  }
+  addEventListener('pointercancel', endDrag);
   addEventListener('pointerup', ()=>{
+   try{
     if(picking && drift<5) takePick(picking[0],picking[1]);
     picking=null;
     if(lassoing) finishDraft();
@@ -10815,12 +10848,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     /* A cut is applied in the merged frame, so tilting a scan moves it through
        whatever was cut -- the same debt the arms and the sliders owe. */
     if(leaning!==null && V.edits.length) recomputeLive();
-    axis=null; V.moveAxis=null;
-    leaning=null; V.leanAxis=null;
-    down=false; moving=false; grip=null; lassoing=false;
-    /* the hand stopped: the next frame is the full cloud again */
-    if(V.rush){ V.rush=false; invalidate(); }
-    cv.classList.remove('drag'); });
+   } finally { endDrag(); } });
   addEventListener('wheel', e=>{
     if(e.target.id!=='cv') return;
     e.preventDefault();

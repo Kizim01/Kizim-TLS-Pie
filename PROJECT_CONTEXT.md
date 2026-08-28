@@ -4613,9 +4613,139 @@ was written — see the next pass.)*
   same machine whose **trading bots have repeatedly lost days to laptop sleep** — this helps
   there too.
 
+## 2026-08-28, fifteenth pass — the full code check: six reviewers, ~35 findings
+
+The operator asked for a full code check. Six agents swept the package from independent angles
+(render path, alignment target logic, incremental cut path, solver core, colour pipeline,
+wrapper + file IO). Several findings were **reproduced by executing the code**, not read off.
+
+### ⛔⛔ DATA LOSS — fixed first, because this is a surveyor's only copy
+
+- **An export destroyed the previous one before writing a point.** Both writers opened the
+  chosen path outright, which truncates it — so a decode that threw on capture 9 of 15 had
+  already destroyed the good file AND left one that **reads as complete** (`close()` patches the
+  PLY header with the count so far; the truncation check only fires when the header promises
+  *more* than the body holds). Re-exporting to the same name after a small edit is the ordinary
+  case. Both writers now work beside the destination and `os.replace` onto it only when a whole
+  cloud arrived. Reversion-audited.
+- **The header comment was ASCII-encoded AFTER the truncate**, so a folder called `Café` zeroed
+  the previous export and leaked the handle. Encoded before anything opens, and sanitised.
+- **`shutil.move` silently overwrites a destination FILE** (it only refuses a directory): it
+  renames, fails on Windows, then falls back to copy-then-unlink — destroying the destination
+  and deleting the source. The clash guard covers only numbered folders and only a `.pcap`
+  inside them, so a half-finished sort, or two dark captures sharing a stem landing in
+  `no photos`, lost an original. Every move now refuses an occupied destination and says which.
+
+### ⛔⛔ A WRONG PHOTOGRAPH STOPPED PASSING AS A GOOD ONE
+
+`settle_drift` refuses when content sits further out than any stitch can explain — the signature
+of a photo paired with the **wrong capture** — and **the refusal was computed and dropped on the
+floor at both doors**: only the *lift* was refused, the cloud was painted from that photograph
+anyway, and the attach reported success. It now reaches the record and the page says it plainly.
+
+### The solver: why blind fits were wrong five times in seven
+
+The solver reviewer explained the fourteenth pass's measurement, and one finding **confirmed the
+experiment that had already been run**: lifting `refine_refused` changed nothing because
+`solve_multi` always passes a start, so `solve_ladder` takes the ±10° NEAR fan — **a 178° flip is
+not reachable by any of its five seeds**. The guard was downstream of a fan that cannot produce
+the answer.
+
+- **FIXED — the rival was never refined, only re-priced.** The fan's winner descended three
+  further GICP rungs while the runner-up kept its coarse pose, so `margin` divided a four-rung
+  answer by a one-rung one and was inflated by pure refinement. `solve_ladder` now refines up to
+  `LADDER_KEEP` genuinely distinct candidates and **re-ranks on what they refined to** — the fix
+  `solve` has carried all along and the GICP path never learned. ⭐ Nearly free where it is not
+  needed: `_apart` asks 2.5 m or 45°, and a hinted press fans ±10°, so its seeds collapse to one
+  candidate. **Measured on the live job: 2 of 7 → 3 of 7 correct**, folder 13 going from 178.6°
+  wrong to 1.6° right with its residual halving (0.0311 → 0.0155). Margins compressed, which is
+  honest — they now compare like with like.
+- **FIXED — the blind seed spacing was not sized to its reach.** The worst-case heading error is
+  **half** the spacing, so a seed must reach a chord of `2·r·sin(Δ/4)`: at 45° that is
+  **r ≤ 3.85 m**, and in a restaurant a true heading mid-gap is in no seed's basin. The near fan
+  was always sized right (3° mid-gap → 28 m); only the blind one was out by an order of
+  magnitude. Now 20° → **8.6 m**. ⚠ *The first version of the check that guards this used
+  `sin(Δ/2)` and failed a correctly-sized fan — the arithmetic is spelled out in the test
+  because the constant is chosen from it.*
+  **Measured on the live job: folder 11 went from 80° wrong to 0.40 m / 3.8° — essentially
+  right — and nothing regressed** (folder 12's error halved; folder 9 was unchanged but is now
+  FLAGGED). Both genuinely-lost scans are flagged now where only one was before.
+
+**Where the blind path stands after both fixes, on the operator's own restaurant:** 2 of 7
+correct → **3 of 7 correct plus one at 3.8°**, and 2 of the 3 remaining failures are flagged.
+⚠ **It is still not a survey you can trust unchecked** — align-on-import remains a coarse pass
+whose answers need an eye. The remaining half of the cause is queued below: the blind fan still
+seeds **yaw only, at zero translation**. Cost of the fixes: the blind press now runs 18 coarse
+seeds instead of 8 and refines up to 3 candidates; a HINTED press is unchanged, because its ±10°
+seeds collapse to one candidate.
+
+### Fixed in the page and the panel
+
+- **Refinement frames painted over every overlay drawn with depth-testing off** — clip grips,
+  pair markers and the plumb reference dissolved in the second after the hand stopped, exactly
+  when they are reached for. Redrawn on top of each refined chunk.
+- **The rush twin's GPU buffers were never freed** (~2.5 MB per scan per rebuild, and rebuild
+  runs on every add, photo and re-read), and `fillQ` held buffers the teardown paths had already
+  deleted. `dropChunks` is one home for both.
+- **⛔⛔ `ring` was never cleared after a ring drag** — and `turnScan` returns a number for ever
+  once seeded. So after one ring turn, **drag-to-move a scan was dead for the session**
+  (`moving` requires `ring===null`) and, while the ring was on screen, **every later drag turned
+  the scan instead of orbiting**. Found by refactoring the teardown, not by the reviewers.
+- **The drag flags came down in one place only** — a `pointercancel` or a throw inside the
+  pointerup handler left the view stuck on the coarse twin and `down` true, so bare mouse moves
+  orbited. One `endDrag`, reached from the end and from a `finally`.
+- The wheel's settle timer could fire **inside** a later drag and strip the rush.
+- `applyDrop`'s counter guard asked "has `V.total` ever been set" rather than "does it still
+  describe these scans", so cut → undo → add a scan → cut showed a **negative** points-kept.
+- **Every comparison with NaN is false**, so the dead points `applyDrop` marks passed all three
+  of `markLasso`'s rejections and fell into the full polygon walk — a lasso got *slower* the more
+  had been deleted, inverting the claim the incremental cut was built on.
+- `markBox` could not read the legacy `[lo,hi]` box, so a project saved before boxes learnt to
+  turn **would not open at all**.
+- `solve` chose its target from the **stale** server-side pose, ignoring the placement the
+  operator had just dragged; an unplaced scan in a job of exported clouds returned `None` ("no
+  such scan to align to"); the walk rule could default onto a merged cloud; and the walk message
+  claimed adjacency it had not achieved. `OVERLAP_MIN_BINS` is now its own constant with its own
+  evidence (it was borrowing `MULTI_MIN_BINS`, documented for FULL samples, to judge thinned
+  ones), and `walk_order`'s uniqueness gate compares ints rather than strings.
+
+### ⚠ QUEUED — found, evidenced, NOT fixed
+
+**Solver** (all with concrete evidence in the review): the blind fan still varies **yaw only at
+zero translation**, so GICP must close a 3 m offset from a 1.5 m reach — seeding translation as
+well is the remaining half of the blind problem. `Solution.ambiguous` reads "no rival was found"
+as "no rival exists" and reports `trustworthy`. `MIN_SHARED_BINS` is an absolute 500 across a 16×
+change of scale, so the unpriceable-rather-than-scored protection **switches off at the two
+finest rungs** (measured: a pose pushed 12–14 m out of the room is refused coarse and *priced* at
+fine). Nothing penalises a small intersection — measured on an asymmetric room, a 90°-wrong pose
+**beat doing nothing** by confining itself to 40% of the directions. `refine_gap` ignores height
+entirely. The sampling floor is measured at 360×90 while the residual it gates comes off
+1440×360 (factor 2.4). **And `solve_multi`'s rival block builds the merged panorama the whole
+design forbids** — `xyz_ref` there is the union of every neighbour.
+
+**Colour**: `settle_drift` never checks it *improved* anything (`moved` means "applied", not
+"better") — the only stage in the file without that rule. A peak pinned at the search rail is
+returned as a measurement, and longitude is unclamped, so up to 7.5° of heading can be walked on
+three non-measurements. `paint_drift` skips `_prefiltered` (the only `image_at_pose` call site
+that does) and has no fill gate on the finest cloud panorama in the file (~1.2 points per cell).
+The pooled surface carries a DC term that biases **latitude only** — the very axis the feature
+corrects — by an estimated 0.1–0.3°.
+
+**Wrapper/IO**: the aborted-sweep deletion is a permanent `os.remove` gated on a median that
+assumes one sweep profile per shoot. `os._exit(2)` in the zombie guard can truncate an export in
+flight. The **browser fallback is dead on arrival** — `show()` returns, `main` stops the server,
+and the browser then connects to a closed socket. `attach_photo` silently overwrites an existing
+photo and, when `organise()` succeeds but the copy fails, leaves `scan.path` pointing at a file
+that has moved. `--associate --remove` reports success when it removed nothing. `viewer.Buffer`'s
+`_ref = None` is a one-way door that turns a later refl-bearing chunk into an `AttributeError`.
+A settings file that cannot be READ is treated as empty and then overwritten.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-28 09:55:44, Converter 09:56:03, selftest 0.**
+**✅ THE EXES ARE CURRENT: Studio 2026-08-28 11:10:35, Converter 11:10:54, selftest 0.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 09:55:44, Converter 09:56:03, selftest 0.**
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-28 02:41:54, Converter 02:42:29, selftest 0.**

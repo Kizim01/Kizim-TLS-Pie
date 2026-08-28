@@ -602,7 +602,34 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None):
                             ", ".join(clashes[:6]),
                             "s" if len(clashes) == 1 else "")}
 
-    op = shutil.move if move else shutil.copy2
+    def op(src, dst):
+        """
+        Move or copy one file, and NEVER onto one that is already there.
+
+        ⛔⛔ `shutil.move` REFUSES AN EXISTING DESTINATION ONLY WHEN IT IS A
+        DIRECTORY. Given a full file path it tries `os.rename`, which fails on
+        Windows when the target exists, and then falls back to `copy2` plus
+        `unlink` -- so it destroys the destination and deletes the source,
+        silently, and this module moves a surveyor's ONLY copy of a day's
+        capture. `copy2` overwrites outright.
+
+        The clash guard above covers the numbered folders and only a `.pcap`
+        inside them, so it passes a folder holding a sidecar from a sort that
+        died half way, and it never looks at `no photos` or `aborted sweeps`
+        at all -- where two dark captures from different subfolders sharing a
+        stem land on the same name. Both are the same accident: a second run
+        over a tree the first run half-moved.
+
+        Refusing is right rather than renaming aside: the operator is told
+        which file stopped it, and nothing is lost either way.
+        """
+        if os.path.exists(dst):
+            raise IOError(
+                "%s is already there, so nothing was written over it. A "
+                "sort that stopped part way leaves files in place; move or "
+                "delete that folder's contents and run this again."
+                % os.path.basename(dst))
+        return (shutil.move if move else shutil.copy2)(src, dst)
     done, deleted, failed = [], [], []
     # ⛔ COUNTED IN FILES, NOT IN CAPTURES. A capture is a 98 MB .pcap plus a
     # 2 kB sidecar plus a photograph, and on the same disk the .pcap is
@@ -635,6 +662,14 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None):
         # `pipeline.find_photo` looks for -- so the CLI, Studio's import and
         # every later session find it with no memory of this having been run.
         target = os.path.join(folder, stem + ext)
+        # ⛔ THROUGH THE SAME GUARD as every other file this moves: a
+        # photograph landing on one already there is the same lost original.
+        if os.path.exists(target):
+            raise IOError(
+                "%s is already there, so nothing was written over it. A sort "
+                "that stopped part way leaves files in place; move or delete "
+                "that folder's contents and run this again."
+                % os.path.basename(target))
         if row.get("shared") or not move:
             shutil.copy2(got["path"], target)
         else:

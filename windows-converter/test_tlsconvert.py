@@ -5744,6 +5744,48 @@ check("the page says what one press means now",
       "One press runs the whole search, coarse to fine" in _ALIGN_SRC
       and "Press again to refine further" not in _ALIGN_SRC)
 
+# ⛔⛔ SEVERAL DISTINCT CANDIDATES GO DOWN THE LADDER, AND THE ANSWER IS
+# RE-RANKED ON WHAT THEY REFINED TO. This committed to the fan's coarse winner
+# and merely RE-PRICED the runner-up at its old coarse pose, so `margin`
+# divided a four-rung answer by a one-rung one and was inflated by pure
+# refinement -- measured on the operator's restaurant, a wrong fit carried a
+# margin of 2.50 because the truth had been discarded before anything was
+# refined. `solve` has carried this fix all along ("REFINE SEVERAL RIVALS,
+# NOT THE FIRST ONE"); the GICP path, which is the one that runs, had not.
+# Re-measured on the live job after the change: 2 of 7 blind fits correct
+# became 3 of 7, folder 13 going from 178.6 deg wrong to 1.6 deg right with
+# its residual halving.
+check("more than one distinct candidate is refined before the answer is "
+      "chosen", registration.LADDER_KEEP > 1, registration.LADDER_KEEP)
+check("...and the winner is picked from what they REFINED to, not from the "
+      "coarse rank they entered with",
+      "refined.sort(key=lambda t: t.residual)" in _fan
+      and "sol = refined[0]" in _fan)
+check("...and the rival comes from that same refined list, so the margin "
+      "compares like with like",
+      "rival = next((t for t in refined[1:]" in _fan)
+check("...and the candidates it refines are genuinely different answers",
+      "if all(_apart(t.setup, p.setup) for p in picks)" in _fan)
+# ⛔ A seed corresponds a surface at range r only when 2*r*sin(spacing/2) fits
+# inside the reach. At 45 degrees that was r <= 3.85 m, so in a restaurant a
+# true heading falling mid-gap was in NO seed's basin. The NEAR fan was always
+# sized right (3 deg mid-gap -> 28 m); only the blind one was out.
+#: ⚠ THE WORST-CASE HEADING ERROR IS HALF THE SPACING, not the spacing -- a
+#: true heading falls at most Δ/2 from the nearest seed. The chord a seed must
+#: reach is therefore 2·r·sin(Δ/4), and the first version of this check used
+#: sin(Δ/2), which failed a fan that was correctly sized. The arithmetic is
+#: worth spelling out because the constant is chosen from it.
+_gap = max(registration.FAN_BLIND_DEG[i + 1] - registration.FAN_BLIND_DEG[i]
+           for i in range(len(registration.FAN_BLIND_DEG) - 1))
+_reach_m = registration.FAN_REACH_M / (2.0 * math.sin(math.radians(_gap / 4)))
+check("the blind seed spacing is sized to the reach, and covers the room a "
+      "capture actually sees", _reach_m >= 8.0, (_gap, round(_reach_m, 2)))
+check("...and the circle is still covered with no duplicate",
+      abs(registration.FAN_BLIND_DEG[0]) < 1e-9
+      and registration.FAN_BLIND_DEG[-1] < 360.0
+      and len(set(registration.FAN_BLIND_DEG))
+      == len(registration.FAN_BLIND_DEG))
+
 
 # --- the camera's seat, and the fine polish --------------------------------
 #
@@ -8639,6 +8681,47 @@ check("the grip highlight yields to shift and to the world-axes widget",
       and "function gizmoZone" in _page)
 check("...and a press that took no grip unlights the dot for the drag",
       "if(!grip) V.hot=-1;" in _page)
+
+# ⛔⛔ THE DRAG FLAGS COME DOWN WHATEVER HAPPENS. They were cleared only in the
+# tail of the pointerup handler, so a `pointercancel` (pen or touch, or the OS
+# taking the pointer away) and a throw inside that handler -- which calls
+# finishDraft() and recomputeLive() -- both left them set: the view sticks on
+# the coarse twin with no idle frame coming to refine it, and `down` stays
+# true, so every later mouse move orbits with no button held.
+check("one teardown ends a drag, reached from the end AND from a finally",
+      "function endDrag()" in _page
+      and "addEventListener('pointercancel', endDrag);" in _page
+      and "} finally { endDrag(); } });" in _page)
+# ⛔⛔ AND `ring` IS ONE OF THEM, WHICH IT NEVER WAS. `turnScan` returns a
+# number for ever once seeded -- it returns early only when no ring is SHOWN,
+# and then hands the old angle straight back -- and nothing ever reset it. So
+# after a single ring turn `moving` could never be true again (drag-to-move a
+# scan was dead for the rest of the session, because `moving` requires
+# `ring===null`) and, while the ring was on screen, every later drag turned
+# the scan instead of orbiting the camera.
+check("...including the rotation ring, which nothing used to clear",
+      "ring=null; picking=null;" in _page)
+check("...and the wheel's settle timer, so it cannot fire inside a drag and "
+      "strip the rush the twin is being grown for",
+      _page.count("clearTimeout(rushT)") >= 3)
+# ⛔ The overlays are drawn with depth-testing OFF, which stops depth being
+# written as well as tested, so a refinement chunk drawn afterwards wins the
+# depth test over them and paints them out -- the grips dissolved in the
+# second after the hand stopped, which is exactly when they are reached for.
+check("every refined chunk puts the overlays back on top of itself",
+      "drawWorldGrid(V.vp); drawBox(V.vp); drawRef(V.vp); drawPairs(V.vp);"
+      in _page)
+# ⛔ One home for freeing a scan's buffers -- including the rush twin's, which
+# no teardown path ever freed -- and for dropping the refine queue that still
+# names them.
+check("tearing scans down frees the twin too, and empties the refine queue",
+      "function dropChunks(list)" in _page
+      and "s.coarse ? s.coarse.chunks : []" in _page
+      and "fillQ=[]; fillAt=0;" in re.search(
+          r"function dropChunks\(list\)\{.*?\n\}", _page, re.S).group(0))
+check("...and every teardown site goes through it",
+      _page.count("dropChunks(V.scans);") == 3
+      and _page.count("gl.deleteBuffer(c.pos)") == 1)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
