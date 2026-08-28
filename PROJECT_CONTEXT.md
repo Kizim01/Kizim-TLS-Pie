@@ -4850,9 +4850,106 @@ from 176 s to 60 s, because a good start converges instead of flailing.
   measured at 4–5 starts; whether 2 would do as well is a **measurable** question that has not
   been measured. ⛔ Do not simply lower it — that is tuning on the same nine samples.
 
+## 2026-08-28, seventeenth pass — a report I could not reproduce, and the probe that was asking the wrong question
+
+### The Project tray opens by default
+
+Asked for by name. Two things it had to get right, both scars already here: **a default reaches
+nobody who already has a saved arrangement** (trays live in `localStorage` on purpose), and the
+migration is **a separate `if`, not another link in the `moveback` chain** — that chain is an
+`else if` and `moveback` is already true for everyone who has launched since it landed, so
+chaining would have meant it ran only on a brand-new install, which already gets it from the
+default list. Dead code that looks alive. Pinned by its own check. Fold state kept; flags written
+immediately. Suites **1305 → 1309**.
+
+*(The operator first asked for it on the LEFT, with the clip box and move controls, then corrected
+to the right. A second `#panelL` column was written and NOT applied — if a left column is ever
+wanted, the shape is: a `TRAY_LEFT` constant, `applyOrder` placing per column, `showTrays` hiding
+an empty left panel, and `trayOver` refusing to reorder across columns.)*
+
+### ⛔⛔ "auto align error.tlspie" — AND MY PROBE RAN A DIFFERENT CODE PATH FROM THE BUTTON
+
+The operator saved a two-scan job with the pair placed close by hand and reported *"auto align is
+not working"*, then *"the rotation is wrong"*.
+
+⛔⛔ **I measured it three times with `srv.solve(index)` and reported conclusions from it. That
+call leaves `start=None`, which sets `hint = None` and takes the BLIND path.** The panel does not
+do that: `autoAlign()` sends `start: s.setup` whenever the scan has been moved at all, so an
+operator who has placed the pair by hand ALWAYS presses the hinted path. Every number I gave them
+was the blind search — and with the floor-plan seeder, which is not even in their build.
+⭐ **A probe that calls the library directly can take a different route from the button, and the
+DEFAULT ARGUMENT is where they diverge.** Read the call signature before reporting a conclusion
+about what the operator experiences.
+
+**Re-measured properly. Both routes work on that file:**
+
+| | off the placement they kept in .04 | |
+|---|---|---|
+| their hand placement | 0.08 m, 1.03° | |
+| **hinted — what the panel sends** | **0.04 m, 0.31°** | residual 0.0371, `kept_start=False`, nothing refused |
+| blind | 0.04 m, 0.31° | (an earlier run; see the rung note below) |
+
+And an independent measure that does not depend on calling .04 "truth" — nearest-neighbour gap
+from scan 2's points to scan 1's, **bucketed by range from the tripod**:
+
+| range | before the press | after |
+|---|---|---|
+| 0–2 m | 3.4 cm | 2.3 cm |
+| 2–4 m | 6.6 cm | 4.0 cm |
+| 4–6 m | 8.4 cm | 2.5 cm |
+| 6–8 m | 12.0 cm | 2.8 cm |
+| 8–12 m | 14.3 cm | 4.9 cm |
+
+⭐ **The operator's hand placement had a real tilt** — that is what a gap growing 3 → 14 cm with
+distance means — **and the press removed it**: flat 2–5 cm everywhere afterwards, which is the
+VLP-16's own ±3 cm range noise. **The fit is at the instrument's floor.**
+
+⚠ **THE REPORT IS STILL UNEXPLAINED AND MUST NOT BE RECORDED AS FIXED.** Four measurements
+(hinted, blind, gap-vs-range, floor planes) all say this pair is fitted as well as the hardware
+allows. Either something the numbers cannot see is wrong, or what looks wrong on screen is not the
+geometry — the THIRD "not aligning" report this month to trace back to correct geometry.
+**Waiting on a screenshot.** What to look for: walls doubled at an ANGLE (a tilt), doubled but
+PARALLEL (an offset), or one cloud sparse/speckled (drawing, not geometry) — three different
+fixes.
+
+### Two dead ends, recorded so they are not re-walked
+
+- **The floor-plane comparison was measuring the floor FINDER.** The two floors came out 0.63° and
+  19 cm apart — but the solved relative height is right to 2 mm, so both fits cannot be on the
+  same surface. Scan 2's fit is materially worse (rms 0.046 m against 0.016 m, 40% fewer points)
+  and lands elsewhere, so its normal is not evidence either.
+- **The server not telling the page about the recovered tilt.** It does: `_placement()` folds
+  pitch and roll into the same dict as the setup and the handler assigns the lot.
+
+### ⚠ QUEUED from this pass — evidenced, NOT fixed
+
+- **⛔ PICKING THE REFERENCE SPLITS THE SELECTION IN TWO.** Reported as *"I can only move scan 2
+  even when scan 1 is selected"*. `pickScan(0)` sets `V.picked`/`V.editWho` to the reference but
+  deliberately leaves `V.active` on another scan, so **cuts follow scan 1 while every movement
+  control silently operates on scan 2** — exactly the two-selection fault `pickScan`'s own comment
+  says it was written to abolish. Nudging a slider then moves a scan the operator did not choose,
+  with nothing saying so. The refusal must be visible and the movement controls disabled; the
+  feature that gives them what they want is **"make this the reference"** (swap which scan is
+  fixed, re-expressing the others against it — how CloudCompare/Cyclone/Scene all do it).
+- **Pressing Auto-align repeatedly walks down the ladder and then stops.** `scan.rung` restarts
+  only when the hint DIFFERS from the current setup, so press-press-press without moving anything
+  ends in *"already refined as far as this instrument supports"* and no movement. It says so in
+  the status line; watching the cloud rather than the text, it reads as dead. (This also
+  invalidated a row in one of my own probes — a second `solve` in one process hits it.)
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-28 14:47:24, Converter 14:46:53, tlsconvert 14:47:50, selftest 0.**
+**✅ THE EXES: Studio 2026-08-28 18:07:21, Converter 18:06:59, tlsconvert 18:07:42, selftest 0**
+— and THIS build carries the slider rush fix, the floor-plan seeder AND the project-tray default.
+
+⚠ **THE SEEDER ONLY TOUCHES THE BLIND PATH.** A scan placed by hand goes down the hinted route
+(`autoAlign` sends `start: s.setup` whenever the scan has moved at all), so a job like
+`auto align error.tlspie` will behave EXACTLY as before. Do not present the 2-of-9 → 5-of-9
+improvement as something they will see there; it shows on align-on-import and on an untouched
+scan.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 14:47:24, Converter 14:46:53, selftest 0.**
 **✅ The CUDA engine was rebuilt at the same time and verified THROUGH THE PACKAGED BUILD** — the
 only witness that cannot accidentally agree, because the frozen exe has no CuPy of its own:
 RTX 3050 Ti found beside the program, 500k points 0.019 s on the card against 0.176 s on the
@@ -4917,7 +5014,10 @@ their own data; nothing since the 09:55 build has been exercised in Studio):
   deliberately SPARSE while the thumb is down and sharpens on release. If the operator reads that
   as "broken", it is the fix working; say so before changing anything.
 - **What scan 1 and 2 actually look like** once the picture has settled. This is the one
-  outstanding question that only they can answer.
+  outstanding question that only they can answer — see the seventeenth pass: FOUR independent
+  measurements say that pair is fitted to the instrument's noise floor, and the report stands
+  unexplained. **A screenshot is the next move, not more solver work.**
+- **The Project tray now opens by default** (right-hand panel, with everything else).
 - **An export can no longer destroy the previous one**, and the shoot sorter refuses to write
   over an existing file. Both are data-loss fixes tested only synthetically so far — one real
   export and one real sort, watched, are worth doing.
