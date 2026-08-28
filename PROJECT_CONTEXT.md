@@ -4757,19 +4757,35 @@ A settings file that cannot be READ is treated as empty and then overwritten.
 that folder holds seven other exes, this is the one. The `renderer:` line in studio.log is the
 only thing that settles it.)*
 
+**✅ THE `ambiguous` QUESTION IS ANSWERED — do not re-open it as a reporting problem.** Measured
+against ground truth (fourteenth pass): the flag has **never fired on a fit that was right**. It
+is under-sensitive, not over. And the solver review gave the reason the measurement could only
+hint at — the rival used to be re-priced *without being refined*, so the margin was inflated by
+refinement alone. That is now fixed and the margins are smaller and honest.
+⚠ **Do not tune `AMBIGUITY_MARGIN` on seven samples.**
+
+**⛔ THE STATE OF ALIGNMENT, PLAINLY.** On the operator's own restaurant a BLIND fit — a scan
+with no position, which is exactly what align-on-import runs — is right **3 times in 7**, plus
+one at 3.8°, with two of the three failures flagged. **This is a coarse pass that needs an eye,
+not a survey to trust unchecked**, and it should not be described to the operator as though it
+were. The remaining half of the cause is queued above: the blind fan seeds **yaw only, at zero
+translation**, so GICP must close a 3 m offset from a 1.5 m reach. Meanwhile the reliable
+workflow to recommend is the HINTED one — place it roughly by hand, then Auto-align — which
+takes a tighter path with a real starting point.
+
 **What the operator has NOT yet pressed** (everything below was verified through the library on
-their own data, and nothing since the 23:22 build has been exercised in Studio):
-- **Auto-align on a placed scan**: it should now name a target by shared surface rather than by
-  distance — on their job that changes folders 8, 10 and 11. The message says which rule aimed
-  it, so a wrong target is arguable instead of invisible.
-- **Auto-align on a fresh scan**: aims at the capture beside it in the walk, and says so.
-- Turning never hangs (worst wait = one 4M chunk), the cloud sharpens at rest and no longer goes
-  porous while moving, lasso deletes are far quicker (quicker still as more is cut), and
-  double-click re-aims the move controls.
-- ⚠ **The fits on their job still report `ambiguous` even when the residual is excellent**
-  (folder 13 onto folder 12: 0.031 m and still flagged). Worth a look — a warning that fires on
-  good fits trains the operator to ignore warnings — but it was NOT investigated, and it may
-  well be honest about a symmetric restaurant.
+their own data; nothing since the 09:55 build has been exercised in Studio):
+- **Auto-align on a placed scan** names its target by shared surface rather than distance — on
+  their job that changes folders 8, 10 and 11 — and says which rule aimed it.
+- **Auto-align on a fresh scan** aims at the capture beside it in the walk, and says so.
+- Turning never hangs, the cloud sharpens at rest and no longer goes porous or leaves fat rims,
+  lasso deletes are far quicker, double-click re-aims the move controls, and the view opens on
+  the smallest points in the photograph's colour with load detail beside the point size.
+- **Drag-to-move a scan works again after using the rotation ring** — `ring` was never cleared,
+  which killed it for the rest of the session. Worth a specific try.
+- **An export can no longer destroy the previous one**, and the shoot sorter refuses to write
+  over an existing file. Both are data-loss fixes tested only synthetically so far — one real
+  export and one real sort, watched, are worth doing.
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-27 23:22:39 / 22:23:42, selftest 0.**
