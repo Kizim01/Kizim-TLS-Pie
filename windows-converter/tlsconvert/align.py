@@ -4789,6 +4789,17 @@ PAGE = r"""<!doctype html>
     <button id="keepbox">Keep only the box</button></div>
   <div class="row"><button id="rect">Rectangle</button>
     <button id="lasso">Lasso</button></div>
+  <!-- ⭐ Asked for by the operator, 2026-08-28. Both are the same cut the
+       lasso already makes -- a screen-space outline frozen with the matrix
+       that drew it -- so neither the exporter nor the preview needed to learn
+       anything new. -->
+  <div class="row"><button id="circle" title="Drag out from the CENTRE: put
+      the middle of the circle on the thing you mean and drag until it is
+      covered. Shortcut E.">Circle</button>
+    <button id="poly" title="Click each corner in turn, then double-click or
+      press Enter to close it. Every corner has to be placed from one
+      viewpoint — moving the camera abandons the outline. Shortcut N.">Polygon
+      </button></div>
   <div class="row"><button id="undo">Undo</button>
     <button id="clearedit">Clear all</button></div>
   <div id="lassoask" style="display:none">
@@ -4885,7 +4896,8 @@ const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:0.2,
            mode:2, only:-1, clip:false, grab:false, active:1, scans:[],
            edits:[], wire:true, hot:-1, vp:null, ortho:false, inside:false,
-           tool:'', draft:null, pending:null, detail:0, exdet:2, gizmo:true,
+           tool:'', draft:null, poly:null, pending:null,
+           detail:0, exdet:2, gizmo:true,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            turnRing:false, moveGiz:false, moveAxis:null, moveHot:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
@@ -6238,7 +6250,16 @@ function turnScan(mx,my,fromAngle,snap){
 
 /* The outline being drawn right now, and the one awaiting a keep-or-cut. */
 function drawDraft(){
-  const path = V.draft || (V.pending && V.pending.screen);
+  /* ⛔ CHECKED HERE, EVERY FRAME, because this is the one place that runs
+     whenever the picture changes -- so the abandon happens at the instant the
+     camera moves rather than being discovered later, when the operator has
+     already clicked three more corners into a view that no longer holds them. */
+  if(polyStale())
+    polyDrop('The camera moved, so the polygon was thrown away — every '+
+             'corner has to be placed from one viewpoint. Draw it again.');
+  /* An open polygon is its corners plus a line to wherever the hand is now. */
+  const path = (V.poly && V.poly.pts.concat([V.poly.at]))
+               || V.draft || (V.pending && V.pending.screen);
   const dpr=Math.min(devicePixelRatio||1,2);
   if(ov.width!==Math.floor(innerWidth*dpr)||
      ov.height!==Math.floor(innerHeight*dpr)){
@@ -7958,13 +7979,18 @@ function setNav(on){
 }
 function setTool(t){
   if(t) V.nav=false;
-  /* ⭐ ARMING A TOOL OPENS ITS TRAY. The shortcuts (M, L, P, G, T) arm a tool
-     without going near the panel, and a tool whose controls are shut is a tool
-     whose Cancel button cannot be found. */
+  /* ⛔ SWITCHING TOOLS THROWS AWAY A HALF-DRAWN POLYGON. Its corners belong to
+     the polygon tool and to one viewpoint; carrying them into the lasso would
+     leave an outline on screen that nothing can close. */
+  polyDrop(null);
+  /* ⭐ ARMING A TOOL OPENS ITS TRAY. The shortcuts (M, L, E, N, P, G, T) arm a
+     tool without going near the panel, and a tool whose controls are shut is a
+     tool whose Cancel button cannot be found. */
   if(t) trayForTool(t);
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
-  [['lasso','Lasso'],['rect','Rectangle'],['pair','Pick pairs'],
+  [['lasso','Lasso'],['rect','Rectangle'],['circle','Circle'],
+   ['poly','Polygon'],['pair','Pick pairs'],
    ['level','Pick level points'],['plumb','Place / measure'],
    ['setorg','Pick a point']]
     .forEach(([id,label])=>{
@@ -7982,6 +8008,12 @@ function askLasso(on){
   $('lassoask').style.display = on ? 'block' : 'none';
 }
 function startDraft(x,y){ V.draft=[[x,y]]; V.anchor=[x,y]; }
+/* ⭐ HOW ROUND A CIRCLE IS. 64 segments is under a fifth of a pixel of chord
+   error on a 500-pixel circle, which is finer than the outline is drawn, and
+   the whole list travels to the exporter as a polygon -- so this is the one
+   place the number matters and it is written down rather than guessed at each
+   use. */
+const CIRCLE_SEGS = 64;
 function extendDraft(x,y){
   if(V.tool==='rect'){
     /* dragged from the corner it was started at, the way a marquee reads */
@@ -7989,15 +8021,49 @@ function extendDraft(x,y){
     V.draft=[[ax,ay],[x,ay],[x,y],[ax,y]];
     return invalidate();
   }
+  /* ⭐ A CIRCLE IS DRAWN FROM ITS CENTRE, NOT CORNER TO CORNER. A marquee is
+     placed by its edges because that is where a rectangle's meaning is; a
+     circle put over a tripod, a bin or a person is placed by the thing in the
+     MIDDLE of it, and dragging out from that thing is how you say which one.
+     ⛔ And it is a polygon like every other outline -- the cut path takes a
+     screen-space ring of points, so there is nothing here the exporter needs
+     to learn about. */
+  if(V.tool==='circle'){
+    const [ax,ay]=V.anchor;
+    const r=Math.hypot(x-ax, y-ay);
+    const ring=[];
+    for(let i=0;i<CIRCLE_SEGS;i++){
+      const a=i/CIRCLE_SEGS*Math.PI*2;
+      ring.push([ax+r*Math.cos(a), ay+r*Math.sin(a)]);
+    }
+    V.draft=ring;
+    return invalidate();
+  }
   const p=V.draft[V.draft.length-1];
   if(Math.hypot(x-p[0],y-p[1]) < 3) return;   /* freehand, not every pixel */
   V.draft.push([x,y]); invalidate();
 }
+/* ⛔⛔ ONE SIZE RULE FOR EVERY OUTLINE, TAKEN FROM ITS BOUNDING BOX. The old
+   test read `path[1]` and `path[2]` and could only ever mean anything for a
+   rectangle -- a circle dragged to nothing is sixty-four points on one spot
+   and a polygon of three clicks in the same place is three, and both would
+   have sailed straight past it into a cut that encloses nothing. The box is
+   the one measurement every shape has.
+   ⛔ BOTH SIDES SMALL, NOT EITHER. A deliberate sliver -- a long thin cut down
+   a wall -- is narrow in one axis and means something; only a shape that is
+   small in BOTH is the click-without-a-drag this is here to catch. */
+const OUTLINE_MIN_PX = 4;
+function outlineTiny(path){
+  let lox=1e9, loy=1e9, hix=-1e9, hiy=-1e9;
+  for(const [x,y] of path){
+    if(x<lox) lox=x; if(x>hix) hix=x;
+    if(y<loy) loy=y; if(y>hiy) hiy=y;
+  }
+  return (hix-lox) < OUTLINE_MIN_PX && (hiy-loy) < OUTLINE_MIN_PX;
+}
 function finishDraft(){
   const path=V.draft; V.draft=null;
-  const tiny = path && path.length===4 &&
-    Math.abs(path[1][0]-path[0][0])<4 && Math.abs(path[2][1]-path[1][1])<4;
-  if(!path || path.length<3 || tiny){ invalidate(); return say(
+  if(!path || path.length<3 || outlineTiny(path)){ invalidate(); return say(
     'That outline was too small to enclose anything. Drag it out across the '+
     'points you mean.', 'warn'); }
   /* Frozen HERE, with the matrix that drew it. Orbit afterwards and the cut
@@ -8012,6 +8078,75 @@ function finishDraft(){
         'that widens with distance. Press O for orthographic and draw it '+
         'again if you meant a straight column.',
       V.ortho ? null : 'warn');
+}
+/* ---- the polygon: clicked out one corner at a time ----------------------
+
+   ⛔⛔ EVERY CORNER MUST BE PLACED IN ONE VIEW, and that is not a shortcoming
+   of this tool -- it is what a screen-space cut IS. A lasso cannot straddle an
+   orbit either; it simply never gets the chance, because a drag ends when the
+   hand lifts. A CLICKED polygon can outlive one, and corners placed before the
+   orbit would then describe a column through somewhere nobody pointed at: a
+   cut that looks deliberate and lands in the wrong part of the room.
+
+   So the matrix is frozen at the first corner and the outline is ABANDONED the
+   moment the camera disagrees with it -- loudly, and before any cut can be
+   made from it. Refusing to move the camera was the other option and it is
+   worse: the view stops working and nothing on screen says why. */
+function polyStart(x,y){
+  V.poly={pts:[[x,y]], vp:Array.from(V.vp), at:[x,y]};
+}
+function polyDrop(why){
+  if(!V.poly) return false;
+  V.poly=null; invalidate();
+  if(why) say(why, 'warn');
+  return true;
+}
+function polyPick(x,y){
+  if(!V.poly){
+    polyStart(x,y);
+    return say('Polygon started — click each corner in turn, then '+
+               'double-click or press Enter to close it. Esc throws it away. '+
+               'Every corner has to be placed from THIS viewpoint: moving the '+
+               'camera abandons the outline.');
+  }
+  V.poly.pts.push([x,y]); V.poly.at=[x,y]; invalidate();
+  const n=V.poly.pts.length;
+  say(n+' corner'+(n===1?'':'s')+(n<3 ? ' — a polygon needs three.'
+      : ' — double-click or press Enter to close it.'));
+}
+/* ⛔ THE MATRIX IS COMPARED, NOT A FLAG SET BY THE CAMERA CODE. There are a
+   dozen ways the view moves -- orbit, pan, zoom, roam, recentre, fit, the
+   ortho toggle, a saved view being restored -- and a flag would have to be set
+   in every one of them, which means it would be missed in one. What the
+   outline actually depends on is the matrix it was drawn against, so that is
+   what is checked. */
+function polyStale(){
+  if(!V.poly) return false;
+  const a=V.poly.vp, b=V.vp;
+  for(let i=0;i<a.length;i++) if(a[i]!==b[i]) return true;
+  return false;
+}
+function polyClose(){
+  if(!V.poly) return false;
+  /* A double-click lands two pointerups on the same spot before it arrives, so
+     the closing gesture leaves a corner sitting on top of its neighbour. Dropped
+     here rather than guarded at the door, because the same duplicate can be made
+     honestly with two slow clicks in one place. */
+  const pts=[];
+  for(const p of V.poly.pts){
+    const q=pts[pts.length-1];
+    if(q && Math.hypot(p[0]-q[0], p[1]-q[1]) < 3) continue;
+    pts.push(p);
+  }
+  V.poly=null;
+  if(pts.length<3){
+    invalidate();
+    say('A polygon needs at least three corners in different places. Thrown '+
+        'away.', 'warn');
+    return true;
+  }
+  V.draft=pts; finishDraft();
+  return true;
 }
 function commitLasso(mode){
   if(!V.pending) return;
@@ -9293,7 +9428,8 @@ const MENUWHY = {
   View:'How the job is drawn. Changes nothing that is saved'};
 /* Which tray owns which pick-tool, so a keyboard shortcut opens the controls
    that go with it instead of arming a tool whose panel is shut. */
-const TOOLTRAY = {rect:'cut', lasso:'cut', pair:'pairs', level:'level',
+const TOOLTRAY = {rect:'cut', lasso:'cut', circle:'cut', poly:'cut',
+                  pair:'pairs', level:'level',
                   north:'north', plumb:'plumb', setorg:'level'};
 const TRAYKEY = 'tlspie.trays.v2';
 
@@ -9384,6 +9520,9 @@ const KEYHELP = [
   ['Tools', [
     ['M', 'rectangle'],
     ['L', 'lasso'],
+    ['E', 'circle · drag out from its centre'],
+    ['N', 'polygon · click each corner, double-click or Enter to close · '+
+     'all from one viewpoint'],
     ['P', 'pick pairs'],
     ['G', 'level points'],
     ['T', 'reference lines'],
@@ -10882,7 +11021,14 @@ function syncClipSliders(){
    they were built, and nothing failed loudly enough to say so: the fallback was
    a working feature, just the wrong one. A tool in neither table now leaves the
    drag to the camera, which is inert rather than misleading. */
-const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1};
+/* ⛔ THE POLYGON IS A PICK TOOL, NOT A DRAW TOOL, and the distinction is the
+   button rather than the shape. A draw tool owns the press: down, drag, up,
+   done. The polygon needs the operator to click, look, click again -- so it
+   takes its corners on RELEASE like the other pick tools, and anything that
+   travelled falls through to the camera exactly as it does for pair-picking.
+   (Moving the camera then abandons the outline -- see `polyStale` -- which is
+   the honest end of that trade, not a bug in it.) */
+const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1, poly:1};
 
 /* Is this cloud on screen? One home for the question, because the draw, the
    picker and every new cut all have to agree about it. */
@@ -10907,7 +11053,7 @@ function cutScope(){
   if(V.editWho>=0) return V.hidden[V.editWho] ? [] : V.editWho;
   return on.length===V.scans.length ? null : on;
 }
-const DRAW_TOOLS = {lasso:1, rect:1};
+const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
@@ -11018,6 +11164,12 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
+    /* ⭐ THE OPEN POLYGON FOLLOWS THE HAND. Without the rubber band the tool
+       shows nothing between clicks, and an outline you cannot see the next
+       edge of is one you place the corners of by guesswork. Before the
+       `if(!down)` guard, because the line has to keep up whether or not a
+       button happens to be held. */
+    if(V.poly){ V.poly.at=[e.clientX,e.clientY]; invalidate(); }
     if(!down){
       const over = e.target.id==='cv' && !V.tool;
       const was=V.hot, wasRing=V.ring;
@@ -11091,7 +11243,14 @@ const DRAW_TOOLS = {lasso:1, rect:1};
   addEventListener('pointercancel', endDrag);
   addEventListener('pointerup', ()=>{
    try{
-    if(picking && drift<5) takePick(picking[0],picking[1]);
+    /* ⛔ A POLYGON CORNER IS NOT A POINT PICK. `takePick` searches the cloud
+       for something under the cursor and refuses when it finds nothing -- but
+       a corner belongs wherever it was clicked, and the useful ones are out in
+       empty space, off the edge of the thing being cut around. */
+    if(picking && drift<5){
+      if(V.tool==='poly') polyPick(picking[0],picking[1]);
+      else takePick(picking[0],picking[1]);
+    }
     picking=null;
     if(lassoing) finishDraft();
     if(moving && V.edits.length) recomputeLive();   /* the cut follows the
@@ -11124,7 +11283,13 @@ const DRAW_TOOLS = {lasso:1, rect:1};
      tool (its clicks are picks), to the world-axes widget and to the clip
      grips, exactly as a single press does. */
   addEventListener('dblclick', e=>{
-    if(e.target.id!=='cv' || V.tool) return;
+    if(e.target.id!=='cv') return;
+    /* ⛔ BEFORE THE TOOL GUARD, not after it. The line below hands every
+       double-click to a live tool, which is right for the pick tools -- but
+       the polygon's closing gesture IS a double-click, so it has to be read
+       here or it would be swallowed by the very rule that protects it. */
+    if(V.tool==='poly' && polyClose()) return;
+    if(V.tool) return;
     if(gizmoZone(e.clientX,e.clientY)) return;
     if(pickHandle(e.clientX,e.clientY)>=0) return;
     const s=scanUnder(e.clientX,e.clientY);
@@ -11174,10 +11339,17 @@ const DRAW_TOOLS = {lasso:1, rect:1};
        outline, which is the answer nine times out of ten; Shift-Enter keeps it
        instead, so the rarer choice is still on the keyboard. */
     else if(k==='Enter'){
+      /* ⛔ AN OPEN POLYGON IS CLOSED BEFORE ANYTHING IS COMMITTED, because
+         Enter is the SAME key that deletes what is inside a finished outline
+         -- so pressing it with a polygon half-drawn would otherwise reach past
+         the thing being drawn and act on whatever was drawn before it. Closing
+         leaves a pending outline; a second Enter cuts it. */
+      if(polyClose()) return;
       if(!V.pending) return;                    /* nothing drawn: not ours */
       commitLasso(e.shiftKey ? 'keep' : 'cut');
     }
     else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
+                           polyDrop(null);
                            V.half=null; showPairs();
                            setTool(''); invalidate(); }
     /* ⛔⛔ A LETTER ON ITS OWN IS A SHORTCUT; A LETTER WITH CTRL BELONGS
@@ -11200,6 +11372,12 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     else if(k==='o'||k==='O') setOrtho(!V.ortho);
     else if(k==='l'||k==='L') setTool(V.tool==='lasso'?'':'lasso');
     else if(k==='m'||k==='M') setTool(V.tool==='rect'?'':'rect');
+    /* ⛔ NOT C AND NOT P. The obvious letter for each of these was already
+       taken by something older -- C is camera-only and P is pick pairs -- and
+       moving either would break a habit to save a mnemonic. E is the ellipse
+       every drawing program calls it; N is the n-gon. */
+    else if(k==='e'||k==='E') setTool(V.tool==='circle'?'':'circle');
+    else if(k==='n'||k==='N') setTool(V.tool==='poly'?'':'poly');
     else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
     else if(k==='g'||k==='G') setTool(V.tool==='level'?'':'level');
     else if(k==='t'||k==='T'){ V.ref=!V.ref;
@@ -11442,6 +11620,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');
   $('rect').onclick=()=>setTool(V.tool==='rect'?'':'rect');
+  $('circle').onclick=()=>setTool(V.tool==='circle'?'':'circle');
+  $('poly').onclick=()=>setTool(V.tool==='poly'?'':'poly');
   $('pair').onclick=()=>setTool(V.tool==='pair'?'':'pair');
   $('pairgo').onclick=alignPairs;
   $('pairundo').onclick=undoPair;

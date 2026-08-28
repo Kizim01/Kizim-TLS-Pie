@@ -1997,9 +1997,17 @@ try:
     # table a new tool belongs in -- the one decision that, got wrong, leaves
     # a tool usable-but-wrong. `setorg` joined on 2026-08-23: it picks the one
     # point that becomes the world origin, so it picks.
+    # ⭐ `circle` and `poly` joined on 2026-08-28, and they went into DIFFERENT
+    # tables on purpose. A circle is a DRAG: press, pull out from the centre,
+    # release -- one gesture that owns the button, exactly like the rectangle.
+    # A polygon is CLICKS: the operator has to look between corners, so it
+    # takes each one on RELEASE like the other pick tools and lets anything
+    # that travelled fall through to the camera. Routed the other way round,
+    # the circle would need a click to start and a click to finish and the
+    # polygon could not be drawn at all without the first drag eating the view.
     check("and the point-picking tools are the ones that pick",
-          _picks == {"pair", "level", "plumb", "north", "setorg"}
-          and _draws == {"lasso", "rect"},
+          _picks == {"pair", "level", "plumb", "north", "setorg", "poly"}
+          and _draws == {"lasso", "rect", "circle"},
           "picks=%s draws=%s" % (sorted(_picks), sorted(_draws)))
     # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
     # distance alone picks the wall THROUGH the chair in front of it.
@@ -6287,6 +6295,163 @@ check("...nor does the undo stack, which is closures over scan indices",
 _fs = re.sub(r"/\*.*?\*/", "", _js_func("forgetScan"), flags=re.S)
 check("removing a cloud empties the undo stack for the same reason",
       "HIST.length=0;" in _fs, _fs[:300])
+
+
+# --- a circle and a polygon to cut with -------------------------------------
+#
+# ⭐⭐ NEITHER IS A NEW KIND OF CUT. The rectangle was already a four-point
+# polygon fed through `commitLasso`, so a circle is that with sixty-four points
+# and a polygon is that with however many the operator clicked. Nothing on the
+# server, in `editPlan` or in the exporter learned anything -- which is the
+# whole reason these were cheap, and is worth pinning so a later change does
+# not quietly give one of them its own path.
+print("\nthe circle and the polygon")
+
+_ed = re.sub(r"/\*.*?\*/", "", _js_func("extendDraft"), flags=re.S)
+check("a circle is drawn from its centre, not corner to corner",
+      "const [ax,ay]=V.anchor;" in _ed and "r*Math.cos(a)" in _ed
+      and "r*Math.sin(a)" in _ed, _ed)
+check("...out of one written-down segment count, not a number per use",
+      "const CIRCLE_SEGS = 64;" in _ALIGN_SRC
+      and _ALIGN_SRC.count("CIRCLE_SEGS") == 3)
+check("...and it commits through the same door as the lasso",
+      "kind:'lasso'" in _js_func("commitLasso")
+      and "V.draft=ring;" in _ed)
+_pc = re.sub(r"/\*.*?\*/", "", _js_func("polyClose"), flags=re.S)
+check("a closed polygon commits through that same door too",
+      "V.draft=pts; finishDraft();" in _pc)
+check("...and refuses under three corners rather than cutting nothing",
+      "pts.length<3" in _pc)
+# ⛔ A DOUBLE-CLICK LANDS TWO RELEASES ON ONE SPOT before it arrives, so the
+# closing gesture leaves a corner on top of its neighbour.
+check("...dropping a corner that sits on top of the one before it",
+      "Math.hypot(p[0]-q[0], p[1]-q[1]) < 3" in _pc)
+# ⛔⛔ EVERY CORNER FROM ONE VIEWPOINT. A clicked polygon can outlive an orbit
+# where a dragged lasso never gets the chance, and corners placed before the
+# orbit would describe a column through somewhere nobody pointed at.
+_ps = re.sub(r"/\*.*?\*/", "", _js_func("polyStale"), flags=re.S)
+check("an open polygon is abandoned when the camera disagrees with it",
+      "V.poly.vp" in _ps and "if(a[i]!==b[i]) return true;" in _ps, _ps)
+# ⛔ THE MATRIX IS COMPARED, not a flag the camera code has to remember to set
+# in each of a dozen places that move the view.
+check("...by comparing the matrix, not by trusting a flag",
+      "V.poly={pts:[[x,y]], vp:Array.from(V.vp)" in _ALIGN_SRC)
+_dd = re.sub(r"/\*.*?\*/", "", _js_func("drawDraft"), flags=re.S)
+check("...checked in the draw, so it happens the instant the camera moves",
+      "if(polyStale())" in _dd)
+check("...and the open outline is drawn out to the hand",
+      "V.poly.pts.concat([V.poly.at])" in _dd)
+# ⛔ ENTER IS THE SAME KEY THAT CUTS A FINISHED OUTLINE, so a half-drawn
+# polygon has to be closed BEFORE that, or the key reaches past the thing
+# being drawn onto whatever was drawn before it.
+_kdz = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('keydown', e=>{"):]
+check("Enter closes an open polygon before it commits anything",
+      0 < _kdz.find("if(polyClose()) return;") < _kdz.find("if(!V.pending)"))
+check("...Escape throws one away", "polyDrop(null);" in _kdz)
+check("...and switching tools does too, so no outline is left unclosable",
+      "polyDrop(null);" in _js_func("setTool"))
+# ⛔ THE CLOSING GESTURE IS A DOUBLE-CLICK, and the handler hands every
+# double-click to a live tool -- so it must be read BEFORE that guard or the
+# rule that protects the pick tools would swallow it.
+_db = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('dblclick'"):]
+_db = _db[:_db.find("});")]
+check("double-click closes the polygon, ahead of the live-tool guard",
+      0 < _db.find("V.tool==='poly' && polyClose()") < _db.find("if(V.tool)"))
+# ⛔ A CORNER IS NOT A POINT PICK. `takePick` searches the cloud and refuses
+# when nothing is under the cursor -- but the useful corners are out in empty
+# space, off the edge of the thing being cut around.
+check("a polygon corner does not go through the point picker",
+      "if(V.tool==='poly') polyPick(picking[0],picking[1]);" in _ALIGN_SRC)
+# ⛔⛔ ONE SIZE RULE FOR EVERY OUTLINE. The old test read path[1] and path[2]
+# and only meant anything for a rectangle: a circle dragged to nothing is 64
+# points on one spot and would have sailed past it into a cut of nothing.
+_ot = re.sub(r"/\*.*?\*/", "", _js_func("outlineTiny"), flags=re.S)
+check("the too-small test is a bounding box, so it covers every shape",
+      "hix-lox" in _ot and "hiy-loy" in _ot, _ot)
+check("...small in BOTH axes, so a deliberate sliver still cuts",
+      "&&" in _ot and "||" not in _ot, _ot)
+check("...and the rectangle-only test it replaced is gone",
+      "path.length===4 &&" not in _ALIGN_SRC)
+check("both tools reach their tray and their button",
+      "circle:'cut', poly:'cut'" in _ALIGN_SRC
+      and 'id="circle"' in _page and 'id="poly"' in _page
+      and "$('circle').onclick" in _ALIGN_SRC
+      and "$('poly').onclick" in _ALIGN_SRC)
+# ⛔ THE OBVIOUS LETTERS WERE TAKEN -- C is camera-only, P is pick pairs -- and
+# moving either would break a habit to save a mnemonic.
+check("...and a shortcut that does not steal an existing one",
+      "k==='e'||k==='E') setTool(V.tool==='circle'" in _ALIGN_SRC
+      and "k==='n'||k==='N') setTool(V.tool==='poly'" in _ALIGN_SRC)
+check("...both listed in the key help, which would otherwise lie",
+      "['E', 'circle" in _ALIGN_SRC and "['N', 'polygon" in _ALIGN_SRC)
+
+if not _node:
+    print("  ---- node is not installed; the outlines were NOT drawn")
+else:
+    # ⛔ THE SEGMENT COUNT IS LIFTED FROM THE PAGE, NOT RESTATED HERE. Writing
+    # `const CIRCLE_SEGS = 64;` into the harness would make the check below
+    # test the harness: it would go on reading 64 however the shipped constant
+    # changed. Injecting the shipped LINE keeps the 64 in the assertion an
+    # independent claim about what the program does.
+    _consts = re.findall(r"const (?:CIRCLE_SEGS|OUTLINE_MIN_PX) = \d+;",
+                         _ALIGN_SRC)
+    check("the page states both outline constants once, where they can be "
+          "lifted", len(_consts) == 2, _consts)
+    _shape = """
+%s
+%s
+const V={tool:'circle', anchor:[100,100], draft:null, poly:null, vp:[1,0,0,1]};
+let SAID='';
+const say=m=>{SAID=m;}, invalidate=()=>{};
+const out={};
+/* A circle dragged 50 px out from its centre. */
+extendDraft(150,100);
+out.n = V.draft.length;
+/* Every point the same distance from the centre it was placed on, and the
+   centre is the ANCHOR -- not a corner of a box the drag happened to sweep. */
+let lo=1e9, hi=-1e9;
+for(const [x,y] of V.draft){
+  const r=Math.hypot(x-100, y-100);
+  lo=Math.min(lo,r); hi=Math.max(hi,r);
+}
+out.round = [+lo.toFixed(6), +hi.toFixed(6)];
+/* \\u26d4 THE TOO-SMALL TEST HAS TO CATCH A CIRCLE OF NO RADIUS -- 64 points
+   on one spot, which the old length===4 rule sailed straight past. */
+V.anchor=[100,100]; extendDraft(101,100);
+out.tinyCircle = outlineTiny(V.draft);
+V.anchor=[100,100]; extendDraft(150,100);
+out.bigCircle = outlineTiny(V.draft);
+/* \\u26d4 AND A DELIBERATE SLIVER MUST STILL CUT: narrow in one axis only. */
+out.sliver = outlineTiny([[10,10],[12,10],[12,400],[10,400]]);
+/* A rectangle dragged to nothing is still caught, which is what the rule the
+   bounding box replaced was there for. */
+V.tool='rect'; V.anchor=[100,100]; extendDraft(101,101);
+out.tinyRect = outlineTiny(V.draft);
+console.log(JSON.stringify(out));
+""" % ("\n".join(_consts),
+       "\n".join(_js_func(f) for f in ("extendDraft", "outlineTiny")))
+    _sp = os.path.join(tempfile.mkdtemp(prefix="tlsshape"), "shape.js")
+    with io.open(_sp, "w", encoding="utf-8") as _fh:
+        _fh.write(_shape)
+    _sr = subprocess.run([_node, _sp], capture_output=True, text=True)
+    check("the outline shapes' own rules run", _sr.returncode == 0,
+          (_sr.stderr or "")[:400])
+    if _sr.returncode == 0:
+        _so = json.loads(_sr.stdout.strip().splitlines()[-1])
+        check("a circle comes out with the segments it says it has",
+              _so["n"] == 64, _so)
+        # ⭐ ROUND, AND ROUND ABOUT THE ANCHOR: every point 50 px from the
+        # centre the drag started on. A bounding-box circle would have put the
+        # centre at (125, 100) and this would read 25 and 75.
+        check("...every point the same distance from the centre it was placed "
+              "on", _so["round"] == [50.0, 50.0], _so)
+        check("a circle dragged to nothing is caught as too small",
+              _so["tinyCircle"] is True, _so)
+        check("...and a real one is not", _so["bigCircle"] is False, _so)
+        check("...nor is a deliberate sliver, narrow in one axis only",
+              _so["sliver"] is False, _so)
+        check("...and a rectangle dragged to nothing is still caught",
+              _so["tinyRect"] is True, _so)
 
 
 # --- "Ctrl-Z doesn't undo the cloud move controls" --------------------------
