@@ -813,6 +813,17 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
         info["image_up_deg"] = round(info["image_up_px"] * 180.0
                                      / lum.shape[0], 2)
         info["paint_drift"] = got.get("drift")
+    elif not got.get("ok") and got.get("reason"):
+        # ⛔⛔ THE REFUSAL IS THE MOST VALUABLE SENTENCE THIS SUBSYSTEM SAYS,
+        # AND IT WAS BEING DROPPED ON THE FLOOR. `settle_drift` refuses when
+        # the content sits further out than any stitch can explain -- which
+        # is the signature of a photograph paired with the WRONG CAPTURE --
+        # and only the lift was refused: the convert went on to paint the
+        # cloud from that photograph and report success. A wrong pairing that
+        # paints plausibly and says nothing is exactly the failure the
+        # confidence gate exists to prevent, arriving through the one check
+        # that actually caught it.
+        info["drift_refused"] = str(got.get("reason"))
     return colour_mod.Colouriser(rgb, info["yaw_deg"], camera,
                                  info["pitch_deg"], info["roll_deg"]), info
 
@@ -877,6 +888,11 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     own_writer = writer is None
     if own_writer:
         writer = export.writer_for(out_path, comment=comment)
+    # ⛔ THE DESTINATION IS ONLY WRITTEN OVER IF THE WHOLE CLOUD ARRIVES. See
+    # `export.PART_EXT`: the writer works beside the chosen path and moves
+    # onto it at close, so `close(keep=...)` is the moment that decides
+    # whether the operator's previous export survives.
+    finished = False
     before = writer.count
 
     started = time.time()
@@ -994,9 +1010,10 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
                 progress(voxels.cells if voxels else writer.count, decoded)
         if voxels is not None:
             emit(*voxels.result())
+        finished = True
     finally:
         if own_writer:
-            writer.close()
+            writer.close(keep=finished)
 
     over = bool(budget and writer.count > budget * 1.15)
     return {
@@ -1136,6 +1153,9 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
     # layers thick where captures see the same wall. See `OnePerCell`.
     sink = writer if not thin_m else OnePerCell(writer, thin_m)
     parts = []
+    # See `export.PART_EXT`: a merge that dies on capture 9 of 15 must not
+    # take the operator's previous export with it.
+    finished = False
     try:
         for i, (path, setup) in enumerate(zip(captures, setups)):
             if progress:
@@ -1161,8 +1181,9 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
                                  clean_spec=(cleans[i] if cleans
                                              and i < len(cleans) else None),
                                  **dict(kwargs, **_pose_kwargs(colours, i))))
+        finished = True
     finally:
-        writer.close()
+        writer.close(keep=finished)
 
     return {
         "out": out_path,

@@ -42,6 +42,32 @@ def intensity_to_grey(refl):
     return np.repeat(g, 3, axis=1)
 
 
+#: ⛔⛔ AN EXPORT IS WRITTEN BESIDE ITS DESTINATION AND MOVED ONTO IT AT THE
+#: END. Both writers used to open the operator's chosen path outright, which
+#: truncates it before a single point exists -- so a decode that threw on
+#: capture 9 of 15 had already destroyed the good file from the previous
+#: export, and left one that READS AS COMPLETE: `PlyWriter.close` patches the
+#: header with the count written so far, and `library._read_ply`'s truncation
+#: check only fires when the header promises MORE than the body holds. A
+#: surveyor re-exporting to the same name after a small edit is the ordinary
+#: case, not a corner. Nothing is overwritten now until a whole cloud exists.
+PART_EXT = ".part"
+
+
+def _ascii(text):
+    """
+    A header comment that cannot fail to encode.
+
+    ⛔ THE ENCODE USED TO RAISE *AFTER* THE DESTINATION WAS TRUNCATED. The
+    comment carries capture filenames, so a job in a folder called `Café` --
+    or any Cyrillic or CJK name -- destroyed the previous export and left a
+    zero-byte file with the handle still open. A comment is a courtesy; it
+    may not be the thing that loses somebody's cloud.
+    """
+    return (str(text or "").encode("ascii", "replace")
+            .decode("ascii").replace("\r", " "))
+
+
 class PlyWriter:
     """
     Binary little-endian PLY, written incrementally.
@@ -57,14 +83,13 @@ class PlyWriter:
     def __init__(self, path, comment=""):
         self.path = path
         self.count = 0
-        self._handle = open(path, "wb")
         lines = [
             "ply",
             "format binary_little_endian 1.0",
             "comment written by TLS-Pie converter",
         ]
         if comment:
-            lines += ["comment " + c for c in comment.splitlines()]
+            lines += ["comment " + c for c in _ascii(comment).splitlines()]
         lines += [
             "element vertex " + "0" * PLY_COUNT_DIGITS,
             "property float x",
@@ -76,9 +101,12 @@ class PlyWriter:
             "end_header",
             "",
         ]
+        # Encoded BEFORE anything is opened: see `_ascii`.
         header = "\n".join(lines).encode("ascii")
         marker = b"element vertex "
         self._count_offset = header.index(marker) + len(marker)
+        self._part = path + PART_EXT
+        self._handle = open(self._part, "wb")
         self._handle.write(header)
 
     def write(self, xyz, rgb, intensity=None):
@@ -92,11 +120,12 @@ class PlyWriter:
         self._handle.write(rec.tobytes())
         self.count += n
 
-    def close(self):
+    def close(self, keep=True):
         self._handle.seek(self._count_offset)
         self._handle.write(("%0*d" % (PLY_COUNT_DIGITS, self.count))
                            .encode("ascii"))
         self._handle.close()
+        _finish(self._part, self.path, keep)
 
 
 class LasWriter:
@@ -120,11 +149,13 @@ class LasWriter:
         header.offsets = np.array([0.0, 0.0, 0.0])
         if comment:
             # LAS 1.4 caps the system identifier at 32 bytes.
-            header.system_identifier = comment[:31]
+            header.system_identifier = _ascii(comment)[:31]
         header.generating_software = "TLS-Pie converter"[:31]
         self._laspy = laspy
         self._header = header
-        self._writer = laspy.open(path, mode="w", header=header)
+        # Beside the destination, moved onto it at close: see `PART_EXT`.
+        self._part = path + PART_EXT
+        self._writer = laspy.open(self._part, mode="w", header=header)
 
     def write(self, xyz, rgb, intensity=None):
         n = xyz.shape[0]
@@ -145,8 +176,28 @@ class LasWriter:
         self._writer.write_points(rec)
         self.count += n
 
-    def close(self):
+    def close(self, keep=True):
         self._writer.close()
+        _finish(self._part, self.path, keep)
+
+
+def _finish(part, path, keep):
+    """
+    Move the finished file onto the destination, or take the scraps away.
+
+    ⛔ `os.replace` IS ATOMIC ON WINDOWS for a same-directory rename, so the
+    destination is either the previous export or the new one and never a mix
+    of the two. A refused export leaves neither -- the `.part` goes, because
+    a half-cloud lying beside the real one under a name nobody recognises is
+    how a wrong file gets picked up a week later.
+    """
+    if keep:
+        os.replace(part, path)
+        return
+    try:
+        os.remove(part)
+    except OSError:
+        pass
 
 
 def writer_for(path, comment=""):

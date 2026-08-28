@@ -242,6 +242,48 @@ check("PLY round trips coordinates", close(float(rec["x"][0]), 1.0)
       and close(float(rec["z"][1]), -0.125), rec[:2])
 check("PLY round trips colour", int(rec["b"][1]) == 220)
 
+# ⛔⛔ AN EXPORT MAY NOT DESTROY THE LAST ONE BEFORE IT HAS WRITTEN A CLOUD.
+# Both writers opened the operator's chosen path outright, which truncates it
+# before a single point exists -- so a decode that threw on capture 9 of 15
+# had already destroyed the good file from the previous export AND left one
+# that reads as complete (close() patches the header with the count so far,
+# and the truncation check only fires when the header promises MORE than the
+# body holds). Re-exporting to the same name after a small edit is the
+# ordinary case. This is a surveyor's only copy of a day's work.
+_keep_path = os.path.join(tmp, "keepme.ply")
+with open(_keep_path, "wb") as _h:
+    _h.write(b"the previous export, which must survive a failed one")
+_w2 = export.PlyWriter(_keep_path)
+_w2.write(xyz, rgb, inten)
+check("a half-written export does not touch the destination yet",
+      open(_keep_path, "rb").read().startswith(b"the previous export"))
+check("...it works beside it instead",
+      os.path.exists(_keep_path + export.PART_EXT))
+_w2.close(keep=False)                      # the export failed
+check("a REFUSED export leaves the previous file exactly as it was",
+      open(_keep_path, "rb").read()
+      == b"the previous export, which must survive a failed one")
+check("...and takes its own scraps away rather than leaving a half cloud "
+      "lying beside the real one",
+      not os.path.exists(_keep_path + export.PART_EXT))
+_w3 = export.PlyWriter(_keep_path)
+_w3.write(xyz, rgb, inten)
+_w3.close()
+check("a finished export replaces it",
+      open(_keep_path, "rb").read().startswith(b"ply"))
+check("...leaving no .part behind",
+      not os.path.exists(_keep_path + export.PART_EXT))
+# ⛔ AND THE COMMENT MAY NOT BE THE THING THAT LOSES A CLOUD. The header
+# carries capture filenames and was encoded as ASCII AFTER the destination
+# had been truncated, so a job in a folder called `Café` zeroed the previous
+# export and left the handle open.
+_cafe = os.path.join(tmp, "cafe.ply")
+_w4 = export.PlyWriter(_cafe, comment="Café — скан")
+_w4.write(xyz, rgb, inten)
+_w4.close()
+check("a non-ASCII capture name does not stop the export",
+      os.path.getsize(_cafe) > 0 and open(_cafe, "rb").read(3) == b"ply")
+
 las_path = os.path.join(tmp, "a.las")
 w = export.LasWriter(las_path)
 w.write(xyz, rgb, inten)
@@ -2323,8 +2365,10 @@ _real_convert, _real_writer = pipeline.convert, export.writer_for
 class _NullWriter(object):
     count = 0
 
-    def close(self):
-        pass
+    #: `keep` says whether a whole cloud arrived -- see `export.PART_EXT`.
+    #: A stub that cannot take it would hide a caller that stopped passing it.
+    def close(self, keep=True):
+        self.kept = keep
 
 
 def _spy_convert(path, out_path, **kw):
@@ -7353,10 +7397,9 @@ check("...while x, y or a heading does count as somewhere",
 # being identity would be the 2026-08-24 trap all over again, so the sites are
 # counted rather than merely pattern-matched.
 check("...and every place that refuses an unplaced target asks exactly that",
-      # neighbours_of and overlap_rank phrase it on `other`; the walk rule in
-      # default_target phrases it on the list it is indexing.
-      _ALIGN_SRC.count("not other.setup.sited") == 2
-      and _ALIGN_SRC.count("not self.scans[j].setup.sited") == 1
+      # Three sites now, all phrased on `other`: neighbours_of, overlap_rank
+      # and the walk rule in default_target.
+      _ALIGN_SRC.count("not other.setup.sited") == 3
       and _ALIGN_SRC.count("not fixed.setup.sited") == 1
       and "j != 0 and other.setup.is_identity()" not in _ALIGN_SRC
       and "target != 0 and fixed.setup.is_identity()" not in _ALIGN_SRC)
@@ -7519,7 +7562,8 @@ class _Sink(object):
         self.xyz.append(np.asarray(xyz))
         self.count += len(xyz)
 
-    def close(self):
+    def close(self, keep=True):
+        self.kept = keep
         pass
 
 
@@ -7806,7 +7850,8 @@ class _SpyWriter(object):
     def write(self, xyz, rgb, intensity=None):
         _seen_write.append(np.asarray(xyz).copy())
 
-    def close(self):
+    def close(self, keep=True):
+        self.kept = keep
         pass
 
 

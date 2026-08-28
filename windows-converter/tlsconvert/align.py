@@ -78,6 +78,28 @@ DEFAULT_ALIGN_VOXEL = 0.0
 PROJECT_EXT = ".tlspie"
 PROJECT_VERSION = 1
 
+#: How far apart in the capture sequence two scans may be for the walk rule to
+#: call them NEIGHBOURS out loud. The rule still aims at the nearest PLACED
+#: capture in the walk whatever the gap -- there may be nothing else -- but
+#: with only the reference placed that "nearest" can be twelve positions away,
+#: which is the far-apart pair the walk rule exists to avoid, and saying "the
+#: capture beside it in the walk" about it hides the one thing that would fix
+#: it: place the neighbour first, or name it under Align to.
+WALK_ADJACENT = 2
+
+#: The vote bar for `overlap_rank`, ON THE THINNED COUNT.
+#: ⛔⛔ IT IS NOT `registration.MULTI_MIN_BINS`, THOUGH IT SHARES ITS VALUE.
+#: That constant is documented as a bar for counts measured over FULL samples
+#: at the coarse bins; `overlap_rank` thins both clouds by `OVERLAP_THIN`, and
+#: a thinned count is strictly smaller for the same physical overlap, so
+#: reading one number as though it meant the other quietly raises the bar and
+#: drops the overlap rule back to distance on exactly the marginal pairs it
+#: exists for. Measured on the live job (2026-08-27) at 1-in-8: real
+#: neighbours score 3,677-5,545 and a capture dragged 400 m away scores
+#: nothing at all, so the two populations are three-and-a-half times apart
+#: and this bar sits between them with room either side.
+OVERLAP_MIN_BINS = 1500
+
 #: Where Studio writes what it cannot show. ⛔⛔ A WINDOWED BUILD HAS NOWHERE
 #: TO SAY ANYTHING -- stdout and stderr go to the void -- so on 2026-08-27
 #: the WebView2 renderer died mid-drag (Crashpad handed Windows a report at
@@ -545,6 +567,17 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
                 info["camera_x"], info["camera_y"], info["camera_z"] = camera
                 scan.camera_x, scan.camera_y, scan.camera_z = camera
                 info["paint_drift"] = got.get("drift")
+            elif not got.get("ok") and got.get("reason"):
+                # ⛔⛔ AND THE REFUSAL REACHES THE OPERATOR. `settle_drift`
+                # refuses when the content sits further out than any stitch
+                # can explain -- the signature of a photograph paired with
+                # the WRONG CAPTURE -- and only the LIFT was being refused:
+                # the scan was coloured from that photograph anyway and the
+                # attach reported success. Silence here is a wrong pairing
+                # that paints plausibly, which is the failure the confidence
+                # gate exists to prevent, arriving through the one check that
+                # actually caught it.
+                info["drift_refused"] = str(got.get("reason"))
 
     # Stored even when nothing new was measured, so a repaint at a given
     # heading carries the lift a solve once earned instead of dropping it.
@@ -1165,8 +1198,13 @@ class AlignServer(object):
         """
         folders = [_folder_number(s.path) for s in self.scans]
         keys = None
+        # ⛔ UNIQUE AS THE KEYS ARE ACTUALLY COMPARED, which is as INTEGERS.
+        # Testing the strings let "08" and "8" through as two distinct
+        # folders and `int()` then collapsed them, so two scans took walk
+        # ranks handed out by load order -- a target chosen by accident,
+        # which is the one thing the all-or-nothing rule exists to stop.
         if all(f is not None and str(f).isdigit() for f in folders) \
-                and len(set(str(f) for f in folders)) == len(folders):
+                and len(set(int(f) for f in folders)) == len(folders):
             keys = [int(f) for f in folders]
         else:
             names = [os.path.basename(s.path or "") for s in self.scans]
@@ -1283,10 +1321,19 @@ class AlignServer(object):
             rank = self.walk_order()
             if rank is not None:
                 mine, best, gap = rank[index], None, None
-                for j in range(len(self.scans)):
+                for j, other in enumerate(self.scans):
                     # Only onto something that IS somewhere: the reference by
                     # definition, anything else only once it has been placed.
-                    if j == index or (j and not self.scans[j].setup.sited):
+                    if j == index or (j and not other.setup.sited):
+                        continue
+                    # ⛔ AND NEVER ONTO A MERGED CLOUD WHILE A CAPTURE IS
+                    # OFFERED -- the same refusal the other three sites make,
+                    # which this one was missing: a merged product has no
+                    # tripod, so the panorama the fit is scored against
+                    # describes nothing. It was reachable on the FIRST press
+                    # of every new capture, which is the path that matters
+                    # most.
+                    if getattr(other, "source", "capture") == "cloud":
                         continue
                     d = abs(rank[j] - mine)
                     # The capture already walked past wins a tie -- on an
@@ -1294,23 +1341,37 @@ class AlignServer(object):
                     if gap is None or d < gap or (d == gap
                                                   and rank[j] < mine):
                         best, gap = j, d
+                # ⛔ AND THE CLAIM IS BOUNDED BY WHAT WAS ACTUALLY FOUND. With
+                # nothing placed but the reference, the "nearest in the walk"
+                # is twelve positions away -- a fit the twelfth pass exists to
+                # prevent -- and saying "the capture beside it in the walk"
+                # about that hides the one thing that would fix it. Only an
+                # actual neighbour earns the word.
                 if best is not None:
-                    return best, "walk"
-            return self._nearest_tripod(index), "tripod"
-        # ⭐ PLACED: ask what it actually SHARES, not what it is near. The
-        # floor is the vote bar the multi fit already uses -- below it the
-        # count is describing a lost scan rather than a pair of scans, so the
-        # ranking is refused outright and distance answers instead.
+                    return best, ("walk" if gap <= WALK_ADJACENT
+                                  else "walk-far")
+            return self._tripod_or_cloud(index), "tripod"
+        # ⭐ PLACED: ask what it actually SHARES, not what it is near.
         rank = self.overlap_rank(index)
-        if rank and rank[0][1] >= registration.MULTI_MIN_BINS:
+        if rank and rank[0][1] >= OVERLAP_MIN_BINS:
             return rank[0][0], "overlap"
+        return self._tripod_or_cloud(index), "tripod"
+
+    def _tripod_or_cloud(self, index):
+        """
+        The nearest capture, or the nearest anything if that is all there is.
+
+        ⛔ A JOB OF NOTHING BUT EXPORTED CLOUDS STILL HAS TO ANSWER. Preferring
+        a capture is a preference, not a rule that may leave the operator with
+        no target at all -- and it did: "open the exported room, align new
+        captures onto it" is a workflow `solve` documents, and on the first
+        press the answer was None, which reaches `int(target)` and comes back
+        as "no such scan to align to" on a button that used to work.
+        """
         got = self._nearest_tripod(index)
-        # A job of nothing but exported clouds still has to answer something;
-        # the refusal above is a preference for a capture, not a rule that
-        # can leave the operator with no target at all.
         if got is None:
             got = self._nearest_tripod(index, allow_cloud=True)
-        return got, "tripod"
+        return got
 
     def _nearest_tripod(self, index, allow_cloud=False):
         """
@@ -1658,32 +1719,6 @@ class AlignServer(object):
                              "would move the whole survey rather than place "
                              "anything. Align the others to it, or to each "
                              "other."}
-        rule = None
-        if target is None:
-            target, rule = self.default_target(index)
-        try:
-            target = int(target)
-            fixed = self.scans[target]
-        except (TypeError, ValueError, IndexError):
-            return {"ok": False, "error": "no such scan to align to"}
-        if target == index:
-            return {"ok": False,
-                    "error": "a scan cannot be aligned to itself"}
-        warn = None
-        if target != 0 and not fixed.setup.sited:      # in plan; Setup.sited
-            warn = ("scan %d has not been placed itself, so this fits one "
-                    "unplaced cloud to another -- place it first, or align to "
-                    "the reference." % (target + 1))
-        elif getattr(fixed, "source", "capture") == "cloud":
-            # ⛔ NAMED, NOT REFUSED. The operator may well mean it -- an
-            # exported room is a reasonable thing to fit onto by eye -- but
-            # the score behind the answer is a panorama taken at a merged
-            # cloud's origin, which describes no surface, so the number that
-            # comes back is plausible rather than earned.
-            warn = ("scan %d is an exported cloud, so it has no capture "
-                    "position for the fit to be judged from -- the residual "
-                    "below is not the measurement it looks like. Aim at a "
-                    "capture where you can." % (target + 1))
         hint = registration.Setup.from_dict(start) if start else None
         # ⛔ EACH PRESS STEPS DOWN A RUNG. GICP converges, so pressing again at
         # the same voxel re-derives the same answer and the button looks dead --
@@ -1694,15 +1729,70 @@ class AlignServer(object):
         if hint is not None and not _same(hint, scan.setup):
             scan.rung = None
         scan.rung = registration.next_voxel(getattr(scan, "rung", None))
+        # ⛔⛔ THE EXHAUSTED ANSWER COMES BEFORE THE TARGET IS CHOSEN, because
+        # choosing one now costs a panorama per placed capture and this press
+        # is about to do nothing at all. It also has to answer with a target
+        # the page can show, so it takes the cheap rule rather than the
+        # measured one -- nothing is fitted onto it.
         if scan.rung is None:
             return {"ok": True, "index": index, "setup": _placement(scan),
                     "residual": None, "floor": None, "baseline": None,
-                    "improvement": None, "trustworthy": True, "target": target,
-                    "ambiguous": False, "exhausted": True, "warning": warn,
+                    "improvement": None, "trustworthy": True,
+                    "target": (target if target is not None
+                               else self._tripod_or_cloud(index)),
+                    "ambiguous": False, "exhausted": True, "warning": None,
                     "text": "Already refined as far as this instrument "
                             "supports: below 1 cm the VLP-16's own +/-30 mm "
                             "range noise is what would be fitted. Nudge it by "
                             "hand to start over."}
+        rule = None
+        if target is None:
+            # ⛔⛔ CHOSEN FROM WHERE THE SCAN IS *NOW*, WHICH IS THE PAGE'S
+            # PLACEMENT WHEN THERE IS ONE. `default_target` reads
+            # `scan.setup`, and the server's copy is the last SOLVED or SAVED
+            # pose -- so a scan the operator had just dragged into place still
+            # read as unplaced, took the walk rule, and never consulted the
+            # overlap rule that had finally become answerable. Worse,
+            # `take_leans` has already written the page's fresh lean, so the
+            # ranking would have composed a stale setup with a new lean: a
+            # pose that never existed. `solve_multi` has always done this
+            # swap around `neighbours_of`; this is the same guard.
+            was, scan.setup = scan.setup, (hint if hint is not None
+                                           else scan.setup)
+            try:
+                target, rule = self.default_target(index)
+            finally:
+                scan.setup = was
+        try:
+            target = int(target)
+            fixed = self.scans[target]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "no such scan to align to"}
+        if target == index:
+            return {"ok": False,
+                    "error": "a scan cannot be aligned to itself"}
+        # ⛔ TWO INDEPENDENT FACTS, NOT A CHOICE BETWEEN THEM. These were an
+        # if/elif, so a freshly imported merged cloud -- which sits at the
+        # origin and is therefore not `sited` -- reported only "has not been
+        # placed" and the operator never heard the more dangerous half: that
+        # the residual it is about to read is not the measurement it looks
+        # like.
+        says = []
+        if target != 0 and not fixed.setup.sited:      # in plan; Setup.sited
+            says.append("scan %d has not been placed itself, so this fits one "
+                        "unplaced cloud to another -- place it first, or "
+                        "align to the reference." % (target + 1))
+        if getattr(fixed, "source", "capture") == "cloud":
+            # ⛔ NAMED, NOT REFUSED. The operator may well mean it -- an
+            # exported room is a reasonable thing to fit onto by eye -- but
+            # the score behind the answer is a panorama taken at a merged
+            # cloud's origin, which describes no surface, so the number that
+            # comes back is plausible rather than earned.
+            says.append("scan %d is an exported cloud, so it has no capture "
+                        "position for the fit to be judged from -- the "
+                        "residual below is not the measurement it looks like. "
+                        "Aim at a capture where you can." % (target + 1))
+        warn = " ".join(says) or None
         was_lean = getattr(scan, "lean", None)
         self._progress = {"stage": "starting", "n": 0, "total": 1,
                           "busy": True}
@@ -1799,6 +1889,13 @@ class AlignServer(object):
             text += (". Aimed at the capture beside it in the walk: this scan "
                      "had no position yet, so what is NEAR it could not be "
                      "asked — pick another under Align to if that is wrong")
+        elif rule == "walk-far":
+            text += (". ⚠ This scan had no position yet, so it was aimed by "
+                     "the capture ORDER — but the nearest capture placed so "
+                     "far is several positions away in the walk, which is "
+                     "exactly the far-apart pair that fits badly. Place the "
+                     "captures between them first, or name a closer one "
+                     "under Align to, and press again")
         elif rule == "overlap":
             text += (". Aimed at the capture it shares the most surface with, "
                      "which is not always the closest one — pick another "
@@ -6225,6 +6322,16 @@ function draw(){
       gl.bindBuffer(gl.ARRAY_BUFFER,e.c.live);
       gl.vertexAttribPointer(loc.aLive,1,gl.UNSIGNED_BYTE,false,0,0);
       gl.drawArrays(gl.POINTS,0,e.c.n);
+      /* ⛔⛔ AND THE OVERLAYS GO BACK ON TOP, EVERY TIME. They are drawn with
+         DEPTH_TEST off -- which in ES2 stops depth being WRITTEN as well as
+         tested -- so a grip leaves the far cleared depth behind it, and the
+         twin covers only one pixel in K. Every refinement point landing in
+         that disc therefore passes the test and paints cloud over it: the
+         clip grips, the pair markers and the plumb reference dissolved over
+         the second after the hand stopped, which is exactly when the
+         operator reaches for them. Redrawing them costs a few dozen lines
+         against a four-million-point chunk. */
+      drawWorldGrid(V.vp); drawBox(V.vp); drawRef(V.vp); drawPairs(V.vp);
     }
     drawT=0; return;
   }
@@ -6463,6 +6570,23 @@ function makeCoarse(pos,col,live,comps,name){
      not look porous. */
   return {step:K, grow:Math.sqrt(K), live:l,
           chunks:makeChunks(p,c,l,comps,name+' rush')};
+}
+
+/* ⛔⛔ EVERY BUFFER A SCAN OWNS, AND THE QUEUE THAT STILL POINTS AT THEM.
+   Three places tear scans down -- opening a project, removing a cloud,
+   re-reading at another detail -- and each freed only `s.chunks`, so the rush
+   twin's buffers were never deleted at all and every re-read leaked them.
+   Worse, `fillQ` holds these same buffers for the idle frames that have not
+   drawn yet and nothing told it they were gone: the next idle frame binds a
+   deleted buffer and paints rubbish into the preserved drawing buffer, which
+   stands until the next scene frame clears it. One home for both jobs. */
+function dropChunks(list){
+  for(const s of list||[]){
+    for(const c of (s.chunks||[]).concat(s.coarse ? s.coarse.chunks : [])){
+      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
+    }
+  }
+  fillQ=[]; fillAt=0;
 }
 
 /* A recovered context gets fresh buffers from the arrays the page KEPT --
@@ -7401,12 +7525,22 @@ function applyDrop(e){
   const box = e.kind==='box' ? Object.assign({}, e.box, {scan:who}) : null;
   const las = box ? null : {matrix:e.matrix, polygon:e.poly,
                             keep:false, scan:who};
-  if(!(V.total>0)){
-    V.total=0; V.alive=0;
-    for(const s of V.scans){
-      V.total+=s.points;
+  /* ⛔⛔ THE COUNTERS DESCRIBE A SET OF SCANS, so the question is whether
+     they still describe THIS one -- not whether they have ever been set.
+     `V.total` is written only here and in recomputeLive, and adding a scan,
+     removing one or re-reading at another density all skip the recompute
+     when nothing has been cut yet (`if(V.edits.length) recomputeLive()`).
+     A cached total then outlives the clouds it counted and the next drop
+     subtracts from it: cut, undo, add a bigger scan, cut that one, and the
+     status line reads a NEGATIVE number of points kept. Summing s.points is
+     one pass over the SCANS; the mask walk runs only when the population
+     really has moved. */
+  let holds=0;
+  for(const s of V.scans) holds+=s.points;
+  if(V.total!==holds){
+    V.total=holds; V.alive=0;
+    for(const s of V.scans)
       for(let i=0;i<s.points;i++) if(s.live[i]) V.alive++;
-    }
   }
   for(const s of V.scans){
     if(!(who==null || (Array.isArray(who) ? who.indexOf(s.index)>=0
@@ -7550,16 +7684,25 @@ function upload(s){
   }
 }
 /* The same test pipeline.Box.inside runs, in the same turn order. */
+/* ⛔ AND IT READS THE LEGACY BOX TOO. A project saved before the box learnt
+   to turn holds the plain pair `[lo, hi]`, which `Object.assign` copies into
+   {0:…, 1:…} with no `.lo` at all -- so this threw on `undefined[0]`, the
+   open failed, and the whole project would not load, even though
+   `pipeline.Box.parse` still accepts that form and the EXPORTER would have
+   applied the cut correctly. `boxSize` has read both forms all along for
+   exactly this reason; so must the thing that previews the cut. */
 function markBox(seg,k,b,to){
-  const lo=[Math.min(b.lo[0],b.hi[0]),Math.min(b.lo[1],b.hi[1]),
-            Math.min(b.lo[2],b.hi[2])];
-  const hi=[Math.max(b.lo[0],b.hi[0]),Math.max(b.lo[1],b.hi[1]),
-            Math.max(b.lo[2],b.hi[2])];
+  const blo = b.lo || b[0], bhi = b.hi || b[1];
+  const lo=[Math.min(blo[0],bhi[0]),Math.min(blo[1],bhi[1]),
+            Math.min(blo[2],bhi[2])];
+  const hi=[Math.max(blo[0],bhi[0]),Math.max(blo[1],bhi[1]),
+            Math.max(blo[2],bhi[2])];
   const c=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2];
   const h=[(hi[0]-lo[0])/2,(hi[1]-lo[1])/2,(hi[2]-lo[2])/2];
   const turned = b.yaw_deg||b.pitch_deg||b.roll_deg;
   const R = turned ? rotOf(b.yaw_deg||0, b.pitch_deg||0, b.roll_deg||0) : null;
   for(let i=0;i<k;i++){
+    if(seg[i]===to) continue;      /* already what this edit would make it */
     let dx=_wx[i]-c[0], dy=_wy[i]-c[1], dz=_wz[i]-c[2];
     if(R){                       /* undo the turn: R transposed, not R */
       const qx=R[0][0]*dx+R[1][0]*dy+R[2][0]*dz;
@@ -7586,6 +7729,15 @@ function markLasso(seg,k,l,to){
     if(q[1]<by0)by0=q[1]; if(q[1]>by1)by1=q[1];
   }
   for(let i=0;i<k;i++){
+    /* ⛔⛔ FIRST, AND IT IS WHAT MAKES A DEAD POINT CHEAP. Every comparison
+       with NaN is FALSE, so the dead points `applyDrop` marks with NaN pass
+       none of the three rejections below -- they fall straight through into
+       the full crossing-number walk over every polygon edge. That inverted
+       the very claim the incremental cut was built on: a lasso got SLOWER
+       per point the more of the model had already been deleted. A point
+       already at the value this edit would set needs no test at all, which
+       is true for every caller and skips the dead ones outright. */
+    if(seg[i]===to) continue;
     const w=_wx[i]*m[3]+_wy[i]*m[7]+_wz[i]*m[11]+m[15];
     if(w<=1e-9) continue;                 /* behind the eye: never enclosed */
     const x=(_wx[i]*m[0]+_wy[i]*m[4]+_wz[i]*m[8]+m[12])/w;
@@ -8514,9 +8666,7 @@ async function openProject(path){
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not open it');
-    for(const s of V.scans) for(const c of s.chunks){
-      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
-    }
+    dropChunks(V.scans);
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
     V.pairs=[]; V.half=null; V.perr=null;
     /* ⛔ THE PICK IS SESSION STATE AND GOES WITH THE REST OF IT. A project
@@ -9505,9 +9655,7 @@ async function removeScan(index){
        neighbour's placement: a room shifted by a metre or two, which reads as
        a bad alignment rather than as the bookkeeping it is. */
     const kept=V.scans.filter(s=>s.index!==index).map(s=>s.setup);
-    for(const s of V.scans) for(const c of s.chunks){
-      gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
-    }
+    dropChunks(V.scans);
     V.scans=[];
     for(const m of j.scans) V.scans.push(await loadScan(m));
     V.scans.forEach((s,i)=>{ if(kept[i]) s.setup=kept[i]; });
@@ -9540,9 +9688,7 @@ async function removeScan(index){
    colour bytes changed, and only the server knows the new ones. */
 async function rebuildFrom(meta){
   const setups=V.scans.map(s=>s.setup);
-  for(const s of V.scans) for(const c of s.chunks){
-    gl.deleteBuffer(c.pos); gl.deleteBuffer(c.col); gl.deleteBuffer(c.live);
-  }
+  dropChunks(V.scans);
   V.scans=[];
   /* ⛔ THE PLACEMENT GOES BACK ON EACH SCAN AS IT ARRIVES, not after the
      loop: a throw mid-list (a GPU reset during a fetch) used to abort
@@ -10052,6 +10198,18 @@ async function usePhoto(index, path){
    this picture land low for weeks, and a paint that finally sits right with
    no word about why would read as luck. */
 function liftNote(i){
+  /* \u26d4\u26d4 THE REFUSAL COMES FIRST AND IT IS NOT A FOOTNOTE. The corrector
+     refuses when the content sits further out than any stitch can explain,
+     which is what a photograph paired with the WRONG CAPTURE looks like --
+     and only the LIFT was ever refused: the cloud was painted from that
+     photograph regardless and the message said nothing. A wrong pairing
+     that paints plausibly and reports success is the failure the whole
+     confidence gate exists to prevent. */
+  const no=(i&&i.drift_refused)||'';
+  if(no) return ' \u26a0 THE PICTURE DOES NOT SIT ON THIS ROOM: '+
+    String(no).replace(/[<>]/g,'')+' The cloud was still coloured from it, '+
+    'so check that this photograph belongs to THIS capture before trusting '+
+    'the colour.';
   const up=+((i&&i.image_up_deg)||0);
   if(Math.abs(up)<0.3) return '';
   return ' The photograph\u2019s own horizon sat '+Math.abs(up).toFixed(1)+
