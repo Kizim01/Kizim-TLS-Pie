@@ -4555,9 +4555,70 @@ capture (falling back to a cloud only if the job holds nothing else); naming one
 to* still works and is **warned about**. ⭐ The pre-existing "every refusal asks the narrow
 question" check fired when `overlap_rank` became a third site — the check working, not failing.
 
+## 2026-08-28, fourteenth pass — the ambiguity flag is HONEST, and it uncovered a far worse thing
+
+The operator asked why fits report `ambiguous` even at an excellent residual. **Measured against
+ground truth** — their own saved project, the placements they looked at and accepted — by
+unplacing each capture down the walk and pressing Auto-align exactly as the import does:
+
+|  | fit RIGHT | fit WRONG |
+|---|---|---|
+| **flagged ambiguous** | **0** | 2 |
+| **not flagged** | 2 | **3** |
+
+**The flag never once cried wolf.** It fired twice and both fits were genuinely wrong. It is not
+over-sensitive — it is *under*-sensitive, and that is the small half of the finding.
+
+**⛔⛔ THE BIG HALF: FIVE OF SEVEN BLIND PAIR FITS LANDED ON THE WRONG ANSWER**, and not
+subtly — off by 167.7°, 154.3°, 80.1°, 58.2° and 178.6°, i.e. mostly **rotational rivals** of the
+true pose. A restaurant of repeating booths fits its own 180° flip. Only two were flagged; one
+wrong fit had a margin of **2.50** (the winner beating the runner-up two and a half times over)
+and was still 80° out — so this **cannot be fixed by tuning `AMBIGUITY_MARGIN`**: the true
+answer was not the runner-up, it was nowhere in the running.
+
+⚠ **DO NOT TUNE THE THRESHOLD ON THIS DATA.** Seven samples, and the two RIGHT fits sit at
+margins 2.64 and 4.07 — moving the 1.25 bar to 2.0 would have caught two more wrong fits with no
+new false alarms *in this sample*, which is exactly the shape of evidence that trades false
+positives for the false negatives the check exists to prevent. The constant was set by evidence
+once already (see `Solution.ambiguous`); it deserves more than seven points to move it.
+
+**What this means in practice:** align-on-import is a *coarse* pass whose answer needs checking
+by eye in a repetitive building, and the program has been saying "trustworthy" about some of
+those. The pursuit from here is the **room fit**, not the flag: a flipped scan disagrees with
+every other neighbour, so `solve_multi` ought to catch it — except `refine_refused` blocks a
+correction past 1 m / 20°, and on import **the placement it is protecting is the machine's own
+previous guess, not the operator's**. That guard was written to stop a search overruling a
+HUMAN. *(Measurement of whether lifting it on import recovers these scans was in flight when this
+was written — see the next pass.)*
+
+### Also this pass
+
+- **"I can see the quick LOD points, they don't disappear when the full cloud snaps back"** —
+  caused by the thirteenth pass's own growth fix. ⭐⭐ **A GROWN stand-in point cannot be painted
+  out by the real point it stands for**: the real one is drawn at the ordinary size *inside* it
+  and leaves the fat rim standing. At equal size the two are the same point — same place, colour
+  and depth — so one paints out the other exactly. The twin is now grown **only while the hand
+  is moving**, where nothing refines on top and the whole frame is uniformly grown.
+- **Three defaults the operator asked for**: a job opens on the **smallest points** and on the
+  **photograph's colour**, and **load detail moved beside point size** (the two halves of "what
+  am I looking at" were in trays at opposite ends of the menu). One control *moved*, not a
+  second one added; its old tray and menu entry are gone with it.
+- The bare count of tray drag-handles fired on that move. It now checks the real invariant —
+  **markup, handles and the workflow list must name the same trays** — so a tray that cannot be
+  opened and a menu entry that opens nothing both fail there.
+- **⚙ THE LAPTOP NO LONGER SLEEPS ON A CLOSED LID.** `powercfg` LIDACTION set to *Do nothing* on
+  **both** AC and battery, and the setting un-hidden so it shows in Windows' own UI. Idle sleep
+  and hibernate were already *Never*, so the lid was the only path. ⚠ Two things worth knowing:
+  a closed laptop on battery now stays awake (heat in a bag, battery drain), and this is the
+  same machine whose **trading bots have repeatedly lost days to laptop sleep** — this helps
+  there too.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-28 02:41:54, Converter 02:42:29, selftest 0.**
+**✅ THE EXES ARE CURRENT: Studio 2026-08-28 09:55:44, Converter 09:56:03, selftest 0.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 02:41:54, Converter 02:42:29, selftest 0.**
 
 **✅ THE GPU ITEM IS DONE — do not ask the operator to do it again.** They set
 `msedgewebview2.exe` to High performance on 2026-08-27 and the log confirms the RTX is drawing.
