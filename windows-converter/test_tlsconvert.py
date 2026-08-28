@@ -1889,11 +1889,65 @@ try:
     check("...and the scan identification walks a stride, not every point",
           "Math.ceil(n/200000)" in _page)
     check("a view-moving press starts the rush; lasso and pick do not",
-          "V.rush = !lassoing && picking===null;" in _page)
+          "if(!lassoing && picking===null) rushGrab('drag'); "
+          "else rushDrop('drag');" in _page)
     check("release and the wheel's settle timer both end it with a "
           "full-detail redraw",
-          "if(V.rush){ V.rush=false; invalidate(); }" in _page
-          and "rushT=setTimeout(()=>{ V.rush=false; invalidate(); }" in _page)
+          "rushDrop('drag');" in _page
+          and "rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }" in _page)
+    # ⛔⛔ ONE OWNER FOR `V.rush`, AND THE HOLDERS ARE NAMED. It used to be set
+    # and cleared from two places that knew nothing about each other -- the
+    # canvas drag and the wheel's settle timer -- so whichever finished FIRST
+    # put the full cloud back underneath the one still running, and the twin
+    # then drew UNGROWN with no idle frame refining it. A third owner was
+    # about to be added for the sliders. The whole point is that exactly one
+    # statement writes the flag; anything else is a second answer to "is this
+    # frame a stand-in".
+    check("exactly one statement in the page assigns V.rush",
+          len(re.findall(r"V\.rush\s*=[^=]", _page)) == 1
+          and "if(V.rush!==want){ V.rush=want; invalidate(); }" in _page)
+    check("...and the holders are a SET, so a double drop cannot strand the "
+          "view on the twin, nor a double grab hold it for ever",
+          "const rushWho=new Set();" in _page
+          and "function rushGrab(who){ rushWho.add(who); rushSet(); }" in _page
+          and "function rushDrop(who){ rushWho.delete(who); rushSet(); }"
+          in _page)
+    # ⭐⭐ THE OPERATOR'S OWN WORDS, 2026-08-28: "use the sparse point cloud
+    # when rotating -- as long as I hold the rotate slider only the sparse
+    # point cloud is shown". Each of these six moves a whole cloud on every
+    # `input` event, and none of them had a rush: the view spent the gesture
+    # alternating a cheap scene frame with a four-million-point refinement
+    # frame. The ring on the canvas never had this problem because the rush was
+    # wired to the CANVAS drag.
+    check("all six placement sliders draw the twin while they are held",
+          "['tx','ty','tz','rz','rtip','rbank']"
+          ".forEach(id=>rushWhileHeld($(id)));" in _page)
+    # ⛔ HELD, NOT TIMED. A settle timer would let the full cloud start
+    # refining under a thumb that is still down but momentarily still, and the
+    # next movement then waits behind a chunk -- which is the hang itself.
+    _hold = re.search(r"function rushWhileHeld\(el\)\{.*?\n\}", _page, re.S)
+    check("...held for as long as the thumb is down, with no settle timer "
+          "inside it to let the full cloud back in mid-gesture",
+          _hold is not None and "setTimeout" not in _hold.group(0))
+    # ⛔ THE RELEASE IS TAKEN AT THE WINDOW. A range input captures the
+    # pointer, so a thumb let go anywhere but over the control delivers no
+    # pointerup to the element -- and the twin would stand for ever.
+    check("...and the release is taken at the window, not on the slider that "
+          "captured the pointer",
+          _hold is not None
+          and "\n  addEventListener('pointerup', ()=>rushDrop(who));"
+          in _hold.group(0)
+          and "\n  addEventListener('pointercancel', ()=>rushDrop(who));"
+          in _hold.group(0))
+    # ⛔ AND THE LIST IS THE SIX PLACEMENT SLIDERS ONLY. A rush is a promise
+    # that what you are looking at is a stand-in; the point-size and detail
+    # sliders exist to judge the REAL cloud, so showing them the twin would be
+    # answering the question they were opened to ask.
+    _held = re.search(r"\[([^\]]*)\]\.forEach\(id=>rushWhileHeld", _page)
+    check("...and the point-size and detail sliders are NOT given the twin, "
+          "because judging the real cloud is what they are for",
+          _held is not None
+          and not {"'ps'", "'det'", "'ex'"} & set(_held.group(1).split(',')))
     check("the cuts reach the twin, or a delete would flicker back during "
           "a drag",
           "l[i]=s.live[i*K]" in re.search(
@@ -5100,7 +5154,19 @@ check("re-solving one photograph is undoable",
 # cloud moves, the box goes on displaying it. The field's own undo would put
 # the TEXT back and leave the cloud where it was, so the control would then be
 # lying about the scan: the same fault the clamped slider had.
-_kd = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('keydown'"):]
+#
+# ⛔ AND THE ANCHOR IS THE GLOBAL HANDLER, NOT THE FIRST `keydown` IN THE FILE.
+# This used to search for `addEventListener('keydown'` and take everything
+# after it, which silently meant "whichever keydown listener is written
+# first". Adding an unrelated one earlier in the page -- a slider holding the
+# rush twin down, 2026-08-28 -- pointed both of these checks at a three-line
+# closure and failed them while the handler they are about was untouched. The
+# check below and the pair at the Ctrl-and-a-letter guard shared the fault;
+# the second pair went on PASSING, because `str.find` returns -1 for a string
+# that is not there and the ordering comparisons stayed true by accident. The
+# global handler is the one with no element in front of it, and that is what
+# is matched now.
+_kd = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('keydown', e=>{"):]
 check("Ctrl-Z works from a number box, where the field's own undo would make "
       "the control lie about the cloud",
       "kind!=='number' || !undoing" in _kd[:1400], _kd[:200])
@@ -5474,7 +5540,7 @@ check("and every widget does it, not just the one that always did", _n >= 4, _n)
 # BROWSER. Ctrl-C toggled camera mode INSTEAD of copying, because the branch
 # tested the key and not the modifiers -- and `preventDefault` took the copy
 # away as well.
-_kd = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('keydown'"):]
+_kd = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('keydown', e=>{"):]
 check("Ctrl and a letter is the browser's, not a tool shortcut",
       _kd.find("e.ctrlKey || e.metaKey || e.altKey) return")
       < _kd.find("k==='c'||k==='C'"), _kd[:80])
@@ -8701,9 +8767,15 @@ check("one teardown ends a drag, reached from the end AND from a finally",
 # the scan instead of orbiting the camera.
 check("...including the rotation ring, which nothing used to clear",
       "ring=null; picking=null;" in _page)
+# ⛔ AND THE WHEEL'S SETTLE TIMER CAN ONLY EVER DROP ITS OWN HAND. It used to
+# clear the rush outright, so a notch spun mid-orbit -- the common one -- would
+# strip the twin 200 ms into a drag that was still running. Cancelling it on
+# every press papered over that; naming the holder fixes it, and the cancel is
+# kept so a wheel rush cannot survive into a lasso either.
 check("...and the wheel's settle timer, so it cannot fire inside a drag and "
       "strip the rush the twin is being grown for",
-      _page.count("clearTimeout(rushT)") >= 3)
+      "rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }" in _page
+      and "clearTimeout(rushT); rushT=null; rushDrop('wheel');" in _page)
 # ⛔ The overlays are drawn with depth-testing OFF, which stops depth being
 # written as well as tested, so a refinement chunk drawn afterwards wins the
 # depth test over them and paints them out -- the grips dissolved in the

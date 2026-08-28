@@ -6278,6 +6278,72 @@ function shader(t,src){ const s=gl.createShader(t);
   return s; }
 function invalidate(){ need=true; }
 
+/* --- who is holding the twin up -------------------------------------------
+
+   ⭐⭐ ONE OWNER FOR `V.rush`, AND THE HOLDERS ARE NAMED. `V.rush` says "this
+   frame draws the strided twin and nothing refines on top of it", and it was
+   set and cleared from two independent places -- the canvas drag and the
+   wheel's settle timer -- neither of which knew about the other. Whichever
+   finished FIRST put the full cloud back underneath the one still running,
+   and the twin then drew UNGROWN with no idle frame ever coming to refine it:
+   the porous wall, for the rest of the gesture.
+
+   ⛔ AND A THIRD OWNER IS EXACTLY WHAT WAS ABOUT TO BE ADDED. The tray's
+   placement sliders turn and slide a whole cloud on every `input` event and
+   had no rush at all -- so a drag of the Turn slider queued EVERY full-detail
+   chunk on EVERY event, and the view alternated a cheap scene frame with a
+   four-million-point refinement frame all the way round the dial. That is
+   "rotate is broken again, it needs to be fast, use the sparse cloud while I
+   hold the slider" (operator, 2026-08-28): the same complaint the twin was
+   built to answer, arriving through the one control the twin was never wired
+   to.
+
+   ⛔ A SET, NOT A COUNTER. A holder that grabs twice and drops once would
+   leave the view stuck on the twin for ever, and a counter cannot tell a
+   `pointerup` arriving after a `pointercancel` -- two drops for one grab --
+   from a real second release. Adding a name already in the set, or deleting
+   one that was never in it, is nothing. */
+const rushWho=new Set();
+let rushT=null;
+function rushSet(){
+  const want = rushWho.size>0;
+  if(V.rush!==want){ V.rush=want; invalidate(); }
+}
+function rushGrab(who){ rushWho.add(who); rushSet(); }
+function rushDrop(who){ rushWho.delete(who); rushSet(); }
+/* ⛔ A BURST WITH NO RELEASE EVENT LETS GO ON A TIMER, AND ONLY EVER LETS GO
+   OF ITSELF. A wheel notch reports no "finished", so it settles after a quiet
+   interval -- but the drop is BY NAME, so a timer that fires in the middle of
+   somebody else's drag takes the wheel's hand off the twin and leaves theirs
+   exactly where it was. */
+function rushBurst(who, ms){
+  rushGrab(who);
+  clearTimeout(rushT);
+  rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }, ms||200);
+}
+/* ⭐ HELD, NOT TIMED, FOR A CONTROL THAT REPORTS ITS OWN RELEASE. This is what
+   the operator asked for in those words: while the slider is held the twin
+   stands, however still the thumb goes, so the full cloud never begins
+   refining underneath a gesture that is still running -- and the sharpening
+   happens once, on release.
+
+   ⛔ THE RELEASE IS TAKEN AT THE WINDOW. A range input captures the pointer,
+   so a thumb let go anywhere but over the control delivers no `pointerup` to
+   the element itself, and the twin would stand for ever. `blur` covers focus
+   stolen mid-drag, `pointercancel` covers the OS taking the pointer away, and
+   every one of them is safe to arrive twice. */
+function rushWhileHeld(el){
+  if(!el) return;
+  const who='slider:'+el.id;
+  el.addEventListener('pointerdown', ()=>rushGrab(who));
+  /* the arrow keys work a focused slider with no pointer in it at all */
+  el.addEventListener('keydown', ()=>rushGrab(who));
+  el.addEventListener('keyup', ()=>rushDrop(who));
+  el.addEventListener('blur', ()=>rushDrop(who));
+  addEventListener('pointerup', ()=>rushDrop(who));
+  addEventListener('pointercancel', ()=>rushDrop(who));
+}
+
 /* Sustained slowness leaves one line in the log: 30 back-to-back drawn
    frames over 90 ms. Measured as the gap between CONSECUTIVE drawn frames
    (drawArrays returns before the GPU works, so timing the body would time
@@ -10654,7 +10720,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
       spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
-  let tilting=null, leaning=null, camming=null, rushT=null;
+  let tilting=null, leaning=null, camming=null;
   /* Which of the move gizmo's arms is being dragged, and where the hand was
      last frame. */
   let axis=null;
@@ -10746,16 +10812,18 @@ const DRAW_TOOLS = {lasso:1, rect:1};
        leave the cloud still (their feedback is the 2D overlay), so they keep
        full detail; everything else -- orbit, pan, a scan or box drag, every
        gizmo -- redraws the cloud continuously and gets the twin. */
-    V.rush = !lassoing && picking===null;
-    /* ⛔ THE WHEEL'S SETTLE TIMER MUST NOT FIRE INSIDE THIS DRAG. It is a
-       one-shot "the wheel has stopped" alarm that knows nothing about the
-       button, so zooming and then immediately orbiting -- or spinning the
-       wheel mid-orbit, which is the common one -- let it clear V.rush 200 ms
-       later for the rest of the drag: the twin then draws UNGROWN and, since
-       every pointermove re-arms `need`, no idle frame ever refines it. The
-       wall goes porous and stays porous, which is the exact complaint the
-       growth was added to fix. */
-    clearTimeout(rushT);
+    /* ⛔ AND THE WHEEL'S HAND COMES OFF FIRST. Its settle timer is a one-shot
+       "the wheel has stopped" alarm that knows nothing about the button, so
+       zooming and then immediately orbiting -- or spinning the wheel
+       mid-orbit, which is the common one -- used to clear V.rush 200 ms into
+       the drag: the twin then drew UNGROWN and, since every pointermove
+       re-arms `need`, no idle frame ever refined it. The wall went porous and
+       stayed porous. Naming the holders fixed that structurally -- the timer
+       can only drop `wheel` now -- so this line is belt and braces, and it is
+       kept because a wheel rush left standing through a LASSO would be the
+       same fault the other way up. */
+    clearTimeout(rushT); rushT=null; rushDrop('wheel');
+    if(!lassoing && picking===null) rushGrab('drag'); else rushDrop('drag');
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
   addEventListener('pointermove', e=>{
@@ -10821,9 +10889,12 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     camming=null; V.camAxis=null;
     ring=null; picking=null;
     down=false; moving=false; grip=null; lassoing=false;
-    clearTimeout(rushT);
-    /* the hand stopped: the next frame is the full cloud again */
-    if(V.rush){ V.rush=false; invalidate(); }
+    /* The hand stopped: the next frame is the full cloud again -- UNLESS
+       something else is still holding the twin up. Clearing the flag outright
+       here could not tell the difference, and this handler runs on every press
+       anywhere on the page, including the release of a slider that is holding
+       it on purpose. */
+    rushDrop('drag');
     cv.classList.remove('drag');
   }
   addEventListener('pointercancel', endDrag);
@@ -10854,8 +10925,7 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     e.preventDefault();
     /* A wheel zoom is a burst with no release event, so the rush ends on a
        short settle timer instead: full detail 200 ms after the last notch. */
-    V.rush=true; clearTimeout(rushT);
-    rushT=setTimeout(()=>{ V.rush=false; invalidate(); }, 200);
+    rushBurst('wheel', 200);
     zoom(Math.exp(e.deltaY*0.0012));
   }, {passive:false});
   /* ⭐ DOUBLE-CLICK A CLOUD TO WORK ON IT -- the same pickScan the list rows
@@ -10969,6 +11039,21 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const by=to-(+s.setup[key]||0);
       leanScan(key==='pitch_deg'?by:0, key==='roll_deg'?by:0); }; };
   bindLean('rtip','pitch_deg'); bindLean('rbank','roll_deg');
+  /* ⭐⭐ AND ALL SIX DRAW THE TWIN WHILE THEY ARE HELD. Each of these moves a
+     whole cloud on every `input` event, and a slider dragged across its range
+     fires a hundred of them -- so without a rush the view spent the gesture
+     alternating a cheap scene frame with a four-million-point refinement
+     frame, and the picture arrived a second behind the thumb. The ring on the
+     canvas has drawn the twin since the day it was built, because the rush was
+     wired to the CANVAS drag; these six are the same gesture reaching the same
+     setup through a different control, and they were simply missed.
+
+     ⛔ THE LIST IS THE SIX PLACEMENT SLIDERS, NOT EVERY RANGE ON THE PAGE. A
+     rush is a promise that what you are looking at is a stand-in, and the
+     point-size and detail sliders exist precisely to judge the REAL cloud --
+     showing the twin while they are dragged would be answering the question
+     they were opened to ask. */
+  ['tx','ty','tz','rz','rtip','rbank'].forEach(id=>rushWhileHeld($(id)));
   /* ⭐⭐ ONE BUTTON FOR THE WHOLE MANIPULATOR, BECAUSE THREE BUTTONS ARE NOT A
      GIZMO. Every part of this already existed -- arms, turn ring, tilt rings,
      all sharing the tripod, all with a worked-out order of precedence when
