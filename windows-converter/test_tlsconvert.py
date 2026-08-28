@@ -2620,6 +2620,10 @@ const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
          ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:0,alive:0,total:0};
 const $=()=>({textContent:'',innerHTML:'',value:0});
 const say=()=>{}, showDensity=()=>{}, invalidate=()=>{}, upload=()=>{};
+/* \\u26d4 Removing a cloud empties the undo stack -- its placement entries are
+   closures over scan INDICES and this function renumbers them. Real here, so
+   that emptying it is exercised rather than stubbed away. */
+const HIST=[];
 /* Placed nowhere and unlevelled: the narrowing is what is under test here,
    not the transform, and the exporter's mask is fed the same coordinates. */
 function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
@@ -3325,7 +3329,7 @@ out.said0=SAID;
 console.log(JSON.stringify(out));
 """ % "\n".join(_js_func(f) for f in
                 ("screenRadius", "ringOf", "ringPath", "ringGap", "turnScan",
-                 "pickScan", "span"))
+                 "pickScan", "aimAt", "span"))
     _rp = os.path.join(tempfile.mkdtemp(prefix="tlsring"), "ring.js")
     with io.open(_rp, "w", encoding="utf-8") as _fh:
         _fh.write(_harness)
@@ -5167,9 +5171,16 @@ check("re-solving one photograph is undoable",
 # global handler is the one with no element in front of it, and that is what
 # is matched now.
 _kd = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('keydown', e=>{"):]
-check("Ctrl-Z works from a number box, where the field's own undo would make "
-      "the control lie about the cloud",
-      "kind!=='number' || !undoing" in _kd[:1400], _kd[:200])
+# ⛔⛔ AND A RANGE COUNTS AS A NUMBER BOX. Written as `kind!=='number'`, this
+# guard returned on a keydown from any of the six placement SLIDERS, which are
+# `type="range"` -- so Ctrl-Z was never read at the one moment it is reached
+# for, right after a slider has been dragged and still holds the focus.
+# Reported 2026-08-28 as "Ctrl-Z doesn't undo the cloud move controls". The
+# reasoning was right and was scoped to the control it named.
+check("Ctrl-Z works from a number box OR A SLIDER, where the field's own undo "
+      "would make the control lie about the cloud",
+      "kind==='number' || kind==='range'" in _kd[:2200]
+      and "!applied || !undoing" in _kd[:2200], _kd[:200])
 check("and a text box keeps the browser's undo, because a half-typed path is "
       "not a change to anything yet",
       "t==='select') return;" in _kd[:1400])
@@ -6059,8 +6070,26 @@ check("picking a scan by hand records that a person chose it",
       "if(index>0){ V.active=index; V.chose=true; }" in _ALIGN_SRC)
 # ⛔ AND THE REFERENCE IS NOT A CHOICE OF MOVING SCAN -- it cannot be moved,
 # so recording it as one would freeze `V.active` on a cloud nobody picked.
+# ⛔⛔ `[1]` OF A SPLIT THAT FOUND NOTHING IS AN IndexError, NOT A FAILURE.
+# Written that way, this check ABORTED the suite when the guard was removed --
+# so the run went red for the right reason at the wrong place, every later
+# check never ran at all, and the behavioural check that actually pins this
+# was never reached. Caught by the reversion audit on 2026-08-28: the break
+# was reported as "the suite CRASHED rather than reporting". A check whose
+# failure mode is an exception does not report, it takes the rest down with it.
+_aim_split = _js_func("aimAt").split("if(index>0)")
 check("...but picking the reference does not, because it cannot be moved",
-      "V.chose=true" in _js_func("pickScan").split("if(index>0)")[1])
+      len(_aim_split) == 2 and "V.chose=true" in _aim_split[1],
+      len(_aim_split))
+# ⛔ AND THE RULE LIVES IN ONE PLACE. `pickScan` and the import both aim, and
+# the reference exception is exactly the clause a second copy loses -- so
+# neither is allowed to assign the selection itself.
+check("...and there is exactly one function that aims the controls",
+      _ALIGN_SRC.count("V.editWho=index;") == 1
+      and "V.editWho=index;" in _js_func("aimAt"))
+check("...which pickScan calls rather than re-implementing",
+      "aimAt(index);" in _js_func("pickScan")
+      and "V.picked=index" not in _js_func("pickScan"))
 
 # ⛔ A REBUILD HANDS BACK EVERY DELETED POINT. `loadScan` fills the live flag
 # with 1, so without `recomputeLive` the cuts come back -- on the one button
@@ -6084,6 +6113,10 @@ const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
 const $=()=>({textContent:'',innerHTML:'',value:0});
 const say=()=>{}, showDensity=()=>{}, invalidate=()=>{}, openTray=()=>{},
       refreshLists=()=>{}, syncSliders=()=>{};
+/* \\u26d4 REMOVING A CLOUD EMPTIES THE UNDO STACK -- every placement entry on
+   it is a closure over a scan INDEX, and this function renumbers them. The
+   stack is real here so that emptying it is exercised rather than stubbed. */
+const HIST=[];
 function cloud(i){ return {index:i, points:10, reach:5,
                            lo:[-5,-5,-5], hi:[5,5,5]}; }
 const out={};
@@ -6097,8 +6130,16 @@ pickScan(1); out.picked=V.active;
 measure(); out.afterRebuild=V.active;
 measure(); measure(); out.afterThree=V.active;
 
-/* And a cloud ARRIVING does not move the target either, which is what the
-   rule beside it has always said and only half done. */
+/* \\u26d4 AND A CLOUD APPEARING IN THE LIST DOES NOT MOVE THE TARGET EITHER --
+   `measure` does not aim, full stop, whatever changed under it.
+
+   \\u26a0 THIS IS NOT THE IMPORT. On 2026-08-28 the operator asked for the
+   opposite behaviour on an ARRIVAL, and it was given to them in `ingest`,
+   which calls `aimAt` once per import. The two live apart on purpose: an
+   import happens because a person pressed Add, a rebuild happens because
+   anything at all was re-uploaded. Pushing onto the array here is a rebuild.
+   If this ever reads 3, `measure` has taken the aim back and the recolour /
+   clean / remove bug is live again. */
 V.scans.push(cloud(3)); measure(); out.afterAdd=V.active;
 
 /* A choice that no longer names a cloud is not kept. */
@@ -6117,10 +6158,27 @@ V.active=1; V.picked=1; V.chose=true; V.editWho=-1; V.only=-1;
 V.edits=[]; V.pairs=[];
 forgetScan(1);
 out.removedChoice=[V.active, V.picked, V.chose];
+
+/* \\u2b50\\u2b50 AND THE MOVE THE IMPORT MAKES, RUN RATHER THAN READ. Asked for
+   on 2026-08-28: "when a new scan is loaded, that scan is selected for
+   controls." `ingest` cannot be run here -- it fetches -- so what it calls is
+   run instead, and the source checks beside this pin that it is what gets
+   called and in what order. */
+V.scans=[cloud(0),cloud(1),cloud(2)];
+V.active=1; V.picked=1; V.chose=true; V.editWho=1;
+aimAt(2);
+out.arrived=[V.active, V.picked, V.editWho, V.chose];
+
+/* \\u26d4 The FIRST cloud to arrive is the reference. It takes the cuts, but
+   it has no placement to change, so it must not be recorded as a choice of
+   moving scan -- that would freeze the aim on a cloud that cannot move. */
+V.active=0; V.picked=1; V.chose=false; V.editWho=1;
+aimAt(0);
+out.arrivedFirst=[V.active, V.picked, V.editWho, V.chose];
 console.log(JSON.stringify(out));
 """ % "\n".join(_js_func(f) for f in
                 ("measure", "resetBox", "span", "boxSize", "shown",
-                 "cutScope", "showHidden", "forgetScan", "pickScan"))
+                 "cutScope", "showHidden", "forgetScan", "pickScan", "aimAt"))
     _pp = os.path.join(_rdir, "pick.js")
     with io.open(_pp, "w", encoding="utf-8") as _fh:
         _fh.write(_pick)
@@ -6138,13 +6196,166 @@ console.log(JSON.stringify(out));
               _o["afterRebuild"] == 1, _o)
         check("...nor does the next one, or the one after that",
               _o["afterThree"] == 1, _o)
-        check("...nor does another cloud arriving", _o["afterAdd"] == 1, _o)
+        check("...nor does a cloud appearing under it without an import",
+              _o["afterAdd"] == 1, _o)
         check("a choice that names no open cloud is given up, not kept",
               _o["dangling"] == 1, _o)
         check("removing a cloud below the choice renumbers it",
               _o["shifted"] == [1, 1, True], _o)
         check("removing the chosen cloud gives the choice up",
               _o["removedChoice"] == [0, 0, False], _o)
+        # ⭐⭐ THE REQUEST ITSELF, IN ONE LINE.
+        check("A SCAN THAT HAS JUST ARRIVED TAKES THE CONTROLS",
+              _o["arrived"] == [2, 2, 2, True], _o)
+        check("...over a pick the operator had made before it arrived",
+              _o["arrived"][0] == 2, _o)
+        check("...but the first arrival is the reference, which takes the cuts "
+              "without being recorded as a moving scan",
+              _o["arrivedFirst"] == [0, 0, 0, False], _o)
+
+
+# --- "when a new scan is loaded, that scan is selected for controls" ---------
+#
+# ⛔ THE AIM MOVES ON AN IMPORT AND ON NOTHING ELSE. Every other route into
+# `measure` is a rebuild -- recolour, stray clean, remove, solve, detail change
+# -- and re-aiming from there is the bug the block above exists for. The
+# separation is the whole design, so it is checked as a separation and not just
+# as a feature.
+print("\nthe arrival takes the controls")
+
+# ⛔ THE COMMENTS COME OFF FIRST, and that is not tidiness. The comment beside
+# this change quotes the very expression the count below is about, so the check
+# passed on its own prose the first time it ran. Same trap as `V.rush=false` in
+# a comment on 2026-08-28: a check a COMMENT can satisfy is not a check.
+_ing = re.sub(r"/\*.*?\*/", "", _js_func("ingest"), flags=re.S)
+check("the import aims the controls at what just arrived",
+      "aimAt(fresh.index);" in _ing, _ing[:400])
+check("...only when something actually arrived, never on an empty add",
+      "const fresh = V.scans.length>was ? V.scans[V.scans.length-1] : null;"
+      in _ing)
+# ⛔ ORDER. `measure` still assigns `V.active` under its own guard, so an aim
+# taken BEFORE it could be handed straight back; and the list highlight and the
+# sliders are drawn from the aim, so they have to be redrawn after it.
+check("...after measure, so the guarded assignment cannot undo it",
+      0 < _ing.find("measure();") < _ing.find("aimAt(fresh.index);"))
+for _after in ("refreshLists();", "syncSliders();"):
+    check("...and before %s, so the panel shows the scan it will move"
+          % _after.rstrip("();"),
+          _ing.find("aimAt(fresh.index);") < _ing.find(_after))
+# ⛔ AND IT IS SAID OUT LOUD, off the SAME value the aim was taken from. A
+# message that recomputes "the last scan" can name a different cloud from the
+# one the sliders now move, which is worse than saying nothing.
+check("...and the operator is told which scan the controls are on now",
+      "'. Working on '+fresh.name" in _ing)
+check("...named from the same arrival the aim used, not re-derived",
+      _ing.count("V.scans[V.scans.length-1]") == 1, _ing.count("V.scans["))
+# ⛔ THE REFERENCE CANNOT BE MOVED, so the line promising movement controls
+# must not appear for the very first scan of a session.
+check("...and that line is not promised for the reference",
+      "fresh && fresh.index>0" in _ing)
+
+
+# --- "I can only move scan 2 even when scan 1 is selected" -------------------
+#
+# ⛔⛔ AND IT WAS NEVER `pickScan`, WHICH HAD NOT BEEN PRESSED. `openProject`
+# leaves `V.picked` on the reference and `V.chose` false; `measure` then aims
+# the MOVEMENT at the last scan in the job. So every project opened highlighted
+# scan 1 in the list and in the photograph tray while all six sliders, the
+# rotation ring, the arrow keys and Auto-align worked on scan 2 -- and nothing
+# on screen admitted to it. A saved two-scan job is the shortest route there is
+# to meeting the two halves disagreeing, which is exactly the job that was
+# reported. `pickScan` reconciles them on every press; NOTHING reconciled them
+# on the way IN.
+print("\nthe project that opened with two selections")
+
+_op = re.sub(r"/\*.*?\*/", "", _js_func("openProject"), flags=re.S)
+check("opening a project leaves ONE selection, not two",
+      "V.picked = V.active;" in _op, _op[:400])
+check("...taken after measure, which is what sets V.active",
+      0 < _op.find("measure();") < _op.find("V.picked = V.active;"))
+# ⛔ THE CUT SCOPE IS SESSION STATE TOO, and it was the part the reset forgot.
+# An index from the previous job may not exist in this one, and `refreshLists`
+# then draws "every cloud" because no option matches -- the control reading one
+# thing while the cut takes another.
+check("...and the cut scope does not survive from the last job",
+      "V.editWho=-1;" in _op)
+# ⛔⛔ NOR DOES THE UNDO STACK. `undoSetup` closes over a scan INDEX and the
+# placement that scan had in the job being closed, so one Ctrl-Z in the new job
+# would write another capture's position onto whatever now holds that number.
+check("...nor does the undo stack, which is closures over scan indices",
+      "HIST.length=0;" in _op)
+_fs = re.sub(r"/\*.*?\*/", "", _js_func("forgetScan"), flags=re.S)
+check("removing a cloud empties the undo stack for the same reason",
+      "HIST.length=0;" in _fs, _fs[:300])
+
+
+# --- "Ctrl-Z doesn't undo the cloud move controls" --------------------------
+#
+# ⛔⛔ TWO FAULTS, EITHER OF WHICH ALONE PRODUCES THE REPORT.
+print("\nthe undo that could not reach a move")
+
+_kg = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('keydown', e=>{"):]
+_kg = _kg[:_kg.find("const k=e.key;")]
+# ⛔ ONE: the six placement sliders are `type="range"`, and the guard tested
+# `kind!=='number'` -- so a keydown arriving from a slider RETURNED before
+# Ctrl-Z was ever read. A slider holds the focus the instant after it is
+# dragged, which is exactly when undo is reached for. The arrow keys and the
+# gizmo worked, because those leave the focus on the canvas.
+check("a placement slider does not swallow Ctrl-Z",
+      "kind==='number' || kind==='range'" in _kg, _kg[-400:])
+check("...and the six placement controls really are ranges",
+      _ALIGN_SRC.count('<input type="range" id="tx"') == 1)
+check("...while a text box keeps the browser's own undo, "
+      "because a half-typed path is not a change to anything",
+      "!applied || !undoing" in _kg)
+# ⛔ TWO: `undoAny` opened with `if(V.edits.length) return undoEdit();` -- the
+# cut list first, ALWAYS, and the rest of the stack reachable only once it was
+# empty. Cut anything, move a scan, press Ctrl-Z: the cut came back and the
+# scan stayed where it was dragged. The moves were on the stack the whole time.
+_ua = re.sub(r"/\*.*?\*/", "", _js_func("undoAny"), flags=re.S)
+check("Ctrl-Z no longer sends every press to the cut list first",
+      "if(V.edits.length) return undoEdit();" not in _ua, _ua)
+check("...it pops the one stack, in the order things happened",
+      "HIST.pop()" in _ua)
+# ⛔ A HALF-DRAWN OUTLINE IS NOT ON ANY STACK YET, so it is still first -- it
+# is the most recent thing done, and it is thrown away rather than reversed.
+check("...after throwing away an outline still being drawn",
+      0 < _ua.find("clearPending()") < _ua.find("HIST.pop()"))
+_pe = re.sub(r"/\*.*?\*/", "", _js_func("pushEdit"), flags=re.S)
+check("a cut goes on the same stack as every other action",
+      "remember(" in _pe and "dropEdit(e.eid)" in _pe, _pe)
+# ⛔⛔ BY ID, NOT BY OBJECT AND NOT BY POSITION. `forgetScan` REPLACES every
+# scoped edit with a copy, so a stack holding the object would refuse for cuts
+# that survived; and the list is spliced from three places, so an index names a
+# different cut by the time it is used.
+check("...held by an id, which survives forgetScan's copy",
+      "e.eid = ++EDIT_ID;" in _pe and "HIST[HIST.length-1].edit = e.eid;"
+      in _pe)
+check("...and forgetScan does copy scoped edits, which is why",
+      "Object.assign({}, e, {scan:shift(e.scan)})" in _fs)
+_de = re.sub(r"/\*.*?\*/", "", _js_func("dropEdit"), flags=re.S)
+check("...looked up by that id when the undo actually runs",
+      "V.edits.findIndex(x=>x.eid===eid)" in _de)
+check("...replaying the remaining list rather than unpicking in place",
+      "recomputeLive()" in _de)
+# ⛔ AND A REFUSAL IS ANNOUNCED, never a silent step onto something older --
+# the rule the whole stack is built on.
+check("...and a cut that has already gone refuses out loud",
+      "say(" in _de and "'warn'" in _de)
+# ⛔ IDS FROM A SAVED FILE ARE RE-STAMPED: they were handed out by the session
+# that wrote it, and this one starts counting from 1 again.
+check("cuts loaded from a project are re-numbered",
+      "V.edits.forEach(e=>{ e.eid = ++EDIT_ID; });" in _op)
+check("...and ids start at 1, so `if(entry.edit)` cannot miss the first cut",
+      "let EDIT_ID = 0;" in _ALIGN_SRC)
+# ⛔ THE TRAY BUTTON STAYS CUTS-ONLY -- it sits beside Clear all, where undo
+# plainly means the last cut -- but it must not leave the main stack holding an
+# entry for a cut it has already taken away.
+_ue = re.sub(r"/\*.*?\*/", "", _js_func("undoEdit"), flags=re.S)
+check("the tray's Undo button prunes the entry it invalidates",
+      "forgetEditSteps();" in _ue, _ue)
+check("...and so does Clear all, which takes the whole list",
+      "forgetEditSteps();\n    showEdits(); recomputeLive();" in _ALIGN_SRC)
 
 
 # --- "reload at this detail is not working" ----------------------------------

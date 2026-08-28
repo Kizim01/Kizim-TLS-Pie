@@ -7075,8 +7075,15 @@ function showHidden(){
     : '';
 }
 
-function pickScan(index){
-  const s=V.scans.find(x=>x.index===index); if(!s) return;
+/* ⭐ THE AIM ALONE, WITHOUT THE ANNOUNCEMENT. Split out of `pickScan` so a
+   scan ARRIVING can take the controls without also borrowing `pickScan`'s
+   status line -- the import writes its own, longer one, and a second `say`
+   would only overwrite it a moment later.
+
+   ⛔ THE RULES FOR WHAT GETS AIMED LIVE HERE, ONCE. Copying the three
+   assignments into the import instead is how the two callers drift: the
+   reference exception below is exactly the kind of clause a copy loses. */
+function aimAt(index){
   V.picked=index;
   V.editWho=index;
   /* ⭐ AND THE CHOICE IS RECORDED AS A CHOICE. From here on `measure` leaves
@@ -7084,6 +7091,11 @@ function pickScan(index){
      decide what the next drag will move. Picking the reference is not a choice
      of moving scan -- it cannot be moved -- so it does not set the flag. */
   if(index>0){ V.active=index; V.chose=true; }
+}
+
+function pickScan(index){
+  const s=V.scans.find(x=>x.index===index); if(!s) return;
+  aimAt(index);
   /* ⭐ AND THE PHOTOGRAPH TRAY COMES WITH IT. Picking a scan is how you say
      "work on this one", and its photograph's controls now live in one tray
      rather than being repeated in every row -- so picking has to bring that
@@ -7206,10 +7218,35 @@ function undoBox(){
   return ()=>{ V.box=JSON.parse(JSON.stringify(was)); V.boxSet=set;
                syncClipSliders(); clipLabels(); invalidate(); };
 }
+/* ⛔ AN OUTLINE STILL BEING DRAWN IS NOT ON ANY STACK, so it is thrown away
+   rather than reversed -- and it goes first because it is the most recent
+   thing the operator did. */
+function clearPending(){
+  if(!V.pending) return false;
+  V.pending=null; V.tool=''; setTool(''); invalidate();
+  return true;
+}
 async function undoAny(){
-  /* The cut list is still the commonest thing to undo, and it has its own
-     stack already -- so it stays first while there is anything in it. */
-  if(V.edits.length) return undoEdit();
+  /* ⛔⛔ ONE STACK, IN THE ORDER THINGS HAPPENED. This used to open with
+     `if(V.edits.length) return undoEdit();` -- the cut list first, always, and
+     the rest of the stack reachable only once it was EMPTY. So an operator who
+     had cut anything at all could never get back to a move: cut a lasso, drag
+     a scan, press Ctrl-Z, and the lasso came back while the scan stayed where
+     it had been dragged. Press again and another cut returned. Reported as
+     "Ctrl-Z doesn't undo the cloud move controls", and the moves were on the
+     stack the whole time -- unreachable, not missing.
+
+     This file already makes the argument one level down, about the cuts
+     themselves: they live in ONE ordered list "so that Undo means the last
+     thing I did rather than the last box, unless the last thing was a lasso".
+     Two stacks with a fixed order between them is the same fault one level
+     out, so cuts now go on the same stack as everything else and this pops it.
+
+     ⛔ THE TRAY'S OWN Undo BUTTON STAYS CUTS-ONLY. It sits in Delete points
+     beside Clear all, where "undo" plainly means the last cut; what it must
+     not do is leave the main stack holding an entry for a cut it has already
+     taken away, which is why it prunes. */
+  if(clearPending()) return say('Threw away the outline you were drawing.');
   const step=HIST.pop();
   if(!step) return say('Nothing left to undo.');
   try{
@@ -7568,9 +7605,31 @@ function showEdits(){
    (a box and a lasso) and a third is the obvious next one; a caller that forgot
    would produce a cut that reads as belonging to one cloud in the list and cuts
    through all of them on export, which nothing on screen would show. */
+/* ⛔⛔ AN EDIT CARRIES AN ID, AND THE UNDO STACK HOLDS THE ID RATHER THAN THE
+   OBJECT. `forgetScan` REPLACES every scoped edit with a copy when a cloud is
+   removed -- `Object.assign({}, e, {scan:shift(e.scan)})` -- so a stack that
+   held the object would be pointing at something no longer in the list and
+   could only refuse, for cuts that had in fact survived. A copy carries the id
+   with it. And it must not be the POSITION: the list is spliced from three
+   different places, so an index names a different cut by the time it is used.
+   ⛔ Ids start at 1, so `if(entry.edit)` cannot mistake the first cut of a
+   session for an entry that has none. */
+let EDIT_ID = 0;
 function pushEdit(e){
   e.scan = cutScope();
+  e.eid = ++EDIT_ID;
   V.edits.push(e); showEdits();
+  /* ⛔⛔ AND IT GOES ON THE ONE UNDO STACK WITH EVERY OTHER ACTION, in the
+     order it happened. See `undoAny`: while cuts had a stack of their own that
+     was always consulted first, a move made after a cut could not be reached
+     by Ctrl-Z at all. The entry holds the edit OBJECT, not its position -- the
+     list is spliced by `undoEdit`, by Clear all and by removing a scan, so an
+     index would name a different cut by the time it was used. */
+  remember((e.mode==='keep' ? 'keeping only ' : 'deleting ')+
+           (e.kind==='box' ? 'a box' : 'a lasso')+
+           (e.scan==null ? '' : ' from '+whoName(e.scan)),
+           ()=>dropEdit(e.eid));
+  HIST[HIST.length-1].edit = e.eid;
   /* ⭐⭐ A NEW DELETE ONLY TURNS POINTS OFF, SO ONLY THE NEW DELETE IS RUN.
      recomputeLive re-tests EVERY edit against EVERY point -- the right thing
      after an undo, and quadratic pain while cutting: by the fifth lasso on a
@@ -7650,10 +7709,42 @@ function whoSuffix(){
                       ' cloud(s) on screen — '+off.length+' hidden and left'+
                       ' whole' : '';
 }
+/* Take ONE cut back out of the list, wherever it now sits.
+
+   ⛔ THE LIST IS REPLAYED, NEVER UNPICKED IN PLACE. `recomputeLive` re-runs
+   every remaining operation against the untouched capture, which is the only
+   version that stays true -- keep and drop do not commute, so "take the third
+   of five back out" cannot be done by turning flags on again.
+
+   ⛔ AND IT REFUSES OUT LOUD RATHER THAN DOING NOTHING. A cut whose scan has
+   been removed from the job went with it; the stack says so instead of
+   silently stepping over it onto something older, which is the rule `undoAny`
+   is built on. */
+function dropEdit(eid){
+  const i=V.edits.findIndex(x=>x.eid===eid);
+  if(i<0) return say('That cut is not in the job any more — the cloud it '+
+                     'belonged to was removed. Nothing was changed.', 'warn');
+  V.edits.splice(i,1); showEdits(); recomputeLive(); dirty();
+}
+/* ⛔ ENTRIES FOR CUTS THAT ARE NO LONGER IN THE JOB COME OFF THE STACK. Clear
+   all takes the whole list and removing a scan takes that scan's cuts with it;
+   leaving their entries behind would fill the stack with steps that can only
+   refuse, so reaching the move underneath five cleared cuts would take six
+   presses of Ctrl-Z. `dropEdit` still refuses if one slips past -- announcing
+   a refusal is the designed answer, not a substitute for the bookkeeping. */
+function forgetEditSteps(){
+  for(let i=HIST.length-1;i>=0;i--)
+    if(HIST[i].edit && !V.edits.some(x=>x.eid===HIST[i].edit)) HIST.splice(i,1);
+}
 function undoEdit(){
-  if(V.pending){ V.pending=null; V.tool=''; setTool(''); invalidate(); return; }
+  if(clearPending()) return;
   if(!V.edits.length) return say('Nothing to undo.', 'warn');
   const e=V.edits.pop();
+  /* ⛔ AND ITS ENTRY ON THE MAIN STACK GOES WITH IT. Left there, the next
+     Ctrl-Z would offer to undo a cut this button had already taken away and
+     could only refuse -- a step the operator never made, in the way of the one
+     they did. */
+  forgetEditSteps();
   showEdits(); recomputeLive(); dirty();
   say('undid '+(e.mode==='keep'?'keep':'delete')+' '+e.kind+'.');
 }
@@ -8739,6 +8830,21 @@ async function openProject(path){
        opened over another job would otherwise keep the last one's choice --
        an index into a set of clouds that is no longer there. */
     V.chose=false; V.active=1; V.picked=0;
+    /* ⛔ AND THE CUT SCOPE IS SESSION STATE TOO. It was the one part of the
+       selection this reset forgot, so a job opened over another one kept the
+       last one's "only scan 4" -- an index that may not exist in the new job,
+       which `refreshLists` then renders as "every cloud" because no option
+       matches it. The control would have been reading one thing and the cut
+       taking another. */
+    V.editWho=-1;
+    /* ⛔⛔ AND THE UNDO STACK IS SESSION STATE, which it had never been told.
+       `undoSetup(i)` closes over a scan INDEX and the placement that scan had
+       in the job being closed. Opened over another job those closures survive,
+       still pointing at index 1 -- so one Ctrl-Z in the new job would write a
+       different capture's position onto whatever now holds that number and
+       teleport it across the room. Exactly the fault the pick reset three
+       lines up was written against; the stack simply was not on the list. */
+    HIST.length=0;
     V.level=null; V.lvl=[]; V.lerr=null;
     for(const m of j.scans) V.scans.push(await loadScan(m));
     /* ⛔ The level goes back before anything is drawn or masked. Left until
@@ -8747,6 +8853,19 @@ async function openProject(path){
        for a crop nobody ever made. */
     V.level=j.level||null; V.lvl=j.level_points||[];
     measure();                          /* extents first: the box needs them */
+    /* ⛔⛔ ONE SELECTION, NOT TWO -- AND THIS IS WHERE THEY SPLIT APART.
+       The reset above leaves `V.picked` on the reference and `V.chose` false;
+       `measure` then aims the MOVEMENT at the last scan in the job. So every
+       project opened highlighted scan 1 in the list, put the photograph tray
+       on scan 1 and aimed all six sliders, the rotation ring, the arrow keys
+       and Auto-align at scan 2 -- with nothing on screen admitting to it.
+
+       Reported exactly that way: "I can only move scan 2 even when scan 1 is
+       selected". It was blamed on `pickScan`, which had never been pressed.
+       `pickScan` reconciles the two halves on every press; NOTHING reconciled
+       them on the way IN, and a saved two-scan job is the shortest route
+       there is to an operator meeting them disagreeing. */
+    V.picked = V.active;
     if(j.box){
       V.boxSet=true;      /* a saved box is a decision, not a default */
       V.box.o=j.box.o; V.box.lo=j.box.lo; V.box.hi=j.box.hi;
@@ -8781,6 +8900,13 @@ async function openProject(path){
       setOrtho(!!j.view.ortho);
     }
     V.edits=j.edits||[];
+    /* ⛔ CUTS THAT ARRIVE FROM A FILE ARE RE-NUMBERED, because the ids in it
+       were handed out by the session that saved it and this one starts
+       counting again from 1. Left alone, the first cut made after opening
+       would share an id with a loaded one and Undo would take back whichever
+       came first in the list. `pushEdit` is the only other door, and this is
+       the one the file comes through. */
+    V.edits.forEach(e=>{ e.eid = ++EDIT_ID; });
     /* Pairs saved half-finished come back half-finished: the residuals do not,
        because they belonged to a fit made against a placement this project has
        since had written over it. A stale number beside a pair would be read as
@@ -9694,6 +9820,17 @@ function forgetScan(gone){
   V.pairs = V.pairs.filter(p => p.ri!==gone && p.si!==gone)
                    .map(p => Object.assign({}, p,
                                            {ri:shift(p.ri), si:shift(p.si)}));
+  /* ⛔⛔ AND THE UNDO STACK IS EMPTIED, WHICH IS BLUNT AND IS THE SAFE ANSWER.
+     Every placement entry on it is a closure over a scan INDEX -- `undoSetup`
+     looks the scan up by number when it runs, not when it was made -- and this
+     function renumbers every index above the one that went. So a stack left
+     standing would write the removed cloud's neighbour's old position onto
+     whichever capture inherited its number, and teleport a scan the operator
+     never touched. Re-keying the cut entries alone is not enough, because the
+     dangerous ones are the moves, and nothing on an entry says which scan it
+     belongs to. Losing the history costs a deliberate two-press action's worth
+     of undo; the alternative moves clouds nobody asked to move. */
+  HIST.length=0;
   V.half=null; V.perr=null;
   if(V.only===gone){ V.only=-1; $('showb').textContent='All'; }
   else if(V.only>gone) V.only--;
@@ -10469,13 +10606,45 @@ async function ingest(paths){
     const first = V.scans.length===0;
     const was = V.scans.length;
     await rebuildFrom(j.scans||j.added);
-    measure(); refreshLists(); syncSliders();
+    measure();
+    /* ⭐⭐ THE SCAN THAT JUST ARRIVED TAKES THE CONTROLS. Asked for by name:
+       a cloud you have this second gone and fetched is the one you are about
+       to move, and having to hunt for it in the list and pick it before the
+       sliders would do anything was a step that never had a reason.
+
+       ⛔ HERE, AND DELIBERATELY NOT IN `measure`. `measure` runs after EVERY
+       rebuild -- a recolour, a stray clean, a removal, a solve -- and re-aiming
+       from there is the exact bug its own comment is written against: the
+       sliders hold ABSOLUTE metres, so a target that moved on its own commits
+       the previous scan's position onto the new one at the first touch and the
+       cloud jumps. An ARRIVAL is not a REBUILD. It happens once, and it
+       happens because the operator asked for it, which is what makes it a
+       choice worth recording.
+
+       ⛔ AND IT IS CONDITIONAL ON SOMETHING ACTUALLY ARRIVING. The server can
+       answer `ok` with nothing added (every path a duplicate); aiming at
+       `V.scans[V.scans.length-1]` regardless would then quietly re-aim at
+       whatever happens to sit last in the list -- a rebuild wearing an
+       import's clothes. */
+    const fresh = V.scans.length>was ? V.scans[V.scans.length-1] : null;
+    if(fresh) aimAt(fresh.index);
+    refreshLists(); syncSliders();
     syncClipSliders(); showTurn(); clipLabels();
     if(V.edits.length) recomputeLive();
     if(first) recentre();
     invalidate(); watch(false); dirty();
     $('addpath').value='';
     say('added '+j.added.map(a=>a.name).join(', ')+
+        /* ⛔ THE RE-AIM IS SAID OUT LOUD, and it reads off the same `fresh`
+           the aim was taken from -- a message computed a second time from
+           "the last scan in the list" is a message that can name a different
+           cloud from the one the sliders now move, which is worse than
+           saying nothing at all. */
+        (fresh && fresh.index>0
+          ? '. Working on '+fresh.name+' — the movement controls, the '+
+            'rotation ring and new cuts are aimed at it. Double-click another '+
+            'cloud in the list to work on that one instead.'
+          : '')+
         (V.scans.length>1
           /* ⛔ THIS LINE USED TO SAY "every scan is solved against the FIRST
              one, never against the previous, so errors do not accumulate" --
@@ -10975,7 +11144,23 @@ const DRAW_TOOLS = {lasso:1, rect:1};
     if(t==='input'){
       const kind=(e.target.type||'text').toLowerCase();
       const undoing=(e.ctrlKey||e.metaKey) && (e.key==='z'||e.key==='Z');
-      if(kind!=='number' || !undoing) return;
+      /* ⛔⛔ A RANGE IS AN APPLIED VALUE TOO, AND LEAVING IT OUT IS THE WHOLE
+         REPORT. This read `kind!=='number'`, so a keydown arriving from one of
+         the six placement SLIDERS returned here and Ctrl-Z was never read at
+         all -- and a slider holds the focus the instant after it is dragged,
+         which is exactly when an operator reaches for undo. Arrow keys and the
+         gizmo worked, because those leave the focus on the canvas; the move
+         controls did not. Reported as "Ctrl-Z doesn't undo the cloud move
+         controls".
+
+         The reasoning above was right and was scoped to the control it named.
+         A range shows an ALREADY-APPLIED value for the same reason a number
+         box does -- the cloud moved as the thumb moved -- so the browser's own
+         undo would put the thumb back and leave the scan where it was, which
+         is the control lying about the scan. The test for this list is that
+         question, not the tag: has what it shows already happened? */
+      const applied = (kind==='number' || kind==='range');
+      if(!applied || !undoing) return;
       e.target.blur();
     }
     const k=e.key;
@@ -11388,6 +11573,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('keepbox').onclick=()=>addBox('keep');
   $('cutbox').onclick=()=>addBox('drop');
   $('clearedit').onclick=()=>{ V.edits=[]; V.pending=null; askLasso(false);
+    forgetEditSteps();
     showEdits(); recomputeLive();
     say('edits cleared; the whole cloud will be saved.'); };
   /* ⭐ THE OUTLINE AND THE CLIPPING ARE SEPARATE ON PURPOSE. Once the box is
