@@ -4937,16 +4937,124 @@ fixes.
   the status line; watching the cloud rather than the text, it reads as dead. (This also
   invalidated a row in one of my own probes — a second `solve` in one process hits it.)
 
+## 2026-08-28, eighteenth pass — the arrival takes the controls, and three faults found behind it
+
+### What was asked for
+
+*"Make it a default that when a new scan is loaded, that scan is selected for controls."* Done —
+and the interesting part is WHERE.
+
+⛔⛔ **THE AIM MOVES IN `ingest`, AND DELIBERATELY NOT IN `measure`.** `measure` runs after
+EVERY rebuild — a recolour, a stray clean, a removal, a solve, a detail change — and re-aiming
+from there is the exact bug its own comment is written against: the sliders hold ABSOLUTE metres,
+so a target that moves on its own commits the previous scan's position onto the new one at the
+first touch and the cloud jumps. **An ARRIVAL is not a REBUILD.** It happens once, and it happens
+because a person pressed Add, which is what makes it a choice worth recording. The existing check
+that `measure` does not re-aim on a cloud appearing was KEPT and its comment rewritten, because it
+now pins a separation rather than a blanket rule.
+
+`aimAt` was split out of `pickScan` rather than its three assignments copied — the reference
+exception (`if(index>0)`) is exactly the clause a copy loses. The status line names the scan the
+controls moved to, read off the SAME value the aim used: a message that recomputes "the last scan"
+can name a different cloud from the one the sliders now move.
+
+### ⛔⛔ "I can only move scan 2 even when scan 1 is selected" — AND IT WAS NEVER `pickScan`
+
+Found while tracing the above. `openProject` sets `V.picked=0` and `V.chose=false`; `measure` then
+sets `V.active` to the LAST scan. So **every project opened highlighted scan 1 in the list and in
+the photograph tray while all six sliders, the rotation ring, the arrow keys and Auto-align worked
+on scan 2** — with nothing on screen admitting to it.
+
+⭐ `pickScan` reconciles the two halves on every press. **NOTHING reconciled them on the way
+IN**, and a saved two-scan job is the shortest route there is to meeting them disagreed. The
+seventeenth pass blamed `pickScan(0)`, which the operator had never pressed.
+
+⭐⭐ **AND THIS IS THE BEST AVAILABLE EXPLANATION OF THE "auto align error.tlspie" REPORT.**
+Four independent measurements said that pair was fitted to the instrument's noise floor, and they
+were right — the geometry was never the problem. An operator who picks scan 1 and then presses
+Auto-align is pressing it on scan 2. **The operator reported on 2026-08-28 that auto-align is
+fixed and asked for it to be dropped.** ⚠ Recorded as a HYPOTHESIS, not a conclusion: it was
+settled by using the new build, not by an experiment that isolated the cause.
+
+Two more of the same family, both latent, both fixed here:
+
+- **The undo stack survived a project open.** `undoSetup(i)` closes over a scan INDEX and the
+  placement that scan had in the job being CLOSED, so one Ctrl-Z in the new job would write
+  another capture's position onto whatever now holds that number. The pick reset three lines above
+  it was written against exactly this; the stack simply was not on the list.
+- **And it survived a scan removal**, which renumbers every index above the one that went. Emptied
+  rather than re-keyed: nothing on an entry says which scan it belongs to, and the dangerous
+  entries are the moves.
+- **The cut scope survived a project open too** — an index that may not exist in the new job,
+  which `refreshLists` then draws as "every cloud" because no option matches it: the control
+  reading one thing while the cut takes another.
+
+### ⛔⛔ "Ctrl-Z doesn't undo the cloud move controls" — TWO faults, either one enough
+
+**ONE: a slider swallowed the key.** The keydown guard read `kind!=='number'`, and the six
+placement controls are `<input type="range">` — so a keydown arriving from a slider RETURNED
+before Ctrl-Z was ever read. A slider holds the focus the instant after it is dragged, which is
+precisely when undo is reached for. Arrow keys and the gizmo always worked, because those leave
+the focus on the canvas; that asymmetry is the tell, and it points straight at the move-controls
+tray. ⭐ The comment above the guard reasons carefully about number boxes and text boxes and
+**never considered the ranges** — the reasoning was right and was scoped to the control it named.
+The test is now the question, not the tag: *has what it shows already happened?*
+
+**TWO: the cut list jumped the queue.** `undoAny` opened with `if(V.edits.length) return
+undoEdit();` — the cut list first, ALWAYS, and the rest of the stack reachable only once it was
+empty. Cut anything, move a scan, press Ctrl-Z: the cut came back and the scan stayed where it had
+been dragged. **The moves were on the stack the whole time — unreachable, not missing.**
+
+⭐ This file already makes the argument one level down, about the cuts themselves: they live in
+ONE ordered list *"so that Undo means the last thing I did rather than the last box, unless the
+last thing was a lasso"*. **Two stacks with a fixed order between them is the same fault one level
+out.** Cuts now go on the same stack, in the order things happened.
+
+- The stack holds an **id**, not the object and not the position. `forgetScan` REPLACES every
+  scoped edit with a copy, so an object would refuse for cuts that survived; and the list is
+  spliced from three places, so an index names a different cut by the time it is used. Ids from a
+  saved file are re-stamped on open, because they were handed out by the session that wrote it.
+- The tray's Undo button stays cuts-only — it sits beside Clear all, where undo plainly means the
+  last cut — but it prunes the main stack so it cannot leave an entry for a cut it has taken away.
+
+### ⛔⛔ THE AUDIT LESSONS, WHICH COST THREE ATTEMPTS
+
+Suites **1309 → 1348**. THREE reversion audits, **28 of 30 breaks caught** — and **both misses were mine, not the code’s**, each one a lesson below and each now closed.
+
+1. **A CHECK WHOSE FAILURE MODE IS AN EXCEPTION DOES NOT REPORT — IT ABORTS.**
+   `_js_func("aimAt").split("if(index>0)")[1]` raises `IndexError` when the guard is removed, so
+   the run went red at the wrong place and **every later check never ran**, including the
+   behavioural one that pins that case. The audit reported it as *"the suite CRASHED rather than
+   reporting"*. Same family as the `str.find` returning −1 and the ordering comparisons staying
+   true by accident.
+2. **A SOURCE-TEXT CHECK CANNOT TELL "PRESENT" FROM "CALLED".** The break `if(0) remember(...)`
+   left every string the check looked for in the file while the call never ran, and it passed.
+   Replaced with a node harness that runs the operator's own sequence — cut, move, undo — and
+   reads `[0, 1]` where the bug read `[1, 0]`.
+3. **AND A CHECK CAN PASS ON ITS OWN PROSE.** `_ing.count("V.scans[V.scans.length-1]") == 1`
+   passed the first time it ran because the comment beside the change quotes that expression.
+   Comments are stripped before counting now. Third time in two days.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-28 18:07:21, Converter 18:06:59, tlsconvert 18:07:42, selftest 0**
-— and THIS build carries the slider rush fix, the floor-plan seeder AND the project-tray default.
+**✅ THE EXES: Studio 2026-08-28 19:32:19, Converter 19:31:38, tlsconvert 19:32:54, selftest 0**
+— and THIS build carries the arrival re-aim, the `openProject` selection fix and BOTH Ctrl-Z
+fixes, on top of the slider rush fix, the floor-plan seeder and the project-tray default.
+
+✅ **AUTO-ALIGN IS CLOSED.** The operator reported it fixed on 2026-08-28 and asked for it to be
+dropped — both the *"auto align is not working"* and *"the rotation is wrong"* reports on
+`auto align error.tlspie`. **Do not re-open it and do not ask for the screenshot.** The best
+available explanation is the `openProject` two-selection split fixed in this build (they picked
+scan 1; every control was on scan 2), which is consistent with four measurements saying the
+geometry was already at the instrument's noise floor — but that is a HYPOTHESIS, not a proven
+cause.
 
 ⚠ **THE SEEDER ONLY TOUCHES THE BLIND PATH.** A scan placed by hand goes down the hinted route
-(`autoAlign` sends `start: s.setup` whenever the scan has moved at all), so a job like
-`auto align error.tlspie` will behave EXACTLY as before. Do not present the 2-of-9 → 5-of-9
-improvement as something they will see there; it shows on align-on-import and on an untouched
-scan.
+(`autoAlign` sends `start: s.setup` whenever the scan has moved at all). The 2-of-9 → 5-of-9
+improvement shows on align-on-import and on an untouched scan, never on a hand-placed pair.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 18:07:21, Converter 18:06:59, selftest 0.**
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-28 14:47:24, Converter 14:46:53, selftest 0.**
@@ -5013,11 +5121,12 @@ their own data; nothing since the 09:55 build has been exercised in Studio):
 - **The Turn slider, and the other five in *Move a scan*, no longer hang** — the cloud goes
   deliberately SPARSE while the thumb is down and sharpens on release. If the operator reads that
   as "broken", it is the fix working; say so before changing anything.
-- **What scan 1 and 2 actually look like** once the picture has settled. This is the one
-  outstanding question that only they can answer — see the seventeenth pass: FOUR independent
-  measurements say that pair is fitted to the instrument's noise floor, and the report stands
-  unexplained. **A screenshot is the next move, not more solver work.**
+- ✅ **CLOSED 2026-08-28: the auto-align thread.** The operator said it is fixed and to drop
+  it. Do NOT ask them for the screenshot the seventeenth pass was waiting on.
 - **The Project tray now opens by default** (right-hand panel, with everything else).
+- ⚠ **STILL WANTED: "make this the reference"** — swap which scan is fixed and re-express the
+  others against it. It is what picking scan 1 was reaching for, and CloudCompare, Cyclone and
+  Scene all have it.
 - **An export can no longer destroy the previous one**, and the shoot sorter refuses to write
   over an existing file. Both are data-loss fixes tested only synthetically so far — one real
   export and one real sort, watched, are worth doing.

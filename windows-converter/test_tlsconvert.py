@@ -6357,6 +6357,79 @@ check("the tray's Undo button prunes the entry it invalidates",
 check("...and so does Clear all, which takes the whole list",
       "forgetEditSteps();\n    showEdits(); recomputeLive();" in _ALIGN_SRC)
 
+# ⛔⛔ AND THE REPORT ITSELF IS RUN, NOT READ. The source check above ("a cut
+# goes on the same stack") is text: the reversion audit defeated it with
+# `if(0) remember(...)`, which leaves every string it looks for in the file
+# while the call never runs. A check that cannot tell "present" from "called"
+# is not testing the behaviour, so the behaviour is exercised here instead --
+# cut, move, undo, in that order, which is the operator's exact sequence.
+if not _node:
+    print("  ---- node is not installed; the undo order was NOT run")
+else:
+    _undo = """
+%s
+const HIST=[], HIST_MAX=60;
+let EDIT_ID = 0;
+const V={scans:[], edits:[], hidden:{}, editWho:-1, only:-1,
+         active:1, picked:1, pending:null};
+const $=()=>({textContent:'',innerHTML:'',value:0});
+let SAID='';
+const say=m=>{SAID=m;}, showEdits=()=>{}, recomputeLive=()=>{},
+      applyDrop=()=>{}, dirty=()=>{}, syncSliders=()=>{}, invalidate=()=>{},
+      editsFollow=()=>{}, setTool=()=>{}, whoName=i=>'scan'+i;
+function active(){ return V.scans.find(s=>s.index===V.active); }
+V.scans=[{index:0,name:'s0',setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}},
+         {index:1,name:'s1',setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}}];
+const out={};
+(async()=>{
+  /* \\u26d4\\u26d4 THE REPORTED SEQUENCE. Cut something, move a scan, undo.
+     Before the fix the FIRST undo put the cut back and left the scan exactly
+     where it had been dragged, and every further press returned another cut --
+     the move was on the stack the whole time and could not be reached. */
+  pushEdit({kind:'box', mode:'drop', box:{}});
+  out.cutOnStack = HIST.length;
+  nudge(1, 0, 0, 0);
+  out.moved = V.scans[1].setup.x_m;
+  out.bothOnStack = HIST.length;
+  await undoAny();
+  out.afterOne = [V.scans[1].setup.x_m, V.edits.length];
+  await undoAny();
+  out.afterTwo = [V.scans[1].setup.x_m, V.edits.length];
+  await undoAny();
+  out.afterThree = SAID;
+  console.log(JSON.stringify(out));
+})();
+""" % "\n".join(_js_func(f) for f in
+                ("remember", "undoSetup", "coalesce", "nudge", "cutScope",
+                 "shown", "pushEdit", "dropEdit", "forgetEditSteps",
+                 "clearPending", "undoEdit", "undoAny")
+       # ⛔ `_js_func` matches on "function <name>(", so it lifts an ASYNC
+       # function without its `async` -- and `undoAny` awaits the step it
+       # popped. Put the keyword back rather than teaching the lifter about
+       # it: every other caller wants the body, and this is the one place
+       # that runs it.
+       ).replace("function undoAny(){", "async function undoAny(){")
+    _up = os.path.join(tempfile.mkdtemp(prefix="tlsundo"), "undo.js")
+    with io.open(_up, "w", encoding="utf-8") as _fh:
+        _fh.write(_undo)
+    _ur = subprocess.run([_node, _up], capture_output=True, text=True)
+    check("the undo order's own rules run", _ur.returncode == 0,
+          (_ur.stderr or "")[:400])
+    if _ur.returncode == 0:
+        _uo = json.loads(_ur.stdout.strip().splitlines()[-1])
+        check("a cut really does land on the stack, not merely mention it",
+              _uo["cutOnStack"] == 1, _uo)
+        check("...and a move made after it lands on top",
+              _uo["bothOnStack"] == 2 and _uo["moved"] == 1, _uo)
+        # ⭐⭐ THE WHOLE REPORT, IN ONE LINE. This read [1, 0] before the fix:
+        # the scan still moved, the cut put back.
+        check("CTRL-Z AFTER A CUT-THEN-MOVE TAKES THE MOVE BACK FIRST",
+              _uo["afterOne"] == [0, 1], _uo)
+        check("...and the next press reaches the cut underneath it",
+              _uo["afterTwo"] == [0, 0], _uo)
+        check("...and an empty stack says so rather than doing nothing",
+              "Nothing left to undo" in _uo["afterThree"], _uo)
+
 
 # --- "reload at this detail is not working" ----------------------------------
 # ⛔⛔ THIS FUNCTION WAS ALREADY UNDER TEST AND THE BUG WAS UNDERNEATH THE TEST.
