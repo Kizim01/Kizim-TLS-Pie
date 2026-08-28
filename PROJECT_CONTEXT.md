@@ -4512,24 +4512,76 @@ to cover what they stand in for (Potree's adaptive point size); refinement frame
 back. ⭐⭐ **A rendering shortcut that changes how two surfaces INTERLEAVE is an alignment bug
 report waiting to happen — thin by coverage, not by count.**
 
+## 2026-08-28, thirteenth pass — a placed scan is aimed at what it SHARES; the GPU fix is confirmed
+
+**✅ THE GPU CHANGE LANDED.** The operator set `msedgewebview2.exe` to High performance and
+studio.log now reads `renderer: ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 Ti Laptop GPU …)` on both
+boots since — **and neither logged a `gl-slow` line**, where the 21:55 AMD session logged one at
+46.5M points. The RTX draws the view now. *(Keep this rule: the `renderer:` line is the only
+thing that settles which card is drawing; it is per-machine, per-Windows-setting, and survives
+nothing.)*
+
+**⭐⭐ THE LAST KNOWN ALIGNMENT DEFECT IS CLOSED** (`3eddf93`, suite 1254 → 1264). The twelfth
+pass fixed the *unplaced* case (walk order); a **placed** scan still answered with its nearest
+tripod, and distance is only a proxy for shared surface. Measured across the dense middle of
+the live job at the operator's own placements — **ranking by distance names a different partner
+for 3 of 8 scans**:
+
+| scan | nearest tripod | shares | most shared surface | shares |
+|---|---|---|---|---|
+| folder 10 | 11 @ 2.01 m | 8,152 | **9 @ 3.54 m** | **19,350** (2.4×) |
+| folder 11 | 13 @ 1.99 m | 6,040 | **10 @ 2.01 m** | **12,567** (2.1×) |
+| folder 8 | 10 @ 2.23 m | 18,994 | 9 @ 3.15 m | 19,700 (marginal) |
+
+**A wall between two tripods costs nothing in metres and everything in surface.**
+`overlap_rank()` prices the moving scan against every placed capture *from that capture's own
+tripod* (the same `Judge` the multi fit votes with); `default_target` returns it as the
+`overlap` rule and the answer says so on screen. **Thinning was measured, not assumed**
+(queued question (a), now closed): 1-in-8 picks the **same best partner 8 of 8**, nine times
+faster — **0.16–0.42 s per press** against a 6–20 s solve. ⚠ The full ORDER jitters down the
+tail (2 of 8), so this ranks a *choice* and never reports a precision it does not have.
+⛔ **The floor is a REFUSAL, not a ranking of noise**: coincidence is measured at the current
+placement, so a lost scan overlaps nothing wherever it truly belongs (folder 10 read 16.9%
+before its own fit and 90.0% after) — below `MULTI_MIN_BINS` the tripod rule answers, because it
+at least describes the room rather than the placement. Verified: a scan dragged 400 m away falls
+back.
+
+**⛔⛔ FOUND WHILE TESTING — the pair fit's default could hand out an EXPORTED CLOUD.** A pair is
+scored against a panorama taken at the target's tripod and a merged product **has no tripod**;
+`neighbours_of` has refused them for exactly that since it was written, while `solve`'s default
+went on offering them. This is the *dangerous* half of the 2026-08-23 blind-judge bug — not NaN
+and loud, but **full and plausible with nothing anywhere to notice**. Defaults now prefer a
+capture (falling back to a cloud only if the job holds nothing else); naming one under *Align
+to* still works and is **warned about**. ⭐ The pre-existing "every refusal asks the narrow
+question" check fired when `overlap_rank` became a third site — the check working, not failing.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-27 23:22:39, Converter 23:22:59, selftest 0.**
+**✅ THE EXES ARE CURRENT: Studio 2026-08-28 02:41:54, Converter 02:42:29, selftest 0.**
 
-**⭐⭐ FIRST THING TO TELL THE OPERATOR: THE VIEW IS ON THE WRONG GPU** — Windows draws the
-WebView2 window on the AMD integrated chip while the RTX sits idle (studio.log's `renderer:`
-line, 2026-08-27). One-time fix, and only they can do it: **Settings → System → Display →
-Graphics → Add an app → `msedgewebview2.exe`** (in `C:\Program Files (x86)\Microsoft\
-EdgeWebView\Application\<version>\` — that folder holds seven other exes, this is the one) **→
-High performance → restart Studio**, then check the log's next `renderer:` line says NVIDIA.
+**✅ THE GPU ITEM IS DONE — do not ask the operator to do it again.** They set
+`msedgewebview2.exe` to High performance on 2026-08-27 and the log confirms the RTX is drawing.
+*(If a future machine ever needs it: Settings → System → Display → Graphics → Add an app →
+`msedgewebview2.exe` in `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<version>\` —
+that folder holds seven other exes, this is the one. The `renderer:` line in studio.log is the
+only thing that settles it.)*
 
-Then on the 23:22 build: turning never hangs (worst wait = one 4M chunk), the cloud sharpens
-over ~a second at rest and no longer goes porous while moving, lasso deletes are far quicker
-(quicker still as more is cut), double-click re-aims the move controls, and **Auto-align on a
-fresh scan now aims at the capture beside it in the walk and says so.**
+**What the operator has NOT yet pressed** (everything below was verified through the library on
+their own data, and nothing since the 23:22 build has been exercised in Studio):
+- **Auto-align on a placed scan**: it should now name a target by shared surface rather than by
+  distance — on their job that changes folders 8, 10 and 11. The message says which rule aimed
+  it, so a wrong target is arguable instead of invisible.
+- **Auto-align on a fresh scan**: aims at the capture beside it in the walk, and says so.
+- Turning never hangs (worst wait = one 4M chunk), the cloud sharpens at rest and no longer goes
+  porous while moving, lasso deletes are far quicker (quicker still as more is cut), and
+  double-click re-aims the move controls.
+- ⚠ **The fits on their job still report `ambiguous` even when the residual is excellent**
+  (folder 13 onto folder 12: 0.031 m and still flagged). Worth a look — a warning that fires on
+  good fits trains the operator to ignore warnings — but it was NOT investigated, and it may
+  well be honest about a symmetric restaurant.
 
 <!-- superseded, kept for the build trail -->
-**Older: Studio 2026-08-27 22:23:42, Converter 22:24:08, selftest 0.**
+**Older: Studio 2026-08-27 23:22:39 / 22:23:42, selftest 0.**
 
 <!-- superseded by the eleventh pass, kept for the build trail -->
 **Older: Studio 2026-08-27 21:47:04, Converter 21:47:37, selftest 0.** They
@@ -4569,6 +4621,12 @@ the new messages are specific enough to diagnose from — get the exact wording.
 (~46 more scans) is the same room and the same mechanisms, so this should hold; the failures worth
 hearing about immediately are **a trusted fit that looks wrong by eye**, and **a refusal on a pair that
 obviously overlaps**.
+
+> **✅ CLOSED 2026-08-28 by the thirteenth pass — read that section, not this one.** Both halves
+> are fixed: an unplaced scan is aimed by the walk order, a placed one by measured shared
+> surface, and both name the rule they used. Question (a) below was answered by measurement
+> (1-in-8 thinning keeps the same best partner 8 of 8) and (b) is implemented as written. The
+> paragraph is kept because its evidence is the reason the fix has the shape it does.
 
 **⭐ THE LAST KNOWN ALIGNMENT DEFECT, QUEUED AND EVIDENCED: `nearest_to` PICKS BY TRIPOD DISTANCE.**
 Folder 10 proved the two questions diverge — nearest tripod was folder 8 (1.97 m, 12.6% shared) while
