@@ -1186,6 +1186,68 @@ class AlignServer(object):
             rank[i] = r
         return rank
 
+    #: One point in eight to rank targets by. Ordering is a far weaker demand
+    #: than pose, and this was measured rather than assumed (2026-08-27, eight
+    #: captures of the live job): the thinned sample picks the SAME best
+    #: partner for 8 of 8 scans, nine times faster. The full ORDER does jitter
+    #: down the tail, which is why this ranks a choice and never reports a
+    #: precision it does not have.
+    OVERLAP_THIN = 8
+
+    def overlap_rank(self, index):
+        """
+        How much of what this scan sees is also seen from each placed capture.
+
+        ⭐⭐ THE QUESTION TRIPOD DISTANCE WAS STANDING IN FOR. Distance is a
+        proxy for shared surface and the two genuinely diverge -- measured
+        across the dense middle of the live job, ranking by distance names a
+        different partner for THREE OF EIGHT scans, and not marginally:
+        folder 10's nearest tripod (folder 11, 2.01 m) shares 8,152 bins
+        while folder 9, half again as far, shares 19,350. Folder 11's nearest
+        shares 6,040 against folder 10's 12,567 at the same distance. A wall
+        between two tripods costs nothing in metres and everything in surface.
+
+        ⛔ MEASURED AT THE CURRENT PLACEMENT, WHICH IS THE HONEST LIMIT OF IT.
+        A badly placed scan overlaps nothing much wherever it truly belongs
+        (folder 10 read 16.9% before its own fit and 90.0% after), so a low
+        count means "this scan is lost", not "these two do not overlap". That
+        is exactly why the floor below is a REFUSAL to rank rather than a
+        ranking of noise: when nothing clears it the caller keeps the tripod
+        rule, which at least describes the room rather than the placement.
+
+        Returns [(index, bins)] best first, or None if nothing could be
+        measured at all.
+        """
+        scan = self.scans[index]
+        if scan.sample is None or not len(scan.sample):
+            return None
+        mine = np.asarray(scan.sample)[::self.OVERLAP_THIN]
+        F_me = registration._pose_matrix(scan.setup, scan.lean)
+        out = []
+        for j, other in enumerate(self.scans):
+            # ⛔ THE SAME THREE REFUSALS `neighbours_of` MAKES, and for its
+            # reasons: an exported cloud has no capture position to judge
+            # from, and an unplaced one would be measured against wherever it
+            # is not.
+            if j == index or getattr(other, "source", "capture") == "cloud":
+                continue
+            if other.sample is None or not len(other.sample):
+                continue
+            if j and not other.setup.sited:
+                continue
+            F_j = registration._pose_matrix(other.setup, other.lean)
+            s_loc, l_loc, ok = registration._decompose(
+                np.linalg.inv(F_j) @ F_me)
+            if not ok:
+                continue
+            judge = registration.Judge(
+                [(np.asarray(other.sample)[::self.OVERLAP_THIN], None)])
+            _r, k = judge.measure(mine, s_loc, l_loc,
+                                  registration.GICP_LADDER[0])[0]
+            out.append((j, int(k)))
+        out.sort(key=lambda p: -p[1])
+        return out or None
+
     def default_target(self, index):
         """
         What a press with no chosen target fits onto -- and by WHICH RULE.
@@ -1234,14 +1296,44 @@ class AlignServer(object):
                         best, gap = j, d
                 if best is not None:
                     return best, "walk"
-        return self._nearest_tripod(index), "tripod"
+            return self._nearest_tripod(index), "tripod"
+        # ⭐ PLACED: ask what it actually SHARES, not what it is near. The
+        # floor is the vote bar the multi fit already uses -- below it the
+        # count is describing a lost scan rather than a pair of scans, so the
+        # ranking is refused outright and distance answers instead.
+        rank = self.overlap_rank(index)
+        if rank and rank[0][1] >= registration.MULTI_MIN_BINS:
+            return rank[0][0], "overlap"
+        got = self._nearest_tripod(index)
+        # A job of nothing but exported clouds still has to answer something;
+        # the refusal above is a preference for a capture, not a rule that
+        # can leave the operator with no target at all.
+        if got is None:
+            got = self._nearest_tripod(index, allow_cloud=True)
+        return got, "tripod"
 
-    def _nearest_tripod(self, index):
-        """The open scan whose tripod stands closest to this one's, or None."""
+    def _nearest_tripod(self, index, allow_cloud=False):
+        """
+        The open scan whose tripod stands closest to this one's, or None.
+
+        ⛔⛔ AND NEVER AN EXPORTED CLOUD WHILE A CAPTURE IS OFFERED. A pair is
+        scored against a panorama of the target taken AT THE TARGET'S TRIPOD,
+        and a merged product has no tripod -- a profile at its origin is the
+        blind-judge failure this file is emphatic about, and the dangerous
+        half of it: not NaN and loud, but full and plausible for every
+        candidate with nothing anywhere to notice. `neighbours_of` has always
+        refused them for exactly this; the pair fit's DEFAULT was still
+        handing them out, so a merged cloud sitting near the origin could
+        quietly become what everything was fitted onto. Naming one under
+        `Align to` still works and is now warned about.
+        """
         here = self.scans[index].setup
         best, gap = None, None
         for j, other in enumerate(self.scans):
             if j == index:
+                continue
+            if not allow_cloud \
+                    and getattr(other, "source", "capture") == "cloud":
                 continue
             d = float(np.hypot(other.setup.dx - here.dx,
                                other.setup.dy - here.dy))
@@ -1582,6 +1674,16 @@ class AlignServer(object):
             warn = ("scan %d has not been placed itself, so this fits one "
                     "unplaced cloud to another -- place it first, or align to "
                     "the reference." % (target + 1))
+        elif getattr(fixed, "source", "capture") == "cloud":
+            # ⛔ NAMED, NOT REFUSED. The operator may well mean it -- an
+            # exported room is a reasonable thing to fit onto by eye -- but
+            # the score behind the answer is a panorama taken at a merged
+            # cloud's origin, which describes no surface, so the number that
+            # comes back is plausible rather than earned.
+            warn = ("scan %d is an exported cloud, so it has no capture "
+                    "position for the fit to be judged from -- the residual "
+                    "below is not the measurement it looks like. Aim at a "
+                    "capture where you can." % (target + 1))
         hint = registration.Setup.from_dict(start) if start else None
         # ⛔ EACH PRESS STEPS DOWN A RUNG. GICP converges, so pressing again at
         # the same voxel re-derives the same answer and the button looks dead --
@@ -1697,6 +1799,10 @@ class AlignServer(object):
             text += (". Aimed at the capture beside it in the walk: this scan "
                      "had no position yet, so what is NEAR it could not be "
                      "asked — pick another under Align to if that is wrong")
+        elif rule == "overlap":
+            text += (". Aimed at the capture it shares the most surface with, "
+                     "which is not always the closest one — pick another "
+                     "under Align to to overrule it")
         if followed:
             text += ". " + followed["note"]
         return {"ok": True, "index": index, "setup": _placement(scan),

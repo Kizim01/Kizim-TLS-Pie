@@ -6540,6 +6540,59 @@ check("...nor is one beyond the reach, whose points are cost without "
       "constraint", 5 not in _near)
 check("and the shortlist is capped", len(_msrv.neighbours_of(1, limit=1)) == 1)
 
+# ⛔⛔ WHICH SCAN A PRESS AIMS AT: WHAT IT SHARES, NOT WHAT IT IS NEAR.
+# Distance is a proxy for shared surface and the two diverge -- measured
+# across the dense middle of the live job (2026-08-27), ranking by distance
+# names a different partner for THREE OF EIGHT scans, and not marginally:
+# folder 10's nearest tripod (folder 11 at 2.01 m) shares 8,152 bins while
+# folder 9, half again as far, shares 19,350. A wall between two tripods
+# costs nothing in metres and everything in surface.
+# ⚠ UNTHINNED FOR THE FIXTURE ONLY. These rooms are 70k points where a real
+# capture is millions, so one point in eight leaves too few to clear the vote
+# floor -- which is the floor working, not failing. The thinning factor itself
+# is measured on the live job and checked below.
+_msrv.OVERLAP_THIN = 1
+_rank = _msrv.overlap_rank(1)
+_ranked = [j for j, _k in (_rank or [])]
+check("a placed scan is ranked against the captures it shares surface with",
+      _rank and _ranked[0] in (0, 2), _rank)
+check("...an UNPLACED cloud is never ranked: it would be measured against "
+      "wherever it is not", 3 not in _ranked, _ranked)
+check("...nor an exported one, which has no capture point to judge from",
+      4 not in _ranked, _ranked)
+check("...and the ranking is best first",
+      _rank == sorted(_rank, key=lambda p: -p[1]), _rank)
+check("so a placed scan is aimed by shared surface, and says so",
+      _msrv.default_target(1) == (_ranked[0], "overlap"),
+      _msrv.default_target(1))
+# ⛔ A LOST SCAN OVERLAPS NOTHING WHEREVER IT TRULY BELONGS, so a low count
+# means "this scan is lost", not "these two do not overlap" -- the floor is a
+# REFUSAL to rank rather than a ranking of noise, and distance answers
+# instead because it at least describes the room. Scan 5 stands 300 m off.
+check("a scan too lost to share anything falls back to the tripod rule "
+      "rather than ranking noise",
+      _msrv.default_target(5)[1] == "tripod", _msrv.default_target(5))
+check("the ranking is thinned by the factor that was MEASURED to keep the "
+      "same best partner, not by a guess",
+      align.AlignServer.OVERLAP_THIN == 8)
+# ⛔⛔ AND THE FALLBACK NEVER HANDS OUT AN EXPORTED CLOUD WHILE A CAPTURE IS
+# OFFERED. A pair is scored against a panorama taken AT THE TARGET'S TRIPOD,
+# and a merged product has no tripod -- `neighbours_of` has always refused
+# them for that reason while the pair fit's DEFAULT went on offering them.
+# Scan 4 is an exported cloud standing nearer scan 1 than any capture does.
+del _msrv.OVERLAP_THIN                       # back to the shipped factor
+check("the default target is never an exported cloud while a capture is "
+      "there to be aimed at",
+      _msrv.default_target(1)[0] != 4
+      and _msrv._nearest_tripod(1) != 4, _msrv.default_target(1))
+check("...but naming one is still allowed, and warned about rather than "
+      "silently priced",
+      "is an exported cloud, so it has no capture" in _ALIGN_SRC
+      and "position for the fit to be judged from" in _ALIGN_SRC)
+check("...and a job of nothing but clouds still gets an answer",
+      _msrv._nearest_tripod(1, allow_cloud=True) == 4,
+      _msrv._nearest_tripod(1, allow_cloud=True))
+
 check("the reference cannot be fitted onto its own neighbours",
       not _msrv.solve_multi(0)["ok"])
 _unp = _msrv.solve_multi(3)
@@ -7238,11 +7291,18 @@ check("...while x, y or a heading does count as somewhere",
       and registration.Setup(yaw_deg=3.0).sited
       and not registration.Setup(dz=-1.4).sited
       and not registration.Setup().sited)
-# ⛔ AND THE TWO REFUSALS ASK THE NARROW QUESTION, not the broad one -- a check
+# ⛔ AND EVERY REFUSAL ASKS THE NARROW QUESTION, not the broad one -- a check
 # on the source because the alternative is standing up a whole solve to prove
 # a branch was not taken.
-check("...and both places that refuse an unplaced target ask exactly that",
-      _ALIGN_SRC.count("not other.setup.sited") == 1
+# ⭐ THIS FIRED WHEN A THIRD PLACE LEARNT TO ASK (`overlap_rank`, 2026-08-27),
+# which is the check working: a new site that inferred "placed" from the setup
+# being identity would be the 2026-08-24 trap all over again, so the sites are
+# counted rather than merely pattern-matched.
+check("...and every place that refuses an unplaced target asks exactly that",
+      # neighbours_of and overlap_rank phrase it on `other`; the walk rule in
+      # default_target phrases it on the list it is indexing.
+      _ALIGN_SRC.count("not other.setup.sited") == 2
+      and _ALIGN_SRC.count("not self.scans[j].setup.sited") == 1
       and _ALIGN_SRC.count("not fixed.setup.sited") == 1
       and "j != 0 and other.setup.is_identity()" not in _ALIGN_SRC
       and "target != 0 and fixed.setup.is_identity()" not in _ALIGN_SRC)
