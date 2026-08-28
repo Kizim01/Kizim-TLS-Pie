@@ -1017,6 +1017,168 @@ FAN_BLIND_DEG = tuple(float(d) for d in range(0, 360, 20))
 #: blind or badly off. Four voxels (40 cm) cannot see across a metre of miss.
 FAN_REACH_M = 1.5
 
+# --- the floor-plan seeder -------------------------------------------------
+#
+# ⛔⛔ THE BLIND FAN SEEDS A HEADING AND NOTHING ELSE, AT ZERO TRANSLATION.
+# Every seed above starts the moving capture standing on the REFERENCE's
+# tripod, and the coarse rung may reach 1.5 m for a correspondence. Measured
+# on the operator's own saved placements (2026-08-28), consecutive tripods on
+# that walk stand a MEDIAN 2.6 m apart -- 0.72 m at the closest, 7.29 m at the
+# widest, and 3.64 m for the pair they reported as "auto align scan 1 and 2
+# are not aligning". So on nearly every blind pair the true answer is not in
+# any seed's basin, and the widest yaw fan that could ever be written does not
+# help: the miss is not in the heading.
+#
+# ⛔ AND THAT IS WHY THREE CORRECT FIXES DID NOT MOVE IT. The spacing was
+# resized to the reach, the rivals were properly refined and re-ranked, and
+# both were real improvements to a search that still could not put the cloud
+# anywhere but on top of the reference. Each was scoped to the part of the
+# search that was VISIBLY wrong rather than to what the search never had.
+#
+# ⭐⭐ SO THE TRANSLATION IS TAKEN FROM THE DATA, NOT SEARCHED FOR. Rasterise
+# both captures to a top-down occupancy plan and, for each candidate heading,
+# read the whole translation plane at once out of one FFT cross-correlation.
+# This is the ordinary lidar answer -- the same idea as the branch-and-bound
+# scan matcher in Cartographer or an FFT map-match in a loop closer -- and it
+# is cheap where a search is not: a heading costs one raster and one transform
+# rather than a GICP run. Nothing here is a fit. It produces STARTS, and GICP
+# then does what it has always done with them.
+#
+# ⭐ THE STARTS ARE ADDED TO THE FAN, NOT SUBSTITUTED FOR IT. Measured over
+# nine pairs the true start comes back RANKED FIRST on seven; on the other two
+# the whole field is flat (0.33 against 0.32) and the plan has plainly not
+# found the room. Nine pairs in one building is not enough evidence to take
+# away a search that works today, and the ladder already prices every seed on
+# refined residual, so a start that is no good simply loses.
+
+#: The slab of a capture that carries the floor plan, in the SCANNER's own
+#: frame -- z=0 is the instrument head, so the floor sits near -1.5 m and a
+#: restaurant ceiling near +1.3. This band is walls, booths and the backs of
+#: chairs; the floor and the ceiling are left out because a floor correlates
+#: with any other floor and would flatten the peak being looked for.
+PLAN_BAND_M = (-1.0, 0.9)
+#: Occupancy cell. Deliberately coarser than any rung: these captures arrive
+#: carrying up to 3.5 degrees of tripod tilt, still uncorrected at this point,
+#: which walks a wall about 13 cm across that band. A finer cell would split
+#: one wall between two columns.
+PLAN_CELL_M = 0.15
+#: Half the side of the plan. Wide enough for the room a capture sees;
+#: anything beyond falls outside the raster and is dropped.
+PLAN_HALF_M = 14.0
+#: The heading sweep. Three degrees is affordable because a heading costs a
+#: raster and a transform, not a registration.
+PLAN_STEP_DEG = 3.0
+#: How far apart the two tripods may stand. The operator's own walk runs 0.72
+#: to 7.29 m between consecutive stations.
+PLAN_MAX_SHIFT_M = 9.0
+#: How many starts to hand on.
+PLAN_KEEP = 4
+#: Two starts are the same answer unless they differ by one of these.
+PLAN_APART_M = 1.5
+PLAN_APART_DEG = 25.0
+#: Points to rasterise. A binary occupancy grid saturates long before this --
+#: past a point, more points re-mark cells that are already set.
+PLAN_THIN = 300000
+
+
+def _plan_raster(pts, cell, half, grid):
+    """
+    A capture's floor plan: which cells hold anything, not how much.
+
+    ⛔ PRESENCE, NOT COUNT. A scanner's point density falls off as 1/r^2, so a
+    count raster is mostly a picture of where the tripod stood -- and
+    correlating two of those lines the two TRIPODS up with each other instead
+    of the two rooms.
+    """
+    ix = np.floor((pts[:, 0] + half) / cell).astype(np.int64)
+    iy = np.floor((pts[:, 1] + half) / cell).astype(np.int64)
+    ok = ((ix >= 0) & (ix < grid) & (iy >= 0) & (iy < grid))
+    out = np.zeros((grid, grid), dtype=np.float32)
+    out[iy[ok], ix[ok]] = 1.0
+    return out
+
+
+def _plan_band(xyz):
+    """The slab that carries the plan, thinned, as (N,2)."""
+    xyz = np.asarray(xyz)
+    if xyz.ndim != 2 or xyz.shape[0] < 2 or xyz.shape[1] < 3:
+        return np.zeros((0, 2))
+    z = xyz[:, 2]
+    keep = xyz[(z > PLAN_BAND_M[0]) & (z < PLAN_BAND_M[1])][:, :2]
+    if len(keep) > PLAN_THIN:
+        keep = keep[::int(np.ceil(len(keep) / PLAN_THIN))]
+    return keep
+
+
+def floor_plan_starts(xyz_ref, xyz_mov, lean=None, keep=PLAN_KEEP):
+    """
+    Blind starts for putting `xyz_mov` into `xyz_ref`'s frame.
+
+    Returns [(score, Setup)], best first, or [] when there is nothing to
+    correlate. The score is the correlation peak over sqrt(nA*nB), so it is
+    comparable BETWEEN headings of one pair and not between pairs.
+    """
+    ref2 = _plan_band(xyz_ref)
+    mov = np.asarray(xyz_mov)
+    if lean is not None and not lean.is_identity():
+        mov = lean.apply(mov)
+    mov2 = _plan_band(mov)
+    if len(ref2) < 2 or len(mov2) < 2:
+        return []
+
+    grid = int(np.ceil(2 * PLAN_HALF_M / PLAN_CELL_M))
+    # ⛔ PADDED TO TWICE THE GRID, or the correlation is CIRCULAR: a wall
+    # running off one edge would match one running off the other, and the
+    # brightest peak in the plane would be an artefact of the wrap.
+    pad = 1
+    while pad < 2 * grid:
+        pad *= 2
+
+    a = _plan_raster(ref2, PLAN_CELL_M, PLAN_HALF_M, grid)
+    if not a.any():
+        return []
+    fa = np.fft.rfft2(a, s=(pad, pad))
+    na = float(a.sum())
+    lim = int(round(PLAN_MAX_SHIFT_M / PLAN_CELL_M))
+    off = np.arange(-lim, lim + 1)
+    took = np.ix_(off % pad, off % pad)
+
+    out = []
+    for deg in np.arange(0.0, 360.0, PLAN_STEP_DEG):
+        t = np.radians(deg)
+        cos, sin = np.cos(t), np.sin(t)
+        turned = np.column_stack((mov2[:, 0] * cos - mov2[:, 1] * sin,
+                                  mov2[:, 0] * sin + mov2[:, 1] * cos))
+        b = _plan_raster(turned, PLAN_CELL_M, PLAN_HALF_M, grid)
+        nb = float(b.sum())
+        if nb < 1.0:
+            continue
+        corr = np.fft.irfft2(fa * np.conj(np.fft.rfft2(b, s=(pad, pad))),
+                             s=(pad, pad))
+        win = corr[took]
+        at = int(np.argmax(win))
+        row, col = divmod(at, win.shape[1])
+        out.append((float(win[row, col]) / float(np.sqrt(na * nb)),
+                    float(deg),
+                    float(off[col] * PLAN_CELL_M),
+                    float(off[row] * PLAN_CELL_M)))
+    out.sort(key=lambda r: -r[0])
+
+    # ⛔ ITS OWN SPACING, NOT THE LADDER'S `_apart`. That one asks for 2.5 m OR
+    # 45 degrees because it is deciding whether two REFINED answers are the
+    # same answer. These are starts: two of them 30 degrees apart are worth
+    # trying separately even though no one would call them different results.
+    picks = []
+    for score, deg, dx, dy in out:
+        if len(picks) >= keep:
+            break
+        if all(abs((deg - p[1].yaw_deg + 180.0) % 360.0 - 180.0)
+               > PLAN_APART_DEG
+               or math.hypot(dx - p[1].dx, dy - p[1].dy) > PLAN_APART_M
+               for p in picks):
+            picks.append((score, Setup(dx, dy, 0.0, deg)))
+    return picks
+
 
 def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
                  begin_voxel=None, max_shift=6.0, judge=None):
@@ -1079,7 +1241,17 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
     # coarse rung's whole job is closing a miss the fine rungs cannot see
     # across, and an operator half a metre out is exactly who this is for.
     if start is None:
-        seeds = [(Setup(yaw_deg=d), FAN_REACH_M) for d in FAN_BLIND_DEG]
+        # ⭐⭐ THE FLOOR PLAN GOES FIRST, AND THE HEADING FAN STILL RUNS. The
+        # fan seeds a heading at ZERO TRANSLATION, so on a walk whose tripods
+        # stand a median 2.6 m apart the true answer is in no seed's basin at
+        # all -- see the seeder's own note above. These starts carry a place
+        # as well as a heading. They are ADDED: the fan is what works today on
+        # the pairs the plan cannot read, and every seed is priced on refined
+        # residual further down, so a bad start loses rather than misleading.
+        seeds = [(s, FAN_REACH_M)
+                 for _score, s in floor_plan_starts(xyz_ref, xyz_mov,
+                                                    lean=lean)]
+        seeds += [(Setup(yaw_deg=d), FAN_REACH_M) for d in FAN_BLIND_DEG]
         true_start = None
     else:
         seeds = [(Setup(start.dx, start.dy, start.dz,

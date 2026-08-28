@@ -4711,9 +4711,10 @@ seeds collapse to one candidate.
 
 ### ⚠ QUEUED — found, evidenced, NOT fixed
 
-**Solver** (all with concrete evidence in the review): the blind fan still varies **yaw only at
-zero translation**, so GICP must close a 3 m offset from a 1.5 m reach — seeding translation as
-well is the remaining half of the blind problem. `Solution.ambiguous` reads "no rival was found"
+**Solver** (all with concrete evidence in the review): ~~the blind fan still varies **yaw only
+at zero translation**~~ — **CLOSED in the sixteenth pass below: the floor-plan seeder gives the
+blind search a PLACE as well as a heading; measured 2 of 9 → 5 of 9 on the operator's own
+restaurant.** `Solution.ambiguous` reads "no rival was found"
 as "no rival exists" and reports `trustworthy`. `MIN_SHARED_BINS` is an absolute 500 across a 16×
 change of scale, so the unpriceable-rather-than-scored protection **switches off at the two
 finest rungs** (measured: a pose pushed 12–14 m out of the room is refused coarse and *priced* at
@@ -4740,9 +4741,131 @@ that has moved. `--associate --remove` reports success when it removed nothing. 
 `_ref = None` is a one-way door that turns a later refl-bearing chunk into an `AttributeError`.
 A settings file that cannot be READ is treated as empty and then overwritten.
 
+## 2026-08-28, sixteenth pass — the sliders got the twin, and the blind search got a PLACE
+
+Two operator reports in one evening, and only one of them was the fault it looked like.
+
+### "rotate scan is broken again ... use the sparse point cloud as long as I hold the rotate slider"
+
+**The rush twin was wired to the CANVAS drag and never to the tray sliders.** The six sliders in
+*Move a scan* turn and slide a whole cloud on every `input` event — a hundred-odd per drag — and
+each one queued EVERY full-detail chunk. The view spent the gesture alternating a cheap scene
+frame with a four-million-point refinement frame, all the way round the dial. That is the hang.
+The ring on the canvas never had the problem, which is exactly why it went unnoticed: **the rush
+followed the CONTROL, not the operation.**
+
+- **`V.rush` now has ONE owner and the holders are NAMED.** It was set and cleared from two
+  places that knew nothing about each other — the canvas drag and the wheel's settle timer — so
+  whichever finished first put the full cloud back underneath the one still running, and the twin
+  then drew UNGROWN with no idle frame refining it. A third owner was about to be added.
+- **A set, not a counter.** A double drop (a `pointerup` after a `pointercancel`) cannot strand
+  the view on the twin, and a double grab cannot hold it there for ever.
+- **Held, not timed**, for the sliders — what the operator asked for, in those words. A settle
+  timer would let the full cloud start refining under a thumb that is still down but momentarily
+  still, and the next movement then waits behind a chunk, which IS the hang.
+- **The release is taken at the WINDOW.** A range input captures the pointer, so a thumb let go
+  anywhere but over the control delivers no `pointerup` to it and the twin would stand for ever.
+- **Point size and detail are deliberately NOT given the twin** — they exist to judge the real
+  cloud, so showing them a stand-in answers a different question from the one they were opened
+  to ask.
+
+Reversion-audited: eight breakages, eight caught, file restored intact.
+
+⛔ **And two suite checks were anchored on "the first `keydown` listener in the file".** Adding
+an unrelated one earlier in the page failed them while the handler they are about was untouched
+— and **their two siblings went on PASSING**, because `str.find` returns −1 for a string that is
+not there and the ordering comparisons stayed true by accident. Both anchors now name the global
+handler.
+
+### "auto align scan 1 and 2 are not aligning" — and 1→2 was never the broken pair
+
+⚠ **MEASURED FIRST, AND THE COMPLAINT DID NOT REPRODUCE.** Fitted from scratch on the current
+code, folder 2 onto folder 1 lands **0.04 m and 0.3°** from the operator's own placement — and
+their saved `main project.05.tlspie` has that pair at 3 cm from truth, so auto-align has
+succeeded on it before and they kept the result. Whatever they are seeing on those two is most
+likely **drawing, not geometry** — the same look-alike as 2026-08-26, when "doesn't align like it
+used to" turned out to be the twin punching holes so two clouds interleaved as speckle.
+**UNCONFIRMED: the operator has not yet looked. Do not record this as fixed.**
+
+### ⛔⛔ BUT THE WALK AT LARGE WAS BROKEN, AND THE CAUSE WAS NOT THE HEADING
+
+Every blind seed started the moving capture **standing on the reference's own tripod**. The fan
+varies a heading; its translation is zero, and the coarse rung reaches 1.5 m. From the operator's
+own placements, consecutive tripods on that walk stand a **median 2.6 m apart** — 0.72 m at the
+closest, **7.29 m** at the widest, **3.64 m** for the pair they reported. The true answer was in
+**no seed's basin at all**, and no yaw spacing could ever have reached it.
+
+⭐ **That is why three earlier fixes, each correct, moved nothing.** The spacing was resized to
+the reach; the rivals were properly refined and re-ranked. Both were real improvements to a
+search that still could not put the cloud anywhere but on top of the reference. Each was scoped
+to the part of the search that was VISIBLY wrong rather than to what the search never had.
+*(The same shape as the retry-scope chain: a fix aimed at the component the evidence names, when
+the fault is a property of the whole.)*
+
+**The fix takes the translation from the data instead of searching for it.** Rasterise both
+captures to a top-down occupancy plan and read the WHOLE translation plane per heading out of one
+FFT cross-correlation — the ordinary lidar answer (Cartographer's branch-and-bound scan matcher,
+an FFT map-match in a loop closer). A heading costs a raster and a transform, not a registration.
+
+- **Presence, not count.** A scanner's density falls off as 1/r², so a count raster is a picture
+  of where the TRIPOD stood, and correlating two of those lines the tripods up with each other
+  rather than the two rooms.
+- **Padded to twice the grid**, or the correlation is circular and a wall running off one edge
+  matches one running off the other.
+- **A band that excludes the floor**, which correlates with any other floor and would flatten the
+  peak the whole method depends on.
+- **ADDED to the heading fan, not substituted for it.** Nine pairs in one building is not enough
+  evidence to remove a search that works today, and the ladder prices every seed on refined
+  residual, so a bad start loses rather than misleads.
+
+**Verified on a synthetic room before any real pair** — a correlation with its shift sign
+backwards would find the mirror pose, score it well, and look "nearly working" on real data for
+ever after.
+
+**Measured end to end — same pairs, same order, the operator's own placements as truth:**
+
+| | without the seeder | with it |
+|---|---|---|
+| pairs right, folders 1–10 | **2 of 9** | **5 of 9** |
+
+4→3 went from 4.46 m wrong to 0.05 m right; 9→8 from 2.78 m to 0.00; 10→9 from 4.71 m to 0.00.
+**No pair was made worse.** Residuals fell (9→8: 0.095 → 0.019) and fits ran *faster* — 5→4 went
+from 176 s to 60 s, because a good start converges instead of flailing.
+
+### ⚠ QUEUED from this pass — evidenced, NOT fixed
+
+- **The seeder knows when it has failed, and the signal is thrown away.** On the seven pairs it
+  reads correctly the winner stands clear of the runner-up (0.55 against 0.28); on the two it
+  cannot, the field is **flat** (0.33 against 0.32; 0.234 against 0.233). That is an honest
+  "I could not read this room" — worth surfacing as a flag so Auto-align can say *place it
+  roughly and press again* instead of returning a confident wrong answer. ⛔ **A flag, not a
+  tuned threshold: nine samples in one building cannot set a number.**
+- **7→6 takes 2,346 SECONDS** — 39 minutes — and lands at residual 0.83. From the operator's
+  seat that is not a slow fit, it is a hang. Unexplained, and unrelated to seeding (1,963 s with
+  it).
+- **8→7 misses by 0.75 m at only 0.3° of heading** — a pure translation miss, which is odd on
+  the one path whose new job is translation.
+- **The suite went from ~70 s to 3 m 51 s**, and the cause is the feature itself: four extra
+  coarse GICP runs on every blind solve, plus about a second of correlation. `PLAN_KEEP = 4` was
+  measured at 4–5 starts; whether 2 would do as well is a **measurable** question that has not
+  been measured. ⛔ Do not simply lower it — that is tuning on the same nine samples.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES ARE CURRENT: Studio 2026-08-28 11:10:35, Converter 11:10:54, selftest 0.**
+**✅ THE EXES: Studio 2026-08-28 14:47:24, Converter 14:46:53, tlsconvert 14:47:50, selftest 0.**
+**✅ The CUDA engine was rebuilt at the same time and verified THROUGH THE PACKAGED BUILD** — the
+only witness that cannot accidentally agree, because the frozen exe has no CuPy of its own:
+RTX 3050 Ti found beside the program, 500k points 0.019 s on the card against 0.176 s on the
+processor (**9.3×**), worst panorama disagreement 7.1e-14, colour identical, 108 MB shipped and
+1,368 MB left behind.
+
+⛔⛔ **BUT THAT BUILD PREDATES THE FLOOR-PLAN SEEDER.** It carries the slider-rush fix and
+nothing of the alignment work below. **The seeder is committed but NOT in any exe** — rebuild
+before telling the operator their blind fits improved, and Studio must be closed first or
+PyInstaller dies on `[WinError 5]`.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 11:10:35, Converter 11:10:54, selftest 0.**
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-28 09:55:44, Converter 09:56:03, selftest 0.**
@@ -4764,14 +4887,21 @@ hint at — the rival used to be re-priced *without being refined*, so the margi
 refinement alone. That is now fixed and the margins are smaller and honest.
 ⚠ **Do not tune `AMBIGUITY_MARGIN` on seven samples.**
 
-**⛔ THE STATE OF ALIGNMENT, PLAINLY.** On the operator's own restaurant a BLIND fit — a scan
-with no position, which is exactly what align-on-import runs — is right **3 times in 7**, plus
-one at 3.8°, with two of the three failures flagged. **This is a coarse pass that needs an eye,
-not a survey to trust unchecked**, and it should not be described to the operator as though it
-were. The remaining half of the cause is queued above: the blind fan seeds **yaw only, at zero
-translation**, so GICP must close a 3 m offset from a 1.5 m reach. Meanwhile the reliable
-workflow to recommend is the HINTED one — place it roughly by hand, then Auto-align — which
-takes a tighter path with a real starting point.
+**⛔ THE STATE OF ALIGNMENT, PLAINLY — UPDATED IN THE SIXTEENTH PASS.** On the operator's own
+restaurant a BLIND fit — a scan with no position, which is exactly what align-on-import runs —
+is now right **5 times in 9** (folders 1–10), up from 2 of 9, with no pair made worse. That is a
+real improvement and it is **still not a survey to trust unchecked**: four pairs in ten are wrong,
+and the operator must look. **The reliable workflow to recommend is still the HINTED one** —
+place it roughly by hand, then Auto-align — which takes a tighter path from a real start.
+
+✅ The cause of the blind failures is **found and closed**: every seed began on the reference's
+own tripod while the tripods stand a median 2.6 m apart. The floor-plan seeder gives the search a
+place as well as a heading. What remains wrong is listed with its evidence in the sixteenth pass
+above — including a pair that takes **39 minutes**.
+
+⚠ **AND SCAN 1→2 IS NOT ONE OF THE FAILURES.** The operator reported it; it fits to 0.04 m on
+this code and sits 3 cm from truth in their own saved project. Their report is unexplained and
+most likely a DRAWING artefact. Do not "fix" it in the solver without looking first.
 
 **What the operator has NOT yet pressed** (everything below was verified through the library on
 their own data; nothing since the 09:55 build has been exercised in Studio):
@@ -4783,6 +4913,11 @@ their own data; nothing since the 09:55 build has been exercised in Studio):
   the smallest points in the photograph's colour with load detail beside the point size.
 - **Drag-to-move a scan works again after using the rotation ring** — `ring` was never cleared,
   which killed it for the rest of the session. Worth a specific try.
+- **The Turn slider, and the other five in *Move a scan*, no longer hang** — the cloud goes
+  deliberately SPARSE while the thumb is down and sharpens on release. If the operator reads that
+  as "broken", it is the fix working; say so before changing anything.
+- **What scan 1 and 2 actually look like** once the picture has settled. This is the one
+  outstanding question that only they can answer.
 - **An export can no longer destroy the previous one**, and the shoot sorter refuses to write
   over an existing file. Both are data-loss fixes tested only synthetically so far — one real
   export and one real sort, watched, are worth doing.

@@ -5853,6 +5853,119 @@ check("...and the circle is still covered with no duplicate",
       == len(registration.FAN_BLIND_DEG))
 
 
+# --- the floor-plan seeder --------------------------------------------------
+#
+# ⛔⛔ AND EVERY SEED ABOVE STARTS THE MOVING CAPTURE ON THE REFERENCE'S OWN
+# TRIPOD. The fan seeds a HEADING; its translation is zero, and the coarse rung
+# reaches 1.5 m. Measured on the operator's saved placements (2026-08-28),
+# consecutive tripods on that walk stand a MEDIAN 2.6 m apart -- 0.72 m at the
+# closest, 7.29 m at the widest, 3.64 m for the pair reported as "auto align
+# scan 1 and 2 are not aligning". So the true answer is in no seed's basin at
+# all, and no yaw spacing can reach it: the miss is not in the heading.
+#
+# The seeder rasterises both captures to a top-down occupancy plan and reads
+# the whole translation plane per heading out of one FFT cross-correlation.
+# End to end against the operator's own placements: 2 of 9 pairs right -> 5 of
+# 9, no pair made worse.
+_room_rng = __import__("numpy").random.default_rng(11)
+
+
+def _plan_room(origin, w=9.0, d=6.0, n=40000):
+    """Walls of a w x d room seen from `origin` inside it, scanner frame."""
+    t = _room_rng.random(n)
+    side = _room_rng.integers(0, 4, n)
+    x = np.where(side == 0, t * w, np.where(side == 1, t * w,
+                 np.where(side == 2, 0.0, w)))
+    y = np.where(side == 0, 0.0, np.where(side == 1, d, t * d))
+    z = _room_rng.uniform(-1.4, 1.2, n)
+    return np.column_stack((x - origin[0], y - origin[1], z))
+
+
+def _plan_turned(pts, deg):
+    t = math.radians(-deg)
+    c, s = math.cos(t), math.sin(t)
+    return np.column_stack((pts[:, 0] * c - pts[:, 1] * s,
+                            pts[:, 0] * s + pts[:, 1] * c, pts[:, 2]))
+
+
+_pl_ref = _plan_room((2.0, 1.5))
+_pl_mov = _plan_turned(_plan_room((5.5, 4.0)), 30.0)
+_pl_got = registration.floor_plan_starts(_pl_ref, _pl_mov)
+_pl_best = _pl_got[0][1] if _pl_got else None
+# ⛔ A TRANSLATION OF 3.5, 2.5 -- WELL OUTSIDE THE 1.5 m COARSE REACH. That is
+# the whole point: this is the case the heading fan cannot reach whatever its
+# spacing, so a check that used a nearby pair would pass on a fan alone.
+check("the floor-plan seeder recovers a heading AND a place the yaw fan "
+      "cannot reach",
+      _pl_best is not None
+      and abs((_pl_best.yaw_deg - 30.0 + 180) % 360 - 180) <= 5.0
+      and math.hypot(_pl_best.dx - 3.5, _pl_best.dy - 2.5) <= 0.5,
+      None if _pl_best is None
+      else (round(_pl_best.yaw_deg, 1), round(_pl_best.dx, 2),
+            round(_pl_best.dy, 2)))
+# ⛔⛔ FIXED NUMBERS, NOT `PLAN_APART_*`. The first version of this check
+# read its thresholds from the very constants it was checking, so setting them
+# to zero moved BOTH sides and the check passed on code that returned the same
+# answer four times over -- caught by the reversion audit, which is the only
+# thing that could have caught it. *Two sides that can fail together are not a
+# check* -- the same scar as 2026-08-24. These literals sit well inside the
+# configured spacing on purpose: the claim is "these are different answers",
+# not "the constants have their current values".
+check("...and the starts it offers are distinct answers, not one answer "
+      "listed several times",
+      all(abs((a[1].yaw_deg - b[1].yaw_deg + 180) % 360 - 180) > 5.0
+          or math.hypot(a[1].dx - b[1].dx, a[1].dy - b[1].dy) > 0.5
+          for i, a in enumerate(_pl_got) for b in _pl_got[i + 1:]),
+      [(round(g[1].yaw_deg, 1), round(g[1].dx, 2), round(g[1].dy, 2))
+       for g in _pl_got])
+# ⛔ ADDED TO THE FAN, NOT SUBSTITUTED FOR IT. Nine pairs in one building is
+# not enough evidence to take away a search that works today, and two of the
+# nine are pairs whose plan the correlation plainly cannot read (a flat score
+# field, 0.33 against 0.32). The ladder prices every seed on refined residual,
+# so a start that is no good loses rather than misleading.
+_blind = _REG_SRC[_REG_SRC.find("if start is None:"):][:900]
+check("the blind path runs the floor plan AND the heading fan, not one "
+      "instead of the other",
+      "floor_plan_starts(xyz_ref, xyz_mov" in _blind
+      and "seeds += [(Setup(yaw_deg=d), FAN_REACH_M) for d in FAN_BLIND_DEG]"
+      in _blind)
+# ⛔ A HINTED PRESS MUST NOT PAY FOR IT. The operator who has placed a scan by
+# hand is telling the solver where it goes; correlating the whole plan there
+# would be spending seconds to answer a question already answered -- and could
+# hand back a start FURTHER from their placement than the fan's own wobble.
+_pl_call = _REG_SRC.find("for _score, s in floor_plan_starts(")
+_pl_hint = _REG_SRC.find("seeds = [(Setup(start.dx")
+check("...and a press with a placement behind it does not run the plan at all",
+      _pl_call > 0 and _pl_hint > _pl_call
+      and _REG_SRC.count("for _score, s in floor_plan_starts(") == 1,
+      (_pl_call, _pl_hint))
+# ⛔ PRESENCE, NOT COUNT. A scanner's density falls off as 1/r^2, so a count
+# raster is a picture of where the TRIPOD stood -- correlating two of those
+# lines the tripods up with each other rather than the two rooms.
+_rr = registration._plan_raster(
+    np.array([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0]]),
+    registration.PLAN_CELL_M, registration.PLAN_HALF_M, 200)
+check("the plan raster records presence, so a dense patch cannot outvote a "
+      "whole wall", float(_rr.max()) == 1.0, float(_rr.max()))
+# ⛔ PADDED TO TWICE THE GRID, or the correlation is CIRCULAR and a wall
+# running off one edge matches one running off the other.
+check("...and the correlation is padded, so no peak is an artefact of the "
+      "plan wrapping round",
+      "while pad < 2 * grid:" in _REG_SRC)
+# ⛔ THE BAND LEAVES OUT THE FLOOR, which correlates with any other floor and
+# would flatten the peak the whole method depends on.
+check("the plan is cut from a band that excludes the floor and the ceiling",
+      registration.PLAN_BAND_M[0] > -1.5
+      and registration.PLAN_BAND_M[1] < 1.3
+      and registration.PLAN_BAND_M[0] < registration.PLAN_BAND_M[1])
+check("...and a capture with nothing in that band is refused rather than "
+      "correlated into noise",
+      registration.floor_plan_starts(
+          np.zeros((0, 3)), _pl_mov) == []
+      and registration.floor_plan_starts(
+          _pl_ref, np.array([[0.0, 0.0, 9.0]] * 4)) == [])
+
+
 # --- the camera's seat, and the fine polish --------------------------------
 #
 # ⛔⛔ THE POSE MODEL HAD FIVE OF THE CAMERA'S SIX NUMBERS. Heading, tip,
