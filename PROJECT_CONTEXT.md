@@ -5197,15 +5197,10 @@ alongside, because the frames renumber there too and a half-correct renumbering 
 
 ### ▶ NEXT SESSION STARTS HERE
 
-⛔⛔ **THE EXES ARE HALF REBUILT AND MUST NOT BE SHIPPED AS THEY STAND.** The 2026-08-29 rebuild died on `[WinError 5]` because Studio was OPEN, and PyInstaller had already replaced one of the three:
+**✅ THE EXES: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06, selftest 0** (RTX 3050 Ti, cuda-engine found)
+— and THIS build carries the cut that names POINTS rather than a region of the room, so a delete survives moving the scan.
 
-| exe | stamp | carries |
-|---|---|---|
-| TLS-Pie-Converter.exe | 2026-08-29 18:07:14 | the cut that names POINTS |
-| TLS-Pie-Studio.exe | 2026-08-28 22:55:00 | **the OLD cut, the one the operator reported** |
-| tlsconvert.exe | 2026-08-28 22:55:35 | **the OLD cut** |
-
-**Close Studio, re-run `build_exe.py`, verify by mtime and `TLS-Pie-Studio.exe --selftest`, then replace this block with the three stamps.** Until then the source is fixed and the program the operator runs is NOT — and a Converter that cuts one way beside a Studio that cuts the other is worse than either alone.
+⚠ The 18:07 rebuild of the same day died on `[WinError 5]` with Studio open, leaving Converter new beside a Studio and a tlsconvert that were still old. **That half state is gone; all three are 18:43-44.**
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-28 22:55:00, Converter 22:54:19, tlsconvert 22:55:35, selftest 0**
