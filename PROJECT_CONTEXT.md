@@ -5131,10 +5131,85 @@ assertion an independent claim about the program.
   the instrument's place, because colour is sampled along the ray FROM that origin and a merged
   cloud would come out fully coloured and completely wrong with nothing on screen to say so.
 
+## 2026-08-29, twentieth pass — a delete that deletes points
+
+Reported from the workbench: *"when you create a delete selection and delete points it creates a
+mask that persists in the project, it doesn't actually delete the points — when you move the scan
+the points reappear, and where the selection was any points from the cloud get hidden by the mask."*
+
+### ⭐⭐ BOTH HALVES OF THE REPORT ARE ONE FAULT, AND IT WAS THE DESIGN
+
+A box and a lasso were both tested in the MERGED frame. So a cut was a fixed VOLUME in the room and
+the clouds slid through it: the points taken out came back, and their neighbours went in their
+place. The operator's two sentences are the two directions of the same slide. It was not a bug in
+the sense of a slip — `editsFollow` existed to recompute the mask on every move, and the comment
+above it said so outright: *"An edit is applied in the merged frame, so moving a scan moves it
+through whatever was cut."* Written down, believed, and wrong about what a person means when they
+draw round a tripod and press Delete.
+
+⛔ **AND IT COULD NOT BE FIXED BY REMEMBERING WHICH POINTS WERE HIT.** The preview holds a 2 cm
+thinning while the export re-reads every return, so a list of point numbers from one is meaningless
+to the other — that is the whole reason an edit is stored as an OPERATION. What a cut remembers
+instead is **where every cloud it names was standing when it was drawn**: `frames`, a 3x4 per
+cloud, twelve numbers that mean the same thing at both densities. At test time the scan's own points
+are put back there. The cut then names POINTS, which is what the operator drew.
+
+### What that touched, and what it did not
+
+- `pushEdit` stamps the frames **with the scope**, in the one moment the picture still exists.
+- `editPlan` carries them; `frameFor` reads them; `cutGroups` gathers a cloud's cuts **by the
+  placement each was drawn against**, so the ordinary job — cuts made without moving anything —
+  has ONE group and costs exactly what it always did.
+- ⛔⛔ **EVERY KEEP BEFORE EVERY DROP, ACROSS THE GROUPS.** Two passes, not one per group.
+  What survives is the union of the keeps MINUS the union of the drops; run group by group and a
+  keep drawn at one placement undoes a drop drawn at another — a rule nobody wrote and nothing on
+  screen would explain. There is a test that fails on exactly that.
+- `world()` is now the ONE home for turning a block of a cloud into merged coordinates: the fast
+  drop path and the full replay both call it and each passes the placement its own cut was drawn
+  against. Two copies of that arithmetic is how they would come to disagree.
+- The exporter mirrors it: `pipeline._frames`, `Edit.for_scan` picking out the cloud's own
+  placement (`mask` is deliberately not scope-aware and cannot look one up), and `convert` keeping
+  the scan's own coordinates beside the transformed ones — **only while some cut carries a frame**,
+  so an ordinary export gains no second copy of a thirty-million-point capture.
+- A project saved before this existed has no frames, and neither does a cloud that arrived AFTER a
+  cut was made. Both go on being tested in the merged frame, which is what they were written
+  against. The fallback is not a gap.
+
+### ⛔ FOUND ON THE WAY, AND OLDER THAN THIS PASS
+
+**`forgetScan` only ever renumbered a SINGLE-cloud scope.** `cutScope` returns a LIST whenever
+anything is hidden — a cut made with one cloud off screen belongs to the visible ones — and an
+array is never `===` a number nor `>` one, so such a cut sailed through both the filter and the
+shift and came back aimed at whatever inherited those numbers. That is precisely the failure the
+comment above that function describes, arriving through the case the comment did not cover. Fixed
+alongside, because the frames renumber there too and a half-correct renumbering is worse than none.
+
+### ⚠ TWO THINGS SAID PLAINLY RATHER THAN CLAIMED
+
+- **The `applyDrop` frame lookup is untestable today and is written that way anyway.** `pushEdit`
+  stamps the frames and calls `applyDrop` in the same breath, so `frameFor(...)` and `affine(s)`
+  are equal there by construction and no test can tell them apart. It reads the placement from the
+  one shared home because the day anything comes between the stamp and the drop, the version that
+  asked the cloud where it is NOW would cut something else and only the next replay would show it.
+- **The two notices that warned cuts would be left behind by Level and by North are now wrong**, so
+  they fire only for cuts that carry no frames. A stale warning is a false statement about the
+  program, not a harmless leftover.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-28 22:55:00, Converter 22:54:19, tlsconvert 22:55:35, selftest 0**
-— and THIS build carries the circle and polygon cut tools on top of everything below.
+⛔⛔ **THE EXES ARE HALF REBUILT AND MUST NOT BE SHIPPED AS THEY STAND.** The 2026-08-29 rebuild died on `[WinError 5]` because Studio was OPEN, and PyInstaller had already replaced one of the three:
+
+| exe | stamp | carries |
+|---|---|---|
+| TLS-Pie-Converter.exe | 2026-08-29 18:07:14 | the cut that names POINTS |
+| TLS-Pie-Studio.exe | 2026-08-28 22:55:00 | **the OLD cut, the one the operator reported** |
+| tlsconvert.exe | 2026-08-28 22:55:35 | **the OLD cut** |
+
+**Close Studio, re-run `build_exe.py`, verify by mtime and `TLS-Pie-Studio.exe --selftest`, then replace this block with the three stamps.** Until then the source is fixed and the program the operator runs is NOT — and a Converter that cuts one way beside a Studio that cuts the other is worse than either alone.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-28 22:55:00, Converter 22:54:19, tlsconvert 22:55:35, selftest 0**
+— and THAT build carries the circle and polygon cut tools on top of everything below.
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-28 19:32:19, Converter 19:31:38, tlsconvert 19:32:54, selftest 0**

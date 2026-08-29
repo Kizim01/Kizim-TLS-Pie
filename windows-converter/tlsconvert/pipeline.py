@@ -268,6 +268,55 @@ def _in_scope(scope, index):
     return scope == index
 
 
+def _frames(data):
+    """
+    Where every named cloud STOOD when the cut was drawn: {index: 3x4 affine}.
+
+    ⭐⭐ THIS IS WHAT MAKES A DELETE DELETE POINTS RATHER THAN HIDE A REGION.
+    A box and a lasso are both tested in the merged frame, so without this the
+    cut is a fixed VOLUME in the room and the clouds slide through it: move a
+    scan after cutting the tripod out of it and the tripod comes back, while
+    whatever drifted into the hole disappears instead. The operator sees a mask
+    hanging in the air, and every word this program says about that cut -- the
+    list, the count, the exported file -- describes a different set of points
+    from the one they enclosed.
+
+    ⛔ AND IT IS THE PLACEMENT, NOT THE POINTS. Storing which points were hit
+    is impossible on purpose: the preview holds a 2 cm thinning and the export
+    re-reads every return, so an index list from one is meaningless to the
+    other. A placement is twelve numbers, means the same thing at both
+    densities, and reproduces the operator's picture exactly.
+
+    Keys arrive from JSON as strings and are used as cloud POSITIONS, so they
+    are forced back to ints here rather than at each of the four places that
+    read them.
+    """
+    if not data:
+        return {}
+    got = {}
+    for key, value in data.items():
+        row = [float(v) for v in value]
+        if len(row) != 12:
+            # ⛔ REFUSED, NOT PADDED. A short frame would silently place the
+            # cloud somewhere it never stood, which is the exact failure this
+            # whole mechanism exists to remove.
+            raise ValueError("a cut's frame is 12 numbers, got %d" % len(row))
+        got[int(key)] = row
+    return got
+
+
+def _frames_dict(frames):
+    """JSON form: written only when there is one, so old files stay identical."""
+    return {str(k): [float(v) for v in row] for k, row in frames.items()}
+
+
+def _at_frame(frame, local):
+    """The scan's own points put where they stood when the cut was drawn."""
+    xyz = np.asarray(local, dtype=np.float64)
+    a = np.asarray(frame, dtype=np.float64).reshape(3, 4)
+    return xyz @ a[:, :3].T + a[:, 3]
+
+
 class Box(object):
     """
     A box that need not be square to the world -- it can be turned to a wall.
@@ -283,7 +332,7 @@ class Box(object):
     """
 
     def __init__(self, lo, hi, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
-                 scan=None):
+                 scan=None, frames=None):
         lo = np.asarray(lo, dtype=float)
         hi = np.asarray(hi, dtype=float)
         self.lo = np.minimum(lo, hi)          # any two opposite corners
@@ -294,6 +343,11 @@ class Box(object):
         # Which cloud or clouds this cut belongs to, or None for every
         # cloud. See `Edit.for_scan` and `_scope`.
         self.scan = _scope(scan)
+        # Where each of those clouds stood when this was drawn -- see
+        # `_frames`. `frame` is the one that applies to the cloud in hand, and
+        # only `Edit.for_scan` ever sets it.
+        self.frames = _frames(frames)
+        self.frame = None
 
     @property
     def centre(self):
@@ -336,6 +390,8 @@ class Box(object):
             # integer, exactly as it did before a scope could name several.
             out["scan"] = (list(self.scan) if isinstance(self.scan, tuple)
                            else self.scan)
+        if self.frames:
+            out["frames"] = _frames_dict(self.frames)
         return out
 
     @classmethod
@@ -346,7 +402,7 @@ class Box(object):
         if isinstance(data, dict):
             return cls(data["lo"], data["hi"], data.get("yaw_deg", 0.0),
                        data.get("pitch_deg", 0.0), data.get("roll_deg", 0.0),
-                       data.get("scan"))
+                       data.get("scan"), data.get("frames"))
         return cls(data[0], data[1])
 
     def describe(self):
@@ -374,11 +430,16 @@ class Lasso(object):
     behind you. `w > 0` is the test, and it is not optional.
     """
 
-    def __init__(self, matrix, polygon, keep=False, scan=None):
+    def __init__(self, matrix, polygon, keep=False, scan=None, frames=None):
         self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
         self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
         self.keep = bool(keep)
         self.scan = _scope(scan)
+        # The camera is frozen at the moment of the drag; ⭐ so is where every
+        # cloud stood underneath it. Freezing one and not the other leaves the
+        # outline pointing at a room that has since moved. See `_frames`.
+        self.frames = _frames(frames)
+        self.frame = None
 
     def inside(self, xyz):
         """True where a point falls within the drawn outline."""
@@ -404,12 +465,14 @@ class Lasso(object):
         if self.scan is not None:
             out["scan"] = (list(self.scan) if isinstance(self.scan, tuple)
                            else self.scan)
+        if self.frames:
+            out["frames"] = _frames_dict(self.frames)
         return out
 
     @classmethod
     def from_dict(cls, data):
         return cls(data["matrix"], data["polygon"], data.get("keep", False),
-                   data.get("scan"))
+                   data.get("scan"), data.get("frames"))
 
 
 def _inside_polygon(x, y, poly):
@@ -454,6 +517,15 @@ class Edit(object):
     puzzle. Lassos join the same two piles: a keep lasso widens what survives,
     a cut lasso takes from it, and both are applied at full density.
 
+    ⭐⭐ AND AN OPERATION REMEMBERS WHERE THE CLOUDS STOOD WHEN IT WAS MADE.
+    Every test here is made in the MERGED frame, so without that a cut is a
+    fixed VOLUME and the clouds slide through it: move a scan after cutting the
+    tripod out of it and the tripod comes back, while whatever drifted into the
+    hole disappears in its place. `frames` on each operation is {cloud index:
+    the 3x4 that put its own points into the merged frame at that moment}, and
+    `mask` is given the scan's own coordinates so it can put them back there.
+    A cut then names POINTS, which is what the operator drew. See `_frames`.
+
     ⭐ AN OPERATION CAN BELONG TO ONE CLOUD. `scan` on a box or a lasso is the
     index of the capture it applies to, or None for all of them. This is what
     makes it possible to cut the tripod out of scan 2 without taking a bite out
@@ -481,10 +553,18 @@ class Edit(object):
         return not self.keep and not self.drop and not self.lassos
 
     @property
+    def ops(self):
+        return list(self.keep) + list(self.drop) + list(self.lassos)
+
+    def has_frames(self):
+        """Does any cut here remember where the clouds stood? See `_frames`."""
+        return any(op.frames for op in self.ops)
+
+    @property
     def scoped(self):
         """Every cloud index this edit singles out, in order."""
         seen = set()
-        for op in list(self.keep) + list(self.drop) + list(self.lassos):
+        for op in self.ops:
             if op.scan is None:
                 continue
             if isinstance(op.scan, tuple):
@@ -526,6 +606,14 @@ class Edit(object):
                     continue
                 op = copy.copy(op)
                 op.scan = scope
+                # ⛔ THE FRAMES ARE KEYED BY POSITION TOO, so they renumber
+                # with the scope or they stop describing the cloud they are
+                # looked up against. Left alone, hiding one cloud would hand
+                # the next one along its neighbour's placement -- a cut landing
+                # somewhere nobody drew it, in the export only, which is the
+                # precise failure this method exists to prevent.
+                op.frames = {mapping[k]: v for k, v in op.frames.items()
+                             if k in mapping}
                 out.append(op)
             return out
 
@@ -553,16 +641,48 @@ class Edit(object):
         """
         if index is None:
             return self
-        mine = (lambda op: _in_scope(op.scan, index))
-        return Edit(keep=[b for b in self.keep if mine(b)],
-                    drop=[b for b in self.drop if mine(b)],
-                    lassos=[l for l in self.lassos if mine(l)])
+
+        # ⭐ AND THE PLACEMENT THIS CLOUD STOOD AT IS PICKED OUT HERE, in the
+        # one place that already knows which cloud is in hand. `mask` is
+        # deliberately not scope-aware, so it cannot look a frame up itself.
+        def mine(op):
+            if not _in_scope(op.scan, index):
+                return None
+            op = copy.copy(op)
+            op.frame = op.frames.get(index)
+            return op
+
+        picked = [[got for got in map(mine, ops) if got is not None]
+                  for ops in (self.keep, self.drop, self.lassos)]
+        return Edit(keep=picked[0], drop=picked[1], lassos=picked[2])
 
     @staticmethod
     def _inside(xyz, box):
         return Box.parse(box).inside(xyz)
 
-    def mask(self, xyz):
+    @staticmethod
+    def _seen(op, xyz, local):
+        """
+        The points as this cut saw them.
+
+        ⭐⭐ A CUT IS TESTED AGAINST THE PICTURE IT WAS DRAWN ON. `xyz` is the
+        cloud where it stands NOW; `local` is the same points in the scan's own
+        frame, and the cut's remembered placement puts them back where they
+        were when the outline went round them. So the cut names points rather
+        than a region of the room, and moving the scan afterwards moves the
+        deleted points with it instead of sliding the cloud through a hole.
+
+        ⛔ WITHOUT A FRAME, NOTHING CHANGES. A project saved before this
+        existed has none, and neither does a cloud that arrived after the cut
+        was made -- both go on being tested in the merged frame, which is what
+        they were written against.
+        """
+        frame = getattr(op, "frame", None)
+        if frame is None or local is None:
+            return xyz
+        return _at_frame(frame, local)
+
+    def mask(self, xyz, local=None):
         """True where a point survives the edit."""
         xyz = np.asarray(xyz)
         if self.is_empty():
@@ -571,15 +691,15 @@ class Edit(object):
         if self.keep or keepers:
             live = np.zeros(len(xyz), dtype=bool)
             for box in self.keep:
-                live |= self._inside(xyz, box)
+                live |= self._inside(self._seen(box, xyz, local), box)
             for shape in keepers:
-                live |= shape.inside(xyz)
+                live |= shape.inside(self._seen(shape, xyz, local))
         else:
             live = np.ones(len(xyz), dtype=bool)
         for box in self.drop:
-            live &= ~self._inside(xyz, box)
+            live &= ~self._inside(self._seen(box, xyz, local), box)
         for shape in self.cut_lassos:
-            live &= ~shape.inside(xyz)
+            live &= ~shape.inside(self._seen(shape, xyz, local))
         return live
 
     def as_dict(self):
@@ -933,6 +1053,13 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # world origin, and a scan standing ten metres away would swing right
         # out of the room: the same two numbers, a completely different claim,
         # and one that changes every time the scan is moved.
+        # ⭐ THE SCAN'S OWN FRAME IS KEPT WHERE THE CUTS CAN STILL REACH IT.
+        # A cut remembers the placement each cloud stood at when it was drawn
+        # (see `_frames`), and a placement is a statement about THESE
+        # coordinates -- the ones the instrument measured, before the lean,
+        # the setup or the level moved them anywhere. Held only while some cut
+        # actually carries a frame, so the ordinary export gains no copy.
+        seen = xyz if (edit is not None and edit.has_frames()) else None
         if lean is not None and not lean.is_identity():
             xyz = lean.apply(xyz)
         # ⛔⛔ COLOUR IS LOOKED UP AFTER THE LEAN AND BEFORE THE PLACEMENT,
@@ -967,7 +1094,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # box applied in each scan's own frame would cut a different piece out
         # of every scan and look like the registration had failed.
         if edit is not None and not edit.is_empty():
-            live = edit.mask(xyz)
+            live = edit.mask(xyz, local=seen)
             xyz, rgb, refl = xyz[live], rgb[live], refl[live]
             if xyz.shape[0] == 0:
                 return

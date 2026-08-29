@@ -7326,10 +7326,14 @@ function leanScan(dp, dr){
               + 'wrong box, or a room that leans, which is Level\u2019s job '
               + 'and not this one\u2019s.', 'warn');
 }
-/* An edit is applied in the merged frame, so moving a scan moves it through
-   whatever was cut. Recomputed on a trailing timer rather than per frame: at
-   preview density this costs tens of milliseconds, which is nothing once but
-   would be a stutter on every pixel of a drag. */
+/* ⭐ A CUT THAT REMEMBERS ITS PLACEMENT DOES NOT MOVE WHEN THE SCAN DOES, and
+   that is the whole point of `frames` -- so for those this replay confirms the
+   mask rather than changing it. It still has work to do: a cut made before
+   frames existed, and a cloud that arrived after a cut was made, are both
+   tested in the merged frame and DO move through it.
+   Recomputed on a trailing timer rather than per frame: at preview density it
+   costs tens of milliseconds, nothing once, a stutter on every pixel of a
+   drag. */
 let followTimer=null;
 function editsFollow(){
   if(!V.edits.length) return;
@@ -7557,17 +7561,53 @@ async function multiAlign(){
    or null for all of them, and it travels with the box or the lasso all the way
    into `pipeline.Edit` -- the preview below and the exporter narrow the list by
    the same rule, so what is seen is what is written. */
+/* ⭐⭐ AND AN OPERATION REMEMBERS WHERE THE CLOUDS STOOD WHEN IT WAS DRAWN.
+   `frames` is {cloud index: the 3x4 that put its points in the merged frame at
+   that moment}, and it is what makes a delete delete POINTS instead of hanging
+   a hole in the room. Both tests below -- box and lasso -- are made in the
+   merged frame, so without this a cut is a fixed volume the clouds slide
+   through: move a scan after cutting the tripod out of it and the tripod comes
+   back, while whatever drifted into the hole vanishes in its place.
+   ⛔ NOT THE POINTS THEMSELVES, and that is not a shortcut. The preview holds a
+   2 cm thinning while the export re-reads every return, so a list of point
+   numbers from one means nothing to the other. A placement is twelve numbers
+   and means the same thing at both densities. See `pipeline._frames`. */
 function editPlan(){
   const plan={keep:[], drop:[], lassos:[]};
   for(const e of V.edits){
     const who = (e.scan==null) ? null : e.scan;
     if(e.kind==='box')
       (e.mode==='keep'?plan.keep:plan.drop).push(
-        Object.assign({}, e.box, {scan:who}));
+        Object.assign({}, e.box, {scan:who, frames:e.frames}));
     else plan.lassos.push({matrix:e.matrix, polygon:e.poly,
-                           keep:e.mode==='keep', scan:who});
+                           keep:e.mode==='keep', scan:who, frames:e.frames});
   }
   return plan;
+}
+/* ⛔ ONE HOME FOR THE SCOPE TEST, mirroring `pipeline._in_scope`. Three copies
+   of this arithmetic had grown up -- the preview's narrowing, the fast drop
+   path and now the frame stamp -- and a fourth is how a preview and an
+   exporter drift apart while both look right. */
+function inScope(scope, index){
+  if(scope==null) return true;
+  if(Array.isArray(scope)) return scope.indexOf(index)>=0;
+  return scope===index;
+}
+/* The placement a cut was drawn against for THIS cloud, or where the cloud
+   stands now. ⛔ THE FALLBACK IS NOT A GAP: a project saved before cuts
+   remembered anything has no frames at all, and neither does a cloud that
+   arrived after the cut was made. Both were written against the merged frame
+   and go on being tested in it, which is what they mean. */
+function frameFor(op, s){
+  return (op.frames && op.frames[s.index]) || affine(s);
+}
+/* Where every cloud in a cut's scope stands right now -- stamped once, at the
+   moment the cut is made, and never touched again. */
+function cutFrames(scope){
+  const got={};
+  for(const s of V.scans)
+    if(inScope(scope, s.index)) got[s.index]=Array.from(affine(s));
+  return got;
 }
 /* The part of the plan that applies to one cloud -- the page's copy of
    pipeline.Edit.for_scan, and it has to stay its copy. */
@@ -7577,9 +7617,7 @@ function editPlan(){
    Python disagreed, the preview would show one thing and the exported file
    would hold another, which is the failure this program keeps finding. */
 function planFor(plan, index){
-  const mine = o => (o.scan==null
-                     || (Array.isArray(o.scan) ? o.scan.indexOf(index)>=0
-                                               : o.scan===index));
+  const mine = o => inScope(o.scan, index);
   return {keep:plan.keep.filter(mine), drop:plan.drop.filter(mine),
           lassos:plan.lassos.filter(mine)};
 }
@@ -7638,6 +7676,11 @@ function showEdits(){
 let EDIT_ID = 0;
 function pushEdit(e){
   e.scan = cutScope();
+  /* ⭐⭐ STAMPED HERE, WITH THE SCOPE, AND FOR THE SAME REASON: this is the
+     one moment the picture the operator drew on still exists. A cut carries
+     where every cloud it names stood, so it goes on naming those points after
+     they are moved. See `editPlan`. */
+  e.frames = cutFrames(e.scan);
   e.eid = ++EDIT_ID;
   V.edits.push(e); showEdits();
   /* ⛔⛔ AND IT GOES ON THE ONE UNDO STACK WITH EVERY OTHER ACTION, in the
@@ -7668,9 +7711,11 @@ function pushEdit(e){
    edit's share are never walked, and only touched scans re-upload. */
 function applyDrop(e){
   const who=(e.scan==null)?null:e.scan;
-  const box = e.kind==='box' ? Object.assign({}, e.box, {scan:who}) : null;
+  const box = e.kind==='box' ? Object.assign({}, e.box,
+                                             {scan:who, frames:e.frames})
+                             : null;
   const las = box ? null : {matrix:e.matrix, polygon:e.poly,
-                            keep:false, scan:who};
+                            keep:false, scan:who, frames:e.frames};
   /* ⛔⛔ THE COUNTERS DESCRIBE A SET OF SCANS, so the question is whether
      they still describe THIS one -- not whether they have ever been set.
      `V.total` is written only here and in recomputeLive, and adding a scan,
@@ -7689,26 +7734,21 @@ function applyDrop(e){
       for(let i=0;i<s.points;i++) if(s.live[i]) V.alive++;
   }
   for(const s of V.scans){
-    if(!(who==null || (Array.isArray(who) ? who.indexOf(s.index)>=0
-                                          : who===s.index))) continue;
-    const n=s.points, live=s.live, A=affine(s);
+    if(!inScope(who, s.index)) continue;
+    /* ⭐ THE PLACEMENT THE CUT WAS DRAWN AGAINST, not the one the cloud is at
+       now. ⚠ Be honest about what this line buys today: `pushEdit` stamps the
+       frames and calls this in the same breath, so `frameFor` and `affine(s)`
+       are equal here by construction and no test can tell them apart. It is
+       written this way because the fast path and the replay must read the
+       placement from ONE place -- the day anything comes between the stamp and
+       the drop, the version that asked the cloud where it is now would cut
+       something else and only the next replay would show it. */
+    const n=s.points, live=s.live, A=frameFor(box||las, s);
     let touched=false;
     for(let base=0;base<n;base+=BLOCK){
       const k=Math.min(BLOCK,n-base);
       const seg=live.subarray(base,base+k);
-      let anybody=false;
-      for(let i=0;i<k;i++){
-        if(!seg[i]){ _wx[i]=NaN; continue; }
-        anybody=true;
-        const j=(base+i)*3;
-        const x=s.raw[j]*s.scale[0]+s.offset[0];
-        const y=s.raw[j+1]*s.scale[1]+s.offset[1];
-        const z=s.raw[j+2]*s.scale[2]+s.offset[2];
-        _wx[i]=A[0]*x+A[1]*y+A[2]*z+A[3];
-        _wy[i]=A[4]*x+A[5]*y+A[6]*z+A[7];
-        _wz[i]=A[8]*x+A[9]*y+A[10]*z+A[11];
-      }
-      if(!anybody) continue;
+      if(!world(s, base, k, A, seg)) continue;
       let before=0; for(let i=0;i<k;i++) if(seg[i]) before++;
       if(box) markBox(seg,k,box,0); else markLasso(seg,k,las,0);
       let after=0; for(let i=0;i<k;i++) if(seg[i]) after++;
@@ -7802,6 +7842,48 @@ function addBox(which){
 const BLOCK = 1 << 19;
 const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
       _wz=new Float64Array(BLOCK);
+/* One block of one cloud's points, in the merged frame, under the placement
+   `A` -- which is the placement the CUT was drawn against, not necessarily the
+   one the cloud is at now. ⛔ ONE HOME FOR IT: the fast drop path and the full
+   replay both need it, and two copies of this arithmetic is how they would
+   come to disagree about which placement they were using.
+   `seg` may be null. Given, points already dead are skipped and their x set to
+   NaN, which no comparison passes -- so cutting gets faster as the model gets
+   cleaner. Returns whether anything at all was live. */
+function world(s, base, k, A, seg){
+  let anybody = !seg;
+  for(let i=0;i<k;i++){
+    if(seg && !seg[i]){ _wx[i]=NaN; continue; }
+    anybody=true;
+    const j=(base+i)*3;
+    const x=s.raw[j]*s.scale[0]+s.offset[0];
+    const y=s.raw[j+1]*s.scale[1]+s.offset[1];
+    const z=s.raw[j+2]*s.scale[2]+s.offset[2];
+    _wx[i]=A[0]*x+A[1]*y+A[2]*z+A[3];
+    _wy[i]=A[4]*x+A[5]*y+A[6]*z+A[7];
+    _wz[i]=A[8]*x+A[9]*y+A[10]*z+A[11];
+  }
+  return anybody;
+}
+/* The cuts that apply to one cloud, gathered by the placement each was drawn
+   against. ⭐ Cuts made without moving anything in between share a frame, so
+   the ordinary job has ONE group and costs exactly what it always did; a
+   second group is the price of having moved a scan between two cuts, which is
+   the case that used to come out wrong. */
+function cutGroups(plan, s){
+  const groups=[], byKey={};
+  const put=(op, into, kind)=>{
+    const A=frameFor(op,s), key=A.join(',');
+    let g=byKey[key];
+    if(!g){ g={A:A, keepBox:[], keepLas:[], dropBox:[], dropLas:[]};
+            byKey[key]=g; groups.push(g); }
+    g[into+kind].push(op);
+  };
+  for(const b of plan.keep) put(b, 'keep', 'Box');
+  for(const b of plan.drop) put(b, 'drop', 'Box');
+  for(const l of plan.lassos) put(l, l.keep?'keep':'drop', 'Las');
+  return groups;
+}
 function recomputeLive(){
   const whole=editPlan();
   let total=0, alive=0;
@@ -7816,24 +7898,29 @@ function recomputeLive(){
     const keepers = plan.keep.length || plan.lassos.some(l=>l.keep);
     const any = plan.keep.length || plan.drop.length || plan.lassos.length;
     if(!any){ live.fill(1); alive+=n; upload(s); continue; }
-    const A=affine(s);          /* placement AND level, exactly as the GPU has it */
+    const groups=cutGroups(plan, s);
     for(let base=0;base<n;base+=BLOCK){
       const k=Math.min(BLOCK,n-base);
-      for(let i=0;i<k;i++){
-        const j=(base+i)*3;
-        const x=s.raw[j]*s.scale[0]+s.offset[0];
-        const y=s.raw[j+1]*s.scale[1]+s.offset[1];
-        const z=s.raw[j+2]*s.scale[2]+s.offset[2];
-        _wx[i]=A[0]*x+A[1]*y+A[2]*z+A[3];
-        _wy[i]=A[4]*x+A[5]*y+A[6]*z+A[7];
-        _wz[i]=A[8]*x+A[9]*y+A[10]*z+A[11];
-      }
       const seg=live.subarray(base,base+k);
       seg.fill(keepers?0:1);
-      for(const b of plan.keep) markBox(seg,k,b,1);
-      for(const l of plan.lassos) if(l.keep) markLasso(seg,k,l,1);
-      for(const b of plan.drop) markBox(seg,k,b,0);
-      for(const l of plan.lassos) if(!l.keep) markLasso(seg,k,l,0);
+      /* ⛔⛔ EVERY KEEP BEFORE EVERY DROP, ACROSS ALL THE GROUPS -- not each
+         group's keeps and drops in turn. What survives is the union of the
+         keeps MINUS the union of the drops, so a drop drawn before a keep
+         still wins; run group by group and a drop made at one placement would
+         be undone by a keep made at another, which is a rule nobody wrote and
+         nothing on screen would explain. */
+      for(const g of groups){
+        if(!g.keepBox.length && !g.keepLas.length) continue;
+        world(s, base, k, g.A, null);
+        for(const b of g.keepBox) markBox(seg,k,b,1);
+        for(const l of g.keepLas) markLasso(seg,k,l,1);
+      }
+      for(const g of groups){
+        if(!g.dropBox.length && !g.dropLas.length) continue;
+        if(!world(s, base, k, g.A, seg)) break;
+        for(const b of g.dropBox) markBox(seg,k,b,0);
+        for(const l of g.dropLas) markLasso(seg,k,l,0);
+      }
       for(let i=0;i<k;i++) if(seg[i]) alive++;
     }
     upload(s);
@@ -8538,8 +8625,13 @@ async function applyNorth(dir){
   if(!V.level) say('note: the room is not levelled, so this bearing is '+
                    'measured in the rig\'s own horizontal, not gravity\'s.',
                    'warn');
-  if(V.edits.length) say('note: the cuts already made stay where they are '+
-                         'while the room turns under them.', 'warn');
+  /* ⭐ THIS USED TO WARN THAT THE CUTS WOULD NOT FOLLOW, AND NOW THEY DO.
+     A cut remembers the placement it was drawn against, so turning the room
+     turns the cut with it and it goes on naming the same points. */
+  if(V.edits.some(e=>!e.frames))
+    say('note: some cuts in this project were made before cuts '+
+        'remembered which points they took, so those stay where they '+
+        'are while the room turns under them.', 'warn');
   try{
     const j=await post('north', {points:pts, direction:dir,
                                  level:V.level||null});
@@ -8643,8 +8735,10 @@ async function applyLevel(){
                       'open. Clear them and pick again.', 'warn');
     pts.push(preLevel(s,q.p));       /* measured on the RAW frame, always */
   }
-  if(V.edits.length) say('note: the edits already made stay where they are '+
-                         'while the cloud straightens under them.', 'warn');
+  if(V.edits.some(e=>!e.frames))
+    say('note: some cuts in this project were made before cuts '+
+        'remembered which points they took, so those stay where they '+
+        'are while the cloud straightens under them.', 'warn');
   const r=await fetch('level',{method:'POST',
     headers:{'Content-Type':'application/json'},
     /* ⛔ THE LEVEL GOES WITH IT, so that levelling a frame whose north and
@@ -9953,9 +10047,37 @@ function askRemove(index){
 function forgetScan(gone){
   const shift = i => (i>gone ? i-1 : i);
   const hadEdits=V.edits.length, hadPairs=V.pairs.length;
-  V.edits = V.edits.filter(e => e.scan!==gone)
-                   .map(e => (e.scan==null ? e
-                              : Object.assign({}, e, {scan:shift(e.scan)})));
+  /* ⛔ A SCOPE CAN NAME SEVERAL CLOUDS, AND THIS ONLY EVER HANDLED ONE.
+     `cutScope` returns a LIST whenever anything is hidden -- a cut made with
+     one cloud off screen belongs to the visible ones -- and an array is never
+     `===` a number and never `>` one, so such a cut sailed through both the
+     filter and the shift and came back aimed at whatever inherited those
+     numbers. Same failure the comment above describes, in the case the comment
+     did not cover. `pipeline.Edit.renumbered` is the mirror of this. */
+  const reScope = scope => {
+    if(scope==null) return {alive:true, scope:null};
+    if(Array.isArray(scope)){
+      const got=scope.filter(i=>i!==gone).map(shift);
+      /* An empty scope is "no cloud", never "every cloud" -- widening it here
+         would turn a cut on one cloud into a cut across the whole job. */
+      return {alive:got.length>0, scope:got};
+    }
+    return {alive:scope!==gone, scope:shift(scope)};
+  };
+  V.edits = V.edits.map(e => {
+    const got=reScope(e.scan);
+    if(!got.alive) return null;
+    /* ⛔ AND THE FRAMES RENUMBER WITH THE SCOPE. They are keyed by position
+       too, so left alone a cut would be handed its neighbour's placement and
+       land somewhere nobody drew it -- looking entirely deliberate. */
+    const frames={};
+    for(const k of Object.keys(e.frames||{})){
+      const at=+k;
+      if(at===gone) continue;
+      frames[shift(at)]=e.frames[k];
+    }
+    return Object.assign({}, e, {scan:got.scope, frames:frames});
+  }).filter(e => e!==null);
   V.pairs = V.pairs.filter(p => p.ri!==gone && p.si!==gone)
                    .map(p => Object.assign({}, p,
                                            {ri:shift(p.ri), si:shift(p.si)}));

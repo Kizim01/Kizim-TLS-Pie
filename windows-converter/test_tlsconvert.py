@@ -1868,9 +1868,14 @@ try:
     # still recompute fully, and dead points skip the transform via NaN.
     check("a drop edit is applied incrementally; a keep still recomputes",
           "if(e.mode==='keep') recomputeLive(); else applyDrop(e);" in _page)
+    # ⛔ THE SKIP MOVED INTO `world`, which is now the one home for turning a
+    # block of a cloud into merged coordinates -- the fast drop path and the
+    # replay both call it, and each passes the placement the CUT was drawn
+    # against. `seg` is optional there because a keep has to be able to bring
+    # a dead point back, so it cannot skip them.
     check("...dead points skip the world transform and untouched scans "
           "skip the re-upload",
-          "if(!seg[i]){ _wx[i]=NaN; continue; }" in _page
+          "if(seg && !seg[i]){ _wx[i]=NaN; continue; }" in _page
           and "if(touched) upload(s);" in _page)
     check("the lasso test rejects on the outline's own bounds before "
           "walking its edges",
@@ -2675,6 +2680,11 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "editPlan", "planFor", "markBox",
                   "forgetScan", "measure", "resetBox", "span", "boxSize",
+                  # ⛔ AND THE ONES A CUT'S REMEMBERED PLACEMENT ADDED. The
+                  # replay groups its cuts by the frame each was drawn
+                  # against and puts the points back there; none of that is
+                  # optional to run, so none of it is optional to lift.
+                  "inScope", "frameFor", "cutGroups", "world",
                   # ⛔ ADDED BECAUSE THE SHIPPED CODE NOW CALLS THEM. A harness
                   # that runs the real functions has to follow them wherever
                   # they go, and the reward for not doing so is a ReferenceError
@@ -4234,7 +4244,11 @@ check("a lasso carries one too", _lrt.scan == (1, 2), _lrt.scan)
 # would pass while the shipped one did something else.
 if _node:
     _probe = chr(10).join(_js_func(f) for f in
-                          ("shown", "cutScope", "planFor")) + """
+                          # ⛔ `planFor` reads the scope through `inScope` now
+                          # -- one home for the test, mirroring
+                          # `pipeline._in_scope`. A harness that runs the real
+                          # functions has to follow them wherever they go.
+                          ("shown", "cutScope", "inScope", "planFor")) + """
     var V = {scans:[{index:0},{index:1},{index:2}], hidden:{}, only:-1,
              editWho:-1};
     var out = {};
@@ -4264,25 +4278,29 @@ if _node:
           _hr.stderr[-400:])
     _got = (json.loads(_hr.stdout.strip().splitlines()[-1])
             if _hr.returncode == 0 else {})
+    # ⛔ READ WITH .get, NOT [ ]. When the harness above fails to
+    # run, `_got` is {} -- and a KeyError here ABORTS the suite instead
+    # of reporting, so every check after this point silently never
+    # runs. The failure of a check must be a FAILURE, not an exception.
     check("with nothing hidden a cut goes through every cloud",
-          _got["nothingHidden"] is None, _got)
+          _got.get("nothingHidden") is None, _got)
     # ⛔⛔ THE HEART OF IT: a hidden cloud is not in the scope of a new cut.
     check("a hidden cloud is left out of a new cut",
-          _got["oneHidden"] == [0, 2], _got["oneHidden"])
+          _got.get("oneHidden") == [0, 2], _got.get("oneHidden"))
     check("with everything hidden a cut takes from nothing, not everything",
-          _got["allHidden"] == [], _got["allHidden"])
+          _got.get("allHidden") == [], _got.get("allHidden"))
     # ⭐ AND THE OLD ISOLATE CONTROL IS HONOURED THE SAME WAY, which is what it
     # never was: it used to change the picture and leave the cut alone.
     check("isolating one cloud also narrows the cut to it",
-          _got["isolated"] == [2], _got["isolated"])
+          _got.get("isolated") == [2], _got.get("isolated"))
     # ⛔ NAMING A CLOUD THAT IS HIDDEN CUTS NOTHING, rather than cutting a cloud
     # the operator cannot see because they aimed at it earlier and forgot.
     check("a cut aimed at a cloud that is hidden takes from nothing",
-          _got["namedButHidden"] == [], _got["namedButHidden"])
+          _got.get("namedButHidden") == [], _got.get("namedButHidden"))
     check("but aimed at a visible one it is that one alone",
-          _got["namedAndShown"] == 1, _got["namedAndShown"])
+          _got.get("namedAndShown") == 1, _got.get("namedAndShown"))
     check("the page reads a list scope exactly as Python does",
-          _got["listSeenBy0"] == 1 and _got["listSeenBy1"] == 0, _got)
+          _got.get("listSeenBy0") == 1 and _got.get("listSeenBy1") == 0, _got)
 else:
     print("  (node missing: the page's hide rules were not run)")
 
@@ -6497,7 +6515,7 @@ check("...held by an id, which survives forgetScan's copy",
       "e.eid = ++EDIT_ID;" in _pe and "HIST[HIST.length-1].edit = e.eid;"
       in _pe)
 check("...and forgetScan does copy scoped edits, which is why",
-      "Object.assign({}, e, {scan:shift(e.scan)})" in _fs)
+      "Object.assign({}, e, {scan:got.scope, frames:frames})" in _fs)
 _de = re.sub(r"/\*.*?\*/", "", _js_func("dropEdit"), flags=re.S)
 check("...looked up by that id when the undo actually runs",
       "V.edits.findIndex(x=>x.eid===eid)" in _de)
@@ -6541,7 +6559,8 @@ const $=()=>({textContent:'',innerHTML:'',value:0});
 let SAID='';
 const say=m=>{SAID=m;}, showEdits=()=>{}, recomputeLive=()=>{},
       applyDrop=()=>{}, dirty=()=>{}, syncSliders=()=>{}, invalidate=()=>{},
-      editsFollow=()=>{}, setTool=()=>{}, whoName=i=>'scan'+i;
+      editsFollow=()=>{}, setTool=()=>{}, whoName=i=>'scan'+i,
+      affine=()=>[1,0,0,0, 0,1,0,0, 0,0,1,0];
 function active(){ return V.scans.find(s=>s.index===V.active); }
 V.scans=[{index:0,name:'s0',setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}},
          {index:1,name:'s1',setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}}];
@@ -6567,7 +6586,14 @@ const out={};
 """ % "\n".join(_js_func(f) for f in
                 ("remember", "undoSetup", "coalesce", "nudge", "cutScope",
                  "shown", "pushEdit", "dropEdit", "forgetEditSteps",
-                 "clearPending", "undoEdit", "undoAny")
+                 "clearPending", "undoEdit", "undoAny",
+                 # ⛔ `pushEdit` stamps the placement every cloud in its
+                 # scope stood at, so the stamp comes with it. Following the
+                 # shipped code wherever it goes is the price of running it
+                 # rather than restating it. `affine` itself is stubbed
+                 # below: what is under test here is the ORDER of the undo
+                 # stack, not how a placement is built.
+                 "cutFrames", "inScope")
        # ⛔ `_js_func` matches on "function <name>(", so it lifts an ASYNC
        # function without its `async` -- and `undoAny` awaits the step it
        # popped. Put the keyword back rather than teaching the lifter about
@@ -9381,6 +9407,272 @@ check("tearing scans down frees the twin too, and empties the refine queue",
 check("...and every teardown site goes through it",
       _page.count("dropChunks(V.scans);") == 3
       and _page.count("gl.deleteBuffer(c.pos)") == 1)
+
+# ---------------------------------------------------------------------------
+# ⭐⭐ A CUT NAMES POINTS, NOT A REGION OF THE ROOM
+#
+# Reported from the workbench: "when you create a delete selection and delete
+# points it creates a mask that persists in the project, it doesn't actually
+# delete the points -- when you move the scan the points reappear, and where
+# the selection was any points from the cloud get hidden by the mask."
+#
+# Both halves are one fault. A box and a lasso were both tested in the MERGED
+# frame, so a cut was a fixed VOLUME the clouds slid through: the points taken
+# out came back, and their neighbours went in their place. An operator cutting
+# a tripod out of a scan they are still placing had no way to make it stick,
+# and the program said "deleting a lasso" while doing something else.
+#
+# A cut now remembers the placement every cloud it names stood at -- `frames`
+# on the page, `pipeline._frames` in the exporter -- and is tested against the
+# points put back there. ⛔ It cannot be a list of point NUMBERS: the preview
+# holds a 2 cm thinning while the export re-reads every return, so an index
+# from one is meaningless to the other. Twelve numbers mean the same at both.
+print("\na cut remembers which points it took")
+
+_PIPE_SRC = io.open(pipeline.__file__, encoding="utf-8").read()
+
+_FR0 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+_FR5 = [1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+# Five points along x in the scan's own frame. Two sit inside the cut where it
+# was drawn; the last is four and a half metres away and is carried INTO it by
+# the move that follows -- both halves of the report, in one set of points.
+_LOCAL = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0],
+                   [3.0, 0.0, 0.0], [-4.5, 0.0, 0.0]])
+_MOVED = _LOCAL + np.array([5.0, 0.0, 0.0])
+_CUT = {"lo": [-0.5, -1.0, -1.0], "hi": [1.5, 1.0, 1.0]}
+_KEPT = [False, False, True, True, True]
+# The same two points, reached from five metres away -- a cut drawn while the
+# scan stood at x=5. Paired with a keep drawn at x=0 it is the ordering case:
+# what survives is every keep MINUS every drop, whichever was drawn first.
+_AWAY = {"lo": [4.5, -1.0, -1.0], "hi": [6.5, 1.0, 1.0]}
+_ORDERED = [False, False, True, True, False]
+
+_drift = pipeline.Edit(drop=[dict(_CUT)])
+check("without a frame a cut is a hole in the room, which is the bug",
+      list(_drift.for_scan(0).mask(_MOVED, local=_LOCAL))
+      == [True, True, True, True, False],
+      list(_drift.for_scan(0).mask(_MOVED, local=_LOCAL)))
+_stuck = pipeline.Edit(drop=[dict(_CUT, frames={"0": _FR0})])
+check("A CUT KEEPS THE POINTS IT TOOK WHEN THE SCAN IS MOVED",
+      list(_stuck.for_scan(0).mask(_MOVED, local=_LOCAL)) == _KEPT,
+      list(_stuck.for_scan(0).mask(_MOVED, local=_LOCAL)))
+# ⛔ AND IT TAKES NOTHING NEW, which is a separate claim: the point that moved
+# into the hole is the last one, and it has to survive.
+check("...and nothing that moves into where the cut was goes with it",
+      bool(_stuck.for_scan(0).mask(_MOVED, local=_LOCAL)[4]))
+_kl = pipeline.Edit(keep=[dict(_CUT, frames={"0": _FR0})])
+check("a KEEP is frozen the same way, or it would keep the wrong points",
+      list(_kl.for_scan(0).mask(_MOVED, local=_LOCAL))
+      == [True, True, False, False, False],
+      list(_kl.for_scan(0).mask(_MOVED, local=_LOCAL)))
+_lasso_frozen = pipeline.Edit(lassos=[pipeline.Lasso(
+    _look_down(), _SQ, frames={"0": _FR0}).as_dict()])
+_lasso_free = pipeline.Edit(lassos=[pipeline.Lasso(_look_down(),
+                                                   _SQ).as_dict()])
+check("a lasso remembers it too, not only a box",
+      list(_lasso_frozen.for_scan(0).mask(_MOVED, local=_LOCAL))
+      != list(_lasso_free.for_scan(0).mask(_MOVED, local=_LOCAL)))
+
+# ⛔ THE EXPORTER HAS TO BE HANDED THE SCAN'S OWN POINTS or it cannot do this
+# at all -- and it keeps them only while some cut carries a frame, so an
+# ordinary export gains no second copy of a thirty-million-point capture.
+check("a frame with no local points to put back falls through unchanged",
+      list(_stuck.for_scan(0).mask(_MOVED))
+      == list(_drift.for_scan(0).mask(_MOVED)))
+check("the exporter keeps the scan's own frame only when a cut needs it",
+      "seen = xyz if (edit is not None and edit.has_frames()) else None"
+      in _PIPE_SRC
+      and "live = edit.mask(xyz, local=seen)" in _PIPE_SRC)
+# The two arrays are indexed together, so the copy must be taken AFTER the
+# clean has thrown points away and BEFORE anything moves them.
+check("...taken after the clean and before the lean, so the two stay aligned",
+      0 < _PIPE_SRC.find("if clean_spec:") < _PIPE_SRC.find("seen = xyz if")
+      < _PIPE_SRC.find("xyz = lean.apply(xyz)"))
+
+# ⛔ A FRAME IS LOOKED UP BY CLOUD, and `for_scan` is the only thing that knows
+# which cloud is in hand -- `mask` is deliberately not scope-aware. Two clouds
+# standing in different places when one cut was drawn must each get their own,
+# or the second is cut where the first was standing.
+_two = pipeline.Edit(drop=[dict(_CUT, frames={"0": _FR0, "1": _FR5})])
+check("each cloud is put back where IT stood, not where its neighbour did",
+      list(_two.for_scan(0).mask(_MOVED, local=_LOCAL)) == _KEPT
+      and list(_two.for_scan(1).mask(_MOVED, local=_LOCAL))
+      == [True, True, True, True, False],
+      (list(_two.for_scan(0).mask(_MOVED, local=_LOCAL)),
+       list(_two.for_scan(1).mask(_MOVED, local=_LOCAL))))
+check("a cloud that arrived after the cut was made gets no frame",
+      _two.for_scan(4).drop[0].frame is None)
+
+# ⛔⛔ AND FRAMES RENUMBER WITH THE SCOPE. They are keyed by POSITION exactly
+# as a scope is, so leaving a cloud out of an export would otherwise hand the
+# next one along its neighbour's placement -- a cut landing somewhere nobody
+# drew it, in the written file only, which is the fault `renumbered` exists
+# for arriving through a door it did not yet cover.
+_re = pipeline.Edit(drop=[dict(_CUT, scan=[0, 2],
+                               frames={"0": _FR0, "2": _FR5})])
+_rd = _re.renumbered({0: 0, 2: 1}).drop[0]
+check("A CUT'S FRAMES RENUMBER WITH ITS SCOPE",
+      _rd.scan == (0, 1) and sorted(_rd.frames) == [0, 1]
+      and _rd.frames[1] == _FR5, (_rd.scan, sorted(_rd.frames)))
+check("...and a frame for a cloud left out of the export goes with it",
+      sorted(_re.renumbered({2: 0}).drop[0].frames) == [0])
+
+check("frames survive the round trip, keyed by number however JSON spells it",
+      pipeline.Box.parse(pipeline.Box.parse(
+          dict(_CUT, frames={"0": _FR0})).as_dict()).frames == {0: _FR0})
+check("...and a cut written before frames existed reads back with none",
+      pipeline.Box.parse(dict(_CUT)).frames == {}
+      and "frames" not in pipeline.Box.parse(dict(_CUT)).as_dict())
+check("...and the lasso does the same",
+      pipeline.Lasso.from_dict(pipeline.Lasso(
+          _look_down(), _SQ, frames={"3": _FR5}).as_dict()).frames
+      == {3: _FR5}
+      and "frames" not in pipeline.Lasso(_look_down(), _SQ).as_dict())
+# ⛔ REFUSED, NOT PADDED. A short frame would place the cloud somewhere it
+# never stood, which is the failure this whole mechanism exists to remove.
+try:
+    pipeline.Box.parse(dict(_CUT, frames={"0": [1.0, 0.0, 0.0]}))
+    _short = "accepted"
+except ValueError as _exc:
+    _short = str(_exc)
+check("a frame that is not twelve numbers is refused out loud",
+      "12 numbers" in _short, _short)
+
+# --- and the page, run as shipped ------------------------------------------
+#
+# ⛔ THE REPORT WAS ABOUT THE WORKBENCH, so the workbench's own functions are
+# what run here: the cut is made through `pushEdit`, applied by the fast drop
+# path, replayed by `recomputeLive`, and the scan is then MOVED -- which is the
+# gesture that produced the bug. The answer is compared against the exporter's
+# on the same points, because a preview that sticks and an export that does not
+# is the same failure wearing a different coat.
+if not _node:
+    print("  (node missing: the page's own cut rules were not run)")
+else:
+    _cutjs = """
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+let EDIT_ID = 0;
+const V={scans:[], edits:[], hidden:{}, only:-1, editWho:-1, alive:0, total:0};
+const HIST=[];
+const $=()=>({textContent:'', innerHTML:'', value:0});
+const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
+      dirty=()=>{}, whoName=()=>'a cloud';
+function remember(){ HIST.push({}); }
+function rotOf(){ return [[1,0,0],[0,1,0],[0,0,1]]; }
+/* Stands in for the real placement matrix -- the scan's own points, slid to
+   wherever it has been put. What is under test is WHICH placement a cut is
+   tested against, not how a placement is built. */
+function affine(s){ return [1,0,0,s.setup.x_m, 0,1,0,0, 0,0,1,0]; }
+const LOCAL=%s, CUT=%s, AWAY=%s, LOOK=%s, SQUARE=%s;
+const HERE=%s, FIVE=%s;
+function cloud(index){
+  const flat=[]; for(const p of LOCAL) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:LOCAL.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], setup:{x_m:0},
+          live:new Uint8Array(LOCAL.length).fill(1)};
+}
+const mask=()=>Array.from(V.scans[0].live).map(v=>v===1);
+const out={};
+V.scans=[cloud(0)];
+pushEdit({kind:'box', mode:'drop', box:CUT});
+out.cut = mask();                /* the fast path, at the moment of the cut */
+recomputeLive();
+out.replayed = mask();           /* the full replay, same placement */
+out.frames = V.edits[0].frames;
+V.scans[0].setup.x_m = 5;        /* AND THEN THE OPERATOR MOVES THE SCAN */
+recomputeLive();
+out.moved = mask();
+/* The same cut with its memory taken away: the program as it was. */
+V.edits[0].frames = {};
+recomputeLive();
+out.forgetful = mask();
+
+/* ⛔⛔ AND EVERY KEEP BEFORE EVERY DROP, ACROSS THE GROUPS. A drop drawn at
+   one placement and a keep at another land in different groups, and taking
+   each group's keeps and drops in turn lets the keep bring back what the drop
+   had already taken -- a rule nobody wrote and nothing on screen explains.
+   The drop's group is made FIRST here, which is the order that goes wrong. */
+V.scans=[cloud(0)];
+V.edits=[{kind:'box', mode:'drop', box:AWAY, scan:null, frames:{0:FIVE},
+          eid:1},
+         {kind:'lasso', mode:'keep', matrix:LOOK, poly:SQUARE, scan:null,
+          frames:{0:HERE}, eid:2}];
+recomputeLive();
+out.ordered = mask();
+console.log(JSON.stringify(out));
+""" % ("\n".join(_js_func(f) for f in
+                 ("pushEdit", "applyDrop", "recomputeLive", "editPlan",
+                  "planFor", "inScope", "frameFor", "cutFrames", "cutGroups",
+                  "world", "markBox", "markLasso", "cutScope", "shown")),
+       json.dumps(_LOCAL.tolist()), json.dumps(_CUT), json.dumps(_AWAY),
+       json.dumps(list(_look_down())), json.dumps(_SQ), json.dumps(_FR0),
+       json.dumps(_FR5))
+    _cp = os.path.join(_rdir, "cuts.js")
+    with io.open(_cp, "w", encoding="utf-8") as _fh:
+        _fh.write(_cutjs)
+    _cr = subprocess.run([_node, _cp], capture_output=True, text=True)
+    check("the page's own cut rules run at all", _cr.returncode == 0,
+          (_cr.stderr or "")[:400])
+    _c = (json.loads(_cr.stdout.strip().splitlines()[-1])
+          if _cr.returncode == 0 else {})
+    check("the cut takes the points it was drawn round",
+          _c.get("cut") == _KEPT, _c.get("cut"))
+    # ⛔ THE FAST PATH AND THE REPLAY MUST AGREE ABOUT THE VERY CUT JUST MADE.
+    # `pushEdit` marks only the new delete's own insides and never re-tests the
+    # rest; `recomputeLive` replays the whole list. If they read the placement
+    # from different places, the picture changes under the operator the next
+    # time anything triggers a replay -- with nothing on screen to say why.
+    check("the fast drop path and the full replay agree",
+          _c.get("cut") == _c.get("replayed"), _c)
+    check("...and the cut carries the placement it was drawn against",
+          _c.get("frames") == {"0": _FR0}, _c.get("frames"))
+    check("THE DELETED POINTS STAY DELETED WHEN THE SCAN IS MOVED",
+          _c.get("moved") == _KEPT, _c.get("moved"))
+    # ⛔ THE TEST CAN TELL THE DIFFERENCE, and says so rather than being
+    # believed: with the frame removed the shipped code reproduces the report
+    # exactly -- the two cut points back, and the one that drifted in gone.
+    check("...and without the frame the reported bug comes straight back",
+          _c.get("forgetful") == [True, True, True, True, False],
+          _c.get("forgetful"))
+    check("WHAT THE PREVIEW KEEPS AFTER A MOVE IS WHAT THE EXPORTER WRITES",
+          _c.get("moved") == list(_stuck.for_scan(0).mask(_MOVED,
+                                                          local=_LOCAL)),
+          (_c.get("moved"), list(_stuck.for_scan(0).mask(_MOVED,
+                                                         local=_LOCAL))))
+    # ⛔⛔ THE ORDERING THE GROUPS PUT AT RISK. Cuts are now gathered by the
+    # placement each was drawn against, and a keep and a drop can fall in
+    # different groups; run group by group and the keep undoes a drop that came
+    # before it. Two passes over the groups -- all keeps, then all drops -- is
+    # what keeps "the union of the keeps minus the union of the drops" true.
+    _mix = pipeline.Edit(
+        drop=[dict(_AWAY, frames={"0": _FR5})],
+        lassos=[pipeline.Lasso(_look_down(), _SQ, keep=True,
+                               frames={"0": _FR0}).as_dict()])
+    check("A DROP IS NOT UNDONE BY A KEEP DRAWN AT ANOTHER PLACEMENT",
+          _c.get("ordered") == _ORDERED, _c.get("ordered"))
+    check("...and the exporter agrees about that too",
+          list(_mix.for_scan(0).mask(_LOCAL, local=_LOCAL)) == _ORDERED,
+          list(_mix.for_scan(0).mask(_LOCAL, local=_LOCAL)))
+
+# ⛔ A SCOPE CAN NAME SEVERAL CLOUDS AND `forgetScan` ONLY EVER HANDLED ONE.
+# `cutScope` returns a LIST whenever anything is hidden, and an array is never
+# `===` a number nor `>` one -- so such a cut sailed through both the filter
+# and the shift and came back aimed at whatever inherited those numbers.
+check("removing a cloud renumbers a several-cloud scope, not just a single",
+      "Array.isArray(scope)" in _js_func("forgetScan")
+      and "scope.filter(i=>i!==gone).map(shift)" in _js_func("forgetScan"))
+check("...and an emptied scope drops the cut rather than widening it",
+      "alive:got.length>0" in _js_func("forgetScan"))
+check("...and the frames renumber with it",
+      "frames[shift(at)]" in _js_func("forgetScan"))
+# ⛔ THE NOTICE THAT USED TO SAY CUTS WOULD NOT FOLLOW A LEVEL OR A NORTH IS
+# NOW ONLY TRUE OF CUTS MADE BEFORE THIS EXISTED, and it says so.
+check("levelling no longer warns that every cut will be left behind",
+      "V.edits.some(e=>!e.frames)" in _ALIGN_SRC
+      and _ALIGN_SRC.count("if(V.edits.length) say('note: the cuts") == 0)
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
