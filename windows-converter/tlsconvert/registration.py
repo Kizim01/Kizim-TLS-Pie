@@ -998,6 +998,227 @@ def refine_refused(setup, lean, from_setup, from_lean):
         return far, turn, tilt
     return None
 
+
+#: How many linearise-and-reapply rounds `close_loop` runs. Each round is
+#: exact to first order and the corrections here are centimetres and fractions
+#: of a degree, so the second round is already a formality and the third has
+#: never been seen to move anything; three is cheap insurance, not a tuning.
+SURVEY_ROUNDS = 3
+#: The rungs a survey EDGE descends: coarse enough to cross the few tens of
+#: centimetres a closed walk disagrees by, fine enough that the answer is a
+#: measurement. Not the full ladder — an edge starts from two poses that are
+#: already individually solved, so the top rung would be spent re-finding
+#: what is already known, across every pair in the survey.
+SURVEY_EDGE_VOXELS = (0.05, 0.02)
+
+
+def _rot_vector(R):
+    """The axis-angle 3-vector of a rotation matrix (Rodrigues, inverse)."""
+    c = max(-1.0, min(1.0, (float(np.trace(R)) - 1.0) / 2.0))
+    theta = math.acos(c)
+    if theta < 1e-12:
+        return np.zeros(3)
+    w = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    return (theta / (2.0 * math.sin(theta))) * w
+
+
+def _rot_matrix(w):
+    """The rotation matrix of an axis-angle 3-vector (Rodrigues, forward)."""
+    theta = float(np.linalg.norm(w))
+    if theta < 1e-12:
+        return np.eye(3)
+    k = w / theta
+    K = np.array([[0.0, -k[2], k[1]],
+                  [k[2], 0.0, -k[0]],
+                  [-k[1], k[0], 0.0]])
+    return np.eye(3) + math.sin(theta) * K + (1.0 - math.cos(theta)) * (K @ K)
+
+
+#: ⛔⛔ THE GRAPH-LEVEL ROGUE RULE, AND A FIXTURE IS WHAT DEMANDED IT. An
+#: edge can converge into a WRONG BASIN whose residual sits well under the
+#: per-edge rogue bar -- measured in an early cut of the suite's ray-cast
+#: room, where a column stood squarely between two tripods: that pair
+#: answered exactly 0.800 m off truth and read 0.17 m against a 1.0 m bar.
+#: Fed to plain least squares, that one edge dragged the whole 4-capture
+#: answer 0.36 m. What no per-edge score can see, the GRAPH can: after a
+#: solve, every other path between those two scans disagrees with the rotten
+#: edge. A hard drop on a threshold was tried first and FAILED -- the poison
+#: spreads, lifting every gap, so the rotten edge stood only 2.4x over the
+#: median with the bar at 4x. So the graph reweights instead
+#: (Geman-McClure, the robust kernel pose-graph packages call dynamic
+#: covariance scaling): each pass scales every edge by k^2/(k^2+gap^2), so an
+#: edge that keeps disagreeing with the survey fades from it rather than
+#: having to beat a bar. Measured on the poisoned fixture: one reweight took
+#: the rotten edge's factor to 0.00 and the survey landed back on the truth
+#: to machine precision.
+#:
+#: `k` is where doubt begins: twice the median gap, floored at the
+#: measurement scale so a survey already closed to millimetres does not eat
+#: its own edges over noise ratios.
+SURVEY_ODD_SPREAD = 2.0
+SURVEY_ODD_MIN_M = 0.05
+#: How many reweight passes. One does the work (measured above); the rest
+#: are convergence insurance and each costs one small linear solve.
+SURVEY_ODD_ROUNDS = 8
+#: An edge whose factor ends below this was disowned by the survey and is
+#: REPORTED as such -- a muted edge is a finding about that pair, not a
+#: bookkeeping detail.
+SURVEY_ODD_MUTED = 0.1
+#: A turn priced as movement: the metres it causes at the scale of one of
+#: these rooms, so a rotation-only rotten edge cannot slip under a gap that
+#: only measured translation.
+SURVEY_ODD_LEVER_M = 3.0
+
+
+def close_loop(poses, edges, fixed=0, rounds=SURVEY_ROUNDS):
+    """
+    Move every pose at once so the measured pairs agree, holding one fixed.
+
+    ⭐⭐ WHY THIS EXISTS WHEN THE MULTI FIT ALREADY DOES. The multi fit holds
+    the survey still and moves ONE scan, so it can only ever spend a
+    disagreement on the scan in hand -- and on a walk that comes back to
+    where it started, the disagreement is not IN any one scan. Measured on
+    the live restaurant job: scan 18 read 0.026 m against its walk
+    neighbours and 0.307-0.392 m against the two captures from the start of
+    the walk, standing right next to it in the room -- and so did scan 17,
+    and no rigid move of either could satisfy both sides, which the multi
+    fit correctly reported by keeping the start. Sixteen pairwise fits each
+    left a few millimetres and a fraction of a degree, and where the walk
+    closed, the sum came out as a bartop floating 0.2 m in the air. The only
+    honest fix moves EVERY link a little, which is this: the loop-closure
+    adjustment every terrestrial package eventually grows.
+
+    Takes `poses` (4x4 merged-frame pose per scan) and `edges`
+    `(i, j, M_ij, weight)` where `M_ij` is the MEASURED relative pose of j
+    in i's frame and the weight is how much shared surface backed the
+    measurement. Minimises the weighted disagreement over left-corrections
+    `E_k`: each edge asks `E_i^-1 E_j ~= B_ij` with
+    `B_ij = T_i M_ij T_j^-1`, which to first order is the linear system
+    `d_j - d_i = log(B_ij)` -- one weighted graph Laplacian shared by all six
+    components, solved directly. The corrections at hand are centimetres, so
+    the first-order step is essentially exact; `rounds` reapplies it on the
+    recomposed poses to mop up what the linearisation dropped.
+
+    ⛔ THE FIXED POSE IS THE GAUGE, NOT A JUDGEMENT. Some scan has to say
+    where the room IS -- adjust all N and the whole survey drifts freely.
+    The reference is the natural choice because everything was measured
+    against it from the start.
+
+    ⛔ A POSE NO CHAIN OF EDGES TIES TO THE FIXED ONE CANNOT BE ADJUSTED --
+    there is no path for the disagreement to reach it, and its rows would
+    make the system singular. Those come back UNCHANGED, and their indices
+    are returned so the caller can say so out loud rather than let an
+    untouched scan pass as an adjusted one.
+
+    ⛔⛔ AND AN EDGE THE ADJUSTED SURVEY ITSELF DISOWNS FADES FROM IT, AND IS
+    NAMED -- see `SURVEY_ODD_SPREAD`. A wrong-basin edge looks healthy on
+    every per-edge score; only the graph, solved, can see that every other
+    path between its two scans says something else. The reweighting can mute
+    a pose's every edge, which strands it, and it then comes back in
+    `stranded` like any other.
+
+    Returns `(new_poses, stranded, dropped)` -- `dropped` holding the
+    `(i, j)` of every edge the survey disowned.
+    """
+    n = len(poses)
+    poses = [np.asarray(p, dtype=np.float64) for p in poses]
+    factors = [1.0] * len(edges)
+
+    def _gap_of(b):
+        """One number for how far an edge sits from identity, in metres."""
+        return (float(np.linalg.norm(b[:3, 3]))
+                + float(np.linalg.norm(_rot_vector(b[:3, :3])))
+                * SURVEY_ODD_LEVER_M)
+
+    def _solve(active):
+        """One robustly-weighted graph solve; returns (fixes, seen)."""
+        # The component the fixed pose can reach, walked over active edges.
+        seen = {int(fixed)}
+        grow = True
+        while grow:
+            grow = False
+            for e in active:
+                i, j = edges[e][0], edges[e][1]
+                if (i in seen) != (j in seen):
+                    seen |= {i, j}
+                    grow = True
+        movable = sorted(seen - {int(fixed)})
+        fixes = [np.eye(4) for _ in range(n)]
+        if not movable:
+            return fixes, seen
+        at = {k: c for c, k in enumerate(movable)}
+        for _round in range(rounds):
+            lap = np.zeros((len(movable), len(movable)))
+            rhs = np.zeros((len(movable), 6))
+            for e in active:
+                i, j, m_ij, w = edges[e]
+                if i not in seen or j not in seen:
+                    continue
+                t_i = fixes[i] @ poses[i]
+                t_j = fixes[j] @ poses[j]
+                b = (t_i @ np.asarray(m_ij, dtype=np.float64)
+                     @ np.linalg.inv(t_j))
+                gap = np.concatenate([b[:3, 3], _rot_vector(b[:3, :3])])
+                w = float(w) * factors[e]
+                if i in at:
+                    lap[at[i], at[i]] += w
+                    rhs[at[i]] -= w * gap
+                if j in at:
+                    lap[at[j], at[j]] += w
+                    rhs[at[j]] += w * gap
+                if i in at and j in at:
+                    lap[at[i], at[j]] -= w
+                    lap[at[j], at[i]] -= w
+            deltas = np.linalg.solve(lap, rhs)
+            for k in movable:
+                d = deltas[at[k]]
+                e4 = np.eye(4)
+                e4[:3, :3] = _rot_matrix(d[3:])
+                e4[:3, 3] = d[:3]
+                fixes[k] = e4 @ fixes[k]
+        return fixes, seen
+
+    def _gaps(fixes, seen, active):
+        got = {}
+        for e in active:
+            i, j, m_ij, _w = edges[e]
+            if i in seen and j in seen:
+                got[e] = _gap_of(fixes[i] @ poses[i]
+                                 @ np.asarray(m_ij, dtype=np.float64)
+                                 @ np.linalg.inv(fixes[j] @ poses[j]))
+        return got
+
+    # The reweighting passes: solve, ask every edge how far it sits from the
+    # survey it just helped shape, and scale doubters down. The first pass is
+    # unweighted on purpose -- before any solve, the honest loop-closing
+    # edges are the ones disagreeing with the DRIFTED poses, and reweighting
+    # on that would mute exactly the edges this tool exists to listen to.
+    active = list(range(len(edges)))
+    for _pass in range(SURVEY_ODD_ROUNDS):
+        fixes, seen = _solve(active)
+        gaps = _gaps(fixes, seen, active)
+        if len(gaps) <= 1:
+            break
+        k = max(SURVEY_ODD_SPREAD * float(np.median(list(gaps.values()))),
+                SURVEY_ODD_MIN_M)
+        was = list(factors)
+        for e, g in gaps.items():
+            factors[e] = (k * k) / (k * k + g * g)
+        if max(abs(a - b) for a, b in zip(was, factors)) < 1e-3:
+            break
+
+    # A muted edge is DROPPED outright and named: the final answer must not
+    # lean on an edge the survey disowned, however lightly, and a pose whose
+    # every edge is muted must come back stranded rather than held in place
+    # by scraps of poison.
+    dropped = [(edges[e][0], edges[e][1]) for e in range(len(edges))
+               if factors[e] < SURVEY_ODD_MUTED]
+    active = [e for e in range(len(edges))
+              if factors[e] >= SURVEY_ODD_MUTED]
+    fixes, seen = _solve(active)
+    stranded = [k for k in range(n) if k not in seen]
+    return [fixes[k] @ poses[k] for k in range(n)], stranded, dropped
+
 #: The seed fan at the coarse rung. Around an operator's placement the
 #: wobble to escape is small -- a few degrees of hand error -- so the fan is
 #: tight; with no placement at all every heading is equally plausible, so it

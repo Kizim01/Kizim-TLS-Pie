@@ -7514,8 +7514,10 @@ check("A ROLL PAST THE TILT LIMIT IS A DIFFERENT ANSWER, not a refinement",
 check("...and the tilt limit is tighter than the turn, because a tripod "
       "stands on a floor",
       registration.REFINE_LIMIT_TILT_DEG < registration.REFINE_LIMIT_DEG)
-check("...and the two fits share ONE refusal, so neither can miss a limit",
-      _ALIGN_SRC.count("registration.refine_refused(") == 2
+# ⭐ Four sites now: the pair fit, the multi fit, and the loop closure's two
+# gates (a measured edge, and every capture the graph wants to carry).
+check("...and all four fits share ONE refusal, so none can miss a limit",
+      _ALIGN_SRC.count("registration.refine_refused(") == 4
       and "REFINE_LIMIT_TILT_DEG" not in _ALIGN_SRC)
 _gp = registration.refine_gap(registration.Setup(1.0, 2.0, 0.0, 359.0),
                               registration.Lean(3.0, 0.0), _here, _flat0)
@@ -7528,6 +7530,302 @@ _msrc = re.sub(r"/\*.*?\*/", "", _ALIGN_SRC, flags=re.S)
 check("the page has a button for it, wired to a route the server answers",
       "id=\"multi\"" in _msrc and "$('multi').onclick=multiAlign" in _msrc
       and 'path == "/solve/multi"' in _msrc)
+
+# --- closing the loop: the error that is in NO one scan ----------------------
+# Measured on the live restaurant job (2026-08-31): scan 18 read 0.026 m
+# against its walk neighbours and 0.307-0.392 m against the captures from the
+# start of the walk -- and so did scan 17. Sixteen pairwise fits each left
+# millimetres, and where the walk closed, the sum was a bartop floating 0.2 m
+# above itself. No per-scan tool can spend that error, because it is not in
+# any one scan: the multi fit correctly KEPT scan 18 where it was.
+print("\nclosing the loop")
+
+# The rotation helpers are exact inverses, or every edge lies a little.
+_wv = np.array([0.02, -0.31, 0.17])
+check("the axis-angle helpers are exact inverses",
+      float(np.abs(registration._rot_vector(registration._rot_matrix(_wv))
+                   - _wv).max()) < 1e-12)
+
+def _lpose(x, y, yaw, z=0.0, pitch=0.0, roll=0.0):
+    return registration._pose_matrix(registration.Setup(x, y, z, yaw),
+                                     registration.Lean(pitch, roll))
+
+# ⭐⭐ A RING WITH DISTRIBUTED DRIFT AND EXACT EDGES RECOVERS EXACTLY. The
+# edges are the truth here, so the adjusted poses must land back ON the truth
+# -- to machine precision, not to a tolerance: the solve is a linear system
+# and the rounds mop up the linearisation, so error means a wrong sign
+# somewhere, not noise.
+_ltrue = [_lpose(0, 0, 0), _lpose(3, 0, 20), _lpose(6, 2, 80, 0.1, 0.5, -0.3),
+          _lpose(4, 5, 160, 0.2), _lpose(0.5, 4, -100, 0.15, -0.4, 0.6)]
+_lbad = []
+for _k, _T in enumerate(_ltrue):
+    _E = np.eye(4)
+    _E[:3, :3] = registration._rot_matrix(
+        np.array([0.0, 0.0, math.radians(0.2 * _k)]))
+    _E[:3, 3] = [0.02 * _k, -0.015 * _k, 0.01 * _k]
+    _lbad.append(_E @ _T)
+_ledges = [(_i, _j, np.linalg.inv(_ltrue[_i]) @ _ltrue[_j], 1.0)
+           for _i in range(5) for _j in range(_i + 1, 5)]
+_lgot, _lstr, _ldr = registration.close_loop(_lbad, _ledges)
+check("a ring of exact edges pulls distributed drift back to the truth",
+      max(float(np.abs(_g - _t).max())
+          for _g, _t in zip(_lgot, _ltrue)) < 1e-9 and _lstr == [],
+      max(float(np.abs(_g - _t).max()) for _g, _t in zip(_lgot, _ltrue)))
+check("...with every exact edge kept: agreement is not rationed",
+      _ldr == [], _ldr)
+check("...and the fixed pose is the gauge: it did not move at all",
+      float(np.abs(_lgot[0] - _lbad[0]).max()) == 0.0)
+
+# ⛔ A POSE NO CHAIN OF EDGES REACHES CANNOT BE ADJUSTED, and saying nothing
+# would let an untouched scan pass as an adjusted one.
+_lcut = [_e for _e in _ledges if 4 not in (_e[0], _e[1])]
+_lgot2, _lstr2, _ = registration.close_loop(_lbad, _lcut)
+check("A POSE NO EDGE TIES TO THE FIXED ONE COMES BACK UNCHANGED, AND NAMED",
+      _lstr2 == [4] and float(np.abs(_lgot2[4] - _lbad[4]).max()) == 0.0,
+      _lstr2)
+check("...while the poses the edges do reach still recover",
+      max(float(np.abs(_g - _t).max())
+          for _g, _t in zip(_lgot2[:4], _ltrue[:4])) < 1e-9)
+
+# A chain has no loop to close: the edges are satisfiable exactly, so the
+# adjustment reproduces them exactly rather than inventing a compromise.
+_lchain = [(_i, _i + 1, np.linalg.inv(_ltrue[_i]) @ _ltrue[_i + 1], 2.0)
+           for _i in range(4)]
+_lgot3, _, _ = registration.close_loop(_lbad, _lchain)
+check("a pure chain is reproduced exactly, not compromised",
+      max(float(np.abs(_g - _t).max())
+          for _g, _t in zip(_lgot3, _ltrue)) < 1e-9)
+
+# ⛔⛔ THE GRAPH-LEVEL ROGUE RULE. A wrong-basin edge looks healthy on every
+# per-edge score -- measured in an early cut of the ray-cast room below,
+# where a column stood between two tripods: that pair answered
+# exactly 0.800 m off truth and read 0.17 m against a 1.0 m bar. Only the
+# solved graph can see it: every other path between those two poses says
+# something else. Here edge (0,1) is poisoned by 0.8 m while the rest are
+# exact; it must be dropped BY NAME and the recovery still land on truth.
+_lshift8 = np.eye(4)
+_lshift8[0, 3] = 0.8
+_lpois = [(_i, _j,
+           (np.linalg.inv(_ltrue[_i]) @ _lshift8 @ _ltrue[_j])
+           if (_i, _j) == (0, 1)
+           else np.linalg.inv(_ltrue[_i]) @ _ltrue[_j], 1.0)
+          for _i in range(5) for _j in range(_i + 1, 5)]
+_lgot4, _lstr4, _ldr4 = registration.close_loop(_lbad, _lpois)
+check("AN EDGE THE ADJUSTED SURVEY DISOWNS IS DROPPED, BY NAME",
+      _ldr4 == [(0, 1)], _ldr4)
+check("...and with it gone the survey still lands on the truth",
+      max(float(np.abs(_g - _t).max())
+          for _g, _t in zip(_lgot4, _ltrue)) < 1e-9 and _lstr4 == [],
+      max(float(np.abs(_g - _t).max()) for _g, _t in zip(_lgot4, _ltrue)))
+
+if registration.have_gicp():
+    _l2 = align.AlignServer([], out_path=None)
+    _l2.scans = [_mscan("a", _ma),
+                 _mscan("b", _mb_own, registration.Setup(3.5, 1.0, 0.0, 0.0))]
+    _l2ref = _l2.solve_survey()
+    check("two captures are refused: one link has nothing to disagree with",
+          not _l2ref["ok"] and "three placed" in _l2ref["error"],
+          _l2ref.get("error"))
+    # ⭐⭐ THE END-TO-END CASE, ON RAY-CAST ROOMS: four captures round a
+    # loop, every one nudged a little (the drift no one scan owns), and one
+    # press puts the whole survey back. The corruptions are centimetres --
+    # inside every refinement limit, invisible to any pair on its own.
+    # ⚠ SCAN 1 STANDS CLEAR OF THE COLUMNS ON PURPOSE. Its first position,
+    # (3.5, 0.5), put column 1 squarely between it and the reference: the
+    # panorama residual of that pair read 1.09 m AT TRUTH (pure occlusion),
+    # and GICP had a wrong basin exactly 0.800 m along x -- which is what
+    # forced the graph-level rogue rule into existence, so it was a fine
+    # find, but a terrible fixture to assert recovery on.
+    _lo = [(0.0, 0.0), (2.6, -3.2), (3.2, 3.4), (-0.4, 3.0)]
+    _lyaw = [0.0, 35.0, -120.0, 75.0]
+    _ltruth = [registration.Setup(_x, _y, 0.0, _w)
+               for (_x, _y), _w in zip(_lo, _lyaw)]
+    _lsrv = align.AlignServer([], out_path=None)
+    _lsrv.scans = []
+    for _k, ((_x, _y), _w) in enumerate(zip(_lo, _lyaw)):
+        _own = registration.Setup(0.0, 0.0, 0.0, -_w).apply(
+            _room_from([_x, _y, 1.4], seed=20 + _k))
+        _lsrv.scans.append(_mscan("loop%d" % _k, _own))
+    _ldrift = [(0.0, 0.0, 0.0), (0.03, -0.02, 0.2),
+               (0.05, 0.04, 0.45), (-0.02, 0.05, 0.3)]
+    for _k, (_dx, _dy, _dw) in enumerate(_ldrift):
+        _t = _ltruth[_k]
+        _lsrv.scans[_k].setup = registration.Setup(
+            _t.dx + _dx, _t.dy + _dy, 0.0, _t.yaw_deg + _dw)
+        _lsrv.scans[_k].rung = registration.GICP_LADDER[-1]
+    _lr = _lsrv.solve_survey()
+    check("ONE PRESS MOVES THE WHOLE SURVEY BACK INTO AGREEMENT",
+          _lr.get("ok") and _lr.get("applied"),
+          _lr.get("error") or _lr.get("text"))
+    if _lr.get("ok") and _lr.get("applied"):
+        _lworst = max(
+            max(abs(_s.setup.dx - _t.dx), abs(_s.setup.dy - _t.dy))
+            for _s, _t in zip(_lsrv.scans, _ltruth))
+        check("...and every capture lands back where it truly stood",
+              _lworst < 0.03, _lworst)
+        check("...the survey measures BETTER afterwards, which is the "
+              "all-or-nothing line", _lr["after"] < _lr["before"],
+              (_lr["before"], _lr["after"]))
+        check("...the moved captures are named, largest first",
+              len(_lr["moved"]) >= 2
+              and _lr["moved"] == sorted(_lr["moved"],
+                                         key=lambda m: -m["by_m"]),
+              _lr["moved"])
+        check("...the reference did not move: it is the gauge",
+              all(m["index"] != 0 for m in _lr["moved"]), _lr["moved"])
+        check("...every adjusted placement goes back over the wire, or the "
+              "screen shows the old survey",
+              sorted(t["index"] for t in _lr["setups"]) == [0, 1, 2, 3],
+              _lr["setups"])
+        check("...and a moved capture restarts the pair ladder",
+              all(_lsrv.scans[m["index"]].rung is None
+                  for m in _lr["moved"]))
+        # The wrong-basin edge this fixture happens to produce (0-1, off by
+        # exactly 0.800 m at rc 0.17) is disowned and NAMED when it appears;
+        # the poisoned-ring check above pins that path deterministically, so
+        # here the claim is only that a disowned pair is never silent.
+        check("...and any pair the survey disowned is a NAMED finding",
+              all("wrong hollow" in o["why"]
+                  for o in (_lr.get("odd") or [])), _lr.get("odd"))
+        # ⛔ PRESSED AGAIN, IT SAYS THE SURVEY ALREADY AGREES -- and does not
+        # stir the poses to manufacture an improvement.
+        _lag = [_s.setup for _s in _lsrv.scans]
+        _lr2 = _lsrv.solve_survey()
+        check("pressed again, nothing moves and it says so",
+              _lr2.get("ok") and not _lr2.get("applied")
+              and "nothing was moved" in _lr2["text"]
+              and all(_s.setup is _w
+                      for _s, _w in zip(_lsrv.scans, _lag)),
+              _lr2.get("text"))
+
+    # ⛔⛔ A CAPTURE WHOSE EVERY PAIR READS FAR APART IS LEFT OUT AND NAMED,
+    # NOT EATEN. ⚠ THE ROTTEN CAPTURE IS A NOISE BALL, AND HONESTY REQUIRES
+    # SAYING WHY: the gate is 75 sampling floors, calibrated on the live job
+    # (real misplacements read 0.8-2.0 m against a 0.42 m bar there), but
+    # these 70k-point fixture rooms put the bar near 1.0 m, and NO room-shaped
+    # cloud crosses it -- a scan 5 m off reads 0.2-0.9, a 40-degree wrong
+    # heading 0.6-0.7, all occlusion-scale. What deterministically reads far
+    # past any bar is a capture that is not a room at all -- which is also a
+    # real failure (a swung tripod, a decode gone wrong). The solver is
+    # stubbed to "keep the start" so the rc the real judge measures is the
+    # miss itself, not whatever basin GICP slides junk into.
+    for _k in range(4):
+        _lsrv.scans[_k].setup = registration.Setup(
+            _ltruth[_k].dx, _ltruth[_k].dy, 0.0, _ltruth[_k].yaw_deg)
+        _lsrv.scans[_k].lean = registration.Lean()
+    _lreal3 = _lsrv.scans[3]
+    _ljunk3 = _mscan("loop3",
+                     np.random.RandomState(9).uniform(-8.0, 8.0,
+                                                      (70_000, 3)),
+                     registration.Setup(_ltruth[3].dx, _ltruth[3].dy, 0.0,
+                                        _ltruth[3].yaw_deg))
+    _lsrv.scans[3] = _ljunk3
+
+    def _lstay(ref, mov, start=None, lean=None, voxel=None, **kw):
+        _s = registration.Solution(start, 0.001, 0.001, 1.0)
+        _s.kept_start = True
+        _s.lean = lean or registration.Lean()
+        _s.voxel = voxel
+        return _s
+
+    _real_gicp = registration.solve_gicp
+    registration.solve_gicp = _lstay
+    try:
+        _lr3 = _lsrv.solve_survey()
+    finally:
+        registration.solve_gicp = _real_gicp
+        _lsrv.scans[3] = _lreal3
+    check("A ROTTEN CAPTURE'S PAIRS ARE LEFT OUT AND NAMED, NOT EATEN",
+          _lr3.get("ok") and len(_lr3.get("odd") or []) == 3
+          and all("check that pair by eye" in o["why"] for o in _lr3["odd"]),
+          (_lr3.get("error"), _lr3.get("odd")))
+    check("...the capture they all point at is STRANDED, not dragged",
+          _lr3.get("ok") and _lr3.get("stranded") == ["loop3"]
+          and abs(_ljunk3.setup.dx - _ltruth[3].dx) < 1e-9,
+          (_lr3.get("stranded"), _lr3.get("error")))
+    check("...and a kept survey with a stranded capture says so, instead of "
+          "'already agrees' full stop",
+          not _lr3.get("applied") and "Left out entirely" in _lr3["text"],
+          _lr3.get("text"))
+
+    # ⛔⛔ AND THE GRAPH ITSELF IS HELD TO THE REFINEMENT LINE. Edges can
+    # each sit inside the per-pair limits and still, chained, carry one
+    # capture metres from where it stands -- so every capture's TOTAL move is
+    # checked against the same line, and past it NOTHING moves. The stub
+    # tells one consistent story: every capture k truly stands 0.45*k further
+    # along x -- each surviving edge is an honest-looking 0.45-0.9 m (inside
+    # the limits, and small enough that the judge prices it under the
+    # fixture's rogue bar), the 1.35 m end-to-end edge is refused as a
+    # different answer, and what remains still chains to 1.35 m at the far
+    # end.
+    _lsrv.scans[3].setup = registration.Setup(
+        _ltruth[3].dx, _ltruth[3].dy, 0.0, _ltruth[3].yaw_deg)
+    _lwas = [(_s.setup.dx, _s.setup.dy) for _s in _lsrv.scans]
+    _lcur = [registration._pose_matrix(_s.setup, _s.lean)
+             for _s in _lsrv.scans]
+    _lwho = {id(_s.sample): _k for _k, _s in enumerate(_lsrv.scans)}
+
+    def _lshift(k):
+        _e = np.eye(4)
+        _e[0, 3] = 0.45 * k
+        return _e
+
+    def _lpush(ref, mov, start=None, lean=None, voxel=None, **kw):
+        _i, _j = _lwho[id(ref)], _lwho[id(mov)]
+        _su, _le, _ok = registration._decompose(
+            np.linalg.inv(_lshift(_i) @ _lcur[_i])
+            @ (_lshift(_j) @ _lcur[_j]))
+        _s = registration.Solution(_su, 0.001, 0.001, 1.0)
+        _s.lean = _le
+        _s.voxel = voxel
+        return _s
+
+    registration.solve_gicp = _lpush
+    try:
+        _lr4 = _lsrv.solve_survey()
+    finally:
+        registration.solve_gicp = _real_gicp
+    check("EDGES EACH INSIDE THE LIMITS CAN STILL DRAG A CAPTURE PAST THEM, "
+          "AND THEN NOTHING MOVES AT ALL",
+          not _lr4.get("ok")
+          and "different answer about where it stands" in _lr4["error"],
+          (_lr4.get("ok"), _lr4.get("error") or _lr4.get("text")))
+    check("...and 'nothing' means nothing: every capture is exactly where "
+          "it was",
+          all(_s.setup.dx == _x and _s.setup.dy == _y
+              for _s, (_x, _y) in zip(_lsrv.scans, _lwas)))
+
+    # ⛔ A PAIR THE GRAPH DISOWNS REACHES THE OPERATOR BY NAME. The clean
+    # fixture above never produces one (that is what clean means), so the
+    # e2e check on `odd` is passive there -- this one forces the graph to
+    # disown a pair and asserts the naming actively, or a reversion that
+    # swallowed the report would pass the suite.
+    _real_close = registration.close_loop
+    registration.close_loop = (lambda poses, edges, fixed=0, **kw:
+                               (list(poses), [], [(0, 1)]))
+    registration.solve_gicp = _lstay
+    try:
+        _lr5 = _lsrv.solve_survey()
+    finally:
+        registration.close_loop = _real_close
+        registration.solve_gicp = _real_gicp
+    check("a pair the graph disowned is REPORTED, wrong hollow and all",
+          _lr5.get("ok")
+          and any("wrong hollow" in o["why"] and "loop0" in o["name"]
+                  and "loop1" in o["name"]
+                  for o in _lr5.get("odd") or []),
+          (_lr5.get("error"), _lr5.get("odd")))
+
+check("the page has a button for the whole survey, wired to a route the "
+      "server answers",
+      "id=\"survey\"" in _msrc and "$('survey').onclick=surveyAlign" in _msrc
+      and 'path == "/solve/survey"' in _msrc)
+# ⛔ ONE UNDO FOR THE WHOLE ADJUSTMENT -- it moves every placed capture, and
+# an undo that put back one scan would leave the survey in a state nobody
+# made.
+check("...and its undo covers EVERY scan in one entry",
+      "V.scans.map(s=>undoSetup(s.index))" in _msrc
+      and "remember('closing the loop'" in _msrc)
 
 # --- where zero is, and the grid that shows it -------------------------------
 print("\nthe world grid, and where zero is")

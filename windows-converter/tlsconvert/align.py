@@ -864,6 +864,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.solve_multi(int(body.get("index", 1)),
                                                   body.get("start"),
                                                   body.get("targets")))
+            if path == "/solve/survey":
+                srv.take_leans(body.get("leans"))
+                return self._json(srv.solve_survey())
             if path == "/pairs":
                 srv.take_leans(body.get("leans"))
                 return self._json(srv.align_pairs(int(body.get("index", 1)),
@@ -1677,6 +1680,287 @@ class AlignServer(object):
                 # dropping it silently would spend that evidence on nothing.
                 "rogue": [{"name": nm, "residual": float(r)}
                           for nm, r in rogue],
+                "text": text}
+
+    def solve_survey(self):
+        """
+        Move EVERY placed capture a little, so the walk agrees with itself.
+
+        ⭐⭐ THE ERROR THIS EXISTS FOR IS IN NO ONE SCAN, WHICH IS WHY NO
+        PER-SCAN TOOL CAN SPEND IT. Aligning a walk pair by pair leaves each
+        link millimetres out, and where the walk comes back to its start the
+        sum of those turns up in one place. Measured on the live restaurant
+        job: scan 18 stood 0.026 m from its walk neighbours and 0.307-0.392 m
+        from the two captures at the start of the walk -- and so did scan 17,
+        and the multi fit rightly refused to move either, because no rigid
+        move of ONE scan can satisfy both sides of a disagreement that is
+        distributed over sixteen links. What the operator saw was that sum:
+        a bartop floating 0.2 m above itself. This measures every pair of
+        placed captures standing in reach of each other and then moves the
+        WHOLE survey at once (`registration.close_loop`), so each link gives
+        back the few millimetres it took.
+
+        ⛔ MEASURED FRESH, NEVER TRUSTED FROM THE POSES. The graph is only as
+        honest as its edges, so every edge is a GICP fit run NOW, from the
+        current relative pose, and priced by the fixed capture's own panorama
+        -- the same judge every other fit answers to. An edge that wants to
+        move a pair past the refinement limits is a DIFFERENT ANSWER about
+        where one of those scans is, so it is left out and NAMED -- fed to
+        the graph it would not close a loop, it would drag the room toward a
+        misplacement.
+
+        ⛔ ALL OR NOTHING. Either the adjusted survey measures better than
+        the current one and every capture moves together, or nothing moves at
+        all. A survey half-adjusted is worse than either whole state.
+        """
+        if not registration.have_gicp():
+            return {"ok": False,
+                    "error": "closing the loop needs the GICP solver, which "
+                             "is not available in this build."}
+        nodes = [k for k, s in enumerate(self.scans)
+                 if getattr(s, "source", "capture") == "capture"
+                 and s.sample is not None and len(s.sample)
+                 and (k == 0 or s.setup.sited)]
+        if len(nodes) < 3:
+            return {"ok": False,
+                    "error": "closing the loop needs at least three placed "
+                             "captures — with two there is only one link, "
+                             "and nothing for it to disagree with. Use "
+                             "Auto-align, or fit a pair."}
+        pairs = []
+        for a, i in enumerate(nodes):
+            for j in nodes[a + 1:]:
+                d = float(np.hypot(self.scans[i].setup.dx
+                                   - self.scans[j].setup.dx,
+                                   self.scans[i].setup.dy
+                                   - self.scans[j].setup.dy))
+                if d <= registration.MULTI_REACH_M:
+                    pairs.append((i, j))
+        if not pairs:
+            return {"ok": False,
+                    "error": "no two placed captures stand within reach of "
+                             "each other, so there are no pairs to measure."}
+
+        judges, edges, odd, blind = {}, [], [], 0
+        fine = registration.SURVEY_EDGE_VOXELS[-1]       # scored where solved
+        old = [(s.setup, getattr(s, "lean", None) or registration.Lean())
+               for s in self.scans]
+        was_pose = [registration._pose_matrix(su, le) for su, le in old]
+        self._progress = {"stage": "starting", "n": 0, "total": len(pairs),
+                          "busy": True}
+        try:
+            for n, (i, j) in enumerate(pairs):
+                self._note("measuring %s against %s"
+                           % (self.scans[j].name, self.scans[i].name),
+                           n, len(pairs))
+                s0, l0, ok = registration._decompose(
+                    np.linalg.inv(was_pose[i]) @ was_pose[j])
+                if not ok:
+                    odd.append({"name": "%s / %s" % (self.scans[i].name,
+                                                     self.scans[j].name),
+                                "why": "their placements differ by a tilt "
+                                       "past what a standing tripod can "
+                                       "hold"})
+                    continue
+                jd = judges.get(i)
+                if jd is None:
+                    jd = judges[i] = registration.Judge(
+                        [(self.scans[i].sample, None)])
+                ss, ll, sol = s0, l0, None
+                for voxel in registration.SURVEY_EDGE_VOXELS:
+                    got = registration.solve_gicp(
+                        self.scans[i].sample, self.scans[j].sample,
+                        start=ss, lean=ll, voxel=voxel)
+                    if got is None:
+                        break
+                    sol = got
+                    ss, ll = sol.setup, sol.lean
+                if sol is None:
+                    continue
+                # ⛔ AN EDGE PAST THE REFINEMENT LIMITS IS A CLAIM THAT ONE OF
+                # THESE SCANS IS SOMEWHERE ELSE. That is a finding for the
+                # operator's eye, not a constraint for the graph.
+                far = registration.refine_refused(ss, ll, s0, l0)
+                if far is not None:
+                    odd.append({"name": "%s / %s" % (self.scans[i].name,
+                                                     self.scans[j].name),
+                                "why": "the pair wanted to move %.2f m and "
+                                       "turn %.1f° — a different answer, so "
+                                       "one of them is probably misplaced; "
+                                       "check that pair by eye" % far[:2]})
+                    continue
+                # Admitted at the coarse bins, like the multi fit: a view that
+                # shares enough directions there is safe all the way down.
+                (rc, nc), = jd.measure(self.scans[j].sample, ss, ll,
+                                       registration.GICP_LADDER[0])
+                if rc != rc or nc < registration.MULTI_MIN_BINS:
+                    blind += 1
+                    continue
+                # ⛔⛔ AN EDGE THAT DID NOT CONVERGE IS NOT A MEASUREMENT. A
+                # genuinely misplaced capture defeats the gate above -- GICP
+                # cannot cross metres, so it keeps the start or lands in a
+                # wrong basin NEAR it, both inside the refinement limits --
+                # but it cannot fake the residual: the pair still reads far
+                # apart after the fit. The same bar the multi fit holds a
+                # rogue neighbour to, for the same reason: fed to the graph,
+                # this edge would not close a loop, it would spread a
+                # misplacement over the whole room.
+                if rc > registration.MULTI_ROGUE_FLOORS * jd.floor():
+                    odd.append({"name": "%s / %s" % (self.scans[i].name,
+                                                     self.scans[j].name),
+                                "why": "still %.2f m apart after the fit — "
+                                       "one of them is probably misplaced; "
+                                       "check that pair by eye" % rc})
+                    continue
+                (before, _nb), = jd.measure(self.scans[j].sample, s0, l0,
+                                            fine)
+                edges.append({"i": i, "j": j, "w": float(nc),
+                              "m": registration._pose_matrix(ss, ll),
+                              "before": float(before)})
+        finally:
+            self._progress = {"stage": "done", "n": len(pairs),
+                              "total": len(pairs), "busy": False}
+        if len(edges) < len(nodes) - 1:
+            return {"ok": False, "odd": odd,
+                    "error": "only %d of the %d pairs in reach could be "
+                             "measured, which is not enough to tie %d "
+                             "captures together%s"
+                             % (len(edges), len(pairs), len(nodes),
+                                "; " + odd[0]["why"] if odd else ".")}
+
+        fixed = 0 if 0 in nodes else nodes[0]
+        new_pose, stranded, disowned = registration.close_loop(
+            was_pose, [(e["i"], e["j"], e["m"], e["w"]) for e in edges],
+            fixed=fixed)
+        stranded = [k for k in stranded if k in nodes]
+        # ⛔ AN EDGE THE SURVEY ITSELF DISOWNED IS A FINDING -- a wrong-basin
+        # fit that every per-edge score waved through, caught only because
+        # every other path between those two scans says something else.
+        for i, j in disowned:
+            odd.append({"name": "%s / %s" % (self.scans[i].name,
+                                             self.scans[j].name),
+                        "why": "its answer disagrees with every other path "
+                               "between those two captures, so the fit "
+                               "landed in the wrong hollow and was left "
+                               "out"})
+            edges = [e for e in edges
+                     if not (e["i"] == i and e["j"] == j)]
+        if not edges:
+            return {"ok": False, "odd": odd,
+                    "error": "every measured pair was disowned by the "
+                             "survey; nothing was moved. Check the pairs "
+                             "named below by eye."}
+
+        # The verdict is taken BEFORE anything is touched: price every edge
+        # at the adjusted poses, against the same panoramas.
+        moved, tot_b = [], 0.0
+        tot_a = tot_w = 0.0
+        for e in edges:
+            s1, l1, ok = registration._decompose(
+                np.linalg.inv(new_pose[e["i"]]) @ new_pose[e["j"]])
+            if not ok:
+                return {"ok": False, "odd": odd,
+                        "error": "the adjustment carried a pair past what a "
+                                 "standing tripod can hold; nothing was "
+                                 "moved."}
+            (now, _n), = judges[e["i"]].measure(self.scans[e["j"]].sample,
+                                                s1, l1, fine)
+            if now != now:
+                return {"ok": False, "odd": odd,
+                        "error": "the adjusted survey could not be priced; "
+                                 "nothing was moved."}
+            tot_b += e["w"] * e["before"]
+            tot_a += e["w"] * float(now)
+            tot_w += e["w"]
+            e["after"] = float(now)
+        before_m, after_m = tot_b / tot_w, tot_a / tot_w
+
+        takes = {}
+        for k in nodes:
+            su, le, ok = registration._decompose(new_pose[k])
+            if not ok:
+                return {"ok": False, "odd": odd,
+                        "error": "the adjustment wanted to tilt %s past what "
+                                 "a standing tripod can hold; nothing was "
+                                 "moved. Check its pairs by eye."
+                                 % self.scans[k].name}
+            # ⛔ THE SAME LINE EVERY OTHER FIT DRAWS. The graph distributes
+            # millimetres; a capture it wants to carry past the refinement
+            # limits means an edge fed it a misplacement the gate above did
+            # not catch, and that is a refusal, not a bigger move.
+            far = registration.refine_refused(su, le, old[k][0], old[k][1])
+            if far is not None:
+                return {"ok": False, "odd": odd,
+                        "error": "the adjustment wanted to move %s %.2f m "
+                                 "and turn it %.1f° — that is a different "
+                                 "answer about where it stands, not a "
+                                 "tightening; nothing was moved. Check that "
+                                 "scan's pairs by eye."
+                                 % ((self.scans[k].name,) + far[:2])}
+            takes[k] = (su, le)
+            by = float(np.linalg.norm(new_pose[k][:3, 3]
+                                      - was_pose[k][:3, 3]))
+            if by > 1e-4 or registration._turn_gap(su.yaw_deg,
+                                                   old[k][0].yaw_deg) > 1e-3:
+                moved.append({"index": k, "name": self.scans[k].name,
+                              "folderNo": _folder_number(self.scans[k].path),
+                              "by_m": by,
+                              "turn_deg": registration._turn_gap(
+                                  su.yaw_deg, old[k][0].yaw_deg)})
+
+        # ⛔ "BETTER BY A ROUNDING ERROR" IS NOT BETTER, and a press that
+        # moved nothing must say so rather than report an adjustment: the
+        # second press on an already-closed survey shaves micrometres off the
+        # score, and reporting that as "0 captures moved, the largest by
+        # 0.00 m" is a claim of work that did not happen.
+        if after_m >= before_m - 1e-6 or not moved:
+            text = ("measured %d pairs across %d captures — the survey "
+                    "already agrees with itself as well as these "
+                    "measurements can make it (%.3f m), so nothing was "
+                    "moved." % (len(edges), len(nodes), before_m))
+            if stranded:
+                text += (" ⚠ Left out entirely, because no measurable pair "
+                         "ties them to the reference: %s."
+                         % ", ".join(self.scans[k].name for k in stranded))
+            return {"ok": True, "applied": False, "moved": [], "odd": odd,
+                    "before": before_m, "after": before_m, "blind": blind,
+                    "edges": len(edges), "captures": len(nodes),
+                    "stranded": [self.scans[k].name for k in stranded],
+                    "setups": [], "text": text}
+
+        followed = []
+        for k, (su, le) in takes.items():
+            was_lean = getattr(self.scans[k], "lean", None)
+            self.scans[k].setup, self.scans[k].lean = su, le
+            # A moved scan restarts the pair ladder: its placement is new.
+            self.scans[k].rung = None
+            # ⛔⛔ THE PHOTOGRAPH FOLLOWS THE FRAME IT WAS SOLVED IN, through
+            # this door exactly as through every other one that moves a lean.
+            got = self._follow_lean(self.scans[k], was_lean)
+            if got:
+                followed.append("%s: %s" % (self.scans[k].name, got["note"]))
+
+        worst = max(edges, key=lambda e: e["before"])
+        text = ("measured %d pairs across %d captures, then moved the whole "
+                "survey together — the walk disagreed with itself by %.3f m "
+                "on average (worst pair %.3f m) and now by %.3f m. %d "
+                "captures moved, the largest by %.2f m."
+                % (len(edges), len(nodes), before_m, worst["before"],
+                   after_m, len(moved),
+                   max([m["by_m"] for m in moved] or [0.0])))
+        if stranded:
+            text += (" ⚠ Not adjusted, because no chain of measurable pairs "
+                     "ties them to the reference: %s."
+                     % ", ".join(self.scans[k].name for k in stranded))
+        return {"ok": True, "applied": True, "odd": odd,
+                "before": before_m, "after": after_m, "blind": blind,
+                "edges": len(edges), "captures": len(nodes),
+                "stranded": [self.scans[k].name for k in stranded],
+                "moved": sorted(moved, key=lambda m: -m["by_m"]),
+                "followed": followed,
+                "setups": [{"index": k,
+                            "setup": _placement(self.scans[k])}
+                           for k in sorted(takes)],
                 "text": text}
 
     def solve(self, index, start=None, target=None):
@@ -4583,6 +4867,18 @@ PAGE = r"""<!doctype html>
     neighbours keep each other honest. Place it roughly first — this refines,
     it does not search.</div>
   <div id="mused" style="font-size:10.5px;color:var(--faint);margin-bottom:5px"></div>
+  <hr>
+  <button class="go" id="survey">Close the loop</button>
+  <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
+    When a walk of captures comes back to where it started, each pairwise fit
+    has left a few millimetres behind, and the sum lands in one place — the
+    last scans disagree with the first ones even though every scan agrees
+    with its neighbours. That error is in <b>no one scan</b>, so no
+    single-scan fit can spend it. This measures every pair of placed captures
+    standing in reach of each other and then moves the <b>whole survey</b> at
+    once, each link giving back what it took. Nothing moves unless the survey
+    measures better afterwards.</div>
+  <div id="sused" style="font-size:10.5px;color:var(--faint);margin-bottom:5px"></div>
   </div></div>
 <div class="tray" id="ty_pairs"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
@@ -7550,6 +7846,65 @@ async function multiAlign(){
         j.trustworthy ? null : 'warn');
   }catch(e){ watch(false); say('Fit to neighbours failed: '+e.message,'bad'); }
   $('multi').disabled=false; $('auto').disabled=false;
+}
+
+/* ⭐⭐ MOVE THE WHOLE SURVEY AT ONCE — the loop-closure press. The error it
+   spends is in NO one scan (see `solve_survey`), so unlike every button above
+   it takes no selection: the whole walk is the thing being fitted.
+
+   ⛔ ONE UNDO FOR THE WHOLE ADJUSTMENT. It moves every placed capture a
+   little, and an undo that put back one scan would leave the survey in a
+   state nobody made — the same rule `undoLevel` states for the world frame. */
+async function surveyAlign(){
+  const backs=V.scans.map(s=>undoSetup(s.index)).filter(b=>b);
+  remember('closing the loop', ()=>{ for(const b of backs) b(); });
+  say('measuring every pair of captures standing in reach… one fit per '+
+      'pair, so on a survey of many scans this can take tens of minutes — '+
+      'the bar below shows which pair it is on.');
+  watch(true);
+  $('survey').disabled=true; $('multi').disabled=true; $('auto').disabled=true;
+  try{
+    const r=await fetch('solve/survey',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({leans:leansWire()})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'adjustment failed');
+    for(const t of (j.setups||[])){
+      const s=V.scans.find(x=>x.index===t.index);
+      if(s) s.setup=t.setup;
+    }
+    syncSliders(); invalidate(); editsFollow(); dirty();
+    watch(false);
+    $('sused').innerHTML =
+      ((j.moved&&j.moved.length)
+        ? j.moved.map(m=>'<span class="fno">'+(m.folderNo?'#'+m.folderNo:'?')+
+            '</span> '+m.name+' <span class="num">'+m.by_m.toFixed(3)+
+            ' m, '+m.turn_deg.toFixed(2)+'&deg;</span>').join('<br>') : '')+
+      ((j.stranded&&j.stranded.length)
+        ? '<br><span style="color:var(--orange)">not adjusted — no chain '+
+          'of measurable pairs ties them to the reference: '+
+          j.stranded.join(', ')+'</span>' : '')+
+      /* ⛔ A PAIR LEFT OUT FOR WANTING A DIFFERENT ANSWER IS A FINDING. It is
+         the same evidence the multi fit calls a rogue: something in that pair
+         is misplaced, and the graph refusing to eat it is what kept the
+         misplacement from being spread over the whole room.
+         ⚠ CAPPED, BECAUSE THE LIVE JOB PRODUCED 31 OF THEM. Most were pairs
+         in reach through a wall — real refusals, not findings of equal
+         weight — and 31 lines of orange drown the two that matter. The
+         wrong-hollow ones go first: an edge the survey itself disowned is
+         the strongest of these signals. */
+      ((j.odd&&j.odd.length)
+        ? '<br><span style="color:var(--orange)">left out ('+j.odd.length+
+          ' pair'+(j.odd.length>1?'s':'')+'): '+
+          j.odd.slice().sort((a,b)=>
+            (b.why.indexOf('hollow')>=0)-(a.why.indexOf('hollow')>=0))
+           .slice(0,6).map(o=>o.name+' — '+o.why).join('; ')+
+          (j.odd.length>6 ? '; …and '+(j.odd.length-6)+' more' : '')+
+          '</span>' : '');
+    say(j.text, j.applied ? null : 'warn');
+  }catch(e){ watch(false); say('Close the loop failed: '+e.message,'bad'); }
+  $('survey').disabled=false; $('multi').disabled=false;
+  $('auto').disabled=false;
 }
 
 /* ⭐ EDITS ARE OPERATIONS, NOT EDITED POINTS: the export re-reads the captures
@@ -11737,6 +12092,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('ortho').onclick=()=>setOrtho(!V.ortho);
   $('auto').onclick=autoAlign;
   $('multi').onclick=multiAlign;
+  $('survey').onclick=surveyAlign;
   $('save').onclick=()=>saveMerged(false);
   $('savewhere').onclick=chooseOut;
   $('saveclip').onclick=()=>saveMerged(true);
