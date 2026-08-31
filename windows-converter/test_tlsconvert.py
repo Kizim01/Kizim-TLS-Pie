@@ -7816,6 +7816,26 @@ if registration.have_gicp():
                   for o in _lr5.get("odd") or []),
           (_lr5.get("error"), _lr5.get("odd")))
 
+# ⭐ THE EDGE MEASUREMENT IS CAPPED, BECAUSE THE CAP WAS MEASURED FIRST: on
+# the live 18-capture job the capped press landed within 0.017 m and 0.33°
+# of the full-density press on every capture (corrections being 0.2-0.45 m)
+# and took 546 s against 1441 s. Only the survey caps -- a pair or multi fit
+# is one fit, not one vote among fifty.
+_lbig = np.zeros((int(registration.SURVEY_EDGE_POINTS * 3.5), 3))
+_lthin = align.AlignServer._survey_sample(_lbig)
+check("a survey edge measures a CAPPED cloud, near the measured budget",
+      registration.SURVEY_EDGE_POINTS * 0.5 <= len(_lthin)
+      <= registration.SURVEY_EDGE_POINTS * 2.0, len(_lthin))
+_lsmall = np.zeros((1000, 3))
+check("...and a cloud already under the cap comes back as the SAME object, "
+      "so small jobs pay nothing",
+      align.AlignServer._survey_sample(_lsmall) is _lsmall)
+check("...and it is the capped view the press actually measures with",
+      "samp = {k: self._survey_sample(self.scans[k].sample) for k in nodes}"
+      in _ALIGN_SRC
+      and "self.scans[i].sample" not in
+      _ALIGN_SRC.split("def solve_survey")[1].split("def solve(")[0])
+
 check("the page has a button for the whole survey, wired to a route the "
       "server answers",
       "id=\"survey\"" in _msrc and "$('survey').onclick=surveyAlign" in _msrc

@@ -1010,6 +1010,16 @@ SURVEY_ROUNDS = 3
 #: already individually solved, so the top rung would be spent re-finding
 #: what is already known, across every pair in the survey.
 SURVEY_EDGE_VOXELS = (0.05, 0.02)
+#: ⭐ HOW MANY POINTS AN EDGE MEASUREMENT ACTUALLY NEEDS — measured, not
+#: guessed, on the live 18-capture job (2026-08-31). At full density
+#: (1.2M-point samples) the press took 1441 s; capped near 300k it took
+#: 546 s and every capture landed within 0.017 m and 0.33° of the
+#: full-density answer — inside the 1-3 cm wobble the weak cross-wall edges
+#: show under ANY resampling, against corrections of 0.2-0.45 m. Only the
+#: SURVEY's edges are capped: the pair and multi fits keep the full sample,
+#: because there one fit is the whole answer rather than one vote among
+#: fifty.
+SURVEY_EDGE_POINTS = 300_000
 
 
 def _rot_vector(R):

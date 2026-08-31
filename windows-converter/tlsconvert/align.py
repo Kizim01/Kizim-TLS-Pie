@@ -1682,6 +1682,21 @@ class AlignServer(object):
                           for nm, r in rogue],
                 "text": text}
 
+    @staticmethod
+    def _survey_sample(sample):
+        """
+        The cloud a SURVEY edge is measured on: capped, never copied idly.
+
+        ⭐ MEASURED BEFORE BUILT — see `registration.SURVEY_EDGE_POINTS`. A
+        cloud already under the cap comes back as the SAME object, so the
+        ordinary suite fixtures and small jobs pay nothing; a capture's
+        1.2M-point sample comes back strided down to roughly the cap.
+        """
+        stride = max(1, len(sample) // registration.SURVEY_EDGE_POINTS)
+        if stride == 1:
+            return sample
+        return np.ascontiguousarray(sample[::stride])
+
     def solve_survey(self):
         """
         Move EVERY placed capture a little, so the walk agrees with itself.
@@ -1741,6 +1756,10 @@ class AlignServer(object):
                     "error": "no two placed captures stand within reach of "
                              "each other, so there are no pairs to measure."}
 
+        # ⭐ ONE CAPPED VIEW PER CAPTURE, built once and used for EVERYTHING
+        # in this press — solver, judge and verdict alike, so the floor the
+        # bars scale from is the floor of the points actually measured.
+        samp = {k: self._survey_sample(self.scans[k].sample) for k in nodes}
         judges, edges, odd, blind = {}, [], [], 0
         fine = registration.SURVEY_EDGE_VOXELS[-1]       # scored where solved
         old = [(s.setup, getattr(s, "lean", None) or registration.Lean())
@@ -1764,12 +1783,11 @@ class AlignServer(object):
                     continue
                 jd = judges.get(i)
                 if jd is None:
-                    jd = judges[i] = registration.Judge(
-                        [(self.scans[i].sample, None)])
+                    jd = judges[i] = registration.Judge([(samp[i], None)])
                 ss, ll, sol = s0, l0, None
                 for voxel in registration.SURVEY_EDGE_VOXELS:
                     got = registration.solve_gicp(
-                        self.scans[i].sample, self.scans[j].sample,
+                        samp[i], samp[j],
                         start=ss, lean=ll, voxel=voxel)
                     if got is None:
                         break
@@ -1791,7 +1809,7 @@ class AlignServer(object):
                     continue
                 # Admitted at the coarse bins, like the multi fit: a view that
                 # shares enough directions there is safe all the way down.
-                (rc, nc), = jd.measure(self.scans[j].sample, ss, ll,
+                (rc, nc), = jd.measure(samp[j], ss, ll,
                                        registration.GICP_LADDER[0])
                 if rc != rc or nc < registration.MULTI_MIN_BINS:
                     blind += 1
@@ -1812,8 +1830,7 @@ class AlignServer(object):
                                        "one of them is probably misplaced; "
                                        "check that pair by eye" % rc})
                     continue
-                (before, _nb), = jd.measure(self.scans[j].sample, s0, l0,
-                                            fine)
+                (before, _nb), = jd.measure(samp[j], s0, l0, fine)
                 edges.append({"i": i, "j": j, "w": float(nc),
                               "m": registration._pose_matrix(ss, ll),
                               "before": float(before)})
@@ -1863,8 +1880,7 @@ class AlignServer(object):
                         "error": "the adjustment carried a pair past what a "
                                  "standing tripod can hold; nothing was "
                                  "moved."}
-            (now, _n), = judges[e["i"]].measure(self.scans[e["j"]].sample,
-                                                s1, l1, fine)
+            (now, _n), = judges[e["i"]].measure(samp[e["j"]], s1, l1, fine)
             if now != now:
                 return {"ok": False, "odd": odd,
                         "error": "the adjusted survey could not be priced; "
@@ -7859,7 +7875,7 @@ async function surveyAlign(){
   const backs=V.scans.map(s=>undoSetup(s.index)).filter(b=>b);
   remember('closing the loop', ()=>{ for(const b of backs) b(); });
   say('measuring every pair of captures standing in reach… one fit per '+
-      'pair, so on a survey of many scans this can take tens of minutes — '+
+      'pair, so on a survey of many scans this takes several minutes — '+
       'the bar below shows which pair it is on.');
   watch(true);
   $('survey').disabled=true; $('multi').disabled=true; $('auto').disabled=true;
