@@ -5269,9 +5269,22 @@ edge residual 0.195 → 0.099 m. The question the report asked: **scan 18 vs the
 **`D:\RESTAURANT SCAN\auto align error - loop closed.tlspie`** — nothing of the operator's
 overwritten.
 
-Cost honesty: **~17 s per pair ≈ 24 minutes on this survey** (1.2M-point samples, two rungs per
-edge). The page says so before starting. Queued: thin the samples for edge measurement — measure
-what density the edges actually need before building it.
+### ⭐ THE COST WAS THEN MEASURED DOWN, IN THAT ORDER
+
+A four-pair density probe (strides 1–16 on the real captures) showed near pairs land the SAME
+answer at a quarter density (≤9 mm shift) while weak cross-wall pairs wobble 1–3 cm under ANY
+resampling — so the deciding run was the FULL press, capped at ~300k points per cloud, compared
+pose-by-pose against the full-density press: **worst difference 0.017 m / 0.33° across all 18
+captures, 546 s against 1441 s.** Shipped as `registration.SURVEY_EDGE_POINTS` +
+`AlignServer._survey_sample` — the capped view feeds solver, judge and verdict alike, so the
+floors the bars scale from are the floors of the points actually measured; a cloud already under
+the cap comes back as the SAME object, so the pair/multi fits and small jobs pay nothing. Suites
+**1434 → 1437**, both new checks reversion-audited (2 of 2, named checks fired). Commit `9928141`.
+
+⚠ Left honest rather than explained: with only 4 scans resident the same full-density edges cost
+2–4 s, so the full press's 17 s/pair had another component (memory traffic with 18 clouds
+resident is the suspect, unproven). The cap makes it moot for the operator; the mechanism is
+unrecorded because it was not measured.
 
 Suites **1407 → 1434**, reversion audit **8 of 8 caught** (wrong sign, IRLS off, stranding off, rc
 bar off, drag guard off, rounding-error "improvement", unwired button, silent disown — every break
@@ -5285,8 +5298,12 @@ before reporting.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-31 09:23:58, Converter 09:23:36, tlsconvert 09:24:17, selftest 0** (RTX 3050 Ti, cuda-engine found)
-— and THIS build carries the **Close-the-loop button** (and the cut that names POINTS, from the pass before).
+**✅ THE EXES: Studio 2026-08-31 09:54:57, Converter 09:54:36, tlsconvert 09:55:16, selftest 0** (RTX 3050 Ti, cuda-engine found)
+— and THIS build carries the **Close-the-loop button with the measured edge cap** (~9 min, not 24, on the 18-capture job), and the cut that names POINTS from the pass before.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-31 09:23:58, Converter 09:23:36, tlsconvert 09:24:17, selftest 0**
+— Close-the-loop at full density (the 24-minute press).
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06, selftest 0**
