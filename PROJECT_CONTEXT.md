@@ -5296,6 +5296,27 @@ backslash halved) and the crash landed AFTER an 18-minute measurement pass, losi
 scripts that gate long work now go through the Write tool too, and persist their measurements
 before reporting.
 
+### ⚠ LIVE STATE AT SESSION END — THE OPERATOR HAS NOT PRESSED THE BUTTON YET
+
+After the rebuild, the operator reported *"scan still not aligning"* and confirmed it is **scan
+18 / the bartop, in the original project**. That is the EXPECTED state, not a failure: their 09:22
+Studio session ran the OLD exe (built 08-29, no button) and the fix is a PRESS, not automatic —
+`auto align error.tlspie` (saved 09:22:32, 18 captures) still holds the drifted poses. They were
+told: open the 09:54 Studio → Auto-align tray → **Close the loop** (~9 min), or open
+`auto align error - loop closed.tlspie` which already carries the adjustment. **If they report the
+bartop still floating AFTER pressing it in the new build, that is a genuinely new finding — ask
+what the press reported.**
+
+⚠ **Folder 20 is strained, not lost** — measured at its saved pose: 0.15–0.40 m against folders
+7/8/9/10 (in family with the survey drift), 1.9–3.7 m against 5/6/12/13 (excluded pairs, walls);
+blind single-target solves land in three DIFFERENT places (2 of 3 flagged ambiguous) — a per-scan
+fit cannot settle a scan inside a survey that disagrees with itself. Advice given: after the loop
+press, run **Fit to its neighbours** on folder 20.
+
+⚠ **Folders 19, 21, 22 exist on disk and are NOT yet imported.** The rhythm told to the operator:
+auto-align each into place as usual, then ONE Close-the-loop at the end of the survey — the press
+spends the walk's accumulated error, so it is a per-survey action, not per-scan.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE EXES: Studio 2026-08-31 09:54:57, Converter 09:54:36, tlsconvert 09:55:16, selftest 0** (RTX 3050 Ti, cuda-engine found)
