@@ -5195,10 +5195,98 @@ alongside, because the frames renumber there too and a half-correct renumbering 
   they fire only for cuts that carry no frames. A stale warning is a false statement about the
   program, not a harmless leftover.
 
+## 2026-08-31, twenty-first pass — close the loop: the error that is in no one scan
+
+Reported from the workbench: *"auto align is not working on scan 18 — the scan sits above the
+bartop from the other scans. Is there a way for auto align to look at all the existing points, not
+just the nearest neighbour?"*
+
+### ⭐⭐ AUTO-ALIGN WAS WORKING, AND THAT IS EXACTLY WHY THE BARTOP FLOATED
+
+Measured on `auto align error.tlspie` before touching anything: scan 18 read **0.026/0.037 m**
+against its walk neighbours (17, 16) and **0.307/0.392 m** against the captures from the start of
+the walk (1, 2) — and scan 17 read the same shape (0.020/0.022 against 16/18, 0.323/0.457 against
+1/2). Sixteen pairwise fits each left millimetres and a fraction of a degree; where the walk came
+back to the bar, the sum surfaced in one place. A dz sweep showed the bar scans wanting 18 dropped
+~0.2 m while the walk neighbours wanted it exactly where it was — **no rigid move of ONE scan can
+satisfy both sides of a disagreement that is distributed over sixteen links**, which is why `Fit to
+its neighbours` (which already fits against several captures at once) correctly KEPT the start when
+pressed on scan 18. The multi fit holds the survey still; the error was in the survey.
+
+⚠ A floor-height ruler nearly misled here: folder 2's floor reads +0.18 m and that is a REAL
+raised area, not drift — the pairwise fit of 2 onto 1 is exact. *A floor is not a datum in a
+restaurant.* The panorama residuals were the honest ruler.
+
+### What was built: `Close the loop` (third button in the Auto-align tray)
+
+- Every pair of placed captures within `MULTI_REACH_M` is measured FRESH — two GICP rungs
+  (`SURVEY_EDGE_VOXELS`, 0.05→0.02) from the current relative pose, priced by the fixed capture's
+  own panorama — and the whole survey is then moved at once by `registration.close_loop`, a
+  weighted pose-graph least squares (one graph Laplacian shared by all six se(3) components,
+  scan 1 the gauge, `SURVEY_ROUNDS` relinearisations).
+- ⛔ Refusals with names, never silent: an edge past the refinement limits ("a different answer"),
+  an edge still far apart after its fit (75-sampling-floor bar, same rule as the multi fit's
+  rogue), a capture the graph would carry past the limits (whole press refused), a survey that
+  does not measure BETTER afterwards (nothing moves), a capture no measurable chain ties to the
+  reference (stranded, named). One Ctrl-Z undoes the whole adjustment.
+
+### ⛔⛔ A HARD THRESHOLD ON ROTTEN EDGES FAILED MEASURABLY, AND THE FIX IS REWEIGHTING
+
+An edge can converge into a WRONG BASIN that every per-edge score waves through: in an early cut of
+the suite's ray-cast room (a column stood squarely between two tripods) a pair answered **exactly
+0.800 m off truth and priced 0.17 m against a 1.0 m bar**, and fed to plain least squares it
+dragged the whole 4-capture answer 0.36 m. The first fix — drop the worst edge past
+4×-the-median — NEVER FIRED: **the poison spreads, lifting every gap, so the rotten edge stood
+only 2.4× over the median**. Leave-one-out showed it cleanly (remaining gap 0.0000 without the
+rotten edge, ~0.19 without any other), and the shipped form is the standard robust kernel:
+**Geman-McClure IRLS** (`SURVEY_ODD_SPREAD`), first pass deliberately unweighted — before any
+solve, the honest loop-closing edges are the ones disagreeing with the drifted poses, and
+reweighting on that would mute exactly the edges the tool exists to listen to. One reweight took
+the rotten edge's factor to 0.00 and the survey to machine precision. An edge muted below
+`SURVEY_ODD_MUTED` is dropped outright and NAMED ("landed in the wrong hollow").
+
+### ⚠ FIXTURE FINDINGS, SAID PLAINLY
+
+- **The 70k-point ray-cast rooms cannot exercise the rc bar physically**: their sampling floor puts
+  the bar near 1.0 m and NO room-shaped miss crosses it (5 m off reads 0.2–0.9, a 40° wrong
+  heading 0.6–0.7) — while an honest pair with a column between its tripods read **1.09 m AT
+  TRUTH** (pure occlusion). The e2e fixture now stands scan 1 clear of the columns, and the
+  rc-bar branch is driven by a **noise-ball capture** (a real failure class: a swung tripod, a
+  decode gone wrong) with the solver stubbed to keep-start so the rc measured is the miss itself.
+- The graph-drag branch is driven by a consistent staircase stub (every capture "truly" 0.45·k
+  further along x): each edge honest-looking, the chain total 1.35 m — past the line, nothing
+  moves.
+
+### ✅ VERIFIED ON THE OPERATOR'S ACTUAL PROJECT, END TO END
+
+The shipped `solve_survey`, headless, on the current file (now **18 captures** — a folder-20 scan
+appeared mid-session, saved 02:56, so the operator is actively scanning): 82 pairs in reach, 54
+measured edges kept, 24 excluded "still apart" (mostly walls between tripods), 7 disowned by the
+graph, 4 blind; **17 captures moved, the middle of the walk giving back 0.2–0.45 m each**; mean
+edge residual 0.195 → 0.099 m. The question the report asked: **scan 18 vs the bar scans
+0.307 → 0.045 and 0.392 → 0.027 m**, walk neighbours kept (0.025/0.035), floors near tripods
+16/17/18 from +0.06/+0.12/+0.19 to **−0.003/0.000/+0.005**. Adjusted copy written to
+**`D:\RESTAURANT SCAN\auto align error - loop closed.tlspie`** — nothing of the operator's
+overwritten.
+
+Cost honesty: **~17 s per pair ≈ 24 minutes on this survey** (1.2M-point samples, two rungs per
+edge). The page says so before starting. Queued: thin the samples for edge measurement — measure
+what density the edges actually need before building it.
+
+Suites **1407 → 1434**, reversion audit **8 of 8 caught** (wrong sign, IRLS off, stranding off, rc
+bar off, drag guard off, rounding-error "improvement", unwired button, silent disown — every break
+went red on its NAMED check; restored tree green). Commit `2dee0ef` (its message says 1433; the
+final count with the disown-naming check is 1434).
+
+⚠ The `<<'PY'` heredoc trap bit AGAIN in a scratch script (`r"SCAN\\(\d+)"` arrived with the
+backslash halved) and the crash landed AFTER an 18-minute measurement pass, losing it. Scratch
+scripts that gate long work now go through the Write tool too, and persist their measurements
+before reporting.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06, selftest 0** (RTX 3050 Ti, cuda-engine found)
-— and THIS build carries the cut that names POINTS rather than a region of the room, so a delete survives moving the scan.
+⛔ **THE EXES ARE ONE PASS BEHIND: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06 (selftest 0) do NOT carry the Close-the-loop button.** The source does (commit `2dee0ef`, suites 1434, audit 8/8); the rebuild needs Studio CLOSED (`[WinError 5]` otherwise) and the operator was mid-scan when the pass ended — ask, rebuild, verify by mtime + `TLS-Pie-Studio.exe --selftest`, then update this block.
+— The 18:43 build still carries the cut that names POINTS rather than a region of the room, so a delete survives moving the scan.
 
 ⚠ The 18:07 rebuild of the same day died on `[WinError 5]` with Studio open, leaving Converter new beside a Studio and a tlsconvert that were still old. **That half state is gone; all three are 18:43-44.**
 
@@ -5218,6 +5306,8 @@ available explanation is the `openProject` two-selection split fixed in this bui
 scan 1; every control was on scan 2), which is consistent with four measurements saying the
 geometry was already at the instrument's noise floor — but that is a HYPOTHESIS, not a proven
 cause.
+
+⚠ **2026-08-31: the operator raised a NEW auto-align report on the same project** (scan 18 above the bartop). It was a DIFFERENT mechanism — loop-closure drift across the whole walk, not a per-scan fit failure — diagnosed and resolved in the twenty-first pass above. The closure of the OLD report stands; this line exists so the two are never conflated.
 
 ⚠ **THE SEEDER ONLY TOUCHES THE BLIND PATH.** A scan placed by hand goes down the hinted route
 (`autoAlign` sends `start: s.setup` whenever the scan has moved at all). The 2-of-9 → 5-of-9
