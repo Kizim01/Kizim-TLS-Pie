@@ -5285,8 +5285,12 @@ before reporting.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-⛔ **THE EXES ARE ONE PASS BEHIND: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06 (selftest 0) do NOT carry the Close-the-loop button.** The source does (commit `2dee0ef`, suites 1434, audit 8/8); the rebuild needs Studio CLOSED (`[WinError 5]` otherwise) and the operator was mid-scan when the pass ended — ask, rebuild, verify by mtime + `TLS-Pie-Studio.exe --selftest`, then update this block.
-— The 18:43 build still carries the cut that names POINTS rather than a region of the room, so a delete survives moving the scan.
+**✅ THE EXES: Studio 2026-08-31 09:23:58, Converter 09:23:36, tlsconvert 09:24:17, selftest 0** (RTX 3050 Ti, cuda-engine found)
+— and THIS build carries the **Close-the-loop button** (and the cut that names POINTS, from the pass before).
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-29 18:43:48, Converter 18:43:26, tlsconvert 18:44:06, selftest 0**
+— and THAT build carries the cut that names POINTS rather than a region of the room, so a delete survives moving the scan.
 
 ⚠ The 18:07 rebuild of the same day died on `[WinError 5]` with Studio open, leaving Converter new beside a Studio and a tlsconvert that were still old. **That half state is gone; all three are 18:43-44.**
 
