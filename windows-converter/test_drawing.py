@@ -451,7 +451,156 @@ check("the layers to extrude are declared in the file's table",
       [n for n, _ in drawing.LAYERS])
 
 
-# --- 9. the writer contract ------------------------------------------------
+# --- 9. the outline trace --------------------------------------------------
+print("\nthe base plane: a low percentile, never the minimum")
+
+
+def grid_of(ijk_list, cell=0.02):
+    ijk = np.array(ijk_list, dtype=np.int64)
+    return ijk, np.ones(ijk.shape[0], dtype=np.int64)
+
+
+# A floor at z = 0 that SLOPES, plus a handful of stray low returns -- a drain,
+# a gap under a door. The literal minimum chases those; a percentile must not.
+rng = np.random.default_rng(5)
+n = 6000
+fx = rng.uniform(0.0, 15.0, n)
+fy = rng.uniform(0.0, 10.0, n)
+fz = -0.004 * fx + rng.normal(0.0, 0.004, n)          # 0.23 deg of slope
+strays = np.array([-0.9, -0.75, -0.6, -0.55, -0.5])   # 5 of 6000
+allz = np.concatenate([fz, strays])
+allx = np.concatenate([fx, np.full(strays.size, 7.0)])
+ally = np.concatenate([fy, np.full(strays.size, 5.0)])
+CELL = 0.02
+ijk = np.column_stack([np.floor(allx / CELL), np.floor(ally / CELL),
+                       np.floor(allz / CELL)]).astype(np.int64)
+counts = np.ones(ijk.shape[0], dtype=np.int64)
+
+base, info = drawing.floor_base_z(ijk, counts, CELL, 0.0)
+check("a base plane is found", info["fitted"], info)
+check("...it sits at the LOW end of a sloping floor",
+      -0.075 <= base <= -0.03, base)
+check("...and the strays did NOT drag it down",
+      base > min(strays) + 0.4, (base, min(strays)))
+check("...the fit reports the floor's real slope (~0.23 deg)",
+      0.15 <= info["slope_deg"] <= 0.35, info["slope_deg"])
+check("...and 'lowest_seen' is kept, so the minimum is still reportable",
+      info["lowest_seen"] <= base, (info["lowest_seen"], base))
+
+
+print("\nfree space, and why a bin with no return stays dark")
+
+# A closed rectangular room with a square column standing in it.
+def ring(x0, y0, x1, y1, step=0.02):
+    xs = np.arange(x0, x1 + step, step)
+    ys = np.arange(y0, y1 + step, step)
+    pts = [np.column_stack([xs, np.full(xs.size, y0)]),
+           np.column_stack([xs, np.full(xs.size, y1)]),
+           np.column_stack([np.full(ys.size, x0), ys]),
+           np.column_stack([np.full(ys.size, x1), ys])]
+    return np.vstack(pts)
+
+
+def block(cx, cy, half, step=0.02):
+    g = np.arange(-half, half + step, step)
+    X, Y = np.meshgrid(cx + g, cy + g)
+    return np.column_stack([X.ravel(), Y.ravel()])
+
+
+walls = ring(0.0, 0.0, 6.0, 4.0)
+column = block(4.0, 2.0, 0.20)
+occupied = np.vstack([walls, column])
+
+one = drawing.free_space(occupied, [(1.5, 2.0)], CELL)[0]
+two_mask, origin = drawing.free_space(occupied, [(1.5, 2.0), (5.2, 2.0)], CELL)
+check("free space is found from one tripod", one.any())
+check("...and two tripods see MORE than one (the column's shadow fills)",
+      two_mask.sum() > one.sum(), (int(one.sum()), int(two_mask.sum())))
+
+# ⛔ The no-leak rule: free space must stay inside the room.
+area_m2 = float(two_mask.sum()) * CELL * CELL
+check("...free space is bounded by the walls, not the horizon",
+      18.0 <= area_m2 <= 24.0, area_m2)
+
+# An open side: the wall removed on x = 6 leaves bins with no return at all.
+open_walls = walls[walls[:, 0] < 5.99]
+leak = drawing.free_space(open_walls, [(1.5, 2.0)], CELL)[0]
+leak_area = float(leak.sum()) * CELL * CELL
+check("a direction with NO return is not claimed as free",
+      leak_area <= area_m2 + 1.0, (leak_area, area_m2))
+
+
+print("\ntracing: the outline, and the holes that are the structures")
+
+loops = drawing.trace_loops(two_mask, CELL, origin)
+check("at least one loop is traced", len(loops) >= 1, len(loops))
+outer = [l for l in loops if l["outer"]]
+holes = [l for l in loops if not l["outer"]]
+check("...exactly one is the OUTER boundary", len(outer) == 1,
+      [round(l["area_m2"], 2) for l in loops])
+check("...its area is the room, near enough",
+      18.0 <= outer[0]["area_m2"] <= 24.5, outer[0]["area_m2"])
+check("...and the column comes back as a HOLE, with no extra pass",
+      len(holes) >= 1, len(holes))
+if holes:
+    big = max(holes, key=lambda l: l["area_m2"])
+    check("...the hole is about the column's own size (0.4 x 0.4 m)",
+          0.05 <= big["area_m2"] <= 0.60, big["area_m2"])
+
+# ⭐ The sign convention is what separates them, so pin it directly.
+sq = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]])
+ccw = 0.5 * float(np.sum(sq[:, 0] * np.roll(sq[:, 1], -1)
+                         - np.roll(sq[:, 0], -1) * sq[:, 1]))
+check("counter-clockwise really is the positive area this relies on", ccw > 0,
+      ccw)
+
+# A loop closes: first vertex must not repeat as the last.
+check("a traced loop is not closed by repeating its first vertex",
+      not np.allclose(outer[0]["xy"][0], outer[0]["xy"][-1]),
+      (outer[0]["xy"][0], outer[0]["xy"][-1]))
+
+
+print("\nsimplify: a staircase is not a wall")
+
+stair = []
+for k in range(200):
+    stair.append((k * 0.02, 0.0))
+    stair.append((k * 0.02, 0.01))
+stair = np.array(stair)
+simple = drawing.simplify_loop(stair, tol_m=0.03)
+check("a 2 cm staircase along a straight run collapses",
+      simple.shape[0] <= 6, simple.shape[0])
+
+corner = np.array([[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]])
+kept = drawing.simplify_loop(corner, tol_m=0.03)
+check("...but a real corner is never simplified away",
+      kept.shape[0] == 4, kept.shape[0])
+
+traced = drawing.simplify_loop(outer[0]["xy"], tol_m=0.03)
+check("...and a traced room reduces by an order of magnitude",
+      traced.shape[0] < 0.25 * outer[0]["xy"].shape[0],
+      (outer[0]["xy"].shape[0], traced.shape[0]))
+
+# ⛔⛔ AND HERE IS WHY SNAPPING TO THE FITTED WALLS IS NOT OPTIONAL. Even after
+# simplifying at the instrument's own tolerance, a traced free-space boundary
+# keeps of the order of a hundred vertices around a plain rectangular room --
+# roughly one every 10 cm. That is not noise in the tracer: the edge of free
+# space is SCALLOPED, because each azimuth bin stops at a slightly different
+# range and the boundary wobbles by about a cell. A reach line is honest like
+# that and should be drawn like that, but nobody can model against it. The
+# straightness has to come from `fit_segments`, which is fitted to tens of
+# thousands of cells, not from the trace. This check exists to fail loudly if
+# anyone ever concludes the raw trace is good enough on its own.
+check("...but it stays SCALLOPED, which is why the wall snap is needed",
+      traced.shape[0] > 40, traced.shape[0])
+check("...while keeping its area",
+      abs(abs(0.5 * float(np.sum(traced[:, 0] * np.roll(traced[:, 1], -1)
+                                 - np.roll(traced[:, 0], -1) * traced[:, 1])))
+          - outer[0]["area_m2"]) < 0.8,
+      outer[0]["area_m2"])
+
+
+# --- 10. the writer contract -----------------------------------------------
 print("\nthe writer contract merge relies on")
 
 with tempfile.TemporaryDirectory() as td:

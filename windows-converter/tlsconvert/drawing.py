@@ -80,6 +80,15 @@ FIT_ITERS = 240
 FIT_MIN_FILL = 0.60          # cells per cell-width along a run
 FIT_MAX_BOTH = 0.45          # share of a run allowed to have both sides full
 _SURFACE_PROBE_CELLS = 6     # 12 cm at a 2 cm cell -- thicker than any wall
+
+# The outline trace. A base plane at the low end of the floor, so every wall
+# extrudes UPWARD from one flat surface (the operator's own requirement).
+FLOOR_BAND_M = 0.20          # cells this close to the floor mode are floor
+FLOOR_PLANE_TOL_M = 0.05     # ...and this close to the fitted plane, after it
+FLOOR_BASE_PCT = 2.0         # a low percentile, never the minimum: see the fn
+FREE_AZIMUTH_BINS = 2048     # ~0.18 deg -- finer than the puck's own spacing
+FREE_MIN_LOOP_CELLS = 400    # a loop smaller than this is speckle, not a room
+SIMPLIFY_TOL_M = 0.03        # the instrument's accuracy, as FIT_TOL_M is
 _KEY_STRIDE = np.int64(1) << 26
 
 
@@ -292,6 +301,236 @@ def slice_plane(ijk, counts, cell_m, axis, lo, hi, min_count=1):
     other = 1 - axis
     pair = np.unique(ijk[keep][:, [other, 2]], axis=0)
     return (pair.astype(np.float64) + 0.5) * cell_m
+
+
+def floor_base_z(ijk, counts, cell_m, floor_z, band_m=FLOOR_BAND_M,
+                 plane_tol_m=FLOOR_PLANE_TOL_M, pct=FLOOR_BASE_PCT):
+    """
+    The height to stand a drawing on: the low end of the REAL floor.
+
+    ⭐ THE OPERATOR'S REQUIREMENT IS "VERTICALLY DOWN TO THE LOWEST POINT OF
+    THE FLOOR, IN A FLAT PLANE, SO I CAN DRAW VERTICALLY UP". A base plane at
+    the lowest floor means every wall extrudes UPWARD in SketchUp and nothing
+    has to be pushed down to meet the ground.
+
+    ⛔ BUT THE LITERAL MINIMUM IS THE WRONG NUMBER, AND BADLY SO. Over five
+    million cells the true minimum is a drain, a stray return under a door, or
+    one bad point -- and it would drop the whole base plane to chase it, with
+    the drawing looking perfectly reasonable. So the floor is FITTED first (a
+    plane through the cells near the floor mode, then re-selected against that
+    plane to shed clutter) and the base is a low PERCENTILE of what survives.
+    A percentile cannot be moved by a handful of outliers; a minimum is defined
+    by them.
+
+    ⚠ Measured on the operator's restaurant, the floor genuinely SLOPES about
+    0.24 deg -- 6 cm over 15 m -- while 41 fitted walls came back plumb. So the
+    slope is the building, not the survey, and this returns one flat height
+    beneath it rather than pretending the floor is level.
+
+    Returns (base_z, info) with the fit and how many cells backed it.
+    """
+    z = (ijk[:, 2].astype(np.float64) + 0.5) * cell_m
+    near = np.abs(z - floor_z) <= band_m
+    if not np.any(near):
+        return float(floor_z), {"cells": 0, "fitted": False,
+                                "slope_deg": 0.0, "pct": pct}
+    xy = (ijk[near, :2].astype(np.float64) + 0.5) * cell_m
+    zf = z[near]
+    A = np.column_stack([xy[:, 0], xy[:, 1], np.ones(xy.shape[0])])
+    coef, *_ = np.linalg.lstsq(A, zf, rcond=None)
+    resid = zf - A @ coef
+    keep = np.abs(resid) <= plane_tol_m
+    if keep.sum() >= 32:
+        zf, A = zf[keep], A[keep]
+        coef, *_ = np.linalg.lstsq(A, zf, rcond=None)
+    base = float(np.percentile(zf, pct))
+    slope = float(np.degrees(np.arctan(np.hypot(coef[0], coef[1]))))
+    return base, {"cells": int(zf.size), "fitted": True,
+                  "slope_deg": slope, "pct": float(pct),
+                  "lowest_seen": float(zf.min()), "median": float(np.median(zf))}
+
+
+def free_space(occupied_xy, tripods_xy, cell_m, n_azimuth=FREE_AZIMUTH_BINS,
+               pad_cells=2):
+    """
+    (mask, origin_xy) -- the cells the instrument could SEE from its tripods.
+
+    ⭐ THIS IS WHAT MAKES AN OUTLINE THE INSIDE FACE OF A WALL. `fit_segments`
+    fits to occupied cells, so on a thick wall band it lands somewhere BETWEEN
+    the two faces; a furniture maker needs the face their cabinet touches. Free
+    space stops at the first return along each ray, which IS that face, and it
+    costs nothing extra to compute.
+
+    Per tripod: bin every occupied cell by azimuth, keep the NEAREST range in
+    each bin, and a grid cell is free if it is closer than its bin's nearest
+    return. Union over tripods, which is why the loop closure had to come
+    first -- one tripod cannot see round a corner, and nineteen can.
+
+    ⛔ A BIN WITH NO RETURN CONTRIBUTES NOTHING, AND THAT IS DELIBERATE. The
+    tempting reading is "nothing in the way, so it is all free out to the
+    horizon", which leaks the room out through every window and doorway into
+    open space that was never measured. No return in a direction is an ABSENCE
+    OF EVIDENCE, not evidence of emptiness.
+    """
+    occupied_xy = np.asarray(occupied_xy, dtype=np.float64)
+    tripods_xy = np.asarray(tripods_xy, dtype=np.float64).reshape(-1, 2)
+    if occupied_xy.shape[0] == 0 or tripods_xy.shape[0] == 0:
+        return np.zeros((0, 0), dtype=bool), (0.0, 0.0)
+
+    lo = occupied_xy.min(axis=0) - pad_cells * cell_m
+    hi = occupied_xy.max(axis=0) + pad_cells * cell_m
+    nx = int(np.ceil((hi[0] - lo[0]) / cell_m)) + 1
+    ny = int(np.ceil((hi[1] - lo[1]) / cell_m)) + 1
+
+    gx = lo[0] + (np.arange(nx) + 0.5) * cell_m
+    gy = lo[1] + (np.arange(ny) + 0.5) * cell_m
+    GX, GY = np.meshgrid(gx, gy, indexing="xy")      # (ny, nx)
+
+    mask = np.zeros((ny, nx), dtype=bool)
+    two_pi = 2.0 * np.pi
+    for tx, ty in tripods_xy:
+        dx, dy = occupied_xy[:, 0] - tx, occupied_xy[:, 1] - ty
+        rng = np.hypot(dx, dy)
+        az = np.mod(np.arctan2(dy, dx), two_pi)
+        b = np.minimum((az / two_pi * n_azimuth).astype(np.int64),
+                       n_azimuth - 1)
+        nearest = np.full(n_azimuth, np.inf)
+        np.minimum.at(nearest, b, rng)
+
+        cdx, cdy = GX - tx, GY - ty
+        crng = np.hypot(cdx, cdy)
+        caz = np.mod(np.arctan2(cdy, cdx), two_pi)
+        cb = np.minimum((caz / two_pi * n_azimuth).astype(np.int64),
+                        n_azimuth - 1)
+        limit = nearest[cb]
+        # half a cell of slack, so the cell the return landed in is not free
+        mask |= np.isfinite(limit) & (crng < limit - 0.5 * cell_m)
+    return mask, (float(lo[0]), float(lo[1]))
+
+
+def trace_loops(mask, cell_m, origin_xy, min_cells=FREE_MIN_LOOP_CELLS):
+    """
+    Closed loops around a boolean mask: the outline, and the holes in it.
+
+    ⭐ THE HOLES ARE THE STRUCTURES, AND THEY COST NOTHING EXTRA. A column, a
+    bar or an island is a piece the instrument could never see into, so it is a
+    hole in free space. One trace yields the room's perimeter and every
+    structure standing in it, and the SIGN OF THE AREA tells them apart --
+    counter-clockwise is the outside, clockwise is a hole. No second pass, no
+    point-in-polygon test, no connected-component labelling.
+
+    ⛔ THE BOUNDARY IS WALKED ON THE CELL CORNERS, NOT THE CELL CENTRES. A path
+    through centres cuts every corner by half a cell and cannot close exactly;
+    the corner lattice gives an axis-aligned staircase whose vertices are exact
+    and whose loop is closed by construction, which is what the DXF polyline
+    then needs. Simplification comes afterwards, on an honest loop.
+
+    ⚠ scipy is deliberately excluded from the build (see build_exe.py), so this
+    is done with numpy and a dict rather than `ndimage.label`.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0 or not mask.any():
+        return []
+    ny, nx = mask.shape
+    pad = np.zeros((ny + 2, nx + 2), dtype=bool)
+    pad[1:-1, 1:-1] = mask
+
+    free = pad
+    below = np.zeros_like(free)
+    above = np.zeros_like(free)
+    left = np.zeros_like(free)
+    right = np.zeros_like(free)
+    below[1:, :] = free[:-1, :]
+    above[:-1, :] = free[1:, :]
+    left[:, 1:] = free[:, :-1]
+    right[:, :-1] = free[:, 1:]
+
+    # free on the left of every edge -> outer loops run counter-clockwise
+    edges = {}
+
+    def add(p, q):
+        edges.setdefault(p, []).append(q)
+
+    ii, jj = np.nonzero(free)
+    for i, j in zip(ii.tolist(), jj.tolist()):
+        if not below[i, j]:
+            add((j, i), (j + 1, i))
+        if not right[i, j]:
+            add((j + 1, i), (j + 1, i + 1))
+        if not above[i, j]:
+            add((j + 1, i + 1), (j, i + 1))
+        if not left[i, j]:
+            add((j, i + 1), (j, i))
+
+    ox, oy = origin_xy
+    loops = []
+    while edges:
+        start = next(iter(edges))
+        loop = [start]
+        cur = start
+        while True:
+            outs = edges.get(cur)
+            if not outs:
+                break
+            nxt = outs.pop()
+            if not outs:
+                del edges[cur]
+            if nxt == start:
+                break
+            loop.append(nxt)
+            cur = nxt
+        if len(loop) < 4:
+            continue
+        pts = np.array(loop, dtype=np.float64)
+        # corner (j, i) of the PADDED grid is world (ox + (j-1)*cell, ...)
+        world = np.column_stack([ox + (pts[:, 0] - 1.0) * cell_m,
+                                 oy + (pts[:, 1] - 1.0) * cell_m])
+        area = 0.5 * float(np.sum(world[:, 0] * np.roll(world[:, 1], -1)
+                                  - np.roll(world[:, 0], -1) * world[:, 1]))
+        if abs(area) < min_cells * cell_m * cell_m:
+            continue
+        loops.append({"xy": world, "area_m2": abs(area), "outer": area > 0})
+    loops.sort(key=lambda d: -d["area_m2"])
+    return loops
+
+
+def simplify_loop(xy, tol_m=SIMPLIFY_TOL_M):
+    """
+    Douglas-Peucker on a closed loop, iterative so a long staircase cannot
+    blow the recursion limit.
+
+    A traced boundary is one vertex per 2 cm cell -- tens of thousands for a
+    room, which is a polyline no CAD package enjoys and no wall needs. The
+    tolerance is the instrument's own accuracy: simplifying tighter preserves
+    noise, and this project already learnt that lesson on `FIT_TOL_M`.
+    """
+    xy = np.asarray(xy, dtype=np.float64)
+    n = xy.shape[0]
+    if n < 4:
+        return xy
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[n - 1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b <= a + 1:
+            continue
+        p, q = xy[a], xy[b]
+        d = q - p
+        L = float(np.hypot(*d))
+        seg = xy[a + 1:b]
+        if L < 1e-12:
+            dist = np.hypot(seg[:, 0] - p[0], seg[:, 1] - p[1])
+        else:
+            dist = np.abs((seg[:, 0] - p[0]) * d[1]
+                          - (seg[:, 1] - p[1]) * d[0]) / L
+        k = int(np.argmax(dist))
+        if dist[k] > tol_m:
+            idx = a + 1 + k
+            keep[idx] = True
+            stack.append((a, idx))
+            stack.append((idx, b))
+    return xy[keep]
 
 
 def fit_segments(pts, tol_m=FIT_TOL_M, min_len_m=FIT_MIN_LEN_M,
