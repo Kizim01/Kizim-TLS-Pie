@@ -5940,6 +5940,14 @@ backend (NumPy or CuPy, float64 all the way — gpu.py's answers-may-not-change 
 chunk. Measured on TLS_26_08_20_16_03_15 (23.46M returns): decode+world 3.48 → 0.47 s, whole shipped
 stream 3.56 → 1.14 s, **output bit-identical** on xyz AND refl.
 
+⭐ **The operator asked the right question while this was being built**: *"is it possible that when
+save is pressed, all solves are recorded so no new photo or other solves need to be done, just
+loaded?"* — and that was **already true of the FILE and false of the CODE**. `save_project` has always
+written every scan's photograph, heading, pitch/roll, camera seat and stitch lift; all nineteen were
+sitting in this project. The open was simply not trusting them. So the fix adds no new bookkeeping:
+it makes the open read what save already recorded. Worth keeping as a shape — **before building a
+cache, check whether the thing is already stored and merely being recomputed.**
+
 ⛔ **Two negative results, kept on purpose.** (1) The vectorised pcap walk — ranked the #1 win by a
 web/GitHub research sweep — died on measurement: the scalar walk is **0.32 s warm** per 98 MB; the
 2.5 s it showed cold was DISK I/O from D:, which no vectorisation and no GPU touches (GPUDirect
