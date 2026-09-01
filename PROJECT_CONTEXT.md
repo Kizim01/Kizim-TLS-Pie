@@ -5868,6 +5868,39 @@ The cell complex still finds **no** structures (61 wall lines bound none), area 
 (complex) vs 150 m² (reach)**, `box.inside: false` is still unresolved, and **none of this is in the
 CLI, the GUI or Studio** — library only.
 
+### 2026-09-01, twenty-seventh pass — the outline cut takes only what the clip box shows
+
+Operator: *"when im using the polygon tool or any other point selection tool ... no points outside
+the active clipping box that cant be seen do not get selected or deleted"*. They were right that it
+happened: an outline is a screen-space prism through the WHOLE cloud, so with the clip box on, every
+lasso / rectangle / circle / polygon cut deleted points the box was hiding — the hidden-scan failure
+(*"a lasso that reached through and deleted points nobody could see"*) one level down.
+
+**The cut now carries a clip stamp.** `pushEdit` freezes `boxSpec() + hide_inside` onto lasso-kind
+edits while `V.clip` is on, exactly like the camera matrix and the frames: the clip box moves on
+afterwards, the cut goes on meaning what was visible when it was drawn. A **delete spares**
+clip-hidden points; a **keep KEEPS them** — else "keep only this" would quietly wipe everything the
+box was hiding. ⛔ **Box cuts are exempt on purpose**: the delete box IS the clip box, and
+hide-inside-then-delete-the-box is the designed preview pairing — clip-limiting it would make
+exactly that press delete nothing.
+
+One stamp, one plan: `markLasso` honours it through `prepClip` + the same `clipHides` the point
+pickers already use (one home for the hide test), `pipeline.Lasso.inside` mirrors it (enclosure OR
+hidden for a keep, enclosure AND NOT hidden for a cut), and the stamp rides `editPlan`, `applyDrop`,
+the project file and the export plan — so the preview, the fast drop path, the replay, the saved
+project and the merged/DXF export all spare the same points. Old projects read back byte-for-byte
+(no `clip` key is written when the box was off). Said out loud: the cut's message gains "Points the
+clip box hides were left alone", the edit list row gains "only what the clip box showed", and the
+Clip-box tray blurb names the rule.
+
+Suites **1487 → 1506**. A new node harness proves the SHIPPED `recomputeLive` AND the shipped
+`pushEdit`→`applyDrop` press against the exporter's own mask — four cases including a TURNED clip
+box, which is why the page's real `rotOf` is lifted rather than the identity stub the older harness
+uses. Reversion audit **3 of 3**, each caught by name: the dropped keep branch, the inverted Python
+hide sense, and the unstamped fast path — that last one caught BEHAVIORALLY only because the
+fast-path press test exists; the string check alone had been the guard until it was added.
+Commit `058cb87`.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE OUTLINE TOOL IS FINISHED AND SHIPPED — read the twenty-SIXTH pass above for the reasoning.**
@@ -5944,7 +5977,14 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Studio 2026-09-01 11:25:56, Converter 11:26:55, tlsconvert 11:27:14, selftest 0**
+**✅ THE EXES: Studio 2026-09-01 12:54:59, Converter 2026-09-01 12:54:36, tlsconvert 2026-09-01 12:55:17, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — and THIS build adds the **clip-limited outline cut** (twenty-seventh pass) on top of
+everything the 11:25 build carried. All three rebuilt together, as before: `pipeline.py` is shared.
+⚠ The CLI's `-f` still offers only `las/laz/ply`: **`dxf` is reachable from Studio and the library, not from
+the command line.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 11:25:56, Converter 11:26:55, tlsconvert 11:27:14, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — and THIS build is the first to carry the **outline tool**: the
 Export tray's **"Outline from clip box (DXF)"** button, `cut="box"`, the levels, the invisible-edge
 work and the `/save` route fix. ⚠ **All three were rebuilt on purpose**: `drawing.py`, `pipeline.py`
