@@ -5484,7 +5484,147 @@ record's to tell; do not treat its TODOs as this workstream's.
   unimported; one Close-the-loop per survey at the end; `auto align error - image 21 level.tlspie`
   delivered but superseded — a Deep-align press in any current build lands scan 21 itself.
 
+### 2026-09-01, twenty-fifth pass — the outline tool: trace the room so SketchUp can extrude it
+
+**The ask, in the operator's words:** *"an outline tool that traces flat lines around the internal
+perimeter of the point cloud so i can export it into sketchup to model ontop of it"*, then *"both wall
+and reachable line… all lines sit on a perfect flat surface. so when im in ketchup i can just extrude
+the walls"*, then *"trace vertically down to the lowest point of the floor in a flat plane"*.
+
+#### ⛔⛔ DO NOT PRESS `Level to a surface` ON THIS PROJECT — THE FLOOR IS WHAT DRIFTS
+
+The operator said it first — *"i rather the walls be straight than the floor level, floors tend to
+drift in real life than walls"* — and it was then **measured**, twice, because the first measurement
+did not work and said so.
+
+| | |
+|---|---|
+| floors at all **19** tripods | 17 lie on a plane to **7.9 mm rms**; folders 2 and 3 stand at **+0.194 / +0.157 m** |
+| those two | the **REAL raised area** already on record at +0.18 m — reproduced independently, which also checks the Lean→Setup order |
+| remaining floor trend | **0.236°**, 6 cm over 15 m |
+| **41 walls fitted in 3-D** | median lean **0.443°**; best rigid tilt **0.137°** with **0.691° of scatter** — five times the signal |
+
+**No rigid survey tilt exists.** The walls do not lean together, so there is nothing to correct, and
+the 0.24 deg belongs to the floor. Levelling to a picked floor would rotate 41 plumb walls to flatten
+a floor that was never flat. `level: null` and `level_points: absent` on every current project, and
+that is CORRECT — leave it.
+
+⚠ **The first plumb attempt measured furniture and reported 1.96° with 4.0° of scatter.** Its low band
+was 0.35–0.75 m, which in a restaurant is banquettes and bar fronts: 156 runs low against 104 high,
+and the matcher paired chair backs with soffits. The fix was to stop matching anything — fit a 3-D
+plane to the cells near each long HIGH run over the full height and read the normal directly. *A pair
+of numbers that disagree with each other is not a measurement.*
+
+#### The project was audited before anything was drawn — `Scan project 2.0.tlspie` is fit
+
+19/19 placed (`method: solved`), 0 files missing, 19 distinct stems, and **the loop closure is in
+it** — 18 of 19 within 2 cm of `auto align error - loop closed.tlspie`, worst 16 mm. Tripod z spread
+0.236 m is leg setting, not tilt. **14 edits (12 lasso `cut`, 2 box `keep`) are applied before any
+trace**, so the outline follows the EDITED cloud — a lasso that clipped a wall becomes a bay that
+looks like architecture. ⚠ `box.inside: false` is STILL unresolved: the mapping from the project's
+`mode: keep/cut` to pipeline's `keep`/`drop` lives in `align.py`, which was being edited by another
+session at the time.
+
+#### What was built, in `drawing.py` (library only — nothing in CLI, GUI or Studio yet)
+
+- **`DxfWriter.polyline`** — R12 `POLYLINE`/`VERTEX`/`SEQEND`, closed. ⛔ `LWPOLYLINE` is R13+.
+  Separate `LINE`s may face if endpoints are bit-identical and two independently computed segments
+  have no reason to be; a polyline shares vertices by construction.
+- **`floor_base_z`** — the flat base plane, a low PERCENTILE of the fitted floor, never the minimum.
+  On the real capture that is **−0.070 m against a −0.110 m minimum**: 4 cm of protection from one
+  drain or stray return, on a drawing that would have looked entirely reasonable.
+- **`free_space`** — nearest return per azimuth bin per tripod, unioned over 19. ⭐ This is what makes
+  the outline the wall's **INSIDE FACE**, which `fit_segments` structurally cannot be. ⛔ A bin with
+  no return contributes NOTHING, or the room leaks out of every window.
+- **`clean_free_space`** — ⛔ **OPEN then CLOSE, and the order is the whole point.** Closing fills a
+  shadow HOLE; opening removes a shadow FINGER. Raw free space traced **512 m of perimeter around a
+  191 m² room**; a first pass that only closed changed nothing. Radii swept on the real capture:
+  open 0.20 / close 0.25 → **66 m**, and it took **30 "structures" to 5** (25 were shadows).
+- **`trace_loops`** — closed loops on the cell-CORNER lattice, free space on the left, so the **sign
+  of the area** separates the perimeter from the holes with no second pass and no labelling.
+- **`snap_to_walls`**, **`regularise_directions`**, **`cell_complex_outline`**, **`_label_regions`**,
+  **`DxfWriter.face`** — see below.
+
+#### ⭐⭐ THE CELL COMPLEX BEAT TRACE-THEN-SNAP, AND IT IS A DIFFERENT KIND OF ANSWER
+
+Trace a raster boundary and snap it to walls and straightness is a **repair** that succeeded on 47%
+of the outline. Cut the plan along the wall lines FIRST and the inside/outside boundary can only lie
+ON one of those lines. Measured on the restaurant:
+
+| | trace-then-snap | **cell complex** |
+|---|---|---|
+| vertices | 101 | **32** |
+| perimeter | 84.7 m | 69.2 m |
+| straightness | 47% of vertices near a wall | **100% of the PERIMETER within 5 cm, 99% within ONE CELL** |
+
+`regularise_directions` squared **59 of 61** walls to the dominant axis, about each wall's own centre;
+anything past `REG_TOL_DEG` keeps its real angle, because forcing Manhattan turns a bay or a canted
+shopfront into a right angle that was never there. `_label_regions` is run-based union-find —
+**scipy is excluded from the build** — with 4-connected growth against an 8-connected barrier.
+
+#### ⛔ THE OPERATOR COULD NOT PUSH/PULL IT, AND THE GEOMETRY WAS NOT AT FAULT
+
+Parsed back: every loop closed, **zero self-crossings**, no zero-length edges, 20 mm minimum edge.
+**SketchUp's DXF importer brings closed CAD polylines in as EDGES** — a long-standing documented
+complaint, not a defect in the file. `DxfWriter.face` now also writes **`3DFACE`** triangles
+(ear clipping, winding FORCED counter-clockwise since `trace_loops` returns holes clockwise and ear
+clipping silently emits nothing on the wrong winding). Both are written; use whichever the tool likes.
+
+#### ▶ WHAT IS WRONG WITH IT — the operator's own verdict, and it is the next job
+
+> *"its missing alot of detail and it does not represent the room well at all, i need outlines of the
+> raised platfroms and the seating."*
+
+⛔ **The cause is a design choice, not a bug: everything is cut at 1.70–2.30 m** to find real walls
+above the furniture. So **platforms, seating, the bar — all of it below 1.7 m — is invisible by
+construction.** Right for walls, wrong for what the operator actually needs.
+
+⭐ **THE FIX IS ONE MECHANISM AND IT COVERS ALL OF IT, from Cloud2BIM (arXiv 2503.11498):** a
+**z-histogram at 0.05 m, and every bin holding ≥50% of the maximum is a horizontal surface.** Seat
+tops, table tops, the bar top, a raised platform and the floor are all horizontal surfaces at
+different heights — so ONE multi-level pass gives closed outlines for every one of them, using
+machinery that already exists (`_dilate`/`_erode`, `trace_loops`, `simplify_loop`).
+`find_floor_and_ceiling` currently takes only the two strongest levels; it needs to return all of them.
+
+**Also queued, with sources:** a **graph-cut smoothness term** (each cell currently votes alone, which
+is worst exactly where a cell is small and half-seen — Ochmann et al.; Applied Sciences 8(9) 1529),
+and **opening detection** (hollow runs 0.3–2.5 m along a wall are doors and windows), which is the
+principled answer to doorways instead of keeping the closing radius under half a door.
+
+⚠ **The cell complex finds NO structures at all** — a column is a hole in FREE SPACE, not something
+bounded by wall lines, and 61 lines bound none. The two paths are **combined**, not one replacing the
+other. ⚠ And area reads **132 m² (complex) vs 150 m² (reach)**; which is right is not established.
+
+#### The audit found a gap the fixture could not
+
+Removing `CELL_EXTEND_M` entirely — the wall extension that closes corners — **broke nothing**,
+because the fixture's walls met exactly at their corners while real fitted walls stop short. The new
+fixture gives every wall a 30 cm gap at each end; breaking the extension now collapses the whole plan
+to **one cell** and the outline becomes the bounding box of the site. *Fifth time this project has met
+"the synthetic room could not show it."* Audit **5 of 5**, suites **42 → 100**.
+
+⚠ Two scratch-script traps hit again, both already on record: a heredoc that crashed **before** its
+restore ran and left `drawing.py` broken (a `finally` fixed it, and later saved the tree when an audit
+died on a unicode decode), and `subprocess` decoding the suite's ⛔/⭐ as cp1252.
+
+**Commits:** `e10258a` polyline · `b618848` free space + trace · `dfd4172` snap + clean ·
+`ae4b203` cell complex · `fcc0915` 3DFACE. Live file: **`D:\RESTAURANT SCAN\restaurant outline.dxf`**
+(layers `TLS-OUTLINE`, `TLS-REACH`, `TLS-STRUCT`, `TLS-WALLS`, `TLS-NOTES` — the operator asked for
+the metre grid to be dropped; ⚠ that was the **only units defence that does not depend on the
+importer**, so `$INSUNITS` and a text note are all that remain). `restaurant outline v2.dxf` is a
+superseded A/B file.
+
+
 ### ▶ NEXT SESSION STARTS HERE
+
+**⭐ THE OUTLINE TOOL IS LIVE BUT NOT FINISHED — read the twenty-fifth pass directly above.**
+It writes `D:\RESTAURANT SCANestaurant outline.dxf` today. The operator's verdict: *"missing alot
+of detail… i need outlines of the raised platfroms and the seating"* — because everything is cut at
+1.70–2.30 m to find walls above the furniture, so every platform and seat is invisible BY DESIGN.
+The fix is named and sourced in that section: **a z-histogram at 0.05 m, every bin over 50% of the max
+is a horizontal surface**, which gives seat tops, platforms and the bar in ONE pass.
+⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
+slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
 **✅ THE EXES: Studio 2026-09-01 03:50:49, Converter 03:50:27, tlsconvert 03:51:08, selftest 0** (RTX 3050 Ti, cuda-engine found; adds “Deep align them all”, the armed middle-click delete, and the operator’s own DXF closed-polyline commit `e10258a`)
 — and THIS build carries **everything through the 23rd pass**: content arbitration on Deep align, the colour tray open by default, the move tool holding the LOD twin while armed, the three polygon gestures, Close-the-loop + edge cap, and the cut that names POINTS.
