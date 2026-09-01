@@ -95,6 +95,11 @@ SNAP_MIN_RUN = 0.40          # METRES of run: a shorter touch is a graze.
 SNAP_EXTEND_M = 0.60         # a wall may run out of returns short of the corner
 SNAP_MIN_CORNER_DEG = 12.0   # below this two lines cross too far away to trust
 CLEAN_CLOSE_M = 0.25         # fill shadow holes; MUST stay under half a door
+# The cell complex: cut the plan along the wall lines, then label the pieces.
+REG_TOL_DEG = 8.0            # nearer than this to the dominant axis gets squared
+CELL_EXTEND_M = 2.5          # extend each wall so corners actually close
+CELL_INSIDE_FRAC = 0.45      # share of a cell the instrument must have seen
+CELL_MIN_AREA_M2 = 0.10      # slivers do not get a vote; see the docstring
 CLEAN_OPEN_M = 0.20          # shave shadow fingers -- this is the one that
                              # matters: it took a 191 m2 room from a 512 m
                              # traced perimeter to 66 m. Chosen by sweep.
@@ -492,6 +497,86 @@ def clean_free_space(mask, close_m=CLEAN_CLOSE_M, open_m=CLEAN_OPEN_M,
     return out
 
 
+def cell_complex_outline(free_mask, origin_xy, cell_m, segments,
+                         extend_m=CELL_EXTEND_M,
+                         inside_frac=CELL_INSIDE_FRAC,
+                         min_cell_m2=CELL_MIN_AREA_M2):
+    """
+    Partition the plan by the wall lines, then let free space LABEL the pieces.
+
+    ⭐⭐ THIS INVERTS THE PREVIOUS DESIGN, AND THE INVERSION IS THE POINT. Trace
+    a raster boundary and then snap it to walls, and straightness is a repair
+    that succeeds on the 47% of the outline that happened to lie near a fitted
+    wall. Cut the plan up along the wall lines FIRST and the boundary between
+    inside and outside can only ever lie ON one of those lines -- straightness
+    stops being something to fix and becomes a property of the construction.
+    Corners are exact line intersections for the same reason. This is the
+    approach the published pipelines converge on (a cell complex labelled by
+    energy minimisation); the labelling here is a direct free-space vote rather
+    than a graph cut, which is the honest simplification -- see below.
+
+    ⛔ THE EVIDENCE IS THE SAME RAY-CAST FREE SPACE, AND THAT IS WHY IT WORKS.
+    A cell the instrument saw into is inside; a cell it never saw is not. The
+    walls decide WHERE the boundary may run, the returns decide WHICH SIDE is
+    the room, and neither is asked to do the other's job.
+
+    ⚠ WHAT THIS IS NOT: the published methods minimise an energy with a
+    smoothness term, so a cell with weak evidence is pulled to agree with its
+    neighbours. Here each cell votes alone. That is fine while cells are large
+    and evidence is plentiful, and it will be worse than a graph cut exactly
+    where a cell is small and half-seen. `min_cell_m2` exists to keep the
+    slivers -- which are the cells a smoothness term would rescue -- from
+    voting at all.
+    """
+    free_mask = np.asarray(free_mask, dtype=bool)
+    if free_mask.size == 0 or not segments:
+        return free_mask, {"cells": 0, "inside": 0, "lines": 0}
+    ny, nx = free_mask.shape
+    ox, oy = origin_xy
+
+    barrier = np.zeros((ny, nx), dtype=bool)
+    for s in segments:
+        a = np.array(s["a"], float)
+        b = np.array(s["b"], float)
+        d = b - a
+        L = float(np.hypot(*d))
+        if L < 1e-9:
+            continue
+        u = d / L
+        # ⛔ EXTENDED AT BOTH ENDS ON PURPOSE. A fitted wall stops where its
+        # returns stopped, which is short of the corner; an unextended line
+        # leaves a gap there and the room leaks straight through it into the
+        # outside, which labels the whole plan as one cell.
+        t = np.arange(-extend_m, L + extend_m, cell_m * 0.4)
+        pts = a[None, :] + u[None, :] * t[:, None]
+        jj = np.floor((pts[:, 0] - ox) / cell_m).astype(np.int64)
+        ii = np.floor((pts[:, 1] - oy) / cell_m).astype(np.int64)
+        ok = (ii >= 0) & (ii < ny) & (jj >= 0) & (jj < nx)
+        barrier[ii[ok], jj[ok]] = True
+
+    regions, n = _label_regions(~barrier)
+    if n == 0:
+        return free_mask, {"cells": 0, "inside": 0, "lines": len(segments)}
+
+    # per-region: how much of it the instrument actually saw into
+    flat = regions.ravel()
+    area = np.bincount(flat, minlength=n + 1).astype(np.float64)
+    seen = np.bincount(flat, weights=free_mask.ravel().astype(np.float64),
+                       minlength=n + 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        frac = np.where(area > 0, seen / np.maximum(area, 1.0), 0.0)
+    cell_m2 = area * cell_m * cell_m
+    inside = (frac >= inside_frac) & (cell_m2 >= min_cell_m2)
+    inside[0] = False                       # label 0 is the barrier itself
+    out = inside[regions]
+    # the barrier cells themselves belong to whatever they separate; give them
+    # back to the room so the wall line is the outer edge, not a 2 cm moat
+    out |= barrier & _dilate(out, 1)
+    return out, {"cells": int(n), "inside": int(inside.sum()),
+                 "lines": len(segments),
+                 "inside_m2": float(cell_m2[inside].sum())}
+
+
 def trace_loops(mask, cell_m, origin_xy, min_cells=FREE_MIN_LOOP_CELLS):
     """
     Closed loops around a boolean mask: the outline, and the holes in it.
@@ -615,6 +700,123 @@ def simplify_loop(xy, tol_m=SIMPLIFY_TOL_M):
             stack.append((a, idx))
             stack.append((idx, b))
     return xy[keep]
+
+
+def regularise_directions(segments, tol_deg=REG_TOL_DEG, min_len_m=0.8):
+    """
+    Square the walls up: snap each run to the dominant direction or its
+    perpendicular, about its own centre.
+
+    ⭐ THIS IS WHAT MAKES A PLAN LOOK DRAWN RATHER THAN TRACED, and it is the
+    step every published pipeline has and this one did not. Walls in a building
+    are parallel or perpendicular to one another far more often than they are
+    at 88.7 degrees, but a RANSAC fit to noisy returns lands a degree or two out
+    on each one independently. Extending two such lines to find a corner then
+    puts the corner centimetres from where it belongs, and the error grows with
+    how far the lines had to be extended.
+
+    ⛔ A WALL THAT IS GENUINELY ASKEW KEEPS ITS OWN ANGLE. The reference is the
+    LONGEST run, and anything more than `tol_deg` from it or its perpendicular
+    is left exactly as fitted. Forcing every wall onto a Manhattan grid is how a
+    reconstruction turns a bay, a canted shopfront or a splayed corner into a
+    right angle that was never there -- and a restaurant is full of them.
+
+    ⚠ The rotation is about the segment's OWN CENTRE, so a wall pivots where it
+    was measured densest rather than sliding sideways. Rotating about an
+    endpoint would swing the far end by the length times the angle.
+    """
+    if not segments:
+        return []
+    out = []
+    lens = []
+    for s in segments:
+        a, b = np.array(s["a"], float), np.array(s["b"], float)
+        lens.append(float(np.hypot(*(b - a))))
+    ref = segments[int(np.argmax(lens))]
+    ra = np.array(ref["a"], float)
+    rb = np.array(ref["b"], float)
+    ref_ang = float(np.degrees(np.arctan2(rb[1] - ra[1], rb[0] - ra[0])))
+
+    snapped = 0
+    for s, L in zip(segments, lens):
+        a, b = np.array(s["a"], float), np.array(s["b"], float)
+        ang = float(np.degrees(np.arctan2(b[1] - a[1], b[0] - a[0])))
+        d = (ang - ref_ang) % 90.0
+        off = d if d <= 45.0 else d - 90.0
+        new = dict(s)
+        if L >= min_len_m and abs(off) <= tol_deg:
+            target = np.radians(ang - off)
+            u = np.array([np.cos(target), np.sin(target)])
+            c = 0.5 * (a + b)
+            half = 0.5 * L
+            new["a"] = tuple(c - u * half)
+            new["b"] = tuple(c + u * half)
+            new["regularised"] = True
+            snapped += 1
+        else:
+            new["regularised"] = False
+        out.append(new)
+    return out
+
+
+def _label_regions(mask):
+    """
+    (labels, count) for 4-connected True regions. 0 means not in `mask`.
+
+    Two-pass run labelling with union-find, over ROWS OF RUNS rather than
+    pixels -- a partitioned room has a handful of runs per row, so this stays
+    fast in plain Python where a per-pixel flood fill would not.
+    ⚠ scipy.ndimage.label is the obvious tool and is excluded from the build.
+    """
+    ny, nx = mask.shape
+    labels = np.zeros((ny, nx), dtype=np.int32)
+    parent = [0]
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    prev_runs = []
+    for i in range(ny):
+        row = mask[i]
+        if not row.any():
+            prev_runs = []
+            continue
+        d = np.diff(np.concatenate(([0], row.view(np.int8), [0])))
+        starts = np.flatnonzero(d == 1)
+        ends = np.flatnonzero(d == -1)
+        runs = []
+        for s0, e0 in zip(starts.tolist(), ends.tolist()):
+            lab = 0
+            for ps, pe, pl in prev_runs:
+                if ps < e0 and s0 < pe:              # overlap on the row above
+                    if lab == 0:
+                        lab = pl
+                    else:
+                        union(lab, pl)
+            if lab == 0:
+                parent.append(len(parent))
+                lab = len(parent) - 1
+            labels[i, s0:e0] = lab
+            runs.append((s0, e0, lab))
+        prev_runs = runs
+
+    if len(parent) <= 1:
+        return labels, 0
+    roots = np.array([find(x) for x in range(len(parent))], dtype=np.int32)
+    uniq = np.unique(roots[1:])
+    remap = np.zeros(len(parent), dtype=np.int32)
+    for k, r in enumerate(uniq, start=1):
+        remap[roots == r] = k
+    remap[0] = 0
+    return remap[labels], int(uniq.size)
 
 
 def _point_seg_dist(pts, a, b, extend_m=0.0):

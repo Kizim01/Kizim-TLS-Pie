@@ -659,7 +659,114 @@ check("near-parallel walls do not produce a corner out at infinity",
       (float(np.abs(par).max()),))
 
 
-# --- 11. the writer contract -----------------------------------------------
+print("\nsquaring the walls up, without straightening a real angle")
+
+
+def ang_of(s):
+    return np.degrees(np.arctan2(s["b"][1] - s["a"][1], s["b"][0] - s["a"][0]))
+
+
+RAW = [{"a": (0.0, 0.0), "b": (6.0, 0.0)},          # the reference, longest
+       {"a": (6.0, 0.05), "b": (6.05, 4.0)},        # 89.27 deg -> should square
+       {"a": (0.0, 0.0), "b": (3.0, 3.4)}]          # 48.6 deg -> a real angle
+reg = drawing.regularise_directions(RAW)
+check("a wall a degree off square is squared up",
+      abs(ang_of(reg[1]) - 90.0) < 1e-6, ang_of(reg[1]))
+check("...and the reference itself is untouched",
+      abs(ang_of(reg[0]) - 0.0) < 1e-6, ang_of(reg[0]))
+check("⛔ a genuinely askew wall KEEPS its angle",
+      abs(ang_of(reg[2]) - ang_of(RAW[2])) < 1e-9 and not reg[2]["regularised"],
+      (ang_of(RAW[2]), ang_of(reg[2])))
+mid_before = 0.5 * (np.array(RAW[1]["a"]) + np.array(RAW[1]["b"]))
+mid_after = 0.5 * (np.array(reg[1]["a"]) + np.array(reg[1]["b"]))
+check("...and it pivots about its own centre, not an end",
+      float(np.hypot(*(mid_after - mid_before))) < 1e-9,
+      (mid_before, mid_after))
+len_before = float(np.hypot(*(np.array(RAW[1]["b"]) - np.array(RAW[1]["a"]))))
+len_after = float(np.hypot(*(np.array(reg[1]["b"]) - np.array(reg[1]["a"]))))
+check("...keeping its length", abs(len_before - len_after) < 1e-9,
+      (len_before, len_after))
+
+
+print("\nregions, without scipy")
+
+split = np.ones((20, 30), dtype=bool)
+split[:, 15] = False
+_lab, nreg = drawing._label_regions(split)
+check("a wall splits one space into two regions", nreg == 2, nreg)
+doorway = split.copy()
+doorway[10, 15] = True
+_lab2, nreg2 = drawing._label_regions(doorway)
+check("...and a doorway makes them one again", nreg2 == 1, nreg2)
+check("an empty mask has no regions",
+      drawing._label_regions(np.zeros((5, 5), dtype=bool))[1] == 0)
+# ⛔ 4-connected growth must not leak through an 8-connected diagonal barrier.
+diag = np.ones((20, 20), dtype=bool)
+for k in range(20):
+    diag[k, k] = False
+check("a diagonal barrier is watertight to 4-connected regions",
+      drawing._label_regions(diag)[1] == 2, drawing._label_regions(diag)[1])
+
+
+print("\nthe cell complex: the walls decide WHERE, free space decides WHICH SIDE")
+
+# A room, and a free-space mask that saw only the inside of it.
+CELL = 0.02
+ny, nx = 260, 360
+free = np.zeros((ny, nx), dtype=bool)
+free[12:248, 12:348] = True
+ORG = (0.0, 0.0)
+box = [{"a": (0.20, 0.20), "b": (6.96, 0.20)},
+       {"a": (6.96, 0.20), "b": (6.96, 4.96)},
+       {"a": (6.96, 4.96), "b": (0.20, 4.96)},
+       {"a": (0.20, 4.96), "b": (0.20, 0.20)}]
+inside, cinfo = drawing.cell_complex_outline(free, ORG, CELL, box)
+check("the complex is cut into cells by the walls", cinfo["cells"] >= 2, cinfo)
+check("...and at least one is labelled inside", cinfo["inside"] >= 1, cinfo)
+loops_c = [l for l in drawing.trace_loops(inside, CELL, ORG) if l["outer"]]
+check("...giving one outer loop", len(loops_c) == 1, len(loops_c))
+if loops_c:
+    simple_c = drawing.simplify_loop(loops_c[0]["xy"])
+    check("...that is a handful of vertices, not a staircase",
+          simple_c.shape[0] <= 12, simple_c.shape[0])
+    # ⭐ THE CLAIM THE WHOLE METHOD RESTS ON: the boundary lies ON the walls.
+    mids = 0.5 * (simple_c + np.roll(simple_c, -1, axis=0))
+    near = np.full(mids.shape[0], np.inf)
+    for s in box:
+        dd, _t = drawing._point_seg_dist(mids, np.array(s["a"]),
+                                         np.array(s["b"]), 2.5)
+        near = np.minimum(near, dd)
+    check("⭐ every edge of the outline lies ON a wall line, by construction",
+          float(near.max()) <= 3 * CELL, float(near.max()))
+
+# ⛔ Free space is what says which side is the room -- invert it and the
+# labelling must invert too, or the walls are doing both jobs.
+empty, einfo = drawing.cell_complex_outline(
+    np.zeros_like(free), ORG, CELL, box)
+check("with nothing seen, no cell is called inside",
+      einfo["inside"] == 0, einfo)
+
+# ⛔⛔ WALLS THAT STOP SHORT OF THE CORNERS, WHICH IS WHAT REAL FITTED WALLS DO.
+# The box above meets exactly at its corners, so it cannot tell whether the
+# extension is doing anything -- a reversion audit removed CELL_EXTEND_M
+# entirely and every check above still passed. A fitted wall ends where its
+# returns ran out, leaving a gap at each corner that the room pours straight
+# through, and then the whole plan labels as one cell and the outline is the
+# bounding box of the site. This is the fixture that can fail.
+short = [{"a": (0.50, 0.20), "b": (6.66, 0.20)},
+         {"a": (6.96, 0.50), "b": (6.96, 4.66)},
+         {"a": (6.66, 4.96), "b": (0.50, 4.96)},
+         {"a": (0.20, 4.66), "b": (0.20, 0.50)}]
+gapped, ginfo = drawing.cell_complex_outline(free, ORG, CELL, short)
+check("walls that stop short of the corners are still extended to close them",
+      ginfo["cells"] >= 2 and ginfo["inside"] >= 1, ginfo)
+gl = [l for l in drawing.trace_loops(gapped, CELL, ORG) if l["outer"]]
+check("...so the room does not leak out through the corner gaps",
+      len(gl) == 1 and 25.0 <= gl[0]["area_m2"] <= 40.0,
+      [round(l["area_m2"], 1) for l in gl])
+
+
+# --- 12. the writer contract -----------------------------------------------
 print("\nthe writer contract merge relies on")
 
 with tempfile.TemporaryDirectory() as td:
