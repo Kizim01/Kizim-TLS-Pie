@@ -5362,13 +5362,41 @@ with ONLY scan 21’s colour block corrected to the verified numbers. The origin
 seat/tilt axes are deliberately not settable in the page, so a corrected file is the only route
 without a rebuild.
 
-**The code fix this earns (NOT BUILT YET):** deep_align and the attach climb never try the rig’s
-own stack — a content-anchored candidate (mount-residual tilt taken from confirmed siblings,
-fleet camera height, zero lift) judged by the content oracle rather than the global score, which
-“measurably prefers the droop”; *a judge that fights the corrector must not speak after it* is
-already this project’s own line. Also: `_repaint` runs the settle only at fresh attach
-(`if not any(camera)`), so nothing content-checks a deep result. Build it measured and
-reversion-audited; exes need a rebuild with Studio closed — Studio was open (operator mid-survey).
+### ⭐ THE FIX WAS THEN BUILT (second half of the pass, operator said “studio closed now rebuild”)
+
+**The content gets the last word after a deep search.** `colour.content_offset` reads where the
+photograph’s content sits PAST `paint_drift`’s ±5° window: the image is walked through a ladder
+of known pre-lifts (1.5° a rung, ±5 rungs) and only readings that fall **1:1 with the lift** are
+believed — a texture lock stays put in the window, so its sum climbs the ladder and it is refused
+BY NAME (“which is texture, not content”). On the suite’s fixture the recovery is machine-clean:
+content planted 8° low — past the window — reads 8.0005° on a 3-rung plateau with 1e-15 spread,
+while `paint_drift` alone genuinely cannot read it (that check pins the ladder as load-bearing).
+
+**`AlignServer._rig_stack`**: the bolted rig’s own numbers — median pitch/roll/camera_z of
+siblings graded **confirmed or sure** (given and doubtful poses do not vote; fewer than two
+siblings = no prior, no challenge). **`deep()` now asks the content about BOTH the searched winner
+(at its own solved seat) and the rig’s stack, and adopts whichever the content prefers by
+`CONTENT_MARGIN_DEG = 0.5°`** — inside the margin the searched answer stands, so a healthy scan
+never flips on instrument noise (folder 1’s control: +0.28° ± 0.05). On adoption the heading
+folds in the content’s own dlon, the seat comes from the stack, and **the stitch lift is
+REMEASURED under the adopted pose** (the plateau was read on the raw image, so its offset IS the
+lift), replacing a lift measured under the discarded pose; a failed repaint restores it. The note
+says it in the content’s numbers, and `deep.content` in the stored record carries both offsets
+and the verdict.
+
+**Verified through the server’s own method on the real capture** (the 17th-pass rule: the probe
+takes the button’s path): the stored pose had become pitch **−11.22** — the operator had pressed
+the old button again, digging exactly as predicted — and the new press reported *“the searched
+pose’s content sat 4.5° adrift, but at the rig’s own bolted geometry (tilt +2.1° / +1.6°, camera
+65 mm, read from 6 confirmed siblings) it sits 0.3° — adopted”*, landing at yaw 72.74 / pitch
++2.11 / roll +1.63 / camera_z 0.065 / lift +4 px in 55 s — the same answer the hand solve found,
+now one press. Suite **1437 → 1453**; reversion audit **4 of 4** (adoption comparison flipped,
+1:1 tolerance removed, lift write dropped, given-grade voting — every break tripped its NAMED
+check and nothing else’s). Commit `74d68a5`.
+
+⚠ Scope honesty: the ATTACH climb still has no content arbitration — the cure for the six
+doubtful high-camera_z photos is now ONE PRESS of Deep align each in the new build, not a changed
+import path. Arbitration adds ~25 s to a deep press (two ladders of eleven `paint_drift` calls).
 
 **Method note:** a hand-rolled per-band correlator on this data was texture-lock garbage (3
 patches cannot cancel the scan-stripe periodicity; the pooled design point of `paint_drift`
@@ -5377,8 +5405,12 @@ sibling as control, is the honest instrument.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-08-31 09:54:57, Converter 09:54:36, tlsconvert 09:55:16, selftest 0** (RTX 3050 Ti, cuda-engine found)
-— and THIS build carries the **Close-the-loop button with the measured edge cap** (~9 min, not 24, on the 18-capture job), and the cut that names POINTS from the pass before.
+**✅ THE EXES: Studio 2026-09-01 01:50:37, Converter 01:50:14, tlsconvert 01:50:57, selftest 0** (RTX 3050 Ti, cuda-engine found)
+— and THIS build carries the **content arbitration on Deep align** (the scan-21 cure: one press per doubtful photo), the Close-the-loop button with the edge cap, and the cut that names POINTS.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-08-31 09:54:57, Converter 09:54:36, tlsconvert 09:55:16, selftest 0**
+— Close-the-loop + edge cap, no content arbitration.
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-31 09:23:58, Converter 09:23:36, tlsconvert 09:24:17, selftest 0**
