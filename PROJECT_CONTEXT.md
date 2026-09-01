@@ -5615,10 +5615,121 @@ importer**, so `$INSUNITS` and a text note are all that remain). `restaurant out
 superseded A/B file.
 
 
+### 2026-09-01, twenty-sixth pass — the levels a room is built in: platforms, seating, the bar
+
+**The operator's verdict on the twenty-fifth pass was the whole brief:** *"its missing alot of detail
+and it does not represent the room well at all, i need outlines of the raised platfroms and the
+seating. the cells are not closed loops so cant press/ pul them"*. Both halves are now answered.
+
+#### ⛔⛔ THE PUBLISHED RULE WAS MEASURED ON THE REAL CAPTURE AND IT FINDS THE FLOOR AND THE CEILING
+
+The twenty-fifth pass queued Cloud2BIM's slab rule (arXiv 2503.11498) as "the fix, one mechanism,
+covers all of it". It was the right *mechanism* and the wrong *rule*, and only running it said so.
+Cloud2BIM histograms returns in 0.05 m bands and calls a band a horizontal surface when it holds more
+than **0.6 × the MAXIMUM** band (the paper says 0.5, the shipped code says 0.6). On this restaurant:
+
+```
+Cloud2BIM rule (band > 0.6 x max returns) selects:  [+0.03, +2.72, +2.78]
+```
+
+The floor and two bands of ceiling. **Nothing else** — the ceiling holds a million returns and the bar
+top a hundred thousand, so a rule scored against the largest thing in the cloud can only ever find the
+two surfaces that were never the problem. ⭐ *A published method calibrated on an empty shell does not
+transfer to a furnished room, and the histogram is where it shows.*
+
+#### ⭐⭐ SO THE TEST IS A RATIO, AND TWO IDEAS HAD TO BE COMBINED TO GET ONE
+
+| | |
+|---|---|
+| from Cloud2BIM | the 0.05 m z-histogram, and merging adjacent bands into one level |
+| from traversability mapping (robot standing positions) | **GROUND SUPPORT + OVERHEAD CLEARANCE** |
+| the join, which is in neither | score a band by the **SHARE of its own returns that are top faces** |
+
+A cell is a **top face** when it holds a return and the 0.30 m directly above holds none. A seat pan
+passes; a table top passes; the middle of a wall fails because there is more wall above it, and so
+does every chair back — which is exactly the clutter that swamps a density histogram. Then the band's
+score is `top faces / its own returns`, which is **scale-free**: the ceiling's share is computed
+against the ceiling, so being ten times denser buys it nothing. Measured here, a band cutting walls
+and chair backs runs **0.03**; a real horizontal surface runs **0.10 to 0.32**.
+
+**What that gives on `Scan project 2.0.tlspie`, above the base plane:**
+
+| level | what it is | loops | largest, m² |
+|---|---|---|---|
+| **+0.08** | the floor | 1 outline + **8 holes** | 153.6 |
+| **+0.26** | **the raised platforms** | 7 | 13.1, 8.8, 5.6 |
+| **+0.48** | **the seating** | 3 | 4.4 |
+| **+0.70** | table tops | 14 | 5.0, 4.4, 4.3 |
+| **+1.20** | the bar / high counter | 7 | 20.3 |
+
+⛔ **THE THRESHOLD IS BOUNDED FROM BELOW, THE OPPOSITE WAY ROUND FROM THE CLOSING RADIUS.** Drop it
+from 0.08 to 0.06 and the qualifying bands run continuously from the floor up to the platform, the two
+**merge into one level** spanning −0.05..0.25 m, and the platform — the thing asked for by name —
+vanishes into the floor. A too-low threshold here does not add noise; it **destroys the feature by
+fusing it to its neighbour**.
+
+⛔ **AND THE CLEANING RADIUS IS A TENTH OF THE PUBLISHED ONE.** Cloud2BIM closes a slab footprint at
+**1.0 m**, right for a building floor plate and fatal here: the audit break that restores it wipes the
+floor's platform-shaped hole to `[]`. The radius is set by the **smallest thing worth drawing**, which
+is a seat. ⚠ Cloud2BIM also keeps `max(contours, key=contourArea)` — **one outline per level** — which
+is structurally incapable of saying "eleven separate objects at 0.48 m". Every region is kept here.
+
+#### ⛔ THE FLOOR WAS ABOUT TO BURY EVERYTHING STANDING ON IT
+
+Every level is drawn **flat on the base plane** — the operator's spec, twice stated: *"all lines sit on
+a perfect flat surface, so when i'm in ketchup i can just extrude"*. A platform at its true height is a
+prettier picture and a worse tool. So the height becomes a **printed number** beside the outline.
+
+But flat means coplanar, and ear clipping ignores holes, so the floor's 153 m² fan covered the
+platforms, the seating and the tables: **all the new detail present in the file and none of it
+visible**. Three defects fell out of fixing that, and every one was invisible from outside:
+
+- **`face()` now cuts its holes out**, by splicing each hole into the ring with a bridge.
+- ⛔ **`_ear_clip` counted a coincident corner as ENCLOSED.** A bridged ring repeats its two bridge
+  ends *by construction*, so no ear was ever found and the face came out **empty**. A floor with a
+  hole in it and a floor that failed to triangulate look identical from the outside.
+- ⛔ **A level's height came from the BAND, not its cells** — putting a platform whose real top is
+  0.20 m at **0.24 m**. That number is not decoration: it is what you Push/Pull to, so a band-centre
+  answer is a 4 cm modelling error handed over as a measurement. Now the median of the cells' own
+  heights (⚠ still half a cell of upward bias, inherent to voxelising).
+
+Also latent and now live: **`DxfWriter` declared a fixed eight layers and accepted any string.**
+Harmless only while every caller stuck to the eight; per-level layers made the layer count depend on
+the *scan*. The table is now the union of the fixed set and whatever was actually drawn on.
+
+#### The audit, and what it proved on the way
+
+Suites **100 → 122** — and **`3DFACE` had NO coverage at all** before this; the twenty-fifth pass
+verified it by hand and never wrote a check. Reversion audit **8 of 8**. Two of the breaks double as
+the evidence for the claims above: scoring against the maximum drops the table, and the 1.0 m closing
+erases the floor's hole. ⚠ A ninth thing the audit caught before it ran: the layer-table check counted
+the bare layer name, which **every entity also carries** — it proved nothing about the table and now
+matches the table's own record shape.
+
+**Delivered file, parsed back:** `D:\RESTAURANT SCAN\restaurant outline.dxf`, 624 kB, 4830 entities,
+**42 polylines all closed, 0 self-crossings, 0 zero-length edges, 2252 3DFACE triangles, every used
+layer declared.** Layers `TLS-LVL-008/026/048/070/120`, plus `TLS-OUTLINE`, `TLS-REACH`, `TLS-WALLS`,
+`TLS-NOTES`. Commit `3a79559`.
+
+⚠ **Still open:** the seating reads only 6.1 m², which is low for a restaurant — banquettes are
+occluded by their own tables, and whether that is the data or the probe height is **not established**.
+The cell complex still finds **no** structures (61 wall lines bound none), area is still **132 m²
+(complex) vs 150 m² (reach)**, `box.inside: false` is still unresolved, and **none of this is in the
+CLI, the GUI or Studio** — library only.
+
 ### ▶ NEXT SESSION STARTS HERE
 
+**⭐ THE OUTLINE TOOL NOW DRAWS THE LEVELS — read the twenty-SIXTH pass directly above.**
+Platforms, seating, tables and the bar all come out as closed, faced loops flat on the base plane with
+their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
+upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
+ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
+floor. Open: seating reads low (6.1 m²), and none of it is wired into CLI/GUI/Studio.
+
+<!-- superseded, kept for the trail -->
 **⭐ THE OUTLINE TOOL IS LIVE BUT NOT FINISHED — read the twenty-fifth pass directly above.**
-It writes `D:\RESTAURANT SCANestaurant outline.dxf` today. The operator's verdict: *"missing alot
+It writes `D:\RESTAURANT SCAN
+estaurant outline.dxf` today. The operator's verdict: *"missing alot
 of detail… i need outlines of the raised platfroms and the seating"* — because everything is cut at
 1.70–2.30 m to find walls above the furniture, so every platform and seat is invisible BY DESIGN.
 The fix is named and sourced in that section: **a z-histogram at 0.05 m, every bin over 50% of the max
