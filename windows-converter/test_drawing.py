@@ -89,6 +89,32 @@ def lines_of(ents, layer):
     return out
 
 
+def polylines_of(ents, layer):
+    """
+    [(closed, [(x, y, z), ...]), ...] for `layer`.
+
+    ⭐ R12 HAS NO SINGLE POLYLINE ENTITY -- it is POLYLINE, then a run of
+    VERTEX, then SEQEND, and the reader above hands those back as separate
+    dicts in file order. Reassembling them here is what makes the tests assert
+    on the LOOP an importer will see rather than on the writer's own account of
+    it, which is the rule the rest of this file already follows.
+    """
+    out, cur, flag = [], None, 0
+    for e in ents:
+        if e.get(8, [None])[0] != layer:
+            continue
+        if e["type"] == "POLYLINE":
+            flag = int(e.get(70, ["0"])[0])
+            cur = []
+        elif e["type"] == "VERTEX" and cur is not None:
+            cur.append((float(e[10][0]), float(e[20][0]),
+                        float(e.get(30, ["0"])[0])))
+        elif e["type"] == "SEQEND" and cur is not None:
+            out.append((bool(flag & 1), cur))
+            cur = None
+    return out
+
+
 def texts_of(ents, layer):
     return [e[1][0] for e in by_layer(ents, layer) if e["type"] == "TEXT"]
 
@@ -346,7 +372,86 @@ with tempfile.TemporaryDirectory() as td:
     check("...and the cap was actually honoured", drawn <= 500, drawn)
 
 
-# --- 8. the writer contract ------------------------------------------------
+# --- 8. the closed polyline, which is what SketchUp faces ------------------
+print("\nthe closed polyline")
+
+SQUARE = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)]
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "poly.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    n = w.polyline("TLS-OUTLINE", SQUARE)
+    w.close()
+    _, ents = read_dxf(p)
+    loops = polylines_of(ents, "TLS-OUTLINE")
+    check("one polyline is written", len(loops) == 1, len(loops))
+    check("...and it reports the vertices it wrote", n == 4, n)
+    closed, vs = loops[0]
+    check("...marked CLOSED, which is what makes SketchUp face it", closed)
+    check("...with every vertex, in order",
+          [(round(x, 6), round(y, 6)) for x, y, _ in vs] == SQUARE, vs)
+
+    # ⭐ THE OPERATOR'S ACTUAL REQUIREMENT: "all lines sit on a perfect flat
+    # surface". A loop a millimetre out of plane does not face, and nothing
+    # on screen says why -- so this is pinned, not assumed.
+    check("...and every vertex is exactly on z = 0",
+          all(z == 0.0 for _, _, z in vs), [z for _, _, z in vs])
+
+    # ⛔ A REPEATED FIRST VERTEX IS A ZERO-LENGTH SEGMENT, NOT A CLOSURE.
+    p2 = os.path.join(td, "poly_dup.dxf")
+    w2 = drawing.DxfWriter(p2, units="m")
+    w2.polyline("TLS-OUTLINE", SQUARE + [(0.0, 0.0)])
+    w2.close()
+    _, ents2 = read_dxf(p2)
+    _, vs2 = polylines_of(ents2, "TLS-OUTLINE")[0]
+    check("a repeated closing vertex is dropped, not written twice",
+          len(vs2) == 4, len(vs2))
+
+    # Units reach the vertices, not only the LINEs -- the silent error again.
+    p3 = os.path.join(td, "poly_mm.dxf")
+    w3 = drawing.DxfWriter(p3, units="mm")
+    w3.polyline("TLS-OUTLINE", SQUARE)
+    w3.close()
+    _, ents3 = read_dxf(p3)
+    _, vs3 = polylines_of(ents3, "TLS-OUTLINE")[0]
+    check("units scale a polyline's vertices too",
+          max(x for x, _, _ in vs3) == 4000.0,
+          max(x for x, _, _ in vs3))
+
+    # The extents must know about a drawing made only of loops, or the sheet
+    # bounds to nothing and the importer opens on empty space.
+    head3, _ = read_dxf(p3)
+    check("...and the extents count them",
+          float(head3["$EXTMAX"][0]) == 4000.0, head3.get("$EXTMAX"))
+
+    p4 = os.path.join(td, "poly_open.dxf")
+    w4 = drawing.DxfWriter(p4, units="m")
+    w4.polyline("TLS-REACH", [(0.0, 0.0), (1.0, 1.0)], closed=False)
+    w4.close()
+    _, ents4 = read_dxf(p4)
+    op, vs4 = polylines_of(ents4, "TLS-REACH")[0]
+    check("an open run is allowed and is NOT marked closed",
+          (not op) and len(vs4) == 2, (op, len(vs4)))
+
+    # A guard never seen to refuse anything has not been tested.
+    for bad, why in (([(0.0, 0.0), (1.0, 0.0)], "closed needs 3"),
+                     ([(0.0, 0.0)], "one vertex")):
+        try:
+            drawing.DxfWriter(os.path.join(td, "x.dxf"),
+                              units="m").polyline("TLS-OUTLINE", bad)
+            check("a loop that cannot enclose anything is refused (%s)" % why,
+                  False)
+        except ValueError as exc:
+            check("a loop that cannot enclose anything is refused (%s)" % why,
+                  "enclose" in str(exc), str(exc))
+
+check("the layers to extrude are declared in the file's table",
+      {"TLS-OUTLINE", "TLS-REACH", "TLS-STRUCT"}
+      <= {n for n, _ in drawing.LAYERS},
+      [n for n, _ in drawing.LAYERS])
+
+
+# --- 9. the writer contract ------------------------------------------------
 print("\nthe writer contract merge relies on")
 
 with tempfile.TemporaryDirectory() as td:

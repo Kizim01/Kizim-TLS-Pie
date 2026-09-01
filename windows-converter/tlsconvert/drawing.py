@@ -56,6 +56,9 @@ UNITS = {
 # 5 blue, 6 magenta, 7 white/black, 8 dark grey.
 LAYERS = (
     ("TLS-WALLS", 3),        # the fitted lines
+    ("TLS-OUTLINE", 4),      # the wall perimeter, closed -- the one to extrude
+    ("TLS-REACH", 6),        # the boundary of what the room actually leaves free
+    ("TLS-STRUCT", 1),       # columns, bars, islands standing inside it
     ("TLS-SLICE", 8),        # the cells they were fitted to
     ("TLS-GRID", 251),       # the metre grid
     ("TLS-NOTES", 2),        # titles, the unit label, the scale note
@@ -588,6 +591,48 @@ class DxfWriter:
         self._ents.append(
             "0\nLINE\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
             "11\n%.4f\n21\n%.4f\n31\n0.0\n" % (layer, a, b, c, d))
+
+    def polyline(self, layer, xy, closed=True):
+        """
+        One connected run of vertices, optionally closed. Returns the count.
+
+        ⭐ THIS IS THE ENTITY THE WHOLE OUTLINE IDEA RESTS ON, AND SEPARATE
+        `LINE`s ARE NOT A SUBSTITUTE. SketchUp turns a closed, coplanar loop of
+        edges into a FACE, and a face is what Push/Pull extrudes -- which is the
+        entire point of exporting a plan to model on top of. Lines drawn end to
+        end usually face too, but only if their endpoints are bit-identical, and
+        two segments computed by different means have no reason to be. A
+        POLYLINE shares its vertices by construction, so the loop cannot be left
+        one rounding apart from closing. The failure is nasty precisely because
+        it is invisible: the drawing looks right and simply will not extrude.
+
+        ⛔ `LWPOLYLINE` IS R13+ AND THIS WRITER IS R12 (`AC1009`). The R12 form
+        is POLYLINE / VERTEX... / SEQEND, with `66` announcing that vertices
+        follow and bit 1 of `70` marking it closed. A closed polyline does NOT
+        repeat its first vertex at the end -- writing the repeat gives a
+        zero-length segment that some importers keep and then fail to face on.
+        """
+        u = self.scale
+        pts = [(float(x) * u, float(y) * u) for x, y in xy]
+        if closed and len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()          # see the note above -- the closure is the flag
+        if len(pts) < (3 if closed else 2):
+            raise ValueError(
+                "a %s polyline needs at least %d vertices, got %d -- refusing "
+                "to write one that cannot enclose anything"
+                % ("closed" if closed else "open",
+                   3 if closed else 2, len(pts)))
+        for a, b in pts:
+            self._seen(a, b)
+        self._ents.append(
+            "0\nPOLYLINE\n8\n%s\n66\n1\n70\n%d\n"
+            "10\n0.0\n20\n0.0\n30\n0.0\n" % (layer, 1 if closed else 0))
+        for a, b in pts:
+            self._ents.append(
+                "0\nVERTEX\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
+                % (layer, a, b))
+        self._ents.append("0\nSEQEND\n8\n%s\n" % layer)
+        return len(pts)
 
     def point(self, layer, x, y):
         u = self.scale
