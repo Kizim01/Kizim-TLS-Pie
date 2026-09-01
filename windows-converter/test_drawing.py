@@ -964,7 +964,7 @@ with tempfile.TemporaryDirectory() as td:
     p = os.path.join(td, "lv.dxf")
     w = drawing.DxfWriter(p, units="m")
     lvs = [dict(floor_lv, outlines=fouts), dict(plat_lv, outlines=outs)]
-    n = drawing.draw_levels(w, lvs, base_z=0.0)
+    n = drawing.draw_levels(w, lvs, base_z=0.0, face=True)
     w.close()
     _, ents = read_dxf(p)
     check("draw_levels writes every loop it was given", n >= 3, n)
@@ -1035,6 +1035,39 @@ check("...and a tolerance under the cell cannot remove a single step",
 check("...while the area survives the coarser one",
       abs(max(o["area_m2"] for o in coarse if o["outer"]) - want) < 0.8,
       max(o["area_m2"] for o in coarse if o["outer"]))
+
+# --- 16. no construction lines unless they are asked for --------------------
+print("\nthe default file carries no triangulation at all")
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "plain.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    drawing.draw_levels(w, [dict(plat_lv, outlines=outs)], base_z=0.0)
+    w.close()
+    _, ents = read_dxf(p)
+    check("draw_levels writes NO 3DFACE by default",
+          not [e for e in ents if e["type"] == "3DFACE"],
+          len([e for e in ents if e["type"] == "3DFACE"]))
+    check("...but the closed outline is still there to model on",
+          len(polylines_of(ents, drawing.level_layer(plat_lv["z"]))) == 1)
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "faced.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    drawing.draw_levels(w, [dict(plat_lv, outlines=outs)], base_z=0.0,
+                        face=True)
+    w.close()
+    txt = io.open(p, encoding="ascii", errors="replace").read()
+    lay = drawing.level_layer(plat_lv["z"], drawing.LEVEL_FACE_LAYER)
+    rec = [c for c in txt.split("0\nLAYER\n2\n")[1:]
+           if c.split("\n")[0] == lay]
+    colour = int(rec[0].split("62\n")[1].split("\n")[0]) if rec else 0
+    check("...and when asked for, the face layer is declared OFF",
+          colour < 0, (lay, colour))
+    check("...while a drawing layer stays ON",
+          all(int(c.split("62\n")[1].split("\n")[0]) > 0
+              for c in txt.split("0\nLAYER\n2\n")[1:]
+              if c.split("\n")[0] == "TLS-OUTLINE"))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

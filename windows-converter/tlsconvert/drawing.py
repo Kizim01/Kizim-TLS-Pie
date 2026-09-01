@@ -65,6 +65,15 @@ LAYERS = (
     ("TLS-NOTES", 2),        # titles, the unit label, the scale note
 )
 
+# ⛔ LAYERS WHOSE ENTITIES ARE CONSTRUCTION, NOT DRAWING. A negative colour
+# number in the LAYER table means the layer is OFF, which is how a DXF says
+# "present, but do not show this". Anything triangulated belongs here: the
+# operator models on the outlines and never wants to see the wedges a face is
+# cut into. This is defence in depth, not the defence -- `draw_levels` writes
+# no faces at all unless asked, because a flag only works if the reader honours
+# it and the file's CONTENTS work everywhere.
+OFF_LAYER_PREFIXES = ("TLS-FACE", "TLS-FCE")
+
 DEFAULT_CELL_M = 0.02        # matches the converter's usual preview voxel
 DEFAULT_PLAN_LO_M = 0.90     # a standard architectural cut, above furniture
 DEFAULT_PLAN_HI_M = 1.60     # and below wall units
@@ -1880,6 +1889,8 @@ class DxfWriter:
             "0\nENDSEC\n" % (self._insunits, lo0, lo1, hi0, hi1))
         known = set(n for n, _ in LAYERS)
         names = list(LAYERS) + [(n, 7) for n in self._used if n not in known]
+        names = [(n, -abs(c) if n.startswith(OFF_LAYER_PREFIXES) else c)
+                 for n, c in names]
         tables = ["0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n%d\n"
                   % len(names)]
         for name, colour in names:
@@ -1916,7 +1927,7 @@ def draw_grid(dxf, lo_x, lo_y, hi_x, hi_y, step_m=1.0, layer="TLS-GRID"):
 
 
 def draw_levels(dxf, levels, base_z, label_layer="TLS-NOTES",
-                face=True, text_h_m=0.12):
+                face=False, text_h_m=0.12):
     """
     Write every level's outlines FLAT ON THE BASE PLANE, each on its own layer,
     each labelled with the height to extrude it to.
@@ -1935,6 +1946,22 @@ def draw_levels(dxf, levels, base_z, label_layer="TLS-NOTES",
     the same situation as drawing a rectangle on a floor in SketchUp, which
     Push/Pull handles correctly -- an offset to stop the flicker would break
     the coplanarity that makes it work, so the flicker is the right trade.
+
+    ⛔⛔ `face` IS OFF BY DEFAULT AND THAT IS THE OPERATOR'S CALL, NOT A
+    DEFAULT PICKED FOR TIDINESS: *"i dont need to see construction lines when i
+    import into sketchup"*. A `3DFACE` is a wedge of a triangulation, so N of
+    them carry N-2 interior edges that are not part of any room. Group 70 marks
+    them invisible and SketchUp offers "Merge Coplanar Faces" on import, but
+    BOTH of those are the reader's behaviour. **A file with no triangles in it
+    has no construction lines to honour a flag about**, and that is the only
+    version of this guarantee that does not depend on somebody else's importer.
+
+    ⚠ THE COST, STATED PLAINLY: a closed POLYLINE is what is left, and whether
+    SketchUp turns one into a Push/Pull-able face is the open question this
+    whole thread started from. Its importer is documented to face closed
+    polylines by default (holes included) -- if that holds, faces were never
+    needed; if it does not, pass `face=True` and they arrive on `TLS-FCE-###`,
+    declared OFF so they are still not SEEN until the tag is switched on.
 
     `levels` is what `find_levels` returned, each with an `outlines` list from
     `level_footprints`. Returns the number of loops written.
