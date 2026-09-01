@@ -5711,6 +5711,40 @@ matches the table's own record shape.
 layer declared.** Layers `TLS-LVL-008/026/048/070/120`, plus `TLS-OUTLINE`, `TLS-REACH`, `TLS-WALLS`,
 `TLS-NOTES`. Commit `3a79559`.
 
+#### ⛔⛔ THE OPERATOR SAW "RADIAL LINES" — AND THE TRIANGULATION WAS NOT AT FAULT
+
+Screenshot: hundreds of edges radiating from single points across the whole plan. Measured before
+anything was changed: **every loop's triangle area matches its polygon area exactly** (153.64 vs
+153.64 on the floor; 0 loops wrong out of 40). A 475-vertex outline simply has 473 correct triangles
+and **472 interior edges**, and every one of them was being drawn. *A correct answer displayed wrongly
+looks exactly like a wrong answer, so measure which one it is before touching the algorithm.*
+
+Two separable causes, and the first is a lesson that generalises:
+
+⛔ **A SIMPLIFY TOLERANCE BELOW THE RASTER CELL PRESERVES THE RASTERISATION, NOT THE MEASUREMENT.**
+`SIMPLIFY_TOL_M` is 0.03 m and a level is traced on a **0.05 m** grid, so every staircase step —
+exactly one cell tall — survived, and no amount of simplifying could remove one. The constant's own
+comment calls it "the instrument's accuracy", which is true and was **borrowed into a place where the
+thing being simplified is not at the instrument's resolution**. `LEVEL_SIMPLIFY_M = 0.10` takes the
+five levels from **2268 vertices to 838**. (The wall trace keeps 0.03: it runs on the 0.02 m cell and
+is snapped to fitted lines afterwards — which is exactly why the borrow looked safe.)
+
+⛔ **AND NOTHING TOLD THE READER THE DIAGONALS WERE CONSTRUCTION LINES.** DXF **group code 70** exists
+for this and the reference names the case: *"representing complex polygons by decomposing them into
+triangular wedges, where the edges between triangles should be made invisible"*. Every `3DFACE` now
+carries it. ⭐ An edge counts as boundary **only if it appears ONCE** — a bridge spliced in by
+`_cut_holes` sits in the ring **twice, once each way**, so counting occurrences finds and hides the
+construction lines without threading extra state out of the splice.
+
+Faces also moved to their **own per-level layer** `TLS-FCE-###`, beside the outline's `TLS-LVL-###`,
+so every triangle can be switched off in one action without losing the outlines — an
+**importer-independent fallback**, which this project has learnt not to skip.
+
+**Result:** 624 kB → **248 kB**, 2252 → **814 triangles**, and **1578 of 2442 triangle edges flagged
+invisible**; every still-drawable edge is a real boundary edge. Suites **122 → 129**, audit **12 of 12**.
+⭐ **Immediate operator action, no new file needed:** SketchUp's CAD import dialog has **Merge Coplanar
+Faces**, which the docs describe as removing triangulated lines from planes — tick it. Commit `33090c2`.
+
 ⚠ **Still open:** the seating reads only 6.1 m², which is low for a restaurant — banquettes are
 occluded by their own tables, and whether that is the data or the probe height is **not established**.
 The cell complex still finds **no** structures (61 wall lines bound none), area is still **132 m²
@@ -5724,7 +5758,10 @@ Platforms, seating, tables and the bar all come out as closed, faced loops flat 
 their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
 upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
 ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
-floor. Open: seating reads low (6.1 m²), and none of it is wired into CLI/GUI/Studio.
+floor. ⭐ If triangulation lines show on import, tick **Merge Coplanar Faces** in SketchUp's import dialog;
+the file already flags every diagonal invisible (DXF group 70) and puts faces on `TLS-FCE-###` so they
+can be hidden wholesale. Open: seating reads low (6.1 m²), and none of it is wired into
+CLI/GUI/Studio.
 
 <!-- superseded, kept for the trail -->
 **⭐ THE OUTLINE TOOL IS LIVE BUT NOT FINISHED — read the twenty-fifth pass directly above.**
