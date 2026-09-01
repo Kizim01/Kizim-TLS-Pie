@@ -771,6 +771,8 @@ LEVEL_GRID_M = 0.05          # the raster a level is traced on
 LEVEL_CLOSE_M = 0.10         # ⛔ FURNITURE scale -- NOT Cloud2BIM's 1.0 m
 LEVEL_OPEN_M = 0.05          # shave speckle off a seat pan, not the seat
 LEVEL_MIN_AREA_M2 = 0.50     # smaller than a seat pan is not worth modelling
+LEVEL_SIMPLIFY_M = 0.10      # ⛔ MUST EXCEED LEVEL_GRID_M -- see level_footprints
+LEVEL_FACE_LAYER = "TLS-FCE" # faces go beside the outline, never on top of it
 LEVEL_MAX_COUNT = 12         # a room has storeys and furniture, not fifty tiers
 
 
@@ -937,7 +939,7 @@ def find_levels(ijk, counts, cell_m, floor_z, ceil_z=None, top=None,
 def level_footprints(ijk, cell_m, level, top=None, grid_m=LEVEL_GRID_M,
                      close_m=LEVEL_CLOSE_M, open_m=LEVEL_OPEN_M,
                      min_area_m2=LEVEL_MIN_AREA_M2, probe_m=LEVEL_PROBE_M,
-                     simplify_m=SIMPLIFY_TOL_M):
+                     simplify_m=LEVEL_SIMPLIFY_M):
     """
     The closed outlines of one level: every separate platform, seat and table
     top standing at that height, with the holes in them.
@@ -955,6 +957,17 @@ def level_footprints(ijk, cell_m, level, top=None, grid_m=LEVEL_GRID_M,
     structurally incapable of representing seating, where the whole answer is
     "eleven separate objects at 0.42 m". `trace_loops` returns them all, and
     the sign of the area still separates a hole from an outline.
+
+    ⛔⛔ THE SIMPLIFY TOLERANCE MUST EXCEED THE RASTER CELL, AND `SIMPLIFY_TOL_M`
+    DOES NOT. A traced boundary is a staircase whose steps are exactly ONE CELL
+    tall, so a tolerance below the cell size cannot remove a single one of them:
+    it preserves the RASTERISATION as faithfully as it preserves the
+    measurement. At 0.03 m on a 0.05 m grid the operator's five levels carried
+    2268 vertices and every outline was visibly stepped; at 0.10 m they carry
+    838. `SIMPLIFY_TOL_M` is right for the wall trace, which runs on the 0.02 m
+    cell and is snapped to fitted lines afterwards -- and that is precisely why
+    borrowing it here was wrong. *A tolerance is only "the instrument's
+    accuracy" if the thing being simplified is at the instrument's resolution.*
 
     ⚠ The order is CLOSE then OPEN here, the reverse of `clean_free_space`,
     and for a reason that does not transfer between the two. Free space is a
@@ -1003,7 +1016,7 @@ def level_footprints(ijk, cell_m, level, top=None, grid_m=LEVEL_GRID_M,
     return out
 
 
-def level_layer(z_above_base_m):
+def level_layer(z_above_base_m, prefix="TLS-LVL"):
     """
     A per-level layer name, so one height can be isolated in the CAD package.
 
@@ -1013,7 +1026,7 @@ def level_layer(z_above_base_m):
     in that set either.
     """
     cm = int(round(float(z_above_base_m) * 100.0))
-    return "TLS-LVL-%s%03d" % ("N" if cm < 0 else "", min(abs(cm), 999))
+    return "%s-%s%03d" % (prefix, "N" if cm < 0 else "", min(abs(cm), 999))
 
 def _label_regions(mask):
     """
@@ -1777,22 +1790,53 @@ class DxfWriter:
         if rings:
             pts = _cut_holes(pts, rings)
 
+        # ⛔⛔ THE DIAGONALS MUST BE FLAGGED INVISIBLE OR THE DRAWING IS A FAN
+        # OF LINES. A 475-vertex floor triangulates into 473 correct triangles
+        # -- the operator saw hundreds of edges radiating from one point and
+        # the triangulation was not at fault, its 472 interior edges were.
+        # Group code 70 exists for exactly this: the DXF reference calls it out
+        # for "representing complex polygons by decomposing them into
+        # triangular wedges, where the edges between triangles should be made
+        # invisible". 1/2/4/8 hide edges one to four.
+        #
+        # ⛔ AN EDGE IS BOUNDARY ONLY IF IT APPEARS ONCE. A bridge spliced in
+        # by `_cut_holes` sits in the ring TWICE, once each way -- it is a
+        # construction line, not an edge of the room, and it has to be hidden
+        # too. Counting occurrences finds them without threading extra state
+        # back out of the splice.
+        seen = {}
+        m = len(pts)
+        for i in range(m):
+            e = (pts[i], pts[(i + 1) % m])
+            k = e if e[0] <= e[1] else (e[1], e[0])
+            seen[k] = seen.get(k, 0) + 1
+        boundary = set(k for k, v in seen.items() if v == 1)
+
+        def hidden(p, q):
+            k = (p, q) if p <= q else (q, p)
+            return k not in boundary
+
         u = self.scale
         n = 0
         for a, b, c in _ear_clip(pts):
             for p in (a, b, c):
                 self._seen(p[0] * u, p[1] * u)
+            # edges are 1: a-b, 2: b-c, 3: c-d (zero length, d == c), 4: d-a
+            flag = ((1 if hidden(a, b) else 0) | (2 if hidden(b, c) else 0)
+                    | 4 | (8 if hidden(c, a) else 0))
             self._add(layer, 
                 "0\n3DFACE\n8\n%s\n"
                 "10\n%.4f\n20\n%.4f\n30\n%.4f\n"
                 "11\n%.4f\n21\n%.4f\n31\n%.4f\n"
                 "12\n%.4f\n22\n%.4f\n32\n%.4f\n"
                 "13\n%.4f\n23\n%.4f\n33\n%.4f\n"
+                "70\n%d\n"
                 % (layer,
                    a[0] * u, a[1] * u, z * u,
                    b[0] * u, b[1] * u, z * u,
                    c[0] * u, c[1] * u, z * u,
-                   c[0] * u, c[1] * u, z * u))    # 4th == 3rd: a triangle
+                   c[0] * u, c[1] * u, z * u,     # 4th == 3rd: a triangle
+                   flag))
             n += 1
         return n
 
@@ -1915,7 +1959,7 @@ def draw_levels(dxf, levels, base_z, label_layer="TLS-NOTES",
                 mine = [h["xy"] for h in holes
                         if _point_in_ring(tuple(h["xy"][0]),
                                           [tuple(p) for p in xy])]
-                dxf.face(layer, xy, holes=mine)
+                dxf.face(level_layer(h, LEVEL_FACE_LAYER), xy, holes=mine)
             n += 1
         if lv.get("outlines") and label_layer:
             big = max(lv["outlines"], key=lambda d: d["area_m2"])

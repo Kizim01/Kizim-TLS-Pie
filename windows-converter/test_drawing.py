@@ -976,10 +976,65 @@ with tempfile.TemporaryDirectory() as td:
     labels = texts_of(ents, "TLS-NOTES")
     check("...each level is labelled with the height to extrude to",
           any("+0.2" in t for t in labels), labels)
-    fl = faces_of(ents, drawing.level_layer(floor_lv["z"]))
+    fl = faces_of(ents, drawing.level_layer(floor_lv["z"],
+                                           drawing.LEVEL_FACE_LAYER))
     check("...and the floor's face does NOT bury the platform",
           fl and sum(tri_area(t) for t in fl) < 24.0 - want + 1.0,
           (round(sum(tri_area(t) for t in fl), 2), want))
+
+# --- 15. the triangulation must not SHOW ------------------------------------
+print("\ninvisible edge flags: a face, not a fan of lines")
+
+
+def visible_edges(ents, layer):
+    """
+    Count the edges an importer will actually draw.
+
+    A 3DFACE carries its four vertices and a group-70 bitmask saying which of
+    its edges are invisible; a triangle is written with the 4th vertex equal to
+    the 3rd, so edge 3 is zero length and always flagged. What is left visible
+    must be the polygon's OWN edges and nothing else.
+    """
+    n = 0
+    for e in by_layer(ents, layer):
+        if e["type"] != "3DFACE":
+            continue
+        f = int(e.get(70, ["0"])[0])
+        n += (0 if f & 1 else 1) + (0 if f & 2 else 1) + (0 if f & 8 else 1)
+    return n
+
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "iv.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    w.face("TLS-FACE", SQ)                       # 4 verts -> 2 triangles
+    w.face("TLS-FCE-020", SQ, holes=[HOLE])      # ring + hole + a bridge
+    w.close()
+    _, ents = read_dxf(p)
+    check("a square's triangulation shows only the square's 4 edges",
+          visible_edges(ents, "TLS-FACE") == 4,
+          visible_edges(ents, "TLS-FACE"))
+    check("...so the diagonal ear clipping needed is HIDDEN",
+          len(faces_of(ents, "TLS-FACE")) == 2)
+    check("a holed face shows the outer 4 and the hole's 4, and no more",
+          visible_edges(ents, "TLS-FCE-020") == 8,
+          visible_edges(ents, "TLS-FCE-020"))
+    check("...which means the BRIDGE is hidden too -- it is not a real edge",
+          visible_edges(ents, "TLS-FCE-020") == 8)
+
+check("the level tolerance EXCEEDS the raster it simplifies",
+      drawing.LEVEL_SIMPLIFY_M > drawing.LEVEL_GRID_M,
+      (drawing.LEVEL_SIMPLIFY_M, drawing.LEVEL_GRID_M))
+
+coarse = drawing.level_footprints(fijk, LC, plat_lv, top=ftop)
+fine = drawing.level_footprints(fijk, LC, plat_lv, top=ftop, simplify_m=0.03)
+nc = sum(o["xy"].shape[0] for o in coarse)
+nf = sum(o["xy"].shape[0] for o in fine)
+check("...and a tolerance under the cell cannot remove a single step",
+      nc <= nf, (nc, nf))
+check("...while the area survives the coarser one",
+      abs(max(o["area_m2"] for o in coarse if o["outer"]) - want) < 0.8,
+      max(o["area_m2"] for o in coarse if o["outer"]))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
