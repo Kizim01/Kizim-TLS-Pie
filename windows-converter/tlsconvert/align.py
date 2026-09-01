@@ -5329,7 +5329,7 @@ PAGE = r"""<!doctype html>
   <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
 <div class="tray" id="ty_clip"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
-  <div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud.</div>
+  <div class="blurb">The clip box hides; Delete points removes for good — and a cut can be aimed at one cloud. An outline cut takes only what the box shows: clipped-away points are never selected.</div>
   <label>Clip box</label>
   <div class="row"><button id="clipon">Off</button>
     <button id="clipfit">Fit to view</button>
@@ -8227,7 +8227,8 @@ function editPlan(){
       (e.mode==='keep'?plan.keep:plan.drop).push(
         Object.assign({}, e.box, {scan:who, frames:e.frames}));
     else plan.lassos.push({matrix:e.matrix, polygon:e.poly,
-                           keep:e.mode==='keep', scan:who, frames:e.frames});
+                           keep:e.mode==='keep', scan:who, frames:e.frames,
+                           clip:e.clip});
   }
   return plan;
 }
@@ -8299,7 +8300,8 @@ function showEdits(){
   const rows=V.edits.map((e,i)=>
     '<div>'+(i+1)+'. '+(e.mode==='keep'?'keep only ':'delete ')+
     (e.kind==='box' ? ('the box '+boxSize(e.box))
-                    : ('a lasso of '+e.poly.length+' points'))+
+                    : ('a lasso of '+e.poly.length+' points'+
+                       (e.clip ? ', only what the clip box showed' : '')))+
     /* Named, never counted. "3 cuts" reads as three cuts through the job, and
        the whole point of a scope is that it is not. */
     (e.scan==null ? '' : ' — <b>'+whoName(e.scan)+'</b> only')+
@@ -8328,6 +8330,23 @@ function pushEdit(e){
      where every cloud it names stood, so it goes on naming those points after
      they are moved. See `editPlan`. */
   e.frames = cutFrames(e.scan);
+  /* ⭐⭐ AND THE CLIP BOX WITH THEM, FOR OUTLINE CUTS. An outline is drawn
+     over what is ON SCREEN, but it is a prism through the whole cloud -- with
+     the clip box on, the points the box hid sit inside that prism where
+     nobody could see them, and a delete that took them would be the
+     hidden-scan failure one level down: a cut reaching through and deleting
+     points nobody could see. The stamp copies the exact test the shader
+     kills by -- same box, same sense, same on-switch -- and it is FROZEN
+     here because the clip box moves on afterwards while the cut goes on
+     meaning what was visible when it was drawn. `markLasso` and
+     `pipeline.Lasso.inside` both honour it, so the preview, the replay and
+     the export spare the same points.
+     ⛔ BOX CUTS ARE EXEMPT ON PURPOSE. The delete box IS the clip box, so
+     "hide inside, look at what is left, then delete the box" is the designed
+     way to preview a removal -- clip-limiting it would make exactly that
+     press delete nothing at all. */
+  if(e.kind==='lasso' && V.clip)
+    e.clip = Object.assign(boxSpec(), {hide_inside:V.inside});
   e.eid = ++EDIT_ID;
   V.edits.push(e); showEdits();
   /* ⛔⛔ AND IT GOES ON THE ONE UNDO STACK WITH EVERY OTHER ACTION, in the
@@ -8362,7 +8381,8 @@ function applyDrop(e){
                                              {scan:who, frames:e.frames})
                              : null;
   const las = box ? null : {matrix:e.matrix, polygon:e.poly,
-                            keep:false, scan:who, frames:e.frames};
+                            keep:false, scan:who, frames:e.frames,
+                            clip:e.clip};
   /* ⛔⛔ THE COUNTERS DESCRIBE A SET OF SCANS, so the question is whether
      they still describe THIS one -- not whether they have ever been set.
      `V.total` is written only here and in recomputeLive, and adding a scan,
@@ -8631,6 +8651,9 @@ function markBox(seg,k,b,to){
 function markLasso(seg,k,l,to){
   const m=l.matrix, p=l.polygon, np=p.length;
   if(np<3) return;
+  /* The clip box this outline was drawn through, if one was on -- prepared
+     once here, tested per point below. See the stamp in `pushEdit`. */
+  const q = l.clip ? prepClip(l.clip) : null;
   /* ⭐ THE OUTLINE'S OWN BOUNDS FIRST. The crossing test walks every polygon
      edge per point; most points of a big cloud land nowhere near the
      outline, and a freehand lasso can carry dozens of vertices -- so the
@@ -8650,6 +8673,17 @@ function markLasso(seg,k,l,to){
        already at the value this edit would set needs no test at all, which
        is true for every caller and skips the dead ones outright. */
     if(seg[i]===to) continue;
+    /* ⭐ WHAT THE CLIP BOX HID, THE OUTLINE NEVER TOUCHES. A drop leaves the
+       hidden point exactly as it was; a keep KEEPS it -- "keep only this"
+       was said of what could be seen, and the alternative is a keep quietly
+       wiping everything the box was hiding. Before the w gate on purpose:
+       a hidden point behind the eye is still a hidden point. (Keep passes
+       see no NaN -- their `world` call takes no mask -- and a drop's dead
+       points were already caught by the line above.) */
+    if(q && clipHides(q,_wx[i],_wy[i],_wz[i])){
+      if(to===1) seg[i]=1;
+      continue;
+    }
     const w=_wx[i]*m[3]+_wy[i]*m[7]+_wz[i]*m[11]+m[15];
     if(w<=1e-9) continue;                 /* behind the eye: never enclosed */
     const x=(_wx[i]*m[0]+_wy[i]*m[4]+_wz[i]*m[8]+m[12])/w;
@@ -8917,6 +8951,10 @@ function commitLasso(mode, keepTool){
   say((mode==='keep' ? 'Deleted everything outside the outline'
                     : 'Deleted the points inside the outline')+
       whoSuffix()+'.'+
+      /* ⛔ SAID OUT LOUD, for the same reason whoSuffix is: a cut that
+         quietly spared the clipped-away points is indistinguishable from a
+         cut that failed on them. */
+      (V.clip ? ' Points the clip box hides were left alone.' : '')+
       (keepTool ? ' The tool is still armed — draw the next outline.' : ''));
 }
 
@@ -8939,6 +8977,17 @@ function commitLasso(mode, keepTool){
 function clipCtx(){
   if(!V.clip) return null;
   return {c:boxCentre(), h:boxHalf(), R:boxRot(), inv:V.inside};
+}
+/* A cut's FROZEN clip stamp, made testable: the same {centre, half, axes,
+   sense} shape clipCtx builds from the live box, so clipHides serves the
+   live screen and the cut replay alike -- one home for the hide test. */
+function prepClip(cl){
+  return {c:[(cl.lo[0]+cl.hi[0])/2,(cl.lo[1]+cl.hi[1])/2,
+             (cl.lo[2]+cl.hi[2])/2],
+          h:[(cl.hi[0]-cl.lo[0])/2,(cl.hi[1]-cl.lo[1])/2,
+             (cl.hi[2]-cl.lo[2])/2],
+          R:rotOf(cl.yaw_deg||0, cl.pitch_deg||0, cl.roll_deg||0),
+          inv:!!cl.hide_inside};
 }
 function clipHides(q,x,y,z){
   if(!q) return false;

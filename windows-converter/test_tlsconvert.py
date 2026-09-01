@@ -1143,6 +1143,59 @@ _rt3 = pipeline.Edit.from_dict(_cutl.as_dict())
 check("an Edit carries its lassos through JSON too",
       list(_rt3.mask(_lp)) == list(_cutl.mask(_lp)))
 
+# ⭐ THE CLIP BOX LIMITS AN OUTLINE TO WHAT IT SHOWED. An outline is a prism
+# through the whole cloud; with the clip box on, the points it hid sit inside
+# that prism where nobody could see them. A cut stamped with the clip spares
+# them; a keep KEEPS them -- "keep only this" was said of what could be seen.
+# The stamp mirrors the shader's own kill test: same box, same sense.
+_clip_pts = np.array([[-2.0, 0.0, 0.0],   # visible (in the box), enclosed
+                      [2.0, 0.0, 0.0],    # HIDDEN (out of the box), enclosed
+                      [6.0, 0.0, 0.0],    # hidden, outside the outline
+                      [-6.0, 0.0, 0.0]])  # visible, outside the outline
+_clip_west = {"lo": [-10.0, -10.0, -10.0], "hi": [0.0, 10.0, 10.0],
+              "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+              "hide_inside": False}       # hiding outside: only x<=0 shows
+_cutc = pipeline.Edit(lassos=[pipeline.Lasso(
+    _look_down(), _SQ, clip=_clip_west).as_dict()])
+check("a clip-stamped cut takes only what the box showed",
+      list(_cutc.mask(_clip_pts)) == [False, True, True, True],
+      list(_cutc.mask(_clip_pts)))
+_cuti = pipeline.Edit(lassos=[pipeline.Lasso(
+    _look_down(), _SQ,
+    clip=dict(_clip_west, hide_inside=True)).as_dict()])
+check("and hiding INSIDE flips which enclosed point is spared",
+      list(_cuti.mask(_clip_pts)) == [True, False, True, True],
+      list(_cuti.mask(_clip_pts)))
+# ⛔ THE KEEP CASE IS THE DANGEROUS ONE: without the union a keep drawn
+# through a clip box would quietly wipe everything the box was hiding --
+# the hidden-scan failure one level down.
+_keepc = pipeline.Edit(lassos=[pipeline.Lasso(
+    _look_down(), _SQ, keep=True, clip=_clip_west).as_dict()])
+check("a clip-stamped keep keeps the hidden points too",
+      list(_keepc.mask(_clip_pts)) == [True, True, True, False],
+      list(_keepc.mask(_clip_pts)))
+# the turn reaches the clip test: a 90-degree yaw swaps which axis the slab
+# lies along, so the same point changes sides
+_slab = {"lo": [-1.0, -8.0, -8.0], "hi": [1.0, 8.0, 8.0],
+         "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+         "hide_inside": False}
+_side = np.array([[0.0, 3.0, 0.0]])
+check("an unturned clip slab shows the side point, so the cut takes it",
+      not pipeline.Edit(lassos=[pipeline.Lasso(
+          _look_down(), _SQ, clip=_slab).as_dict()]).mask(_side)[0])
+check("turned 90 degrees the same slab hides it, so the cut spares it",
+      pipeline.Edit(lassos=[pipeline.Lasso(
+          _look_down(), _SQ,
+          clip=dict(_slab, yaw_deg=90.0)).as_dict()]).mask(_side)[0])
+_crt = pipeline.Lasso.from_dict(pipeline.Lasso(
+    _look_down(), _SQ, clip=_clip_west).as_dict())
+check("the clip stamp survives a round trip through JSON-safe types",
+      _crt.clip is not None and not _crt.clip_hides_inside
+      and list(pipeline.Edit(lassos=[_crt.as_dict()]).mask(_clip_pts))
+      == list(_cutc.mask(_clip_pts)))
+check("and a lasso cut with the clip box off writes no clip at all",
+      "clip" not in pipeline.Lasso(_look_down(), _SQ).as_dict())
+
 print("\naligning from hand-picked point pairs")
 
 
@@ -2744,6 +2797,121 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
               _sz["sized"], _sz)
         check("and still reads a box saved in the older form",
               "2.0 x 3.0 x 4.0" in _sz["old"], _sz)
+
+
+# ⭐⭐ AND THE CLIP-LIMITED OUTLINE IS PROVED THE SAME WAY: the SHIPPED
+# recomputeLive, over real point buffers, against the exporter's own mask --
+# never a copy of either. Four cases: a cut through a clip box (both hide
+# senses), the dangerous keep (it must KEEP what the box hid, not wipe it),
+# and a TURNED clip box, which is why the page's real rotOf is lifted here
+# rather than the identity stub the harness above gets away with.
+if _node:
+    _CLIP_W = {"lo": [-10.0, -10.0, -10.0], "hi": [0.0, 10.0, 10.0],
+               "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+               "hide_inside": False}
+    _CLIP_T = {"lo": [-1.0, -8.0, -8.0], "hi": [1.0, 8.0, 8.0],
+               "yaw_deg": 90.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+               "hide_inside": False}
+    _CPTS = [[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [6.0, 0.0, 0.0],
+             [-6.0, 0.0, 0.0], [0.0, 3.0, 0.0]]
+    _cl_cases = [("cut", _CLIP_W), ("cut", dict(_CLIP_W, hide_inside=True)),
+                 ("keep", _CLIP_W), ("cut", _CLIP_T)]
+    _cl_want = [list(map(bool, pipeline.Edit(lassos=[pipeline.Lasso(
+        _look_down(), _SQ, keep=(mode == "keep"), clip=clip).as_dict()])
+        .mask(np.array(_CPTS)))) for mode, clip in _cl_cases]
+    _cl_page = [[{"kind": "lasso", "mode": mode, "scan": None,
+                  "matrix": [float(v) for v in _look_down()],
+                  "poly": [list(p) for p in _SQ], "clip": clip}]
+                for mode, clip in _cl_cases]
+    _cl_js = """
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+let EDIT_ID = 0;
+const V={scans:[],edits:[],only:-1,editWho:-1,hidden:{},alive:0,total:0};
+const HIST=[];
+const $=()=>({textContent:'',innerHTML:'',value:0});
+const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
+      dirty=()=>{}, whoName=()=>'a cloud';
+function remember(){ HIST.push({}); }
+function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
+const CASES=%s, PTS=%s;
+function cloud(index){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], live:new Uint8Array(PTS.length)};
+}
+/* \\u26d4 THROUGH THE SHIPPED recomputeLive, not beside it. */
+const got=CASES.map(c=>{
+  V.edits=c; V.scans=[cloud(0)];
+  recomputeLive();
+  return Array.from(V.scans[0].live).map(v=>v===1);
+});
+console.log(JSON.stringify(got));
+/* And the FAST PATH -- the press itself, through the SHIPPED pushEdit and
+   applyDrop with the clip box on. The replay above shares none of this code
+   for the stamp, so agreement with the exporter is proved for each. */
+V.scans=[cloud(0)]; V.edits=[]; V.total=0; V.alive=0;
+V.scans[0].live.fill(1);
+V.box={lo:[-10,-10,-10], hi:[0,10,10], yaw:0, pitch:0, roll:0, o:[0,0,0]};
+V.clip=true; V.inside=false;
+pushEdit({kind:'lasso', mode:'cut', matrix:CASES[0][0].matrix,
+          poly:CASES[0][0].poly});
+console.log(JSON.stringify(Array.from(V.scans[0].live).map(v=>v===1)));
+""" % ("\n".join(_js_func(f) for f in
+                 ("recomputeLive", "editPlan", "planFor", "inScope",
+                  "frameFor", "cutGroups", "world", "markBox", "markLasso",
+                  "prepClip", "clipHides", "rotOf", "shown", "pushEdit",
+                  "applyDrop", "cutFrames", "cutScope", "boxSpec",
+                  "boxCentre", "boxHalf", "boxMid", "boxRot", "rmul")),
+       json.dumps(_cl_page), json.dumps(_CPTS))
+    _jsp2 = os.path.join(_rdir, "cliprules.js")
+    with io.open(_jsp2, "w", encoding="utf-8") as _fh:
+        _fh.write(_cl_js)
+    _run2 = subprocess.run([_node, _jsp2], capture_output=True, text=True)
+    check("the clip-limited preview rules run at all", _run2.returncode == 0,
+          (_run2.stderr or "")[:400])
+    if _run2.returncode == 0:
+        _cl_lines = [l for l in _run2.stdout.strip().splitlines()
+                     if l.strip()]
+        _got2 = json.loads(_cl_lines[0])
+        check("A CLIP-LIMITED CUT SPARES ON SCREEN WHAT THE EXPORTER SPARES",
+              _got2 == _cl_want, "page %s want %s" % (_got2, _cl_want))
+        check("...and the fast drop path, stamped by pushEdit itself, agrees",
+              json.loads(_cl_lines[1]) == _cl_want[0],
+              "page %s want %s" % (_cl_lines[1], _cl_want[0]))
+
+# ⛔ AND THE STAMP AT ITS SOURCES. The behaviour above only holds if the
+# stamp is made at commit, carried into BOTH plans (the fast drop and the
+# full replay share no code for this), and said out loud -- a cut that
+# quietly spared the clipped-away points is indistinguishable from a cut
+# that failed on them.
+_pe_src = re.sub(r"/\*.*?\*/", "", _js_func("pushEdit"), flags=re.S)
+check("an outline cut is stamped with the clip box at commit",
+      "if(e.kind==='lasso' && V.clip)" in _pe_src and
+      "e.clip = Object.assign(boxSpec(), {hide_inside:V.inside});" in _pe_src,
+      _pe_src[:400])
+check("...and a BOX cut is never stamped -- hide-inside-then-delete-the-box "
+      "is the designed preview pairing", _pe_src.count("e.clip") == 1)
+check("the full replay's plan carries the stamp",
+      "clip:e.clip" in _js_func("editPlan"))
+check("and the fast drop path carries it too",
+      "clip:e.clip" in _js_func("applyDrop"))
+_ml_src = _js_func("markLasso")
+check("markLasso honours it through the one shared hide test",
+      "const q = l.clip ? prepClip(l.clip) : null;" in _ml_src)
+check("...a keep KEEPS the hidden point rather than leaving it to die",
+      "if(to===1) seg[i]=1;" in _ml_src)
+check("the cut's message says the clipped points were spared",
+      "V.clip ? ' Points the clip box hides were left alone.'"
+      in _js_func("commitLasso"))
+check("and the edit list names a clip-limited cut",
+      "e.clip ? ', only what the clip box showed'" in _js_func("showEdits"))
+# The point-pick tools were already clip-aware; now that the doctrine is
+# load-bearing for cuts too, pin the picker's half of it as well.
+check("a pair or level pick still refuses a clipped-away point",
+      "if(clipHides(q,wx,wy,wz)) continue;" in _js_func("pickPoint"))
 
 
 # --- a low score no longer throws the photograph away ---------------------

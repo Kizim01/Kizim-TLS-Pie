@@ -430,7 +430,8 @@ class Lasso(object):
     behind you. `w > 0` is the test, and it is not optional.
     """
 
-    def __init__(self, matrix, polygon, keep=False, scan=None, frames=None):
+    def __init__(self, matrix, polygon, keep=False, scan=None, frames=None,
+                 clip=None):
         self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
         self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
         self.keep = bool(keep)
@@ -440,11 +441,44 @@ class Lasso(object):
         # outline pointing at a room that has since moved. See `_frames`.
         self.frames = _frames(frames)
         self.frame = None
+        # ⭐ AND THE CLIP BOX THE OUTLINE WAS DRAWN THROUGH, if one was on.
+        # An outline is a prism through the WHOLE cloud, but the operator drew
+        # it over what the screen showed -- so the points the clip box hid are
+        # not the cut's to take. Frozen at the moment of the cut, like the
+        # camera and the frames, because the box moves on afterwards. Absent,
+        # nothing changes and an old project reads back byte-for-byte.
+        if clip is None:
+            self.clip = None
+            self.clip_hides_inside = False
+        else:
+            self.clip = Box.parse(clip)
+            self.clip_hides_inside = bool(clip.get("hide_inside", False)
+                                          if isinstance(clip, dict) else False)
 
     def inside(self, xyz):
-        """True where a point falls within the drawn outline."""
+        """
+        True where the outline CLAIMS a point: enclosure, less whatever the
+        clip box was hiding when it was drawn.
+
+        ⛔ A HIDDEN POINT IS NEVER TOUCHED. A cut spares it, and a keep KEEPS
+        it -- "keep only this" was said of what could be seen, and the
+        alternative is a keep quietly wiping everything the box was hiding:
+        the hidden-scan failure of `_scope` one level down.
+        """
         xyz = np.asarray(xyz, dtype=np.float64)
-        if len(xyz) == 0 or len(self.polygon) < 3:
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        enclosed = self._enclosed(xyz)
+        if self.clip is None:
+            return enclosed
+        hidden = self.clip.inside(xyz)
+        if not self.clip_hides_inside:
+            hidden = ~hidden
+        return (enclosed | hidden) if self.keep else (enclosed & ~hidden)
+
+    def _enclosed(self, xyz):
+        """True where a point falls within the drawn outline."""
+        if len(self.polygon) < 3:
             return np.zeros(len(xyz), dtype=bool)
         m = self.matrix
         # column-major, the same convention the page's own matrices use
@@ -467,12 +501,16 @@ class Lasso(object):
                            else self.scan)
         if self.frames:
             out["frames"] = _frames_dict(self.frames)
+        if self.clip is not None:
+            got = self.clip.as_dict()
+            got["hide_inside"] = self.clip_hides_inside
+            out["clip"] = got
         return out
 
     @classmethod
     def from_dict(cls, data):
         return cls(data["matrix"], data["polygon"], data.get("keep", False),
-                   data.get("scan"), data.get("frames"))
+                   data.get("scan"), data.get("frames"), data.get("clip"))
 
 
 def _inside_polygon(x, y, poly):
