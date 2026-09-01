@@ -5745,6 +5745,25 @@ invisible**; every still-drawable edge is a real boundary edge. Suites **122 →
 ⭐ **Immediate operator action, no new file needed:** SketchUp's CAD import dialog has **Merge Coplanar
 Faces**, which the docs describe as removing triangulated lines from planes — tick it. Commit `33090c2`.
 
+#### ⛔⛔ AND THEN: *"i dont need to see construction lines when i import into sketchup"*
+
+The flag was the wrong answer to that, and the operator's one line said so. Group 70 and SketchUp's
+**Merge Coplanar Faces** are both **the READER's behaviour** — a promise about what somebody else's
+importer will choose to do. ⭐ **A file with no triangles in it has no construction lines for a flag to
+be honoured about**, and that is the only version of the guarantee that does not depend on an importer
+at all. `draw_levels` now defaults to **`face=False`**.
+
+What is left is closed `POLYLINE`s: **42 of them, all closed, 0 self-crossings, 0 degenerate edges,
+3DFACE count 0**, and the file is **624 kB → 79 kB**. Defence in depth for when faces ARE wanted: a
+**negative colour number in the LAYER table means the layer is OFF**, so `TLS-FACE` and `TLS-FCE-###`
+are declared off — present, not seen, one tag toggle away.
+
+⚠ **THE COST IS REAL AND IS NOT HIDDEN:** whether SketchUp turns a closed polyline into a
+Push/Pull-able face is the open question this whole thread began with. Its importer is *documented* to
+face closed polylines by default, holes included — which puts the twenty-fifth pass's "SketchUp
+imports them as EDGES" claim in doubt. **Not retested.** If the outlines do not extrude, `face=True`
+brings the triangles back on a hidden tag. Suites **129 → 133**, audit **14 of 14**. Commit `32b215d`.
+
 ⚠ **Still open:** the seating reads only 6.1 m², which is low for a restaurant — banquettes are
 occluded by their own tables, and whether that is the data or the probe height is **not established**.
 The cell complex still finds **no** structures (61 wall lines bound none), area is still **132 m²
@@ -5758,9 +5777,10 @@ Platforms, seating, tables and the bar all come out as closed, faced loops flat 
 their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
 upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
 ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
-floor. ⭐ If triangulation lines show on import, tick **Merge Coplanar Faces** in SketchUp's import dialog;
-the file already flags every diagonal invisible (DXF group 70) and puts faces on `TLS-FCE-###` so they
-can be hidden wholesale. Open: seating reads low (6.1 m²), and none of it is wired into
+floor. ⛔ **The file now contains NO triangles at all** (`draw_levels` defaults to `face=False`) — the
+operator does not want construction lines, and a flag asking a reader to hide them is the reader's
+behaviour, not a guarantee. ⚠ **If the outlines will not Push/Pull, that is the thing to report**:
+pass `face=True` and they come back on `TLS-FCE-###`, declared OFF in the layer table. Open: seating reads low (6.1 m²), and none of it is wired into
 CLI/GUI/Studio.
 
 <!-- superseded, kept for the trail -->
