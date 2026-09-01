@@ -5902,7 +5902,18 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Studio 2026-09-01 03:50:49, Converter 03:50:27, tlsconvert 03:51:08, selftest 0** (RTX 3050 Ti, cuda-engine found; adds “Deep align them all”, the armed middle-click delete, and the operator’s own DXF closed-polyline commit `e10258a`)
+**✅ THE EXES: Studio 2026-09-01 11:25:56, Converter 11:26:55, tlsconvert 11:27:14, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — and THIS build is the first to carry the **outline tool**: the
+Export tray's **"Outline from clip box (DXF)"** button, `cut="box"`, the levels, the invisible-edge
+work and the `/save` route fix. ⚠ **All three were rebuilt on purpose**: `drawing.py`, `pipeline.py`
+and `export.py` are shared, so leaving Converter and tlsconvert on the 03:51 build would have left two
+of the three running old library code against a new one. Smoke-tested through the console bundle —
+23.7 M returns decoded, colour solved from the photo, PLY written in 6.3 s.
+⚠ The CLI's `-f` still offers only `las/laz/ply`: **`dxf` is reachable from Studio and the library, not
+from the command line.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 03:50:49, Converter 03:50:27, tlsconvert 03:51:08, selftest 0** (RTX 3050 Ti, cuda-engine found; adds “Deep align them all”, the armed middle-click delete, and the operator’s own DXF closed-polyline commit `e10258a`)
 — and THIS build carries **everything through the 23rd pass**: content arbitration on Deep align, the colour tray open by default, the move tool holding the LOD twin while armed, the three polygon gestures, Close-the-loop + edge cap, and the cut that names POINTS.
 
 <!-- superseded, kept for the build trail -->
