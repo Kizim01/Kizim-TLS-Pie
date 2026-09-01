@@ -6205,7 +6205,10 @@ console bundle (capture decoded, colour solved, 335.7 MB PLY).
 Session scratchpad `C:\Users\sunun\AppData\Local\Temp\claude\c--Users-sunun-trading-bot\
 8edb7129-9122-417d-b8ac-33eba2ffc7cf\scratchpad\`: `end_to_end.py` (the real capture through the
 writer the button drives), `trace_full.py` (the standalone trace), `audit_levels.py` (the 25-break
-reversion audit), `grid_002.npz` (the cached 0.02 m occupancy grid — rebuild by deleting it).
+reversion audit), `grid_002.npz` (the cached 0.02 m occupancy grid — rebuild by deleting it);
+from the thirtieth pass: `profile_outline.py` (the cProfile that found the 97%),
+`verify_threads.py` (the stream + thread-scaling facts), `bench_multicore.py` (the 41.3→22.7
+before/after; byte-compares the two DXFs), `audit_multicore.py` (the 4-break reversion audit).
 ⚠ These are temporary; the shipped code is in `windows-converter/tlsconvert/`.
 
 <!-- superseded, kept for the trail -->
