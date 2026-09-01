@@ -5764,6 +5764,70 @@ face closed polylines by default, holes included — which puts the twenty-fifth
 imports them as EDGES" claim in doubt. **Not retested.** If the outlines do not extrude, `face=True`
 brings the triangles back on a hidden tag. Suites **129 → 133**, audit **14 of 14**. Commit `32b215d`.
 
+#### ⛔ "ALSO DONT TRACE ANYTGING ON THE CELIONG" — two rules, because they fail in different rooms
+
+The old guard kept `probe + 0.05` = **0.35 m** clear of the ceiling, and that exists only to stop the
+ceiling's OWN band scoring. *It was a side effect being relied on as a policy.* ⚠ A soffit's
+**UNDERSIDE** is what the instrument sees and it has clear air above it in the cloud, so it passes the
+top-face test exactly like a table top does. Now: `LEVEL_CEILING_CLEAR_M = 0.60` (a surface this near
+the ceiling belongs to it — catches a soffit in a low room) **and** `LEVEL_MAX_HEIGHT_M = 1.60` (the
+operator extrudes UP from the base plane, so nothing above head height is a thing to extrude to —
+catches a bulkhead in a double-height room, where clearance alone would not). The fixture carries two
+soffits and the suite **tests the two rules separately**, because one check would pass while the other
+rule did nothing. On the restaurant this changed **nothing** — the highest level was already +1.20 m.
+
+#### ⭐⭐ THE CLIP BOX REPLACED A CLASSIFIER I COULD NOT VALIDATE — the operator's idea, and a better one
+
+*"what would be better is that only trace whats inside the clip box then i can choose."* The plan is
+cut at 1.70–2.30 m, which is also where the ceiling hangs down: **3 of 61 fitted lines (11.8 m of
+217 m) have almost no returns below head height.** But a wall standing behind a bar counter measures
+the same, the ratios run **0.029, 0.070, 0.127, 0.181, 0.203 with no gap**, and a second test — *"you
+can walk under a soffit"*, asked of the ray casting — ranked a **completely different five** segments
+first and gave those three 0.00, because free space beside a wall is free right up to the wall face.
+⛔ **Two tests that disagree and neither showing a gap is not a classifier; it is the absence of one.**
+That work was written, tested and then **dropped**. The operator was in the room; they draw the box.
+
+- **`viewer_box_bounds()`** converts the live box for `pipeline.Box`, which already owns the
+  containment test — a second copy would drift.
+- ⛔ **`lo`/`hi` MEAN DIFFERENT THINGS IN THE TWO PLACES A PROJECT STORES A BOX, UNDER THE SAME KEY
+  NAMES.** A saved box EDIT holds world corners; the LIVE clip box holds bounds in its own frame from
+  a world pivot `o`, so the centre is `o + R·(lo+hi)/2`. Read one as the other and the box lands in
+  the wrong place at exactly the right size.
+- ⭐ **`inside` NAMES WHAT IS HIDDEN.** `hide = uClipIn>0.5 ? !out : out`, and the button reads
+  "Hiding inside"/"Hiding outside" — so **`inside: false` KEEPS the inside**. *This resolves the
+  `box.inside` question the notes have carried as open since the twenty-fifth pass.*
+- ⛔ **THE DATUM COMES FROM THE WHOLE SURVEY, NEVER FROM THE SELECTION.** Floor, ceiling and base
+  plane are facts about the BUILDING. The operator's saved box runs **z 0.07..2.66**, which trims the
+  floor away — take the datum from inside it and there is nothing to measure from at all.
+  ⚠ That box also fragments the floor into **4 pieces (21.2, 17.5, 14.9, 14.0 m²)** instead of one
+  153.6 m²: its bottom sits just above the floor. Lower it to trace the floor whole.
+
+#### ⭐ THE BUTTON: **Export tray → "Outline from clip box (DXF)"**
+
+`DrawingWriter` now draws the levels and the room outline, so the `.dxf` export route that already
+existed produces the outline instead of a bare plan. `merge`/`convert` hand it the **tripod
+positions** — free space is cast FROM the instrument, so there is no inside-face outline without them.
+It writes `<your output> outline.dxf` **beside** the cloud path, never over it; no slice dots, no grid.
+⛔ It **refuses when the box is off** rather than quietly tracing the whole job.
+
+#### Two real defects found on the way, plus one in the audit
+
+- ⛔⛔ **`/save` DROPPED `hidden` AND `out`.** The client has always sent both and `save()` has always
+  accepted both; the route forwarded **four of six**. So hiding a cloud and pressing Export **wrote it
+  anyway**, and the "⚠ HIDDEN, so NOT written" warning could never fire — the server computed it from
+  an empty set. Same shape as the stale-scope check inside `save`: *a thing that silently does nothing
+  is the failure that looks like success.*
+- ⛔⛔ **`free_space` HAD MORE BINS THAN RETURNS AND THE ROOM CAME OUT STRIPED.** It binned azimuth at
+  a fixed 2048 while `slice_xy` hands it **deduplicated CELLS**: a 6×4 m room offers ~1000, half the
+  bins come up empty, and the result *looks* like half a room free (31688 cells) until the 0.20 m
+  opening **erases every one of them, silently**. The count now comes from the evidence, capped at the
+  constant — the restaurant has ~100k cells and its output is unchanged byte for byte.
+- ⚠ **THE AUDIT COULD NOT TELL A CRASH FROM A NO-OP.** Removing the grid guard divides by a zero step,
+  the suite dies before printing a tally, and counting `FAIL` lines sees zero either way — opposite
+  outcomes on one signal. It now reports them separately. **21 of 21.**
+
+Suites **144 → 155**; `test_tlsconvert` **1487 unchanged**. Commit `cac82d0`.
+
 ⚠ **Still open:** the seating reads only 6.1 m², which is low for a restaurant — banquettes are
 occluded by their own tables, and whether that is the data or the probe height is **not established**.
 The cell complex still finds **no** structures (61 wall lines bound none), area is still **132 m²
@@ -5777,7 +5841,13 @@ Platforms, seating, tables and the bar all come out as closed, faced loops flat 
 their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
 upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
 ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
-floor. ⛔ **The file now contains NO triangles at all** (`draw_levels` defaults to `face=False`) — the
+floor. ⭐ **THE BUTTON IS LIVE: Export tray → "Outline from clip box (DXF)".** It writes
+`<output> outline.dxf` beside the cloud, traces only what is inside the Studio clip box, and refuses
+when the box is off. ⚠ The operator's saved box runs **z 0.07..2.66**, which trims the floor and
+fragments it into four pieces — lower its bottom below the floor before trusting the floor loop.
+⛔ The datum (floor/ceiling/base) is taken from the WHOLE survey, never from the box.
+
+⛔ **The file contains NO triangles at all** (`draw_levels` defaults to `face=False`) — the
 operator does not want construction lines, and a flag asking a reader to hide them is the reader's
 behaviour, not a guarantee. ⚠ **If the outlines will not Push/Pull, that is the thing to report**:
 pass `face=True` and they come back on `TLS-FCE-###`, declared OFF in the layer table. Open: seating reads low (6.1 m²), and none of it is wired into
