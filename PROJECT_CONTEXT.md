@@ -5403,10 +5403,53 @@ patches cannot cancel the scan-stripe periodicity; the pooled design point of `p
 re-proven from outside). The pre-lift ladder against the SHIPPED estimator, with a confirmed
 sibling as control, is the honest instrument.
 
+### 2026-09-01, twenty-third pass — a working session's worth of asks, shipped live
+
+The operator worked in Studio while these landed, closing it twice for rebuilds. Four requests, all
+built the same night, suites **1453 → 1468 → 1475**, reversion audits **4/4 and 3/3**, commits
+`32b2b80` + `b4a2375`.
+
+**“View colour setting should start as default on the right”** — the mode button already starts
+on photo colour AND their projects store `view.mode: 2`, so the repeated press was the DOOR: the
+Colour / point size / detail tray was not in the default-open set. `colour` joined it, with a
+one-time `colourv1` migration for saved arrangements (fold kept, own recorded flag — the
+`project`/`moveback` shape, all three flags written from both writers).
+
+**“Move tool starts smooth then gets really laggy”** — each release let the full cloud start
+refining between nudges, so the next grab's first frames waited behind a 4M-point chunk: lag that
+grows with the session. **`setGrab` is now the one home for the move tool's state** (button text,
+lit class, cursor, and a `'movetool'` rush holder), used by the click and the Esc-to-camera door
+alike. The twin stands for the WHOLE time the tool is armed — per-drag and wheel holders come and
+go underneath it (Set semantics) — and the sharpening happens once, when the tool is put down.
+
+**Three polygon gestures for the draw-then-delete loop**: right-click closes an open outline
+(a right-pan mid-outline could only ABANDON it — the matrix froze at the first corner — so the
+button was a gesture spent on self-defeat; with no outline it pans as always); Esc empties the
+tool's hands but keeps it armed, a second Esc puts it away; a middle CLICK deletes a pending
+selection — press-vs-drag gated exactly like a pick, so middle-pan is untouched, and it fires
+only where Enter already does the same. Button title, corner prompts and key help all updated.
+
+**⚠ OBSERVED FRICTION, NOT YET ASKED FOR:** `commitLasso` ends with `setTool('')`, so after a
+middle-click (or Enter) delete the polygon tool is put away — the operator whose Esc request
+says “stay in the tool” will likely want the tool to survive a commit too. One-line change,
+waiting on their word.
+
+**⭐ QUEUED — “Deep align all images” batch button (operator asked if it's a good idea: YES,
+with conditions).** The content arbitration makes deep safe to batch (adopts only on a real
+content margin, never worse, refusals named). Conditions: skip `given` headings (operator inputs);
+per-scan NAMED outcomes (adopted / kept / far / refused) — a `far` on one photo is the mis-pairing
+signal and must not scroll away; whole-batch undo like the survey press has; cost said before
+starting (~1–2 min per photo, so ~20–30 min on this survey); NOT gated on Close-the-loop — the
+photo pose is scan-relative, so the loop press only matters through `_follow_lean`, which already
+runs. Grades never change during the batch, so the rig prior stays stable across it.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-09-01 01:50:37, Converter 01:50:14, tlsconvert 01:50:57, selftest 0** (RTX 3050 Ti, cuda-engine found)
-— and THIS build carries the **content arbitration on Deep align** (the scan-21 cure: one press per doubtful photo), the Close-the-loop button with the edge cap, and the cut that names POINTS.
+**✅ THE EXES: Studio 2026-09-01 03:14:09, Converter 03:13:46, tlsconvert 03:14:28, selftest 0** (RTX 3050 Ti, cuda-engine found)
+— and THIS build carries **everything through the 23rd pass**: content arbitration on Deep align, the colour tray open by default, the move tool holding the LOD twin while armed, the three polygon gestures, Close-the-loop + edge cap, and the cut that names POINTS.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 01:50:37 (content arbitration, no tray/move/polygon changes); Studio 02:49:49 (adds tray + move tool, no polygon gestures)** — both selftest 0.
 
 <!-- superseded, kept for the build trail -->
 **Older: Studio 2026-08-31 09:54:57, Converter 09:54:36, tlsconvert 09:55:16, selftest 0**
