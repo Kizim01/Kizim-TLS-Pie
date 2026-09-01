@@ -8556,13 +8556,33 @@ function markLasso(seg,k,l,to){
 function wantWidget(){
   if(V.nav) setNav(false);
 }
+/* ⭐ ONE HOME FOR THE MOVE TOOL'S STATE. The button's text, its lit class,
+   the cursor and the rush hold all have to agree, and they were set from two
+   places -- the click and the Esc-to-camera path -- which is how one of them
+   goes stale.
+
+   ⭐⭐ THE TWIN STANDS THE WHOLE TIME THE TOOL IS ARMED. "Starts as smooth
+   control but then gets really laggy" (operator, 2026-09-01): each release
+   let the full cloud start refining between nudges, so the NEXT grab's first
+   frames waited behind a four-million-point chunk -- lag that grows with the
+   session. The holder here is the TOOL, not the gesture: the per-drag and
+   wheel holders come and go underneath it, nothing refines until the tool is
+   put down, and the sharpening then happens once. That is what was asked
+   for, in nearly those words. */
+function setGrab(on){
+  V.grab=!!on;
+  const b=$('grab');
+  if(b){ b.classList.toggle('on',V.grab);
+         b.textContent=V.grab?'Moving scan':'Drag to move'; }
+  cv.classList.toggle('move',V.grab);
+  if(V.grab) rushGrab('movetool'); else rushDrop('movetool');
+  if(V.grab) setNav(false);
+}
 function setNav(on){
   V.nav=!!on;
   if(V.nav){
     setTool('');
-    if(V.grab){ V.grab=false; $('grab').classList.remove('on');
-                $('grab').textContent='Drag to move';
-                cv.classList.remove('move'); }
+    if(V.grab) setGrab(false);
     V.hot=-1;
   }
   const b=$('nav');
@@ -10058,7 +10078,12 @@ function trayState(){
        carries the job's name and whether there are unsaved changes, which is
        the one thing you want visible the whole time rather than something to
        go and open. */
-    for(const id of ['scans','project','add','move','autoalign','photo'])
+    /* ⭐ `colour` JOINED THIS LIST on 2026-09-01, asked for by name: the
+       Colour / point size / detail tray is how the survey is LOOKED at, and
+       the operator asked for the colour view control to be standing there
+       on the right from the start, not fetched from the menu each session. */
+    for(const id of ['scans','project','add','move','autoalign','photo',
+                     'colour'])
       st[id].open = true;
   }else{
    if(!got.projectv1){
@@ -10070,6 +10095,12 @@ function trayState(){
        ⛔ The fold state is kept: opening a tray somebody had folded away
        should give them back the tray they folded, not a fresh one. */
     st.project = {open:true, shut:!!((st.project || {}).shut)};
+   }
+   if(!got.colourv1){
+    /* ⭐ AND `colour` THE SAME WAY on 2026-09-01 -- its own gate, its own
+       recorded flag, the fold state kept, exactly the `project` shape
+       above and for the same reasons. */
+    st.colour = {open:true, shut:!!((st.colour || {}).shut)};
    }
    if(!got.moveback){
     /* ⛔ AND A DEFAULT DOES NOT REACH ANYONE WHO ALREADY HAS A SAVED ONE. The
@@ -10087,13 +10118,13 @@ function trayState(){
      it this would re-open `project` on every launch, putting a tray back each
      morning after it had been deliberately shut. */
   return {trays:st, order:trayOrder(got && got.order), moveback:true,
-          projectv1:true};
+          colourv1:true, projectv1:true};
 }
 function saveTrays(){
   try{
     localStorage.setItem(TRAYKEY,
       JSON.stringify({trays:V.trays, order:V.order, moveback:true,
-                      projectv1:true}));
+                      colourv1:true, projectv1:true}));
   }catch(e){}
 }
 
@@ -12237,10 +12268,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
           'snaps to 5\u00b0. Press Turn ring again to take it away.'
         : 'Turn ring off. Dragging near the tripod orbits the view again.');
   };
-  $('grab').onclick=e=>{ V.grab=!V.grab; e.target.classList.toggle('on',V.grab);
-    e.target.textContent=V.grab?'Moving scan':'Drag to move';
-    cv.classList.toggle('move',V.grab);
-    if(V.grab) setNav(false); };
+  $('grab').onclick=e=>setGrab(!V.grab);
   $('plan').onclick=planView;
   $('front').onclick=()=>preset(-Math.PI/2, 0);
   $('side').onclick=()=>preset(0, 0);

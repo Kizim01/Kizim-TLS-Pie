@@ -4850,6 +4850,105 @@ if _node:
     check("and a drop over nothing moves nothing",
           _t.get("nowhere") == "a,b,c,d", _t.get("nowhere"))
     check("a tray knows its own name for the message", _t.get("name") == "B")
+
+    # ⭐ THE COLOUR TRAY STANDS OPEN -- asked for by name on 2026-09-01: the
+    # colour view control should be there on the right from the start, not a
+    # thing to fetch from the menu each session. Run, not read: a default that
+    # sits in the source but never reaches trayState's answer is exactly the
+    # present-but-not-called shape a source check cannot see.
+    _probe2 = "\n".join(_js_func(f) for f in
+                        ("trayState", "trayOrder")) + """
+    const TRAYS=[['scans','M','S'],['project','M','P'],['add','M','A'],
+                 ['move','M','M'],['autoalign','M','AA'],['photo','M','F'],
+                 ['colour','M','C'],['cut','M','K']];
+    const TRAYKEY='k';
+    let store={};
+    const localStorage={getItem:k=>(k in store?store[k]:null),
+                        setItem:(k,v)=>{store[k]=v;}};
+    const out={};
+    let st=trayState();
+    out.freshColour=!!st.trays.colour.open;
+    out.freshFlag=!!st.colourv1;
+    store[TRAYKEY]=JSON.stringify({trays:{colour:{open:false,shut:true},
+                                          cut:{open:true,shut:false}},
+                                   order:null, moveback:true,
+                                   projectv1:true});
+    st=trayState();
+    out.veteranOpened=!!st.trays.colour.open;
+    out.veteranFoldKept=!!st.trays.colour.shut;
+    out.veteranCutKept=!!st.trays.cut.open;
+    store[TRAYKEY]=JSON.stringify({trays:{colour:{open:false,shut:false}},
+                                   order:null, moveback:true,
+                                   projectv1:true, colourv1:true});
+    st=trayState();
+    out.choiceKept=!st.trays.colour.open;
+    console.log(JSON.stringify(out));
+    """
+    _t2p = os.path.join(tempfile.mkdtemp(prefix="tlstray2"), "tray2.js")
+    with io.open(_t2p, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe2)
+    _t2r = subprocess.run([_node, _t2p], capture_output=True, text=True)
+    check("the colour-tray rules run", _t2r.returncode == 0,
+          (_t2r.stderr or "")[:400])
+    _t2 = (json.loads(_t2r.stdout.strip().splitlines()[-1])
+           if _t2r.returncode == 0 else {})
+    check("THE COLOUR TRAY STANDS OPEN ON A FRESH INSTALL, and the flag "
+          "comes back set",
+          _t2.get("freshColour") is True and _t2.get("freshFlag") is True,
+          _t2)
+    check("...an arrangement saved before today gets it opened once, fold "
+          "kept, everything else untouched",
+          _t2.get("veteranOpened") is True
+          and _t2.get("veteranFoldKept") is True
+          and _t2.get("veteranCutKept") is True, _t2)
+    check("...and an operator who then shuts it stays shut -- the migration "
+          "recorded having run",
+          _t2.get("choiceKept") is True, _t2)
+
+    # ⭐⭐ THE MOVE TOOL HOLDS THE TWIN FOR AS LONG AS IT IS ARMED. "Starts as
+    # smooth control but then gets really laggy" (operator, 2026-09-01): each
+    # release let the full cloud start refining between nudges, and the next
+    # grab waited behind a chunk. The holder is the TOOL, not the gesture --
+    # per-drag and wheel holders come and go underneath it.
+    _probe3 = "\n".join(_js_func(f) for f in
+                        ("rushSet", "rushGrab", "rushDrop", "setGrab")) + """
+    const rushWho=new Set();
+    const V={rush:false, grab:false, nav:false};
+    function invalidate(){}
+    const _els={grab:{classList:{toggle(){}}, textContent:''}};
+    function $(id){ return _els[id]||null; }
+    const cv={classList:{toggle(){}, remove(){}, add(){}}};
+    function setNav(){}
+    const out={};
+    setGrab(true);
+    out.armedRush=V.rush; out.armedGrab=V.grab;
+    rushGrab('drag'); rushDrop('drag');
+    out.betweenDrags=V.rush;
+    rushDrop('wheel');
+    out.afterWheelDrop=V.rush;
+    setGrab(false);
+    out.disarmed=V.rush; out.disarmedGrab=V.grab;
+    console.log(JSON.stringify(out));
+    """
+    _t3p = os.path.join(tempfile.mkdtemp(prefix="tlsgrab"), "grab.js")
+    with io.open(_t3p, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe3)
+    _t3r = subprocess.run([_node, _t3p], capture_output=True, text=True)
+    check("the move-tool rush rules run", _t3r.returncode == 0,
+          (_t3r.stderr or "")[:400])
+    _t3 = (json.loads(_t3r.stdout.strip().splitlines()[-1])
+           if _t3r.returncode == 0 else {})
+    check("ARMING THE MOVE TOOL RAISES THE TWIN AND KEEPS IT RAISED",
+          _t3.get("armedRush") is True and _t3.get("armedGrab") is True, _t3)
+    check("...A DRAG ENDING UNDER THE ARMED TOOL DOES NOT LET THE FULL "
+          "CLOUD BACK -- the tool's own hold stands between nudges",
+          _t3.get("betweenDrags") is True, _t3)
+    check("...and the wheel's settle timer takes only its own hand off",
+          _t3.get("afterWheelDrop") is True, _t3)
+    check("...putting the tool down releases the twin, and the sharpening "
+          "happens once",
+          _t3.get("disarmed") is False and _t3.get("disarmedGrab") is False,
+          _t3)
 else:
     print("  (node missing: the tray rules were not run)")
 
@@ -8026,6 +8125,31 @@ check("...through its own gate, not chained behind moveback, which is already "
 # give them back the tray they folded, not a fresh one.
 check("...keeping the fold state the operator left it in",
       "shut:!!((st.project || {}).shut)" in _wsrc)
+
+# ⭐ THE COLOUR TRAY THE SAME WAY -- 2026-09-01, asked for by name. The
+# behavioural half runs in the node harness (the trayState answers); these pin
+# the pieces a refactor could quietly drop.
+check("a fresh install opens the colour tray too",
+      "'colour'" in _tray_default, _tray_default[:280])
+check("...and an arrangement saved before today gets it, through its own "
+      "gate, fold kept",
+      "if(!got.colourv1){" in _mig
+      and "shut:!!((st.colour || {}).shut)" in _mig, _mig[:200])
+check("...with the flag written back from both writers, so shutting it "
+      "again sticks",
+      _wsrc.count("colourv1:true,") == 2, _wsrc.count("colourv1:true,"))
+
+# ⭐ THE MOVE TOOL HAS ONE HOME, AND BOTH DOORS USE IT. The button's text, lit
+# class, cursor and the twin's rush hold were set from two places; setGrab is
+# now the only writer, so the Esc-to-camera path cannot go stale against the
+# click again.
+check("the grab button arms the tool through its one home",
+      "$('grab').onclick=e=>setGrab(!V.grab);" in _wsrc)
+check("...and the camera-mode door disarms through the same home",
+      "if(V.grab) setGrab(false);" in _wsrc
+      and "$('grab').classList.remove('on')" not in _wsrc)
+check("...which holds the twin by the TOOL's name, not the gesture's",
+      "rushGrab('movetool')" in _wsrc and "rushDrop('movetool')" in _wsrc)
 
 # ⛔⛔ THE PAGE AND THE EXPORTER ARE TWO IMPLEMENTATIONS OF ONE SENTENCE, and
 # this program has been bitten before by them drifting. Both must rotate about
