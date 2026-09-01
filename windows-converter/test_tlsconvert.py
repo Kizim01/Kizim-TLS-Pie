@@ -8770,6 +8770,161 @@ check("...and Deep align searches the same frame",
       and np.allclose(_saw_deep[0], _want_rs, atol=1e-4),
       _r_deep.get("error"))
 
+# --- the deep press asks the content, and the rig's own stack can win -------
+#
+# ⛔⛔ MEASURED ON SCAN 21 (2026-09-01): the search's own judge PREFERRED a
+# pose whose content sat 4-5 degrees adrift -- its term gate and score
+# standardisation are taken at the lean the search STARTS from, so a wrong
+# basin, once stored, votes itself back in and a re-press digs it deeper
+# (pitch -10.5 became -11.2, reported "improved"). The scan swept only 190.8
+# degrees, so over the covered half-circle tilt, stitch lift and camera
+# height are three-way degenerate; the content oracle plus the bolted rig's
+# own numbers (read from confirmed siblings) is what breaks the tie.
+print("\nalign: the deep press asks the content about the rig's own stack")
+_rs2 = _mscan("worn2", _lc_pts, lean=registration.Lean(2.0, 1.0))
+_rs2.photo = "fake.jpg"
+_rs2.sample_refl = np.arange(len(_lc_pts), dtype=float)
+_rs2.colour_info = {"ok": True, "photo": "fake.jpg", "yaw_deg": 10.0,
+                    "pitch_deg": -9.0, "roll_deg": -4.0, "rung": 4,
+                    "camera_x": 0.03, "camera_y": 0.01, "camera_z": 0.395,
+                    "grade": "doubtful", "given": False, "caution": None,
+                    "candidates": [], "image_up_px": 24,
+                    "second": {"yaw_deg": 9.0, "confidence": 6.5}}
+_sibs2 = []
+for _nm, _p, _r, _z, _g in (("sibA", 2.0, 0.5, 0.05, "confirmed"),
+                            ("sibB", 2.6, 0.7, 0.11, "sure"),
+                            ("sibC", 2.3, 0.6, 0.08, "confirmed"),
+                            # neither of these may vote: a 'given' heading
+                            # asserts a heading, not a measured tilt, and a
+                            # doubtful one is the disease being cured
+                            ("sibG", 12.0, 9.0, 0.40, "given"),
+                            ("sibD", 5.0, 3.0, 0.30, "doubtful")):
+    _sb = _mscan(_nm, _lc_pts)
+    _sb.colour_info = {"ok": True, "grade": _g, "yaw_deg": 1.0,
+                       "pitch_deg": _p, "roll_deg": _r, "camera_z": _z}
+    _sibs2.append(_sb)
+_rsrv2 = align.AlignServer.__new__(align.AlignServer)
+_rsrv2._progress = {}
+_rsrv2._rebuild = lambda: []
+_rsrv2.scans = [_rs2] + _sibs2
+_rg2 = _rsrv2._rig_stack(_rs2)
+check("THE RIG STACK IS THE CONFIRMED SIBLINGS' MEDIAN, and given/doubtful "
+      "poses do not vote",
+      _rg2 == {"pitch_deg": 2.3, "roll_deg": 0.6, "camera_z": 0.08, "n": 3},
+      _rg2)
+check("fewer than two graded siblings is no prior at all",
+      _rsrv._rig_stack(_rs) is None)
+
+_tilt_fake = dict(_pose_fake, pitch_deg=-10.5, roll_deg=-5.0,
+                  camera_z=0.395, camera_x=0.03, camera_y=0.01,
+                  improved=True, yaw_deg=10.0)
+_ct_calls = []
+
+
+def _ct_fake(xyz, refl, lum, yaw, pitch=0.0, roll=0.0, camera=(0, 0, 0)):
+    _ct_calls.append((float(pitch), float(roll),
+                      tuple(float(c) for c in camera)))
+    if pitch < 0:                           # the searched, tilted answer
+        return {"ok": True, "offset_deg": 4.6, "dlon_deg": 0.4,
+                "rungs": 5, "spread_deg": 0.05}
+    return {"ok": True, "offset_deg": 0.9, "dlon_deg": -0.2,
+            "rungs": 6, "spread_deg": 0.03}
+
+
+_real_ct = (colour.deep_align, colour.content_offset, colour.load_panorama)
+_patch_colour()
+# a taller stand-in image so the remeasured lift is a visible pixel count
+colour.load_panorama = lambda p: (_fake_rgb,
+                                  np.zeros((360, 720), np.float32))
+colour.deep_align = lambda pts, lum, **kw: dict(_tilt_fake)
+colour.content_offset = _ct_fake
+try:
+    _r_ad = _rsrv2.deep(0, seconds=0.1)
+finally:
+    (colour.deep_align, colour.content_offset,
+     colour.load_panorama) = _real_ct
+    _restore_colour()
+_ci2 = _rs2.colour_info or {}
+check("THE RIG'S ANSWER IS ADOPTED WHEN THE CONTENT PREFERS IT BY THE "
+      "MARGIN: tilt, height and seat all come from the bolted stack",
+      _r_ad.get("ok") and close(_ci2.get("pitch_deg") or 0, 2.3, 1e-9)
+      and close(_ci2.get("roll_deg") or 0, 0.6, 1e-9)
+      and close(_ci2.get("camera_z") or 0, 0.08, 1e-9)
+      and close(_ci2.get("camera_x") or 0.0, 0.0, 1e-9)
+      and close(_ci2.get("camera_y") or 0.0, 0.0, 1e-9),
+      _r_ad.get("error") or {k: _ci2.get(k) for k in
+                             ("pitch_deg", "roll_deg", "camera_z")})
+check("...the heading folds in the content's own sideways reading",
+      close(_ci2.get("yaw_deg") or 0, 9.8, 1e-6), _ci2.get("yaw_deg"))
+check("...THE STITCH LIFT IS REMEASURED UNDER THE ADOPTED POSE, replacing "
+      "one measured under the discarded pose",
+      _ci2.get("image_up_px") == 2, _ci2.get("image_up_px"))
+check("...both candidates were asked at their own seat -- the winner at "
+      "its solved camera, the rig at the siblings' height",
+      len(_ct_calls) == 2 and _ct_calls[0][0] == -10.5
+      and _ct_calls[0][2] == (0.03, 0.01, 0.395)
+      and _ct_calls[1][0] == 2.3 and _ct_calls[1][2] == (0.0, 0.0, 0.08),
+      _ct_calls)
+check("...the note says what was adopted, in the content's own numbers",
+      "adopted" in (_r_ad.get("note") or "") and "4.6" in _r_ad["note"]
+      and "0.9" in _r_ad["note"], _r_ad.get("note"))
+check("...and the record carries both offsets and the verdict",
+      ((_ci2.get("deep") or {}).get("content") or {}).get("adopted") is True
+      and ((_ci2.get("deep") or {}).get("content") or {}).get("searched")
+      == 4.6
+      and ((_ci2.get("deep") or {}).get("content") or {}).get("rig") == 0.9,
+      (_ci2.get("deep") or {}).get("content"))
+
+# ⛔ A HEALTHY SCAN MUST NEVER FLIP ON INSTRUMENT NOISE: inside the margin
+# the searched answer stands, and the note says the check ran and kept it.
+
+
+def _ct_near(xyz, refl, lum, yaw, pitch=0.0, roll=0.0, camera=(0, 0, 0)):
+    if pitch < 0:
+        return {"ok": True, "offset_deg": 0.6, "dlon_deg": 0.0,
+                "rungs": 6, "spread_deg": 0.03}
+    return {"ok": True, "offset_deg": 0.3, "dlon_deg": 0.0,
+            "rungs": 6, "spread_deg": 0.03}
+
+
+_patch_colour()
+colour.deep_align = lambda pts, lum, **kw: dict(_tilt_fake)
+colour.content_offset = _ct_near
+try:
+    _r_kp = _rsrv2.deep(0, seconds=0.1)
+finally:
+    (colour.deep_align, colour.content_offset,
+     colour.load_panorama) = _real_ct
+    _restore_colour()
+_ci2k = _rs2.colour_info or {}
+check("INSIDE THE MARGIN THE SEARCHED ANSWER STANDS -- 0.3 against 0.6 is "
+      "the same reading, not a better one",
+      _r_kp.get("ok") and close(_ci2k.get("pitch_deg") or 0, -10.5, 1e-9)
+      and ((_ci2k.get("deep") or {}).get("content") or {}).get("adopted")
+      is False,
+      (_ci2k.get("pitch_deg"), (_ci2k.get("deep") or {}).get("content")))
+check("...and the note says the check ran and kept it",
+      "kept it" in (_r_kp.get("note") or ""), _r_kp.get("note"))
+
+# ⛔ NO CONFIRMED SIBLINGS, NO CHALLENGE -- a prior read from nothing would
+# be an invented one, so the search's answer stands unquestioned and the
+# record says the check never ran.
+_ct_calls[:] = []
+_patch_colour()
+colour.deep_align = lambda pts, lum, **kw: dict(_tilt_fake)
+colour.content_offset = _ct_fake
+try:
+    _r_ns = _rsrv.deep(0, seconds=0.1)
+finally:
+    (colour.deep_align, colour.content_offset,
+     colour.load_panorama) = _real_ct
+    _restore_colour()
+check("no confirmed siblings, no challenge: content_offset is never asked "
+      "and the record carries no verdict",
+      _r_ns.get("ok") and not _ct_calls
+      and ((_rs.colour_info or {}).get("deep") or {}).get("content") is None,
+      (_ct_calls, ((_rs.colour_info or {}).get("deep") or {}).get("content")))
+
 # ⛔⛔ ON ARRIVAL THE CAPTURE STANDS UP BEFORE ITS PHOTOGRAPH ARRIVES. The
 # photograph used to be solved WHILE the capture streamed -- before the scan
 # object existed, so before its floor could be fitted -- which aligned a level
@@ -9513,6 +9668,47 @@ _str = colour.settle_drift(room, _sd_refl, _sd_low, None, 25.0,
 check("a lift whose TOTAL passes the bound is refused as a wrong pairing",
       not _str.get("ok") and "wrong" in (_str.get("reason") or ""),
       _str.get("reason"))
+
+# --- the content oracle: reading past the window on the 1:1 line ------------
+#
+# ⭐⭐ paint_drift SEARCHES ONLY +-5 DEGREES, AND ON A STRIPED REFLECTIVITY
+# PANORAMA A REPEATING SHELF CAN PUT A PLAUSIBLE LOCK ANYWHERE IN THAT
+# WINDOW. Measured on scan 21 (2026-09-01): it reported -4.5 and +3.1 at two
+# poses whose true content offset was past 8 degrees -- both were aliases.
+# content_offset walks the image through KNOWN pre-lifts and believes only
+# readings that fall 1:1 with the lift (paint_drift's own documented
+# property); a texture lock stays put in the window, so its sum climbs the
+# ladder and it is refused by name.
+print("\ncolour: the content oracle reads past the window")
+_co0 = colour.content_offset(room, _sd_refl, _sd_lum, 25.0)
+check("a true pose reads near zero, on a held plateau",
+      _co0.get("ok") and abs(_co0["offset_deg"]) < 0.5
+      and _co0["rungs"] >= colour.CONTENT_PLATEAU_MIN
+      and _co0["spread_deg"] < colour.CONTENT_PLATEAU_TOL_DEG, _co0)
+_co_low16 = np.roll(_sd_lum, 16, axis=0)
+_co8 = colour.content_offset(room, _sd_refl, _co_low16, 25.0)
+check("CONTENT PLANTED 8 DEGREES LOW -- PAST THE WINDOW -- IS READ, "
+      "BECAUSE THE LADDER WALKS IT IN",
+      _co8.get("ok") and 7.5 < _co8["offset_deg"] < 8.5
+      and _co8["rungs"] >= colour.CONTENT_PLATEAU_MIN, _co8)
+_pd8 = colour.paint_drift(room, _sd_refl, _co_low16, 25.0)
+check("...which paint_drift alone genuinely cannot read -- the ladder is "
+      "load-bearing, not decoration",
+      not _pd8.get("ok") or abs((_pd8.get("dlat_deg") or 0.0) - 8.0) > 1.0,
+      _pd8)
+_real_copd = colour.paint_drift
+colour.paint_drift = lambda *a, **k: {"ok": True, "dlat_deg": -2.0,
+                                      "dlon_deg": 0.1, "patches": 36}
+try:
+    _cot = colour.content_offset(room, _sd_refl, _sd_lum, 25.0)
+finally:
+    colour.paint_drift = _real_copd
+check("A LOCK THAT DOES NOT FALL 1:1 WITH THE LIFT IS TEXTURE, REFUSED BY "
+      "NAME", not _cot.get("ok") and "texture" in (_cot.get("reason") or ""),
+      _cot)
+check("no reflectivity is refused in paint_drift's own words, not the 1:1 "
+      "line's", "reflectivity" in
+      (colour.content_offset(room, None, _sd_lum, 25.0).get("reason") or ""))
 
 # ⛔ EVERY DOOR THE PHOTOGRAPH COMES THROUGH, NAMED. The lift is a property
 # of the image; a door that reloads it and forgets the lift paints or judges

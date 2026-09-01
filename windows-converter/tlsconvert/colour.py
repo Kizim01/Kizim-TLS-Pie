@@ -2418,6 +2418,96 @@ def settle_drift(xyz, refl, lum, rgb, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
         return {"ok": False, "reason": str(exc)}
 
 
+#: The pre-lift ladder that lets `paint_drift` read past its own window.
+#: Spaced in DEGREES because image heights differ (the live panoramas are
+#: 2944 rows, the suite's fixtures 360); 1.5 deg a rung, 5 rungs a side
+#: reaches +-7.5 deg of pre-lift on top of the +-5 deg window.
+CONTENT_LADDER_DEG = 1.5
+CONTENT_LADDER_RUNGS = 5
+#: Two readings on the 1:1 line agree within this; the folder-1 control's
+#: plateau held to 0.05 deg over eight rungs, so 0.35 is instrument slack,
+#: not a mechanism threshold.
+CONTENT_PLATEAU_TOL_DEG = 0.35
+#: A lock must hold this many consecutive rungs to count as content.
+CONTENT_PLATEAU_MIN = 3
+#: Inside this much of the window's edge a reading may be the rail, not a
+#: peak -- paint_drift searches +-5 deg, so readings at 4.5+ are distrusted.
+CONTENT_WINDOW_DEG = 4.5
+#: Two content readings closer than this are the same answer: the rig
+#: candidate must beat the searched one by a real margin or the searched
+#: pose stands (a healthy scan must never flip on instrument noise --
+#: folder 1's control read +0.28 with 0.05 of spread).
+CONTENT_MARGIN_DEG = 0.5
+
+
+def content_offset(xyz, refl, lum, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
+                   camera=(0.0, 0.0, 0.0)):
+    """
+    Where the photograph's content sits at this pose, read PAST the window.
+
+    ⭐⭐ THE 1:1 LINE IS WHAT SEPARATES CONTENT FROM TEXTURE. `paint_drift`
+    reads only +-5 degrees, and on a striped reflectivity panorama a
+    repeating shelf can put a plausible lock anywhere in that window -- on
+    scan 21 it reported -4.5 and +3.1 degrees at two poses whose true offset
+    was past 8. So the image is walked through a ladder of KNOWN pre-lifts:
+    a reading that is really the content falls exactly 1 degree for every
+    degree of lift (`paint_drift`'s own documented property), so the sum
+    (pre-lift + reading) holds still across rungs, while a texture lock
+    stays put in the window and its sum climbs with the ladder. Only a run
+    of CONTENT_PLATEAU_MIN rungs on the line is believed.
+
+    `lum` must be the RAW panorama, no lift applied -- the answer IS the
+    total lift (in degrees; positive = content sits low, lift the image up)
+    that would zero the content at this pose. Never raises.
+
+    Returns {"ok": True, "offset_deg", "dlon_deg", "rungs", "spread_deg"}
+    or {"ok": False, "reason": <named>}.
+    """
+    try:
+        px_per_deg = float(lum.shape[0]) / 180.0
+        rows, why = [], None
+        for i in range(-CONTENT_LADDER_RUNGS, CONTENT_LADDER_RUNGS + 1):
+            k = int(round(i * CONTENT_LADDER_DEG * px_per_deg))
+            _rgb, lifted = lift_image(None, lum, k)
+            d = paint_drift(xyz, refl, lifted, yaw_deg, pitch_deg, roll_deg,
+                            camera)
+            if d.get("ok") and abs(d["dlat_deg"]) < CONTENT_WINDOW_DEG:
+                rows.append((k / px_per_deg + float(d["dlat_deg"]),
+                             float(d["dlon_deg"])))
+            else:
+                if why is None and not d.get("ok"):
+                    why = d.get("reason")
+                rows.append(None)
+        best, run = None, []
+        for row in rows:
+            if row is None:
+                run = []
+                continue
+            if run and abs(row[0] - run[-1][0]) > CONTENT_PLATEAU_TOL_DEG:
+                run = []
+            run = run + [row]
+            if best is None or len(run) > len(best):
+                best = list(run)
+        if not best or len(best) < CONTENT_PLATEAU_MIN:
+            # When every rung refused for one named cause (no reflectivity,
+            # a blank image), that cause is the answer, not the 1:1 line.
+            return {"ok": False,
+                    "reason": (why if why is not None and not any(rows)
+                               else "no reading held the 1:1 line -- every "
+                                    "lock the correlator found moved with "
+                                    "the lift, which is texture, not "
+                                    "content")}
+        totals = [r[0] for r in best]
+        mean = float(sum(totals) / len(totals))
+        spread = float((sum((t - mean) ** 2 for t in totals)
+                        / len(totals)) ** 0.5)
+        return {"ok": True, "offset_deg": mean,
+                "dlon_deg": float(sum(r[1] for r in best) / len(best)),
+                "rungs": len(best), "spread_deg": spread}
+    except Exception as exc:                              # noqa: BLE001
+        return {"ok": False, "reason": str(exc)}
+
+
 def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                pitch_deg=0.0, roll_deg=0.0, weights=None,
                seconds=DEEP_SECONDS, budget=DEEP_BUDGET, seeds=DEEP_SEEDS,

@@ -3502,6 +3502,47 @@ class AlignServer(object):
                          if want < len(colour_mod.RUNGS) else None),
                 "scans": self._rebuild()}
 
+    def _rig_stack(self, scan):
+        """
+        The bolted rig's own numbers, read from the confirmed siblings.
+
+        ⭐⭐ THE CAMERA IS BOLTED TO THE SCANNER, SO ITS TILT AND HEIGHT
+        TRAVEL BETWEEN SCANS -- the mounting residual reproduced on folder 1
+        and scan 3 (2.27-2.52 / 0.45-0.62) is what "the frame is right"
+        looks like, and it is the one prior a wrong-basin search cannot
+        fake. Measured need on scan 21 (2026-09-01): its scan sweeps only
+        190.8 degrees, so laser texture covers HALF the circle, and over
+        that half a tilt acts nearly uniform -- tilt, stitch lift and
+        camera height become three-way degenerate and the deep search
+        settled a stack of pitch -10.5 / roll -5.0 / camera_z 0.395 /
+        lift +24 px whose content sat 4-5 degrees adrift, while the rig's
+        own stack sat at 0.02.
+
+        Medians over siblings graded confirmed or sure (a "given" heading
+        grades "given" and is rightly excluded: it asserts a heading, not a
+        measured tilt). None when fewer than two siblings have earned one --
+        no prior is honest prior to that, and the caller then keeps the
+        searched answer unchallenged.
+        """
+        vals = []
+        for other in self.scans:
+            if other is scan:
+                continue
+            ci = getattr(other, "colour_info", None) or {}
+            if not ci.get("ok") or ci.get("grade") not in ("confirmed",
+                                                           "sure"):
+                continue
+            if ci.get("pitch_deg") is None or ci.get("roll_deg") is None:
+                continue
+            vals.append((float(ci["pitch_deg"]), float(ci["roll_deg"]),
+                         float(ci.get("camera_z") or 0.0)))
+        if len(vals) < 2:
+            return None
+        return {"pitch_deg": float(np.median([v[0] for v in vals])),
+                "roll_deg": float(np.median([v[1] for v in vals])),
+                "camera_z": float(np.median([v[2] for v in vals])),
+                "n": len(vals)}
+
     def deep(self, index, seconds=None):
         """
         Search the whole circle for this photograph's pose, hard.
@@ -3561,11 +3602,12 @@ class AlignServer(object):
                               "n": int(n), "total": int(total), "busy": True}
 
         report("starting", 0, 5)
+        undo_lift = None
         try:
-            rgb_img, lum = colour_mod.load_panorama(photo)
+            rgb_img, lum0 = colour_mod.load_panorama(photo)
             # ⛔ THE SEARCH JUDGES THE LIFTED IMAGE THE POSE WAS FITTED ON.
             rgb_img, lum = colour_mod.lift_image(
-                rgb_img, lum, info.get("image_up_px"))
+                rgb_img, lum0, info.get("image_up_px"))
             got = colour_mod.deep_align(
                 sample, lum, refl=refl,
                 camera=(float(info.get("camera_x") or 0.0),
@@ -3577,6 +3619,73 @@ class AlignServer(object):
                 seconds=(float(seconds) if seconds
                          else colour_mod.DEEP_SECONDS),
                 progress=report)
+            # ⭐⭐ THE CONTENT GETS THE LAST WORD HERE TOO. Measured on scan
+            # 21 (2026-09-01): the search's own judge PREFERRED a pose whose
+            # content sat 4-5 degrees adrift -- the term gate and the score's
+            # standardisation are both taken at the lean the search STARTS
+            # from, so a wrong basin, once stored, votes itself back in and a
+            # re-press digs it deeper (-10.5 became -11.2, "improved"). The
+            # global score cannot arbitrate this; the patch content measure
+            # is the eye that matches the operator's, so the winner and the
+            # rig's own bolted stack are both asked where the content sits,
+            # PAST the +-5 degree window (see colour.content_offset), and
+            # the stack the content prefers by a real margin is the answer.
+            got["content"] = None
+            rig = (self._rig_stack(scan) if got.get("ok") else None)
+            if rig is not None:
+                report("asking the content where it sits", 5, 6)
+                searched = colour_mod.content_offset(
+                    sample, refl, lum0, got["yaw_deg"], got["pitch_deg"],
+                    got["roll_deg"],
+                    (float(got.get("camera_x") or 0.0),
+                     float(got.get("camera_y") or 0.0),
+                     float(got.get("camera_z") or 0.0)))
+                stacked = colour_mod.content_offset(
+                    sample, refl, lum0, got["yaw_deg"], rig["pitch_deg"],
+                    rig["roll_deg"], (0.0, 0.0, rig["camera_z"]))
+                adopt = (stacked.get("ok")
+                         and (not searched.get("ok")
+                              or abs(stacked["offset_deg"])
+                              + colour_mod.CONTENT_MARGIN_DEG
+                              < abs(searched["offset_deg"])))
+                got["content"] = {
+                    "searched": (None if not searched.get("ok")
+                                 else round(searched["offset_deg"], 2)),
+                    "searched_why": searched.get("reason"),
+                    "rig": (None if not stacked.get("ok")
+                            else round(stacked["offset_deg"], 2)),
+                    "rig_why": stacked.get("reason"),
+                    "siblings": rig["n"], "adopted": bool(adopt)}
+                if adopt:
+                    # A zero camera would send _repaint's colour_scan back
+                    # up the climb, overwriting the adoption on the spot.
+                    cz = float(rig["camera_z"]) or 0.005
+                    got.update(
+                        yaw_deg=float((got["yaw_deg"]
+                                       + stacked["dlon_deg"]) % 360.0),
+                        pitch_deg=float(rig["pitch_deg"]),
+                        roll_deg=float(rig["roll_deg"]),
+                        camera_z=cz, camera_x=0.0, camera_y=0.0)
+                    # The plateau was read on the RAW image, so its offset
+                    # IS the photograph's whole lift -- stored before the
+                    # repaint reloads the image, replacing a lift that was
+                    # measured under the discarded pose.
+                    undo_lift = int(scan.colour_info.get("image_up_px")
+                                    or 0)
+                    scan.colour_info["image_up_px"] = int(round(
+                        stacked["offset_deg"] * float(lum0.shape[0])
+                        / 180.0))
+                    moved = abs((got["yaw_deg"] - float(info["yaw_deg"])
+                                 + 180.0) % 360.0 - 180.0)
+                    got["turned_deg"] = float(moved)
+                    got["far"] = bool(moved > colour_mod.DEEP_FAR_DEG)
+                    got["tilted_deg"] = float(np.hypot(
+                        got["pitch_deg"]
+                        - float(info.get("pitch_deg") or 0.0),
+                        got["roll_deg"]
+                        - float(info.get("roll_deg") or 0.0)))
+                    got["raised_m"] = float(
+                        cz - float(info.get("camera_z") or 0.0))
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not search (%s)" % exc}
         finally:
@@ -3590,6 +3699,8 @@ class AlignServer(object):
         scan.camera_y = float(got.get("camera_y") or 0.0)
         fresh = self._repaint(scan, photo, got, info)
         if not fresh.get("ok"):
+            if undo_lift is not None:
+                scan.colour_info["image_up_px"] = undo_lift
             return {"ok": False, "error": fresh.get("reason")
                     or "could not repaint"}
         # Every axis the ladder climbs has now been fitted, and fitted further
@@ -3602,7 +3713,8 @@ class AlignServer(object):
                              "railed", "exhausted")}
         fresh["deep"] = {k: got.get(k) for k in
                          ("solo", "stood_down", "used", "far", "turned_deg",
-                          "seconds", "evaluations", "candidates", "improved")}
+                          "seconds", "evaluations", "candidates", "improved",
+                          "content")}
         scan.colour_info = fresh
 
         names = {"edge": "silhouettes", "mi": "reflectivity",
@@ -3619,7 +3731,25 @@ class AlignServer(object):
             note += ("%s stood down — its own sweep did not stand out on this "
                      "cloud, so it was noise rather than evidence. "
                      % names.get(term, term).capitalize())
-        if got.get("far"):
+        content = got.get("content") or {}
+        if content.get("adopted"):
+            # ⭐⭐ THE ADOPTION IS SAID IN THE CONTENT'S OWN NUMBERS. The
+            # searched answer was set aside, so reporting its gain or its
+            # move would be reporting a discarded pose; what the operator
+            # needs is the two offsets the decision was made on.
+            said = ("could not even be read"
+                    if content.get("searched") is None
+                    else "sat %.1f° adrift" % content["searched"])
+            note += ("⚠ the searched pose's content %s, but at the rig's "
+                     "own bolted geometry (tilt %+.1f° / %+.1f°, camera "
+                     "%d mm, read from %d confirmed siblings) it sits "
+                     "%.1f° — so the rig's answer was adopted and the "
+                     "stitch lift remeasured under it. Ctrl-Z puts it back."
+                     % (said, got["pitch_deg"], got["roll_deg"],
+                        int(round(1000.0 * got["camera_z"])),
+                        content.get("siblings") or 0,
+                        content.get("rig") or 0.0))
+        elif got.get("far"):
             # ⛔⛔ A LONG MOVE IS REPORTED AS A DIFFERENT ANSWER, NOT AS A
             # BETTER ONE. This is the exact shape of a photograph paired to the
             # wrong scan, and folding it in quietly would hide the one thing
@@ -3640,6 +3770,15 @@ class AlignServer(object):
         if got.get("railed"):
             note += (". ⚠ it wanted to go further in %s and stopped at the "
                      "bound" % ", ".join(got["railed"]))
+        if (content and not content.get("adopted")
+                and content.get("searched") is not None
+                and content.get("rig") is not None):
+            # The check that ran and kept the answer is worth a sentence:
+            # silence here would make an adoption look like the check's only
+            # possible outcome.
+            note += (". The content check kept it: %.1f° adrift here "
+                     "against %.1f° at the rig's own geometry"
+                     % (content["searched"], content["rig"]))
         return {"ok": True, "info": fresh, "note": note,
                 "far": bool(got.get("far")),
                 "scans": self._rebuild()}
