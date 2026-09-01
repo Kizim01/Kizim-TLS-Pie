@@ -6087,9 +6087,69 @@ say about. It now names the canvas handler by its indent and asserts it found th
   (six doubtful photos); folder 20 un-refit; folders 22+ unimported.
 - Repo: `main` = `f56a7cd`, pushed; only the standing untracked `cutjs_tmp.js`.
 
+### 2026-09-01, thirtieth pass — multicore: measure first, thread the one loop that is the program
+
+**"how do we make this project multicore"** — and the profile answered before any parallel design
+could: `fit_segments` is **88.2 s of a 91.1 s export (97%)**; everything else combined is under 3 s.
+One function WAS the program. ⛔ Parallelising anything else would have parallelised the 3%.
+
+**Threads, not processes.** The hypothesis scoring is large-array NumPy, which releases the GIL, so
+a ThreadPoolExecutor gets real cores with none of multiprocessing's frozen-app machinery — no
+`freeze_support`, no spawn re-launching the --onefile exe, no pickling the pool across processes.
+numba was rejected for exe size (the same reason scipy is excluded), and CuPy noted but NOT used:
+during a Studio export the viewer already holds 3.9 GB of the 4 GB card (measured tonight), so a GPU
+scorer would OOM into its silent fallback exactly when the button is pressed. The literature agrees
+on the axis — PARSAC (arXiv 2401.14919) parallelises across HYPOTHESES, which is the axis
+`fit_segments` has.
+
+**Two facts measured before the code was touched:**
+
+- `rs.randint(0, n, (iters, 2))` consumes the stream **byte-identically** to `iters` sequential
+  pair draws (three seeds checked) — one batched draw per round keeps every wall where every
+  previous export put it.
+- Thread scaling of the exact scoring op on this box: 2→1.9×, 4→3.0×, 8→3.0×, 16→3.1×.
+  **Bandwidth-bound**, so `FIT_SCORE_WORKERS = 8` is a measured cap, not a core count.
+
+**The mechanism** (`fit_segments` only): one batched draw per round; contiguous column copies
+(a `pool[:, 0]` view is 16-byte-strided — half of every cache line was being thrown away); each
+hypothesis scored WHOLE by one thread, in fixed chunks; the winner by first-argmax over integer
+counts, which IS the sequential `c > best_cnt` earliest-strict-maximum rule; the winner's inlier
+mask recomputed once. `workers=None` auto, `workers=1` sequential, and the output does not depend
+on the choice.
+
+**Measured on the restaurant, identical input, only `workers` differing:
+41.3 s → 22.7 s (1.8×) — and the two DXF files are BYTE-IDENTICAL.** (Below the 3×
+micro-benchmark: the greedy pool shrinks, so late rounds are too small to share, plus ~6 s of
+non-fit work — Amdahl, twice.)
+
+⛔⛔ **THE FIRST TEST FOR THIS CAUGHT NOTHING, AND ONLY THE REVERSION AUDIT SAID SO.**
+`workers=1` vs `workers=4` on a CLEAN two-wall fixture detected **0 of 4** planted breaks — both
+sides of the comparison ran the same broken code, and on clean data the refit converges to the same
+walls whichever hypothesis wins a round, so even a reordered random stream changed nothing. Two
+fixes, both needed: **the reference is a frozen verbatim copy of the pre-threading algorithm**
+(an independent side for the comparison to stand on), and **the fixture is noisy**, so every
+round's winner changes the output. A third fixture makes a **dead tie** — two identical parallel
+walls — because noise cannot manufacture an exact integer tie and the tie-break is invisible
+without one: extraction ORDER is what shows it. Audit after the fixes: **4 of 4 named.**
+
+⚠ **THIS SESSION NUMBERED ITSELF THE TWENTY-SEVENTH AND WAS THREE BEHIND.** Passes 27–29 landed
+the same day from PARALLEL sessions (the clip-limited cut; the 92-second open + CuPy decode; five
+operator asks) and were discovered in `git log` only at commit time — check the log before
+numbering a pass or trusting a "current" claim. Related: the benchmark built its own cut
+(z 0.07–2.66) because the operator re-saved the box mid-session (now z 0.13–0.27) — no earlier
+timing was comparable. A record and a measurement both inherit the moment they were taken in.
+
+Suites **166 → 171**; `test_tlsconvert` **1569, 0 failed** (grown by the parallel sessions);
+audit **4 of 4**. Commit `85f9384`. ⚠ **Exes NOT rebuilt** — Studio was open again; the 23:02
+build lacks only this commit.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**⭐⭐ THE OUTLINE TOOL IS FINISHED AND SHIPPED — read the twenty-SIXTH pass above for the reasoning.**
+**⭐⭐ THE OUTLINE TOOL IS FINISHED, SHIPPED, AND NOW THREADED — 41.3 s → 22.7 s on the same input,
+DXF byte-identical (THIRTIETH pass). ⚠ Passes 27–29 landed the same day from PARALLEL sessions —
+the clip-limited cut, the 92-second open + CuPy decode, five operator asks — and this block sat
+unrewritten through all three, claiming the 11:25 exes current while the trail below said 23:02.
+CHECK `git log` BEFORE numbering a pass or trusting this block's build line.**
 
 ⚠ *This block was rewritten on 2026-09-01 because it had grown by prepending and its last line still
 said "none of it is wired into CLI/GUI/Studio" — which the button had already disproved. A restart
@@ -6124,9 +6184,11 @@ fragments the floor into four pieces (21.2, 17.5, 14.9, 14.0 m²) instead of one
 4. ⛔ `LEVEL_SIMPLIFY_M` must **exceed** `LEVEL_GRID_M`. A tolerance below the raster preserves the
    rasterisation, not the measurement.
 
-#### ✅ The exes are current: **2026-09-01 11:25–11:27, selftest 0** (all three rebuilt — `drawing.py`,
-`pipeline.py` and `export.py` are shared, so rebuilding only Studio leaves two apps on old library
-code). Smoke-tested: 23.7 M returns decoded, colour solved, PLY written in 6.3 s.
+#### ⚠ The exes are STALE BY ONE COMMIT: the 23:02–23:03 build (selftest 0) carries passes 27–29
+but NOT the threaded fitter (`85f9384`). Rebuild **all three together** when Studio is next
+closed — a running --onefile exe holds itself open, and `drawing.py` is shared, so a partial
+rebuild leaves the apps disagreeing about what the same capture draws. Until then the button
+works, only slower.
 
 #### What is actually still open
 
