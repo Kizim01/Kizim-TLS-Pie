@@ -25,9 +25,10 @@ own rotator() to float precision, so the duplicate cannot drift silently.
 
 import numpy as np
 
-from . import rig
+from . import gpu, rig
 
 tls_cloud = None                       # imported lazily; see _vertical_angles
+_vert_cache = {}                       # backend module -> laser table, once
 
 
 DATA_PACKET_BYTES = 1206
@@ -43,13 +44,20 @@ T_SEQ_US = 55.296
 T_BLOCK_US = 110.592
 
 
-def _vertical_angles():
+def _vertical_angles(xp=np):
     """The laser table, taken from the scanner rather than restated here."""
     global tls_cloud
     if tls_cloud is None:
         import tls_cloud as _tc
         tls_cloud = _tc
-    return np.asarray(tls_cloud.VERTICAL_ANGLES_DEG, dtype=np.float64)
+    got = _vert_cache.get(xp)
+    if got is None:
+        # ⛔ float64 ON EVERY BACKEND -- gpu.py's rule that the card is not
+        # allowed to change an answer starts with the calibration table.
+        got = xp.asarray(np.asarray(tls_cloud.VERTICAL_ANGLES_DEG,
+                                    dtype=np.float64))
+        _vert_cache[xp] = got
+    return got
 
 
 def read_packet_chunks(pcap_path, port=2368, stride=1, chunk_packets=20000):
@@ -82,62 +90,70 @@ def read_packet_chunks(pcap_path, port=2368, stride=1, chunk_packets=20000):
 
 
 def decode_chunk(stamps, raw, per_laser_azimuth=False,
-                 min_range=0.4, max_range=120.0):
+                 min_range=0.4, max_range=120.0, xp=np):
     """
     One chunk of packets -> flat (alpha_deg, omega_deg, range_m, refl, t_epoch).
 
     `alpha` is the sensor's own azimuth, which on this rig is the VERTICAL fan
     angle -- so an azimuth error here is a height error, not a bearing error.
+
+    ⭐ `xp` is NumPy or CuPy, and the arithmetic is written to be true of
+    both (gpu.py's contract). Everything stays float64 whichever backend
+    runs it; the outputs live on `xp` and it is the CALLER that brings them
+    home, so the pan interpolation and the world transform can stay on the
+    card between these calls instead of crossing the bus five times.
     """
+    raw = xp.asarray(raw)
+    stamps = xp.asarray(stamps)
     n = raw.shape[0]
     blocks = raw[:, :BLOCKS_PER_PACKET * BLOCK_BYTES].reshape(
         n, BLOCKS_PER_PACKET, BLOCK_BYTES)
 
-    flag = (blocks[:, :, 0].astype(np.uint16)
-            | (blocks[:, :, 1].astype(np.uint16) << 8))
-    az_raw = (blocks[:, :, 2].astype(np.uint32)
-              | (blocks[:, :, 3].astype(np.uint32) << 8))
-    az_deg = az_raw.astype(np.float64) / 100.0
+    flag = (blocks[:, :, 0].astype(xp.uint16)
+            | (blocks[:, :, 1].astype(xp.uint16) << 8))
+    az_raw = (blocks[:, :, 2].astype(xp.uint32)
+              | (blocks[:, :, 3].astype(xp.uint32) << 8))
+    az_deg = az_raw.astype(xp.float64) / 100.0
 
-    k = np.arange(CHANNELS_PER_BLOCK)
+    k = xp.arange(CHANNELS_PER_BLOCK)
     if per_laser_azimuth:
         # Azimuth advances during the block; recover each laser's own angle.
-        d = np.diff(az_deg, axis=1)
-        d = np.where(d < 0, d + 360.0, d)
-        delta = np.concatenate([d, d[:, -1:]], axis=1)
+        d = xp.diff(az_deg, axis=1)
+        d = xp.where(d < 0, d + 360.0, d)
+        delta = xp.concatenate([d, d[:, -1:]], axis=1)
         # A glitched or stalled block gives a nonsense delta. One block spans
         # 110 us, so even a 1200 rpm puck cannot turn more than ~0.8 degrees.
-        delta = np.clip(delta, 0.0, 1.0)
+        delta = xp.clip(delta, 0.0, 1.0)
         frac = (T_SEQ_US * (k // 16) + T_LASER_US * (k % 16)) / T_BLOCK_US
         alpha = az_deg[:, :, None] + delta[:, :, None] * frac[None, None, :]
-        alpha = np.mod(alpha, 360.0)
+        alpha = xp.mod(alpha, 360.0)
     else:
-        frac = np.zeros(CHANNELS_PER_BLOCK)
-        alpha = np.broadcast_to(az_deg[:, :, None],
+        frac = xp.zeros(CHANNELS_PER_BLOCK)
+        alpha = xp.broadcast_to(az_deg[:, :, None],
                                 (n, BLOCKS_PER_PACKET, CHANNELS_PER_BLOCK))
 
     ch = blocks[:, :, 4:4 + CHANNELS_PER_BLOCK * 3].reshape(
         n, BLOCKS_PER_PACKET, CHANNELS_PER_BLOCK, 3)
-    dist_raw = (ch[:, :, :, 0].astype(np.uint32)
-                | (ch[:, :, :, 1].astype(np.uint32) << 8))
-    rng = dist_raw.astype(np.float64) * 0.002          # raw is 2 mm units
+    dist_raw = (ch[:, :, :, 0].astype(xp.uint32)
+                | (ch[:, :, :, 1].astype(xp.uint32) << 8))
+    rng = dist_raw.astype(xp.float64) * 0.002          # raw is 2 mm units
     refl = ch[:, :, :, 2]
 
     good = (flag == BLOCK_FLAG)[:, :, None] & (dist_raw > 0)
     good &= (rng >= min_range) & (rng <= max_range)
 
-    lane = np.broadcast_to((k % 16), (n, BLOCKS_PER_PACKET,
+    lane = xp.broadcast_to((k % 16), (n, BLOCKS_PER_PACKET,
                                       CHANNELS_PER_BLOCK))
-    omega = _vertical_angles()[lane[good]]
+    omega = _vertical_angles(xp)[lane[good]]
 
     t = (stamps[:, None, None]
-         + (np.arange(BLOCKS_PER_PACKET)[None, :, None] * T_BLOCK_US
+         + (xp.arange(BLOCKS_PER_PACKET)[None, :, None] * T_BLOCK_US
             + frac[None, None, :] * T_BLOCK_US) * 1e-6)
 
-    return (np.asarray(alpha)[good], omega, rng[good], refl[good], t[good])
+    return (xp.asarray(alpha)[good], omega, rng[good], refl[good], t[good])
 
 
-def pan_angles(track, t_epoch, sweep_start):
+def pan_angles(track, t_epoch, sweep_start, xp=np):
     """
     Pan angle per point, interpolated over the planner's own breakpoints.
 
@@ -147,25 +163,32 @@ def pan_angles(track, t_epoch, sweep_start):
     early packets genuinely were taken at the start angle.
     """
     bp = track.as_breakpoints()
-    times = np.array([t for t, _ in bp], dtype=np.float64)
-    degs = np.array([d for _, d in bp], dtype=np.float64)
-    return np.interp(t_epoch - sweep_start, times, degs,
+    times = xp.asarray(np.array([t for t, _ in bp], dtype=np.float64))
+    degs = xp.asarray(np.array([d for _, d in bp], dtype=np.float64))
+    return xp.interp(t_epoch - sweep_start, times, degs,
                      left=degs[0], right=degs[-1])
 
 
-def to_world(frame, alpha_deg, omega_deg, rng, pan_deg):
+def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np):
     """
     Sensor observation -> world xyz. Vectorised twin of Frame.rotator().
 
     ⛔ Verified against frame.rotator() in the tests. The matrix and lever come
-    from tls_geometry; only the loop is re-expressed.
+    from tls_geometry; only the loop is re-expressed -- and `xp` re-expresses
+    it once more, identically, for the card. The matrix itself stays a NumPy
+    float64: nine scalars are not worth a transfer, and a NumPy scalar times
+    a CuPy array already lands on the card.
     """
-    a = np.radians(alpha_deg)
-    w = np.radians(omega_deg)
-    cw = np.cos(w)
-    x = rng * cw * np.sin(a)
-    y = rng * cw * np.cos(a)
-    z = rng * np.sin(w)
+    alpha_deg = xp.asarray(alpha_deg)
+    omega_deg = xp.asarray(omega_deg)
+    rng = xp.asarray(rng)
+    pan_deg = xp.asarray(pan_deg)
+    a = xp.radians(alpha_deg)
+    w = xp.radians(omega_deg)
+    cw = xp.cos(w)
+    x = rng * cw * xp.sin(a)
+    y = rng * cw * xp.cos(a)
+    z = rng * xp.sin(w)
 
     m = np.asarray(frame.matrix, dtype=np.float64).reshape(3, 3)
     lx, ly, lz = frame.lever
@@ -173,9 +196,9 @@ def to_world(frame, alpha_deg, omega_deg, rng, pan_deg):
     my = m[1, 0] * x + m[1, 1] * y + m[1, 2] * z + ly
     mz = m[2, 0] * x + m[2, 1] * y + m[2, 2] * z + lz
 
-    p = np.radians(pan_deg + frame.pan_zero_deg)
-    cp, sp = np.cos(p), np.sin(p)
-    return np.column_stack([mx * cp + my * sp,
+    p = xp.radians(pan_deg + frame.pan_zero_deg)
+    cp, sp = xp.cos(p), xp.sin(p)
+    return xp.column_stack([mx * cp + my * sp,
                             my * cp - mx * sp,
                             mz]).astype(np.float32)
 
@@ -196,12 +219,19 @@ def stream_world_points(pcap_path, meta, frame, port=2368, stride=1,
             "This capture has no pan track in its sidecar, so it cannot be "
             "placed in world coordinates. Only the sensor frame is available.")
 
+    # ⭐ THE CARD, WHEN THERE IS ONE, AND THE PROCESSOR IS THE SAME ANSWER.
+    # Measured 2026-09-01 on TLS_26_08_20_16_03_15 (23.46M returns, warm
+    # cache): decode+world 3.48 s on NumPy, 0.47 s through CuPy, outputs
+    # byte-identical -- the whole chunk pipeline runs on `xp` and only the
+    # finished float32 xyz and the reflectivity cross back per chunk.
+    xp = gpu.xp()
     for stamps, raw in read_packet_chunks(pcap_path, port=port, stride=stride,
                                           chunk_packets=chunk_packets):
         alpha, omega, rng, refl, t = decode_chunk(
             stamps, raw, per_laser_azimuth=per_laser_azimuth,
-            min_range=min_range, max_range=max_range)
+            min_range=min_range, max_range=max_range, xp=xp)
         if rng.size == 0:
             continue
-        pan = pan_angles(track, t, sweep_start)
-        yield to_world(frame, alpha, omega, rng, pan), refl
+        pan = pan_angles(track, t, sweep_start, xp=xp)
+        yield (gpu.to_host(to_world(frame, alpha, omega, rng, pan, xp=xp)),
+               gpu.to_host(refl))

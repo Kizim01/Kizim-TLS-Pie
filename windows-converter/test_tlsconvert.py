@@ -216,6 +216,55 @@ short = decode.decode_chunk(stamps, payload.reshape(1, -1),
                             min_range=50.0)[2]
 check("out-of-range returns are dropped", short.size == 0, short.size)
 
+# --- 5b. the card decodes too, and is not allowed to change an answer --------
+# ⭐ stream_world_points routes every chunk through gpu.xp() (measured
+# 2026-09-01 on TLS_26_08_20_16_03_15: 3.48 s -> 0.47 s for 23.46M returns,
+# byte-identical output). The parity checks pin that the two backends stay
+# ONE answer; the source checks pin that the stream actually rides the card,
+# because a dropped `xp=` falls back to NumPy SILENTLY -- there is no error
+# to see, only a load that got slow again.
+print("\ndecode backend parity")
+from tlsconvert import gpu as _gpu_mod                     # noqa: E402
+import inspect as _dinsp                                    # noqa: E402
+
+print("  backend: %s" % _gpu_mod.name())
+if _gpu_mod.on():
+    _cp = _gpu_mod.xp()
+    for _mode in (False, True):
+        _cpu = decode.decode_chunk(stamps, payload.reshape(1, -1),
+                                   per_laser_azimuth=_mode)
+        _dev = decode.decode_chunk(stamps, payload.reshape(1, -1),
+                                   per_laser_azimuth=_mode, xp=_cp)
+        # ⛔ rtol=0, BECAUSE THE DEFAULT rtol IS 1e-5 AND IT GATES ON THE
+        # VALUE'S OWN SIZE: a 15-degree laser angle would be allowed to be
+        # wrong by 1.5e-4 while the check claimed 1e-12. The first audit
+        # break of this feature -- a card-only 1e-7 drift in the laser
+        # table -- sailed straight through exactly that way.
+        _same = all(np.allclose(_c, _gpu_mod.to_host(_g), rtol=0.0,
+                                atol=1e-12)
+                    for _c, _g in zip(_cpu, _dev))
+        check("the card's decode is the processor's (per_laser=%s)" % _mode,
+              _same and _cpu[0].size == int(_dev[0].size),
+              [(_c.dtype, _g.dtype) for _c, _g in zip(_cpu, _dev)])
+    _fr = rig.tls_geometry.Frame(roll_deg=87.3, pitch_deg=-4.1, yaw_deg=12.7,
+                                 lever=(0.031, -0.017, 0.44),
+                                 pan_zero_deg=23.5)
+    _wc = decode.to_world(_fr, alpha, omega, rng_m, pan)
+    _wg = _gpu_mod.to_host(decode.to_world(_fr, alpha, omega, rng_m, pan,
+                                           xp=_cp))
+    check("...and so is the card's world transform, to under a micrometre",
+          np.allclose(_wc, _wg, rtol=0.0, atol=1e-6),
+          float(np.abs(_wc - _wg).max()))
+else:
+    print("  (no card -- the CuPy parity checks run where there is one)")
+_sw_src = _dinsp.getsource(decode.stream_world_points)
+check("the stream picks its backend once, from gpu.xp()",
+      "xp = gpu.xp()" in _sw_src, _sw_src[-400:])
+check("...hands it to all three stages of the chunk pipeline",
+      _sw_src.count("xp=xp") == 3, _sw_src.count("xp=xp"))
+check("...and brings only the finished arrays home",
+      _sw_src.count("gpu.to_host") == 2, _sw_src.count("gpu.to_host"))
+
 # --- 6. writers --------------------------------------------------------------
 print("\nwriters")
 
@@ -7099,6 +7148,87 @@ finally:
     align.load = _real_load
     _dsrv.stop()
     shutil.rmtree(_ddir, ignore_errors=True)
+
+
+# --- the open that solved ten minutes of colour it was about to overwrite ----
+# ⛔⛔ "loading takes a long time." Measured 2026-09-01 on the restaurant
+# project: 34 of a 39 second single-scan load was `colour_scan` solving the
+# photograph's pose from scratch, inside `load()`, on the OPEN path -- where
+# `_carry_colour` then restored the file's SAVED pose straight over the
+# answer. Nineteen scans, ten minutes computed and discarded before the first
+# point appeared. The open and the detail re-read now load with colour OFF,
+# repaint the saved poses (a given heading skips the solve), and
+# `_first_attach` pays for a solve only on the scans no pose covers.
+_odir = tempfile.mkdtemp()
+_osrv = align.AlignServer([], out_path=None)
+_oload, _opaint = [], []
+
+
+def _spy_load(paths, **kw):
+    _oload.append(kw)
+    return [_detail_scan(p, 60 + i, n=1200) for i, p in enumerate(paths)]
+
+
+def _spy_paint(scan, photo, **kw):
+    _opaint.append((os.path.basename(scan.path), kw.get("yaw")))
+    return {"ok": False, "reason": "spy", "photo": photo}
+
+
+_real_paint = align.colour_scan
+_real_find = pipeline.find_photo
+try:
+    _oa = os.path.join(_odir, "a.pcap")
+    _ob = os.path.join(_odir, "b.pcap")
+    _oj = os.path.join(_odir, "a.jpg")
+    for _p in (_oa, _ob, _oj):
+        io.open(_p, "wb").close()
+    _oproj = os.path.join(_odir, "o" + align.PROJECT_EXT)
+    with io.open(_oproj, "w", encoding="utf-8") as _fh:
+        json.dump({"format": "TLS-Pie project",
+                   "version": align.PROJECT_VERSION,
+                   "scans": [{"path": _oa, "rel": "a.pcap", "name": "a.pcap",
+                              "colour": {"photo": _oj, "yaw_deg": 45.0}},
+                             {"path": _ob, "rel": "b.pcap",
+                              "name": "b.pcap"}]}, _fh)
+    align.load = _spy_load
+    align.colour_scan = _spy_paint
+    pipeline.find_photo = lambda _p: _oj
+    _o = _osrv.open_project(_oproj)
+    check("THE OPEN NO LONGER ASKS LOAD TO SOLVE COLOUR IT WILL OVERWRITE",
+          _o.get("ok") is True and len(_oload) == 1
+          and _oload[0].get("colour") is False,
+          (_o.get("error"), [k.get("colour") for k in _oload]))
+    check("the saved pose is painted as GIVEN, never re-solved",
+          ("a.pcap", 45.0) in _opaint
+          and all(_y is not None for _n, _y in _opaint if _n == "a.pcap"),
+          _opaint)
+    check("...and the scan the file has no pose for still gets a first attach",
+          ("b.pcap", None) in _opaint, _opaint)
+
+    del _oload[:], _opaint[:]
+    _d = _osrv.density(0.05)
+    check("THE DETAIL RE-READ KEEPS THE SAME PROMISE: no solve to overwrite",
+          _d.get("ok") is True and len(_oload) == 1
+          and _oload[0].get("colour") is False,
+          (_d.get("error"), [k.get("colour") for k in _oload]))
+finally:
+    align.load = _real_load
+    align.colour_scan = _real_paint
+    pipeline.find_photo = _real_find
+    _osrv.stop()
+    shutil.rmtree(_odir, ignore_errors=True)
+
+# ⭐ The source checks pin WHERE the rule lives, comments stripped so prose
+# about the bug cannot satisfy them (the lesson the clean-carry check paid
+# for above).
+for _mname in ("open_project", "density"):
+    _msrc = "\n".join(
+        _l for _l in _ALIGN_SRC.split("def %s" % _mname)[1]
+        .split("    def ")[0].splitlines() if not _l.lstrip().startswith("#"))
+    check("%s loads with colour off and hands strays to _first_attach"
+          % _mname,
+          "colour=False" in _msrc and "_first_attach" in _msrc,
+          _msrc[:200])
 
 
 # --- the guard that held for every step and not for the journey --------------

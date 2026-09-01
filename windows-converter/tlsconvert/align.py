@@ -4183,8 +4183,14 @@ class AlignServer(object):
         self._progress = {"stage": "re-reading at the new detail", "n": 0,
                           "total": 1, "busy": True}
         try:
+            # ⛔ COLOUR OFF, FOR THE SAME REASON AS `open_project`: the pose
+            # each scan is wearing is carried across below, so a fresh solve
+            # here was half a minute per scan of answer that `_carry_colour`
+            # then painted over. A scan wearing NO pose gets its first
+            # attach after the carry, exactly as a fresh load would have.
             fresh = load([s.path for s in was], voxel_m=voxel or None,
-                         progress=self._note, max_points=self.max_points)
+                         progress=self._note, max_points=self.max_points,
+                         colour=False)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
@@ -4205,7 +4211,11 @@ class AlignServer(object):
             scan.lean = old.lean
             if not self._carry_clean(scan, getattr(old, "clean", None)):
                 lost.append(scan.name)
-            self._carry_colour(scan, self.colour_pose(old))
+            pose = self.colour_pose(old)
+            if pose:
+                self._carry_colour(scan, pose)
+            else:
+                self._first_attach(scan)
         self.scans = fresh
         self.align_voxel = voxel
         return {"ok": True, "scans": self._rebuild(), "voxel": voxel,
@@ -4283,6 +4293,29 @@ class AlignServer(object):
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
         else:
             scan.colour_info = None
+
+    def _first_attach(self, scan):
+        """
+        The colour a fresh `load()` would have found, for a scan that no
+        saved pose covers.
+
+        ⭐ ONLY THE SCANS THAT ACTUALLY NEED A SOLVE PAY FOR ONE. `load()`
+        used to solve every scan's photograph from scratch on a project open
+        (~half a minute of pose climb per scan, measured 34 of a 39 second
+        single-scan load on 2026-09-01) -- and then `_carry_colour` restored
+        the SAVED pose straight over the answer, so on a 19-scan project ten
+        minutes of work were computed and discarded before the first point
+        appeared. The open and the detail re-read now load with colour OFF
+        and colour each scan from what the file (or the session) already
+        knows; this is the one remaining case, the scan that was never
+        paired, and it keeps the behaviour a fresh load gave it.
+        """
+        found = pipeline.find_photo(scan.path)
+        if not found:
+            return
+        got = colour_scan(scan, found)
+        if not got.get("ok") and scan.colour_info is None:
+            scan.colour_info = got
 
     # --- projects ---------------------------------------------------------
     def save_project(self, path, state):
@@ -4404,15 +4437,29 @@ class AlignServer(object):
         self._progress = {"stage": "opening project", "n": 0, "total": 1,
                           "busy": True}
         try:
+            # ⛔ COLOUR IS OFF HERE ON PURPOSE. Every pose worth having is
+            # already IN the file -- `save_project` writes what the screen
+            # showed -- and the fresh solve `load()` runs costs ~half a
+            # minute per scan, all of which `_carry_colour` then overwrote
+            # with the saved pose. The restore loop below repaints from the
+            # file (cheap: a given heading skips the solve entirely) and
+            # `_first_attach` covers the one scan the file has no pose for.
             fresh = load(paths, voxel_m=voxel or None, progress=self._note,
-                         max_points=self.max_points)
+                         max_points=self.max_points, colour=False)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         lost = []
-        for scan, entry in zip(fresh, body.get("scans") or []):
+        entries = body.get("scans") or []
+        for i, (scan, entry) in enumerate(zip(fresh, entries)):
+            # The repaints used to happen after the bar had already closed,
+            # which read as a hang on a large project. Say whose colour is
+            # going back on.
+            self._progress = {"stage": "restoring %s"
+                              % os.path.basename(scan.path),
+                              "n": i, "total": len(fresh), "busy": True}
             _take_placement(scan, entry.get("setup"))
             # ⛔⛔ THIS USED TO CLEAN THE WRONG LIST, AND SO CLEANED NOTHING.
             # It called `self.clean_scan(fresh.index(scan), ...)` -- an index
@@ -4432,6 +4479,7 @@ class AlignServer(object):
             self._carry_clean(scan, entry.get("clean"))
             pose = entry.get("colour")
             if not pose:
+                self._first_attach(scan)
                 continue
             # ⛔ A PHOTOGRAPH THAT HAS MOVED IS NAMED, NOT SKIPPED. Silently
             # falling back to a fresh solve is how the project came back
@@ -4441,6 +4489,7 @@ class AlignServer(object):
                 lost.append(os.path.basename(pose.get("photo") or "?"))
                 continue
             self._carry_colour(scan, pose)
+        self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
