@@ -5247,9 +5247,11 @@ PAGE = r"""<!doctype html>
   <div class="row"><button id="circle" title="Drag out from the CENTRE: put
       the middle of the circle on the thing you mean and drag until it is
       covered. Shortcut E.">Circle</button>
-    <button id="poly" title="Click each corner in turn, then double-click or
-      press Enter to close it. Every corner has to be placed from one
-      viewpoint — moving the camera abandons the outline. Shortcut N.">Polygon
+    <button id="poly" title="Click each corner in turn, then right-click,
+      double-click or press Enter to close it; a middle click then deletes
+      what is inside. Esc throws the outline away and keeps the tool. Every
+      corner has to be placed from one viewpoint — moving the camera abandons
+      the outline. Shortcut N.">Polygon
       </button></div>
   <div class="row"><button id="undo">Undo</button>
     <button id="clearedit">Clear all</button></div>
@@ -8722,14 +8724,15 @@ function polyPick(x,y){
   if(!V.poly){
     polyStart(x,y);
     return say('Polygon started — click each corner in turn, then '+
-               'double-click or press Enter to close it. Esc throws it away. '+
-               'Every corner has to be placed from THIS viewpoint: moving the '+
-               'camera abandons the outline.');
+               'right-click, double-click or press Enter to close it. Esc '+
+               'throws it away and keeps the tool. Every corner has to be '+
+               'placed from THIS viewpoint: moving the camera abandons the '+
+               'outline.');
   }
   V.poly.pts.push([x,y]); V.poly.at=[x,y]; invalidate();
   const n=V.poly.pts.length;
   say(n+' corner'+(n===1?'':'s')+(n<3 ? ' — a polygon needs three.'
-      : ' — double-click or press Enter to close it.'));
+      : ' — right-click, double-click or press Enter to close it.'));
 }
 /* ⛔ THE MATRIX IS COMPARED, NOT A FLAG SET BY THE CAMERA CODE. There are a
    dozen ways the view moves -- orbit, pan, zoom, roam, recentre, fit, the
@@ -10136,7 +10139,8 @@ const KEYHELP = [
     ['drag', 'orbit'],
     ['wheel', 'zoom \u2014 it flies through, it does not stop at the surface'],
     ['shift-drag', 'pan'],
-    ['wheel button', 'pan \u00b7 hold shift to orbit'],
+    ['wheel button', 'pan \u00b7 hold shift to orbit \u00b7 a click with a '+
+     'selection pending deletes what is inside it'],
     ['drag a grip dot', 'pull a clip-box face or turn the box \u2014 only a '+
      'drag starting on the lit dot takes it; anywhere else is the camera'],
     ['double-click a scan', 'work on that one: the movement controls, its '+
@@ -11719,7 +11723,7 @@ function cutScope(){
 const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
 {
   let down=false, panning=false, moving=false, grip=null, lassoing=false,
-      spin=null, lx=0, ly=0, picking=null, drift=0, ring=null;
+      spin=null, lx=0, ly=0, picking=null, drift=0, ring=null, midDown=false;
   let tilting=null, leaning=null, camming=null;
   /* Which of the move gizmo's arms is being dragged, and where the hand was
      last frame. */
@@ -11729,7 +11733,15 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     /* the world widget is a control, and it is drawn over the canvas */
     if(gizmoClick(e.clientX,e.clientY)) return;
     lx=e.clientX; ly=e.clientY;
+    /* ⭐ RIGHT-CLICK CLOSES THE POLYGON -- asked for on 2026-09-01. With
+       corners down, a right-button pan could only ABANDON the outline (the
+       matrix froze at the first corner), so the button was a gesture spent
+       on self-defeat; it now closes the outline, the same act as Enter or
+       the double-click. With no outline in progress it pans as it always
+       has. */
+    if(e.button===2 && V.tool==='poly' && V.poly){ polyClose(); return; }
     down=true; grip=null; lassoing=false; spin=null; picking=null; drift=0;
+    midDown=(e.button===1);
     /* ⭐ THE WHEEL BUTTON IS THE CAMERA, WHATEVER ELSE IS SWITCHED ON. Every
        tool in this program takes the left button, so with a lasso or a pair
        pick live the view was pinned -- and getting round to the other side of
@@ -11894,7 +11906,7 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     tilting=null; V.tiltAxis=null;
     camming=null; V.camAxis=null;
     ring=null; picking=null;
-    down=false; moving=false; grip=null; lassoing=false;
+    down=false; moving=false; grip=null; lassoing=false; midDown=false;
     /* The hand stopped: the next frame is the full cloud again -- UNLESS
        something else is still holding the twin up. Clearing the flag outright
        here could not tell the difference, and this handler runs on every press
@@ -11915,6 +11927,13 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
       else takePick(picking[0],picking[1]);
     }
     picking=null;
+    /* ⭐ A MIDDLE CLICK DELETES WHAT THE OUTLINE HOLDS -- asked for on
+       2026-09-01, and gated exactly as a pick is: a press that ends where
+       it began is the gesture, anything that travelled was the pan the
+       middle button has always been. It fires only while a selection is
+       PENDING, where it is the same act as Enter -- everywhere else the
+       middle button stays the camera, as its own comment above insists. */
+    if(midDown && drift<5 && V.pending){ midDown=false; commitLasso('cut'); }
     if(lassoing) finishDraft();
     if(moving && V.edits.length) recomputeLive();   /* the cut follows the
                                                        scan it was made on */
@@ -12011,10 +12030,26 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
       if(!V.pending) return;                    /* nothing drawn: not ours */
       commitLasso(e.shiftKey ? 'keep' : 'cut');
     }
-    else if(k==='Escape'){ V.draft=null; V.pending=null; askLasso(false);
-                           polyDrop(null);
-                           V.half=null; showPairs();
-                           setTool(''); invalidate(); }
+    else if(k==='Escape'){
+      /* ⭐ ESC EMPTIES THE POLYGON TOOL'S HANDS BUT LEAVES IT ARMED -- asked
+         for on 2026-09-01. Mid-cleanup the next outline starts immediately;
+         stepping all the way out of the tool was the surprise, not the wish.
+         A second Esc, with nothing left to throw away, puts the tool away
+         like any other. */
+      if(V.tool==='poly' && (V.poly || V.pending || V.draft)){
+        V.draft=null; V.pending=null; askLasso(false);
+        if(!polyDrop('Thrown away. The polygon tool is still armed — click '+
+                     'to start a new outline; Esc again puts the tool away.'))
+          say('Selection thrown away. The polygon tool is still armed — '+
+              'click to start a new outline; Esc again puts the tool away.');
+        invalidate();
+      } else {
+        V.draft=null; V.pending=null; askLasso(false);
+        polyDrop(null);
+        V.half=null; showPairs();
+        setTool(''); invalidate();
+      }
+    }
     /* ⛔⛔ A LETTER ON ITS OWN IS A SHORTCUT; A LETTER WITH CTRL BELONGS
        TO THE BROWSER. Every branch below tested the key and not the modifiers,
        so Ctrl-C toggled camera mode INSTEAD of copying -- `preventDefault` at

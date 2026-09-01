@@ -6479,6 +6479,37 @@ check("double-click closes the polygon, ahead of the live-tool guard",
 # space, off the edge of the thing being cut around.
 check("a polygon corner does not go through the point picker",
       "if(V.tool==='poly') polyPick(picking[0],picking[1]);" in _ALIGN_SRC)
+
+# ⭐ THREE GESTURES ASKED FOR ON 2026-09-01, for the draw-then-delete loop the
+# operator repeats all afternoon: right-click closes the outline, Esc empties
+# the tool's hands without putting it away, and a middle CLICK deletes what a
+# pending selection holds.
+_pdz = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('pointerdown', e=>{"):]
+_pdz_head = _pdz[:_pdz.find("const left =")]
+check("RIGHT-CLICK CLOSES AN OPEN POLYGON, before the press becomes a pan",
+      "if(e.button===2 && V.tool==='poly' && V.poly){ polyClose(); return; }"
+      in _pdz_head, _pdz_head[-260:])
+check("...and with no outline the right button still pans",
+      "(e.button===2 || e.shiftKey)" in _pdz)
+_kd_esc = _kdz[_kdz.find("k==='Escape'"):]
+_kd_esc = _kd_esc[:_kd_esc.find("else if(e.ctrlKey")]
+check("ESC WITH THE POLYGON TOOL ARMED THROWS THE OUTLINE AWAY AND KEEPS "
+      "THE TOOL",
+      "if(V.tool==='poly' && (V.poly || V.pending || V.draft)){" in _kd_esc
+      and _kd_esc[:_kd_esc.find("} else {")].count("setTool(") == 0,
+      _kd_esc[:200])
+check("...while a second Esc, hands empty, still puts the tool away",
+      "setTool('');" in _kd_esc[_kd_esc.find("} else {"):])
+check("A MIDDLE CLICK DELETES A PENDING SELECTION -- gated press-vs-drag, "
+      "so the pan the middle button has always been is untouched",
+      "if(midDown && drift<5 && V.pending){ midDown=false; "
+      "commitLasso('cut'); }" in _ALIGN_SRC
+      and "midDown=(e.button===1);" in _ALIGN_SRC)
+check("...and the flag cannot outlive its drag",
+      "lassoing=false; midDown=false;" in _ALIGN_SRC)
+check("...all three gestures are in the help, which would otherwise lie",
+      "right-click," in _page and "middle click then deletes" in _page
+      and "deletes what is inside it" in _ALIGN_SRC)
 # ⛔⛔ ONE SIZE RULE FOR EVERY OUTLINE. The old test read path[1] and path[2]
 # and only meant anything for a rectangle: a circle dragged to nothing is 64
 # points on one spot and would have sailed past it into a cut of nothing.
