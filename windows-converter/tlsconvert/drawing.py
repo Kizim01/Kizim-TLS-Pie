@@ -760,6 +760,261 @@ def regularise_directions(segments, tol_deg=REG_TOL_DEG, min_len_m=0.8):
     return out
 
 
+# --- the levels a room is actually built in -------------------------------
+
+LEVEL_STEP_M = 0.05          # band height; finer than a step nosing is thick
+LEVEL_PROBE_M = 0.30         # clear air needed ABOVE a surface for it to be one
+LEVEL_MIN_SHARE = 0.08       # see find_levels: this one is bounded from BELOW
+LEVEL_MIN_BAND_M2 = 0.80     # a band holding less top face than this is speckle
+LEVEL_MAX_THICK_M = 0.20     # one surface is thinner than this; split if not
+LEVEL_GRID_M = 0.05          # the raster a level is traced on
+LEVEL_CLOSE_M = 0.10         # ⛔ FURNITURE scale -- NOT Cloud2BIM's 1.0 m
+LEVEL_OPEN_M = 0.05          # shave speckle off a seat pan, not the seat
+LEVEL_MIN_AREA_M2 = 0.50     # smaller than a seat pan is not worth modelling
+LEVEL_MAX_COUNT = 12         # a room has storeys and furniture, not fifty tiers
+
+
+def top_face_cells(ijk, cell_m, probe_m=LEVEL_PROBE_M):
+    """
+    Which occupied cells are UPWARD-FACING surfaces: solid here, air above.
+
+    ⭐⭐ THIS IS THE TEST THAT MAKES FURNITURE FINDABLE AT ALL, AND IT IS NOT
+    IN THE SLAB LITERATURE. Cloud2BIM and the other scan-to-BIM pipelines find
+    horizontal surfaces by point density alone, which works because they are
+    looking for structural slabs in a shell: a floor and a ceiling really are
+    the densest things in the cloud. In a furnished room they are the densest
+    by a factor of ten and every table, seat and platform disappears under
+    them. The discriminator has to be a property of the surface, not its size.
+
+    The property is the one traversability mapping uses to decide where a robot
+    may stand: GROUND SUPPORT plus OVERHEAD CLEARANCE. A cell is a top face if
+    it holds a return and the `probe_m` directly above it holds none. A seat
+    pan passes. A table top passes. The middle of a wall fails, because there
+    is more wall above it. A chair back fails for the same reason, and so does
+    every vertical face in the room -- which is exactly the clutter that swamps
+    a plain density histogram.
+
+    ⛔ THE COLUMN KEY CARRIES `probe` CELLS OF HEADROOM ON PURPOSE. The test
+    is a lookup for `key + 1 .. key + probe` in the same (x, y) column, and the
+    key packs z in the least significant field. Without spare z range the
+    topmost cell of the extent wraps into the NEXT column's low cells and reads
+    a phantom return above itself -- so the highest surface in the capture, the
+    ceiling, would be the one thing this never found.
+    """
+    ijk = np.asarray(ijk)
+    n = ijk.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    probe = max(1, int(round(float(probe_m) / float(cell_m))))
+    d = (ijk - ijk.min(axis=0)).astype(np.int64)
+    ny = int(d[:, 1].max()) + 2
+    nz = int(d[:, 2].max()) + probe + 2
+    key = (d[:, 0] * ny + d[:, 1]) * nz + d[:, 2]
+    ks = np.sort(key)
+    top = np.ones(n, dtype=bool)
+    for step in range(1, probe + 1):
+        q = key + step
+        p = np.minimum(np.searchsorted(ks, q), ks.size - 1)
+        top &= ks[p] != q
+    return top
+
+
+def _split_thick_runs(runs, share, max_bands):
+    """Break a run that spans more than one surface at its weakest band."""
+    out, work = [], list(runs)
+    while work:
+        a, c = work.pop()
+        if c - a + 1 <= max_bands:
+            out.append((a, c))
+            continue
+        k = a + 1 + int(np.argmin(share[a + 1:c]))    # never an endpoint
+        work.append((a, k - 1))
+        work.append((k + 1, c))
+    return sorted(out)
+
+
+def find_levels(ijk, counts, cell_m, floor_z, ceil_z=None, top=None,
+                step_m=LEVEL_STEP_M, min_share=LEVEL_MIN_SHARE,
+                min_band_m2=LEVEL_MIN_BAND_M2,
+                max_thick_m=LEVEL_MAX_THICK_M, probe_m=LEVEL_PROBE_M,
+                max_levels=LEVEL_MAX_COUNT):
+    """
+    Every height the room has a horizontal surface at: floors, platforms,
+    seats, tables, counters.
+
+    ⛔⛔ THE PUBLISHED RULE WAS MEASURED ON THIS CAPTURE AND IT FINDS NOTHING
+    BUT THE FLOOR AND THE CEILING. Cloud2BIM takes a 0.05 m z-histogram of
+    returns and calls a band a horizontal surface when it holds more than
+    0.6 x the MAXIMUM band (the paper says 0.5, the shipped code says 0.6 --
+    either way an absolute share of the largest thing in the cloud). Run on the
+    operator's restaurant that selects +0.03, +2.72 and +2.78 m: the floor and
+    two bands of ceiling. The bar top is there in the data at 100k returns and
+    the ceiling has a million, so a rule measured against the maximum can only
+    ever find the two surfaces that were never the problem.
+
+    ⭐ SO THE TEST IS A RATIO, AND THAT IS THE WHOLE REASON IT SURVIVES. A band
+    qualifies when a large SHARE OF ITS OWN RETURNS ARE TOP FACES -- occupied
+    with clear air above (see `top_face_cells`). That is scale-free: it does not
+    care that the ceiling is ten times denser, because the ceiling's share is
+    computed against the ceiling. Measured here, a band cutting through walls
+    and chair backs runs about 0.03; a real horizontal surface runs 0.10 to
+    0.32. Three to ten times of separation, and no dependence on room size,
+    scan count or how glazed the room is.
+
+    ⛔ THE THRESHOLD IS BOUNDED FROM BELOW, WHICH IS THE OPPOSITE OF THE
+    CLOSING RADIUS AND EASY TO GET WRONG. Drop it to 0.06 on this capture and
+    the qualifying bands become continuous from the floor at +0.03 up to the
+    raised platform at +0.21, so the two merge into ONE level spanning
+    -0.05..0.25 m and the platform -- the thing the operator asked for by
+    name -- vanishes into the floor. A too-low threshold does not add noise
+    here; it DESTROYS the feature by fusing it to its neighbour.
+    `max_thick_m` splits a run that spans more than one surface anyway, so the
+    default is not load-bearing alone, but it is what separates them cleanly.
+
+    ⚠ `min_band_m2` is an AREA of top face, not a cell count, so it means the
+    same thing at any `cell_m`. Returns `[{z, lo, hi, share, area_m2}, ...]`
+    lowest first, `z` weighted by top-face count within the band.
+    """
+    ijk = np.asarray(ijk)
+    if ijk.shape[0] == 0:
+        return []
+    if top is None:
+        top = top_face_cells(ijk, cell_m, probe_m)
+    z = (ijk[:, 2].astype(np.float64) + 0.5) * float(cell_m) - float(floor_z)
+    b = np.floor(z / float(step_m)).astype(np.int64)
+    b -= b.min()
+    n = int(b.max()) + 1
+    if n < 3:
+        return []
+    zs = (np.arange(n) + 0.5) * step_m + np.floor(z.min() / step_m) * step_m
+    ret = np.bincount(b, weights=np.asarray(counts, dtype=np.float64),
+                      minlength=n)
+    tf = np.bincount(b[top], minlength=n).astype(np.float64)
+    share = tf / np.maximum(ret, 1.0)
+
+    # ⛔ the ceiling is a top face too, and it is not a thing to model. Stay
+    # under it by more than the probe, or its own band qualifies every time.
+    hi_lim = np.inf if ceil_z is None else (ceil_z - floor_z - probe_m - 0.05)
+    ok = ((zs > -0.30) & (zs < hi_lim) & (share >= min_share)
+          & (tf >= min_band_m2 / (cell_m * cell_m)))
+
+    runs, s = [], None
+    for i in range(n):
+        if ok[i]:
+            s = i if s is None else s
+        elif s is not None:
+            runs.append((s, i - 1))
+            s = None
+    if s is not None:
+        runs.append((s, n - 1))
+    runs = _split_thick_runs(runs, share,
+                             max(1, int(round(max_thick_m / step_m))))
+
+    out = []
+    for a, c in runs:
+        # ⛔ THE HEIGHT COMES FROM THE CELLS, NOT FROM THE BAND THEY FELL IN.
+        # An earlier version reported the top-face-weighted centre of the
+        # 0.05 m bands, which put a platform whose real top is 0.20 m at
+        # 0.24 m. That number is not decoration: it is printed beside the
+        # outline as the distance to Push/Pull, so a band-centre answer is a
+        # 4 cm modelling error handed over as a measurement. The median of the
+        # cells' own heights is robust to a band picking up a stray.
+        # ⚠ It still carries HALF A CELL of upward bias -- a return at 0.200 m
+        # lands in the cell spanning 0.200..0.225 and is read at its centre.
+        sel = top & (b >= a) & (b <= c)
+        zc = (float(np.median(z[sel])) if sel.any()
+              else float(np.average(zs[a:c + 1],
+                                    weights=np.maximum(tf[a:c + 1], 1.0))))
+        out.append({"z": zc + floor_z,
+                    "lo": float(zs[a] - step_m * 0.5) + floor_z,
+                    "hi": float(zs[c] + step_m * 0.5) + floor_z,
+                    "share": float(share[a:c + 1].max()),
+                    "area_m2": float(tf[a:c + 1].sum() * cell_m * cell_m)})
+    out.sort(key=lambda d: -d["area_m2"])
+    return sorted(out[:max_levels], key=lambda d: d["z"])
+
+
+def level_footprints(ijk, cell_m, level, top=None, grid_m=LEVEL_GRID_M,
+                     close_m=LEVEL_CLOSE_M, open_m=LEVEL_OPEN_M,
+                     min_area_m2=LEVEL_MIN_AREA_M2, probe_m=LEVEL_PROBE_M,
+                     simplify_m=SIMPLIFY_TOL_M):
+    """
+    The closed outlines of one level: every separate platform, seat and table
+    top standing at that height, with the holes in them.
+
+    ⛔ THE CLEANING RADIUS IS A TENTH OF THE PUBLISHED ONE AND THAT IS NOT A
+    TWEAK. Cloud2BIM closes a slab footprint with a 1.0 m dilation and a 1.0 m
+    erosion, which is right for a floor plate the size of a building and would
+    erase every object this function exists to find -- a seat pan is 0.5 m
+    across and a 1 m closing swallows it into the floor around it. The radius
+    has to be set by the SMALLEST THING WORTH DRAWING, and here that is a seat.
+
+    ⛔ AND EVERY REGION IS KEPT, NOT THE LARGEST. The published code takes
+    `RETR_EXTERNAL` contours and then `max(contours, key=contourArea)`, so one
+    level yields exactly one outline. That is correct for a storey slab and
+    structurally incapable of representing seating, where the whole answer is
+    "eleven separate objects at 0.42 m". `trace_loops` returns them all, and
+    the sign of the area still separates a hole from an outline.
+
+    ⚠ The order is CLOSE then OPEN here, the reverse of `clean_free_space`,
+    and for a reason that does not transfer between the two. Free space is a
+    visibility map whose defect is long shadow FINGERS, so the fingers come off
+    first or the closing welds them to something. A level footprint's defect is
+    the opposite: a scattering of missed returns INSIDE an otherwise solid top,
+    from a reflective table or a place one tripod could not see. Fill those
+    first, then take the speckle off the outside.
+    """
+    ijk = np.asarray(ijk)
+    if ijk.shape[0] == 0:
+        return []
+    if top is None:
+        top = top_face_cells(ijk, cell_m, probe_m)
+    z = (ijk[:, 2].astype(np.float64) + 0.5) * float(cell_m)
+    sel = top & (z >= level["lo"]) & (z < level["hi"])
+    if not sel.any():
+        return []
+
+    xy = (ijk[sel][:, :2].astype(np.float64) + 0.5) * float(cell_m)
+    pad = int(round(max(close_m, open_m) / grid_m)) + 2
+    lo = xy.min(axis=0) - pad * grid_m
+    gj = np.floor((xy[:, 0] - lo[0]) / grid_m).astype(np.int64)
+    gi = np.floor((xy[:, 1] - lo[1]) / grid_m).astype(np.int64)
+    mask = np.zeros((int(gi.max()) + pad + 1, int(gj.max()) + pad + 1),
+                    dtype=bool)
+    mask[gi, gj] = True
+
+    rc = int(round(close_m / grid_m))
+    ro = int(round(open_m / grid_m))
+    if rc > 0:
+        mask = _erode(_dilate(mask, rc), rc)
+    if ro > 0:
+        mask = _dilate(_erode(mask, ro), ro)
+
+    min_cells = max(1, int(round(min_area_m2 / (grid_m * grid_m))))
+    loops = trace_loops(mask, grid_m, (float(lo[0]), float(lo[1])),
+                        min_cells=min_cells)
+    out = []
+    for lp in loops:
+        xys = simplify_loop(lp["xy"], simplify_m) if simplify_m else lp["xy"]
+        if xys.shape[0] < 3:
+            continue
+        out.append({"xy": xys, "area_m2": lp["area_m2"], "outer": lp["outer"],
+                    "z": level["z"]})
+    return out
+
+
+def level_layer(z_above_base_m):
+    """
+    A per-level layer name, so one height can be isolated in the CAD package.
+
+    ⛔ R12 LAYER NAMES ARE NOT FREE TEXT: letters, digits, `$`, `-` and `_`
+    only -- no dot, so `TLS-LVL-0.21` is malformed and the height goes in
+    CENTIMETRES. Below the base plane reads `N`, because a minus sign is not
+    in that set either.
+    """
+    cm = int(round(float(z_above_base_m) * 100.0))
+    return "TLS-LVL-%s%03d" % ("N" if cm < 0 else "", min(abs(cm), 999))
+
 def _label_regions(mask):
     """
     (labels, count) for 4-connected True regions. 0 means not in `mask`.
@@ -820,6 +1075,85 @@ def _label_regions(mask):
     return remap[labels], int(uniq.size)
 
 
+def _point_in_ring(p, ring):
+    """Ray casting; `ring` is a list of (x, y) with no repeated last point."""
+    x, y = p
+    inside = False
+    n = len(ring)
+    for i in range(n):
+        ax, ay = ring[i]
+        bx, by = ring[(i + 1) % n]
+        if (ay > y) != (by > y):
+            t = (y - ay) / (by - ay)
+            if x < ax + t * (bx - ax):
+                inside = not inside
+    return inside
+
+
+def _cut_holes(outer, holes):
+    """
+    Splice each hole into the outer ring with a bridge, so what comes out is
+    ONE simple polygon that ear clipping can triangulate.
+
+    ⛔⛔ WITHOUT THIS THE FLOOR BURIES EVERY OBJECT STANDING ON IT. Every
+    level is drawn flat on the same base plane, so the floor's 153 m² face and
+    a platform's 13 m² face are coplanar and the floor is written first and
+    larger. Ear clipping ignores holes, so a fan across the floor covers the
+    platform, the seating and the tables -- the drawing would contain all the
+    new detail and show none of it, and the operator would be back to "it does
+    not represent the room". The floor's holes are not defects: they are
+    exactly where the things worth modelling stand.
+
+    The bridge is the textbook one: take the hole's RIGHTMOST vertex, cast a
+    ray in +x, and join it to the nearer end of the first outer edge hit. Holes
+    are spliced right-to-left so an earlier bridge cannot separate a later hole
+    from the ring.
+
+    ⚠ IT CAN FAIL, AND FAILING IS SAFE. The simple visibility test is not
+    proof against a bridge that grazes a reflex corner. If it produces a
+    self-touching ring, `_ear_clip` runs out of ears and returns what it has --
+    which is no worse than the fan this replaces, and never a face crossing a
+    hole it was asked to keep open.
+    """
+    ring = list(outer)
+    if not ring:
+        return ring
+    ccw = _signed_area(ring) > 0
+    ordered = sorted((list(h) for h in holes if len(h) >= 3),
+                     key=lambda h: -max(p[0] for p in h))
+    for hole in ordered:
+        # a hole must wind AGAINST the outer ring or the splice folds over
+        if (_signed_area(hole) > 0) == ccw:
+            hole = hole[::-1]
+        m = max(range(len(hole)), key=lambda i: hole[i][0])
+        mx, my = hole[m]
+        best_x, best_i = None, None
+        for i in range(len(ring)):
+            ax, ay = ring[i]
+            bx, by = ring[(i + 1) % len(ring)]
+            if (ay > my) == (by > my):
+                continue
+            t = (my - ay) / (by - ay)
+            x = ax + t * (bx - ax)
+            if x < mx:
+                continue
+            if best_x is None or x < best_x:
+                best_x, best_i = x, i
+        if best_i is None:
+            continue
+        a, b = ring[best_i], ring[(best_i + 1) % len(ring)]
+        p = best_i if a[0] >= b[0] else (best_i + 1) % len(ring)
+        loop = hole[m:] + hole[:m]
+        ring = (ring[:p + 1] + loop + [loop[0]] + ring[p:])
+    return ring
+
+
+def _signed_area(pts):
+    n = len(pts)
+    return 0.5 * sum(pts[i][0] * pts[(i + 1) % n][1]
+                     - pts[(i + 1) % n][0] * pts[i][1] for i in range(n))
+
+
 def _ear_clip(pts):
     """
     Triangulate a simple counter-clockwise polygon. [(a, b, c), ...].
@@ -852,8 +1186,17 @@ def _ear_clip(pts):
             a, b, c = pts[i0], pts[i1], pts[i2]
             if cross(a, b, c) <= 0:
                 continue                       # reflex corner, not an ear
-            if any(in_tri(pts[j], a, b, c)
-                   for j in idx if j not in (i0, i1, i2)):
+            # ⛔ A VERTEX THAT MERELY COINCIDES WITH A CORNER IS NOT
+            # "INSIDE". `in_tri` is inclusive, so a point lying ON the
+            # candidate triangle counts -- and a ring with a hole bridged into
+            # it repeats the two bridge ends BY CONSTRUCTION. Comparing by
+            # index alone, every candidate ear contained one of those repeats,
+            # no ear was ever found, and the whole face came out EMPTY: a floor
+            # with a hole in it and a floor that failed to triangulate look
+            # exactly the same from outside, which is why this has a test.
+            if any(in_tri(pts[j], a, b, c) for j in idx
+                   if j not in (i0, i1, i2)
+                   and pts[j] != a and pts[j] != b and pts[j] != c):
                 continue                       # something is inside it
             out.append((a, b, c))
             idx.pop(k)
@@ -1313,8 +1656,25 @@ class DxfWriter:
         self.units = units
         self.scale, self._insunits = UNITS[units]
         self._ents = []
+        self._used = []
         self._lo = [float("inf"), float("inf")]
         self._hi = [float("-inf"), float("-inf")]
+
+    def _add(self, layer, s):
+        """
+        Append one entity, remembering the layer it went on.
+
+        ⛔ A LAYER AN ENTITY USES MUST BE IN THE LAYER TABLE. This writer
+        declared a fixed eight and accepted any string, which was harmless only
+        for as long as every caller stuck to the eight -- AutoCAD rejects a
+        drawing whose entity names an undeclared layer, and the readers that
+        tolerate it invent one with arbitrary properties. Per-level layers made
+        the number of layers depend on the SCAN, so the table is now the union
+        of the fixed set and whatever was actually drawn on.
+        """
+        if layer not in self._used:
+            self._used.append(layer)
+        self._ents.append(s)
 
     def _seen(self, x, y):
         if x < self._lo[0]:
@@ -1331,7 +1691,7 @@ class DxfWriter:
         a, b, c, d = x0 * u, y0 * u, x1 * u, y1 * u
         self._seen(a, b)
         self._seen(c, d)
-        self._ents.append(
+        self._add(layer, 
             "0\nLINE\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
             "11\n%.4f\n21\n%.4f\n31\n0.0\n" % (layer, a, b, c, d))
 
@@ -1367,17 +1727,17 @@ class DxfWriter:
                    3 if closed else 2, len(pts)))
         for a, b in pts:
             self._seen(a, b)
-        self._ents.append(
+        self._add(layer, 
             "0\nPOLYLINE\n8\n%s\n66\n1\n70\n%d\n"
             "10\n0.0\n20\n0.0\n30\n0.0\n" % (layer, 1 if closed else 0))
         for a, b in pts:
-            self._ents.append(
+            self._add(layer, 
                 "0\nVERTEX\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
                 % (layer, a, b))
-        self._ents.append("0\nSEQEND\n8\n%s\n" % layer)
+        self._add(layer, "0\nSEQEND\n8\n%s\n" % layer)
         return len(pts)
 
-    def face(self, layer, xy, z=0.0):
+    def face(self, layer, xy, z=0.0, holes=()):
         """
         A filled polygon, as `3DFACE` triangles. Returns how many were written.
 
@@ -1405,18 +1765,24 @@ class DxfWriter:
         if len(pts) < 3:
             raise ValueError("a face needs at least 3 distinct vertices, got %d"
                              % len(pts))
-        area2 = sum(pts[i][0] * pts[(i + 1) % len(pts)][1]
-                    - pts[(i + 1) % len(pts)][0] * pts[i][1]
-                    for i in range(len(pts)))
-        if area2 < 0:
+        if _signed_area(pts) < 0:
             pts.reverse()
+        rings = []
+        for h in holes or ():
+            r = [(float(x), float(y)) for x, y in h]
+            if len(r) > 1 and r[0] == r[-1]:
+                r.pop()
+            if len(r) >= 3:
+                rings.append(r)
+        if rings:
+            pts = _cut_holes(pts, rings)
 
         u = self.scale
         n = 0
         for a, b, c in _ear_clip(pts):
             for p in (a, b, c):
                 self._seen(p[0] * u, p[1] * u)
-            self._ents.append(
+            self._add(layer, 
                 "0\n3DFACE\n8\n%s\n"
                 "10\n%.4f\n20\n%.4f\n30\n%.4f\n"
                 "11\n%.4f\n21\n%.4f\n31\n%.4f\n"
@@ -1434,7 +1800,7 @@ class DxfWriter:
         u = self.scale
         a, b = x * u, y * u
         self._seen(a, b)
-        self._ents.append(
+        self._add(layer, 
             "0\nPOINT\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n" % (layer, a, b))
 
     def text(self, layer, x, y, height_m, s):
@@ -1443,7 +1809,7 @@ class DxfWriter:
         self._seen(a, b)
         # DXF text is one line; a newline would end the group.
         s = str(s).replace("\n", " ")
-        self._ents.append(
+        self._add(layer, 
             "0\nTEXT\n8\n%s\n10\n%.4f\n20\n%.4f\n30\n0.0\n40\n%.4f\n1\n%s\n"
             % (layer, a, b, height_m * u, s))
 
@@ -1468,9 +1834,11 @@ class DxfWriter:
             "9\n$EXTMIN\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
             "9\n$EXTMAX\n10\n%.4f\n20\n%.4f\n30\n0.0\n"
             "0\nENDSEC\n" % (self._insunits, lo0, lo1, hi0, hi1))
+        known = set(n for n, _ in LAYERS)
+        names = list(LAYERS) + [(n, 7) for n in self._used if n not in known]
         tables = ["0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n%d\n"
-                  % len(LAYERS)]
-        for name, colour in LAYERS:
+                  % len(names)]
+        for name, colour in names:
             tables.append("0\nLAYER\n2\n%s\n70\n0\n62\n%d\n6\nCONTINUOUS\n"
                           % (name, colour))
         tables.append("0\nENDTAB\n0\nENDSEC\n")
@@ -1501,6 +1869,60 @@ def draw_grid(dxf, lo_x, lo_y, hi_x, hi_y, step_m=1.0, layer="TLS-GRID"):
         y = y0 + b * step_m
         dxf.line(layer, x0, y, x0 + (nx - 1) * step_m, y)
     return nx, ny
+
+
+def draw_levels(dxf, levels, base_z, label_layer="TLS-NOTES",
+                face=True, text_h_m=0.12):
+    """
+    Write every level's outlines FLAT ON THE BASE PLANE, each on its own layer,
+    each labelled with the height to extrude it to.
+
+    ⭐⭐ FLAT IS THE OPERATOR'S SPECIFICATION, NOT A SIMPLIFICATION: "all
+    lines sit on a perfect flat surface, so when i'm in SketchUp i can just
+    extrude the walls and anything else i need to model". A platform drawn at
+    its true height is a prettier picture and a worse tool -- it has to be
+    dragged down to the ground before it can be built up from it. So the
+    footprint goes on the base plane and the HEIGHT BECOMES A NUMBER printed
+    beside it, which is the one thing Push/Pull actually asks for.
+
+    ⚠ THE COST IS COINCIDENT GEOMETRY AND IT IS WORTH SAYING OUT LOUD. A
+    platform at +0.21 m sits inside the floor outline, so their faces are
+    coplanar and overlapping: viewers may flicker where they coincide. That is
+    the same situation as drawing a rectangle on a floor in SketchUp, which
+    Push/Pull handles correctly -- an offset to stop the flicker would break
+    the coplanarity that makes it work, so the flicker is the right trade.
+
+    `levels` is what `find_levels` returned, each with an `outlines` list from
+    `level_footprints`. Returns the number of loops written.
+    """
+    n = 0
+    for lv in levels:
+        h = lv["z"] - base_z
+        layer = level_layer(h)
+        loops = list(lv.get("outlines", ()))
+        holes = [lp for lp in loops if not lp.get("outer", True)]
+        for lp in loops:
+            xy = lp["xy"]
+            if xy.shape[0] < 3:
+                continue
+            dxf.polyline(layer, xy, closed=True)
+            # ⛔ a HOLE gets no face: filling it would cover the very gap the
+            # trace went to the trouble of finding.
+            if face and lp.get("outer", True):
+                # its OWN holes are cut out: facing the floor without cutting
+                # buries the platform standing in it, which looks exactly like
+                # never having found the platform at all
+                mine = [h["xy"] for h in holes
+                        if _point_in_ring(tuple(h["xy"][0]),
+                                          [tuple(p) for p in xy])]
+                dxf.face(layer, xy, holes=mine)
+            n += 1
+        if lv.get("outlines") and label_layer:
+            big = max(lv["outlines"], key=lambda d: d["area_m2"])
+            c = big["xy"].mean(axis=0)
+            dxf.text(label_layer, c[0], c[1], text_h_m,
+                     "%+.2f m" % h)
+    return n
 
 
 class DrawingWriter:

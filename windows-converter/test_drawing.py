@@ -13,6 +13,7 @@ it wrote would pass on a file nothing could read -- which is this project's
 oldest failure wearing yet another hat.
 """
 
+import io
 import os
 import sys
 import tempfile
@@ -784,6 +785,201 @@ with tempfile.TemporaryDirectory() as td:
     check("...memory is in cells, not returns",
           s["cells"] < pts.shape[0], (s["cells"], pts.shape[0]))
 
+
+# --- 13. the levels a furnished room is built in ---------------------------
+print("\nhorizontal surfaces: platforms, tables, and what a wall is not")
+
+
+def slab(x0, y0, x1, y1, z, step=0.025):
+    xs = np.arange(x0, x1, step)
+    ys = np.arange(y0, y1, step)
+    X, Y = np.meshgrid(xs, ys)
+    return np.column_stack([X.ravel(), Y.ravel(),
+                            np.full(X.size, float(z))])
+
+
+def wall_face(x0, y0, x1, y1, z0, z1, step=0.025):
+    n = max(2, int(round(np.hypot(x1 - x0, y1 - y0) / step)))
+    t = np.linspace(0.0, 1.0, n)
+    zs = np.arange(z0, z1, step)
+    T, Z = np.meshgrid(t, zs)
+    return np.column_stack([x0 + T.ravel() * (x1 - x0),
+                            y0 + T.ravel() * (y1 - y0), Z.ravel()])
+
+
+# A furnished room: floor, four walls, a ceiling, a raised platform with the
+# floor MISSING underneath it (the instrument cannot see through a platform),
+# and a table on legs.
+PST = 0.025
+PLAT = (1.0, 1.0, 3.5, 2.5, 0.20)          # x0 y0 x1 y1 z
+TBL = (4.0, 1.5, 5.6, 2.5, 0.725)
+parts = [slab(0.0, 0.0, 6.0, 4.0, 0.0, PST),
+         slab(0.0, 0.0, 6.0, 4.0, 2.70, PST),
+         wall_face(0, 0, 6, 0, 0.0, 2.70, PST),
+         wall_face(0, 4, 6, 4, 0.0, 2.70, PST),
+         wall_face(0, 0, 0, 4, 0.0, 2.70, PST),
+         wall_face(6, 0, 6, 4, 0.0, 2.70, PST),
+         slab(PLAT[0], PLAT[1], PLAT[2], PLAT[3], PLAT[4], PST),
+         wall_face(PLAT[0], PLAT[1], PLAT[2], PLAT[1], 0.0, PLAT[4], PST),
+         wall_face(PLAT[0], PLAT[3], PLAT[2], PLAT[3], 0.0, PLAT[4], PST),
+         wall_face(PLAT[0], PLAT[1], PLAT[0], PLAT[3], 0.0, PLAT[4], PST),
+         wall_face(PLAT[2], PLAT[1], PLAT[2], PLAT[3], 0.0, PLAT[4], PST),
+         slab(TBL[0], TBL[1], TBL[2], TBL[3], TBL[4], PST)]
+for lx in (TBL[0] + 0.1, TBL[2] - 0.1):
+    for ly in (TBL[1] + 0.1, TBL[3] - 0.1):
+        parts.append(wall_face(lx, ly, lx + 0.05, ly, 0.0, TBL[4], PST))
+FURN = np.vstack(parts)
+# no floor under the platform
+under = ((FURN[:, 2] < 0.01) & (FURN[:, 0] > PLAT[0]) & (FURN[:, 0] < PLAT[2])
+         & (FURN[:, 1] > PLAT[1]) & (FURN[:, 1] < PLAT[3]))
+FURN = FURN[~under]
+
+LC = 0.025
+cc = drawing.CellCounter(LC)
+cc.add(np.ascontiguousarray(FURN))
+fijk, fcnt = cc.result()
+ffz, fcz = drawing.find_floor_and_ceiling(fijk, fcnt, LC)
+check("the furnished room still yields a floor and a ceiling",
+      ffz is not None and abs(ffz) < 0.05 and abs(fcz - 2.70) < 0.05,
+      (ffz, fcz))
+
+ftop = drawing.top_face_cells(fijk, LC)
+fz_m = (fijk[:, 2] + 0.5) * LC
+inplat = ((fijk[:, 0] + 0.5) * LC > PLAT[0] + 0.2) & \
+         ((fijk[:, 0] + 0.5) * LC < PLAT[2] - 0.2) & \
+         ((fijk[:, 1] + 0.5) * LC > PLAT[1] + 0.2) & \
+         ((fijk[:, 1] + 0.5) * LC < PLAT[3] - 0.2)
+plat_top = inplat & (np.abs(fz_m - PLAT[4]) < 0.03)
+check("a platform top IS an upward-facing surface",
+      plat_top.any() and ftop[plat_top].mean() > 0.95,
+      ftop[plat_top].mean() if plat_top.any() else "none")
+midwall = (np.abs((fijk[:, 1] + 0.5) * LC) < 0.03) & (fz_m > 0.5) & \
+          (fz_m < 2.0)
+check("...and the middle of a wall is NOT, which is what makes this work",
+      midwall.any() and ftop[midwall].mean() < 0.02,
+      ftop[midwall].mean() if midwall.any() else "none")
+ceil = np.abs(fz_m - 2.70) < 0.03
+check("...the CEILING is a top face too -- the z key has probe headroom",
+      ceil.any() and ftop[ceil].mean() > 0.95,
+      ftop[ceil].mean() if ceil.any() else "none")
+
+lv = drawing.find_levels(fijk, fcnt, LC, ffz, fcz, top=ftop)
+zs = sorted(round(d["z"], 2) for d in lv)
+check("the floor, the platform and the table are all found as levels",
+      any(abs(z - 0.0) < 0.06 for z in zs)
+      and any(abs(z - 0.20) < 0.06 for z in zs)
+      and any(abs(z - 0.725) < 0.06 for z in zs), zs)
+check("...and the ceiling is NOT offered as a thing to model",
+      not any(z > 2.3 for z in zs), zs)
+check("...they are separate levels, not one thick band",
+      len(set(zs)) == len(zs) and len(zs) <= 5, zs)
+
+# the published rule, run on the same fixture, for the record
+zret = (fijk[:, 2] + 0.5) * LC
+bb = np.floor((zret - ffz) / 0.05).astype(np.int64)
+bb -= bb.min()
+hh = np.bincount(bb, weights=fcnt.astype(np.float64))
+pub = [(np.argsort(hh)[::-1][:6])]
+check("the absolute rule this replaces would take the two dense slabs",
+      (hh > 0.6 * hh.max()).sum() <= 3, (hh > 0.6 * hh.max()).sum())
+
+plat_lv = min(lv, key=lambda d: abs(d["z"] - PLAT[4]))
+outs = drawing.level_footprints(fijk, LC, plat_lv, top=ftop)
+outer = [o for o in outs if o["outer"]]
+want = (PLAT[2] - PLAT[0]) * (PLAT[3] - PLAT[1])
+check("the platform comes out as ONE closed outline",
+      len(outer) == 1, [round(o["area_m2"], 2) for o in outer])
+check("...at its real area", outer and abs(outer[0]["area_m2"] - want) < 0.8,
+      (round(outer[0]["area_m2"], 2) if outer else None, want))
+
+floor_lv = min(lv, key=lambda d: abs(d["z"] - 0.0))
+fouts = drawing.level_footprints(fijk, LC, floor_lv, top=ftop)
+fholes = [o for o in fouts if not o["outer"]]
+check("the floor level carries a HOLE where the platform stands",
+      any(abs(h["area_m2"] - want) < 1.2 for h in fholes),
+      [round(h["area_m2"], 2) for h in fholes])
+
+check("a level layer name is R12-legal -- no dot, no minus",
+      drawing.level_layer(0.21) == "TLS-LVL-021"
+      and drawing.level_layer(-0.1) == "TLS-LVL-N010"
+      and all(c.isalnum() or c in "$-_" for c in drawing.level_layer(1.2)),
+      drawing.level_layer(0.21))
+
+
+# --- 14. the face, and the hole it must keep open --------------------------
+print("\n3DFACE: what SketchUp can actually Push/Pull")
+
+
+def faces_of(ents, layer):
+    out = []
+    for e in by_layer(ents, layer):
+        if e["type"] != "3DFACE":
+            continue
+        out.append([(float(e[10 + i][0]), float(e[20 + i][0]))
+                    for i in range(4)])
+    return out
+
+
+def tri_area(t):
+    (ax, ay), (bx, by), (cx, cy) = t[0], t[1], t[2]
+    return abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2.0
+
+
+SQ = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+HOLE = [(1.0, 1.0), (1.0, 3.0), (3.0, 3.0), (3.0, 1.0)]      # clockwise
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "f.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    w.face("TLS-FACE", SQ)
+    w.polyline("TLS-LVL-020", HOLE, closed=True)
+    w.face("TLS-LVL-020", SQ, holes=[HOLE])
+    w.close()
+    _, ents = read_dxf(p)
+    plain = faces_of(ents, "TLS-FACE")
+    cut = faces_of(ents, "TLS-LVL-020")
+    check("a square is written as 3DFACE triangles", len(plain) >= 2,
+          len(plain))
+    check("...covering its whole area",
+          abs(sum(tri_area(t) for t in plain) - 16.0) < 1e-6,
+          sum(tri_area(t) for t in plain))
+    check("a face with a hole leaves the hole OPEN",
+          abs(sum(tri_area(t) for t in cut) - 12.0) < 1e-6,
+          sum(tri_area(t) for t in cut))
+    check("...and the hole's own outline is still drawn",
+          len(polylines_of(ents, "TLS-LVL-020")) == 1)
+
+    txt = io.open(p, encoding="ascii", errors="replace").read()
+    # every ENTITY names its layer too, so counting the bare name proves
+    # nothing about the table -- match the table's own record shape
+    check("a layer no one declared is added to the LAYER table",
+          txt.count("0\nLAYER\n2\nTLS-LVL-020\n") == 1,
+          txt.count("0\nLAYER\n2\nTLS-LVL-020\n"))
+    n_declared = int(txt.split("2\nLAYER\n70\n")[1].split("\n")[0])
+    check("...and the table's own count agrees with what it lists",
+          n_declared == txt.count("0\nLAYER\n2\n"),
+          (n_declared, txt.count("0\nLAYER\n2\n")))
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "lv.dxf")
+    w = drawing.DxfWriter(p, units="m")
+    lvs = [dict(floor_lv, outlines=fouts), dict(plat_lv, outlines=outs)]
+    n = drawing.draw_levels(w, lvs, base_z=0.0)
+    w.close()
+    _, ents = read_dxf(p)
+    check("draw_levels writes every loop it was given", n >= 3, n)
+    lay = drawing.level_layer(plat_lv["z"])
+    pl = polylines_of(ents, lay)
+    check("...the platform lands on its own height-named layer",
+          len(pl) == 1 and pl[0][0] and abs(int(lay[-3:]) - 20) <= 3,
+          (lay, len(pl)))
+    labels = texts_of(ents, "TLS-NOTES")
+    check("...each level is labelled with the height to extrude to",
+          any("+0.2" in t for t in labels), labels)
+    fl = faces_of(ents, drawing.level_layer(floor_lv["z"]))
+    check("...and the floor's face does NOT bury the platform",
+          fl and sum(tri_area(t) for t in fl) < 24.0 - want + 1.0,
+          (round(sum(tri_area(t) for t in fl), 2), want))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
