@@ -374,7 +374,7 @@ def floor_base_z(ijk, counts, cell_m, floor_z, band_m=FLOOR_BAND_M,
                   "lowest_seen": float(zf.min()), "median": float(np.median(zf))}
 
 
-def free_space(occupied_xy, tripods_xy, cell_m, n_azimuth=FREE_AZIMUTH_BINS,
+def free_space(occupied_xy, tripods_xy, cell_m, n_azimuth=None,
                pad_cells=2):
     """
     (mask, origin_xy) -- the cells the instrument could SEE from its tripods.
@@ -401,6 +401,25 @@ def free_space(occupied_xy, tripods_xy, cell_m, n_azimuth=FREE_AZIMUTH_BINS,
     if occupied_xy.shape[0] == 0 or tripods_xy.shape[0] == 0:
         return np.zeros((0, 0), dtype=bool), (0.0, 0.0)
 
+    # ⛔⛔ MORE BINS THAN RETURNS MAKES THE ROOM STRIPED, AND THE STRIPES ARE
+    # INVISIBLE UNTIL SOMETHING TRIES TO CLEAN THEM. A bin with no return
+    # contributes nothing -- deliberately, or the room leaks out of every
+    # window -- so a bin that is merely EMPTY leaves a dark wedge across the
+    # room. `slice_xy` hands over deduplicated CELLS, not raw returns: a 6 x 4 m
+    # room at a 2 cm cell offers about 1000 of them to 2048 bins, half the bins
+    # come up empty, and the free space arrives as a fan of thin wedges. It
+    # still LOOKS like half a room is free -- 31688 cells measured -- and then
+    # the 0.20 m opening in `clean_free_space` erases every one of them,
+    # because a wedge is narrower than the kernel. Nothing warns; the outline
+    # is simply absent.
+    #
+    # ⭐ So the count is taken from the EVIDENCE unless a caller names one. The
+    # operator's restaurant offers ~100k cells and is capped at
+    # FREE_AZIMUTH_BINS exactly as before -- this changes nothing there and
+    # rescues every room too small or too thinly sliced to fill them.
+    if n_azimuth is None:
+        n_azimuth = int(min(FREE_AZIMUTH_BINS,
+                            max(64, occupied_xy.shape[0] // 2)))
     lo = occupied_xy.min(axis=0) - pad_cells * cell_m
     hi = occupied_xy.max(axis=0) + pad_cells * cell_m
     nx = int(np.ceil((hi[0] - lo[0]) / cell_m)) + 1
@@ -783,6 +802,8 @@ LEVEL_MIN_AREA_M2 = 0.50     # smaller than a seat pan is not worth modelling
 LEVEL_SIMPLIFY_M = 0.10      # ⛔ MUST EXCEED LEVEL_GRID_M -- see level_footprints
 LEVEL_FACE_LAYER = "TLS-FCE" # faces go beside the outline, never on top of it
 LEVEL_MAX_COUNT = 12         # a room has storeys and furniture, not fifty tiers
+LEVEL_MAX_HEIGHT_M = 1.60    # above this it is not something you extrude UP to
+LEVEL_CEILING_CLEAR_M = 0.60 # this close to the ceiling it IS the ceiling
 
 
 def top_face_cells(ijk, cell_m, probe_m=LEVEL_PROBE_M):
@@ -848,7 +869,9 @@ def find_levels(ijk, counts, cell_m, floor_z, ceil_z=None, top=None,
                 step_m=LEVEL_STEP_M, min_share=LEVEL_MIN_SHARE,
                 min_band_m2=LEVEL_MIN_BAND_M2,
                 max_thick_m=LEVEL_MAX_THICK_M, probe_m=LEVEL_PROBE_M,
-                max_levels=LEVEL_MAX_COUNT):
+                max_levels=LEVEL_MAX_COUNT,
+                max_height_m=LEVEL_MAX_HEIGHT_M,
+                ceiling_clear_m=LEVEL_CEILING_CLEAR_M):
     """
     Every height the room has a horizontal surface at: floors, platforms,
     seats, tables, counters.
@@ -903,9 +926,33 @@ def find_levels(ijk, counts, cell_m, floor_z, ceil_z=None, top=None,
     tf = np.bincount(b[top], minlength=n).astype(np.float64)
     share = tf / np.maximum(ret, 1.0)
 
-    # ⛔ the ceiling is a top face too, and it is not a thing to model. Stay
-    # under it by more than the probe, or its own band qualifies every time.
-    hi_lim = np.inf if ceil_z is None else (ceil_z - floor_z - probe_m - 0.05)
+    # ⛔⛔ NOTHING ON THE CEILING, AND THIS IS TWO SEPARATE RULES BECAUSE THEY
+    # FAIL IN DIFFERENT ROOMS. The operator's words: *"also dont trace anytging
+    # on the celiong"*.
+    #
+    # The old guard subtracted `probe_m + 0.05` — 0.35 m — which exists only to
+    # stop the ceiling's OWN band scoring as a top face, and it is not a rule
+    # about ceiling STRUCTURE at all. A soffit, a bulkhead, a duct run or a
+    # dropped ceiling tray is a perfectly good horizontal surface with clear
+    # air above it, and at 1.9 m in a 2.75 m room every one of them passed.
+    # *That guard was a side effect being relied on as a policy.*
+    #
+    #   `ceiling_clear_m`  a surface this near the ceiling belongs TO it, and
+    #                      scales with the room — the rule that catches a
+    #                      soffit in a low room.
+    #   `max_height_m`     the operator models by extruding UP from the base
+    #                      plane, so a surface above head height is not a thing
+    #                      to extrude to whatever the ceiling is doing. 1.60 m
+    #                      is the same "below wall units" height the plan cut
+    #                      already uses — the rule that catches a bulkhead in a
+    #                      double-height room, where clearance alone would not.
+    #
+    # ⚠ The honest cost: a mezzanine deck or a very tall counter is excluded
+    # by height. Both are parameters; nothing here is silently permanent.
+    hi_lim = float(max_height_m)
+    if ceil_z is not None:
+        hi_lim = min(hi_lim, ceil_z - floor_z
+                     - max(float(ceiling_clear_m), probe_m + 0.05))
     ok = ((zs > -0.30) & (zs < hi_lim) & (share >= min_share)
           & (tf >= min_band_m2 / (cell_m * cell_m)))
 
@@ -1633,6 +1680,72 @@ def merge_collinear(segments, tol_m=0.08, angle_deg=4.0, gap_m=0.60):
     return out
 
 
+def box_rotation(yaw_deg, pitch_deg, roll_deg):
+    """
+    The box's axes as columns: yaw about z, then pitch about y, then roll
+    about x. Identical to `pipeline.box_rotation` and to the viewer's `rotOf`,
+    and the tests assert that rather than trusting the comment.
+
+    ⚠ Duplicated on purpose: `pipeline` imports `drawing`, so importing back
+    would be a cycle. The duplication is the ROTATION, which is a convention
+    and cannot drift silently -- not the containment test, which can.
+    """
+    z = np.radians(float(yaw_deg))
+    y = np.radians(float(pitch_deg))
+    x = np.radians(float(roll_deg))
+    cz, sz = np.cos(z), np.sin(z)
+    cy, sy = np.cos(y), np.sin(y)
+    cx, sx = np.cos(x), np.sin(x)
+    return np.array([
+        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+        [-sy, cy * sx, cy * cx]])
+
+def viewer_box_bounds(box):
+    """
+    The Studio clip box, as the world corners `pipeline.Box` expects.
+    Returns `(lo, hi, yaw_deg, pitch_deg, roll_deg, keep_inside)`, or None if
+    the box is absent or switched off.
+
+    ⛔⛔ `lo`/`hi` DO NOT MEAN THE SAME THING IN THE TWO PLACES A PROJECT
+    STORES A BOX, AND THEY SHARE THEIR NAMES. A saved box EDIT holds world
+    corners. The live clip box holds bounds **in the box's own frame, measured
+    from a world pivot `o`** -- because dragging one face of a turned box has
+    to move that face along its own normal, and world corners would make the
+    box creep sideways as it was resized. So the world centre is
+    `o + R · (lo + hi) / 2` and the half-extent is `(hi - lo) / 2`. Read the
+    live box's `lo`/`hi` as world corners and you get a box in the wrong place
+    that is exactly the right SIZE, which looks like a mis-aligned scan rather
+    than a misread field.
+
+    ⛔ `inside` NAMES WHAT IS HIDDEN, NOT WHAT IS KEPT. The shader is
+    `hide = uClipIn > 0.5 ? !out : out` and the button reads "Hiding inside" /
+    "Hiding outside", so `inside: false` -- the setting on the operator's
+    project -- means *hiding outside*, i.e. KEEP WHAT IS IN THE BOX. This is
+    the field the project notes have carried as unresolved; it is resolved
+    here, from the shader and the label together.
+
+    ⚠ THE TEST ITSELF IS DELIBERATELY NOT REPEATED HERE. `pipeline.Box.inside`
+    already does it, turn and all, and a second copy would drift from the first
+    the moment either learnt something. This converts and hands over.
+    """
+    if not box or not box.get("on"):
+        return None
+    lo = np.asarray(box.get("lo"), dtype=float)
+    hi = np.asarray(box.get("hi"), dtype=float)
+    if lo.shape != (3,) or hi.shape != (3,):
+        return None
+    yaw = float(box.get("yaw", 0.0) or 0.0)
+    pitch = float(box.get("pitch", 0.0) or 0.0)
+    roll = float(box.get("roll", 0.0) or 0.0)
+    mid = (lo + hi) / 2.0
+    half = np.abs(hi - lo) / 2.0
+    o = np.asarray(box.get("o", (0.0, 0.0, 0.0)), dtype=float)
+    R = box_rotation(yaw, pitch, roll)
+    centre = o + R.dot(mid)
+    return (centre - half, centre + half, yaw, pitch, roll,
+            not bool(box.get("inside", False)))
+
 def robust_extent(pts, keep=0.995):
     """
     The bounds the room actually occupies, ignoring a thin tail of outliers.
@@ -2021,7 +2134,8 @@ class DrawingWriter:
     def __init__(self, path, comment="", cell_m=DEFAULT_CELL_M, units="mm",
                  plan_lo_m=DEFAULT_PLAN_LO_M, plan_hi_m=DEFAULT_PLAN_HI_M,
                  min_count=2, sections=True, grid_step_m=1.0,
-                 max_slice=MAX_SLICE_ENTITIES, fit=True, margin_m=1.0):
+                 max_slice=MAX_SLICE_ENTITIES, fit=True, margin_m=1.0,
+                 levels=True, outline=True, slice_marks=True):
         self.path = path
         self.comment = comment
         self.cell_m = float(cell_m)
@@ -2034,6 +2148,15 @@ class DrawingWriter:
         self.max_slice = int(max_slice)
         self.fit = bool(fit)
         self.margin_m = float(margin_m)
+        self.levels = bool(levels)
+        self.outline = bool(outline)
+        self.slice_marks = bool(slice_marks)
+        # ⭐ WHERE THE TRIPODS STOOD, filled in by `pipeline.merge`. Free space
+        # is cast FROM the instrument, so an outline that follows the wall's
+        # INSIDE FACE cannot be built from the returns alone -- and no other
+        # writer has any use for it, which is why merge sets it by `hasattr`
+        # rather than every writer growing an argument it ignores.
+        self.tripods = []
         self.count = 0
         self.summary = {}
         self._cells = CellCounter(self.cell_m)
@@ -2105,7 +2228,8 @@ class DrawingWriter:
                 pts = pts[keep]
 
         dxf = DxfWriter(self.path, units=self.units)
-        thinned, drawn = self._draw_slice(dxf, pts)
+        thinned, drawn = ((0, 0) if not self.slice_marks
+                          else self._draw_slice(dxf, pts))
 
         raw = (fit_segments(pts, cell_m=self.cell_m)
                if self.fit else [])
@@ -2119,8 +2243,40 @@ class DrawingWriter:
         # sheet stop being decided by whatever the scan saw through a window.
         lo_x, lo_y = float(pts[:, 0].min()), float(pts[:, 1].min())
         hi_x, hi_y = float(pts[:, 0].max()), float(pts[:, 1].max())
-        nx, ny = draw_grid(dxf, lo_x, lo_y, hi_x, hi_y,
-                           step_m=self.grid_step_m)
+        nx, ny = ((0, 0) if self.grid_step_m <= 0 else
+                  draw_grid(dxf, lo_x, lo_y, hi_x, hi_y,
+                            step_m=self.grid_step_m))
+
+        # --- the outline: the thing the operator actually models on --------
+        base_z, _ = floor_base_z(ijk, counts, self.cell_m, floor_z)
+        found_levels = []
+        if self.levels:
+            top = top_face_cells(ijk, self.cell_m)
+            found_levels = find_levels(ijk, counts, self.cell_m, floor_z,
+                                       ceil_z, top=top)
+            for lv in found_levels:
+                lv["outlines"] = level_footprints(ijk, self.cell_m, lv,
+                                                  top=top)
+            draw_levels(dxf, found_levels, base_z)
+        perim_n = 0
+        if self.outline and len(self.tripods) > 0:
+            trip = np.asarray(self.tripods, dtype=np.float64)
+            free = clean_free_space(free_space(pts, trip, self.cell_m)[0],
+                                    cell_m=self.cell_m)
+            org = free_space(pts, trip, self.cell_m)[1]
+            reg = regularise_directions(segments) if segments else []
+            room = (cell_complex_outline(free, org, self.cell_m, reg)[0]
+                    if reg else free)
+            outer = [l for l in trace_loops(room, self.cell_m, org)
+                     if l["outer"]]
+            if outer:
+                perim = simplify_loop(max(outer,
+                                          key=lambda l: l["area_m2"])["xy"])
+                if reg:
+                    perim = snap_to_walls(perim, reg)[0]
+                if perim.shape[0] >= 3:
+                    dxf.polyline("TLS-OUTLINE", perim, closed=True)
+                    perim_n = int(perim.shape[0])
 
         # The notes. Text height is in metres like everything else, so it
         # scales with the drawing rather than being a fixed number of units.
@@ -2136,6 +2292,11 @@ class DrawingWriter:
             "cell %.0f mm; %d walls fitted from %d slice cells"
             % (self.cell_m * 1000.0, len(segments), pts.shape[0]),
         ]
+        if found_levels:
+            notes.append(
+                "levels (extrude UP from this sheet): %s"
+                % ", ".join("%+.2f m" % (lv["z"] - base_z)
+                            for lv in found_levels))
         if self.comment:
             notes.append(str(self.comment))
         if outside:
@@ -2169,6 +2330,11 @@ class DrawingWriter:
             "slice_outside": int(outside),
             "segments": segments,
             "grid": (nx, ny),
+            "base_m": base_z,
+            "levels": [{"z": lv["z"], "over_base_m": lv["z"] - base_z,
+                        "loops": len(lv.get("outlines") or ())}
+                       for lv in found_levels],
+            "outline_vertices": perim_n,
             "entities": dxf.entities,
         }
         return self.summary

@@ -200,9 +200,14 @@ def _finish(part, path, keep):
         pass
 
 
-def writer_for(path, comment=""):
+def writer_for(path, comment="", **kw):
     """Pick a writer from the output extension."""
     ext = os.path.splitext(path)[1].lower()
+    if kw and ext != ".dxf":
+        raise ValueError(
+            "drawing options (%s) mean nothing for a %s "
+            "file -- refusing rather than dropping them "
+            "silently" % (", ".join(sorted(kw)), ext))
     if ext == ".ply":
         return PlyWriter(path, comment=comment)
     if ext in (".las", ".laz"):
@@ -214,7 +219,7 @@ def writer_for(path, comment=""):
         # the colour pose before a single point reaches a writer; a drawing
         # built down its own path would be a second place for every one of
         # those to be applied -- or forgotten.
-        return drawing.DrawingWriter(path, comment=comment)
+        return drawing.DrawingWriter(path, comment=comment, **kw)
     raise ValueError(
         "Unsupported output format %r. Use .las, .laz or .ply for a point "
         "cloud -- these are what SketchUp's Scan Essentials imports -- or "

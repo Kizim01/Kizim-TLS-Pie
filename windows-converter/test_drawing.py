@@ -76,6 +76,14 @@ def read_dxf(path):
     return header, ents
 
 
+def _refused(fn):
+    """True if `fn` raises -- for options that must not be silently dropped."""
+    try:
+        fn()
+    except Exception:                                     # noqa: BLE001
+        return True
+    return False
+
 def by_layer(ents, layer):
     return [e for e in ents if e.get(8, [None])[0] == layer]
 
@@ -813,6 +821,8 @@ def wall_face(x0, y0, x1, y1, z0, z1, step=0.025):
 PST = 0.025
 PLAT = (1.0, 1.0, 3.5, 2.5, 0.20)          # x0 y0 x1 y1 z
 TBL = (4.0, 1.5, 5.6, 2.5, 0.725)
+SOF_LOW = 1.80      # a bulkhead: well clear of the 2.70 ceiling, over head
+SOF_HIGH = 2.30     # a dropped tray: close enough to the ceiling to BE it
 parts = [slab(0.0, 0.0, 6.0, 4.0, 0.0, PST),
          slab(0.0, 0.0, 6.0, 4.0, 2.70, PST),
          wall_face(0, 0, 6, 0, 0.0, 2.70, PST),
@@ -824,7 +834,14 @@ parts = [slab(0.0, 0.0, 6.0, 4.0, 0.0, PST),
          wall_face(PLAT[0], PLAT[3], PLAT[2], PLAT[3], 0.0, PLAT[4], PST),
          wall_face(PLAT[0], PLAT[1], PLAT[0], PLAT[3], 0.0, PLAT[4], PST),
          wall_face(PLAT[2], PLAT[1], PLAT[2], PLAT[3], 0.0, PLAT[4], PST),
-         slab(TBL[0], TBL[1], TBL[2], TBL[3], TBL[4], PST)]
+         slab(TBL[0], TBL[1], TBL[2], TBL[3], TBL[4], PST),
+         # Two pieces of CEILING STRUCTURE. A soffit's UNDERSIDE is what the
+         # instrument sees, and it has clear air above it in the cloud -- the
+         # solid body is not in the point cloud at all -- so it passes the
+         # top-face test exactly like a table top does. This is the shape of
+         # the problem, not a contrived one.
+         slab(0.5, 0.5, 5.5, 1.2, SOF_LOW, PST),
+         slab(0.5, 2.8, 5.5, 3.5, SOF_HIGH, PST)]
 for lx in (TBL[0] + 0.1, TBL[2] - 0.1):
     for ly in (TBL[1] + 0.1, TBL[3] - 0.1):
         parts.append(wall_face(lx, ly, lx + 0.05, ly, 0.0, TBL[4], PST))
@@ -871,6 +888,21 @@ check("the floor, the platform and the table are all found as levels",
       and any(abs(z - 0.725) < 0.06 for z in zs), zs)
 check("...and the ceiling is NOT offered as a thing to model",
       not any(z > 2.3 for z in zs), zs)
+check("...nor is a soffit, whose UNDERSIDE passes the top-face test",
+      not any(abs(z - SOF_LOW) < 0.1 or abs(z - SOF_HIGH) < 0.1 for z in zs),
+      zs)
+
+# ⭐ THE TWO RULES ARE TESTED SEPARATELY, because they catch different rooms
+# and a single check would pass while one of them did nothing at all.
+tall = drawing.find_levels(fijk, fcnt, LC, ffz, fcz, top=ftop,
+                           max_height_m=3.0)
+tz = sorted(round(d["z"], 2) for d in tall)
+check("lift the height cap and the low bulkhead comes back...",
+      any(abs(z - SOF_LOW) < 0.1 for z in tz), tz)
+check("...which is what proves the height cap is what excluded it",
+      not any(abs(z - SOF_LOW) < 0.1 for z in zs), zs)
+check("...while the one near the ceiling stays out on CLEARANCE alone",
+      not any(abs(z - SOF_HIGH) < 0.1 for z in tz), tz)
 check("...they are separate levels, not one thick band",
       len(set(zs)) == len(zs) and len(zs) <= 5, zs)
 
@@ -1068,6 +1100,126 @@ with tempfile.TemporaryDirectory() as td:
           all(int(c.split("62\n")[1].split("\n")[0]) > 0
               for c in txt.split("0\nLAYER\n2\n")[1:]
               if c.split("\n")[0] == "TLS-OUTLINE"))
+
+# --- 17. the operator's clip box decides what gets traced -------------------
+print("\nthe Studio clip box, read the way the shader reads it")
+
+from tlsconvert import pipeline as _pl        # noqa: E402
+
+for ypr in ((0.0, 0.0, 0.0), (37.0, 0.0, 0.0), (12.0, -8.0, 25.0),
+            (-95.0, 4.0, -3.0)):
+    if not np.allclose(drawing.box_rotation(*ypr), _pl.box_rotation(*ypr)):
+        break
+else:
+    ypr = None
+check("box_rotation agrees with pipeline's on every turn tried",
+      ypr is None, ypr)
+
+check("no box, or a box switched off, means no clipping at all",
+      drawing.viewer_box_bounds(None) is None
+      and drawing.viewer_box_bounds({"lo": [0, 0, 0], "hi": [1, 1, 1],
+                                     "on": False}) is None)
+
+# ⛔ THE LIVE BOX'S lo/hi ARE IN ITS OWN FRAME, MEASURED FROM THE PIVOT `o`.
+# A saved box EDIT stores world corners under the SAME TWO KEY NAMES. Read one
+# as the other and the box lands in the wrong place at exactly the right size.
+LIVE = {"o": [10.0, 2.0, 1.0], "lo": [-4.0, -1.0, -0.5],
+        "hi": [-2.0, 3.0, 1.5], "yaw": 0, "pitch": 0, "roll": 0,
+        "on": True, "inside": False}
+lo, hi, y, p, r, keep_in = drawing.viewer_box_bounds(LIVE)
+# centre = o + (lo+hi)/2 = (10-3, 2+1, 1+0.5); half = (1, 2, 1)
+check("the pivot is added to the mid, not to the corners",
+      np.allclose(lo, [6.0, 1.0, 0.5]) and np.allclose(hi, [8.0, 5.0, 2.5]),
+      (lo, hi))
+check("inside:false means HIDING OUTSIDE, so the inside is what is KEPT",
+      keep_in is True)
+flip = dict(LIVE)
+flip["inside"] = True
+check("...and inside:true keeps what is OUTSIDE the box",
+      drawing.viewer_box_bounds(flip)[5] is False)
+
+# The whole point is that the box selects points. Check it against the entity
+# that already owns the containment test, on a TURNED box.
+TURN = dict(LIVE)
+TURN["yaw"] = 30.0
+tlo, thi, ty, tp, tr, tk = drawing.viewer_box_bounds(TURN)
+tbox = _pl.Box(tlo, thi, ty, tp, tr)
+cen = (np.asarray(tlo) + np.asarray(thi)) / 2.0
+R = drawing.box_rotation(ty, tp, tr)
+half = (np.asarray(thi) - np.asarray(tlo)) / 2.0
+rng = np.random.default_rng(11)
+probe = cen + (rng.random((400, 3)) - 0.5) * 8.0
+want = np.all(np.abs((probe - cen) @ R) <= half + 1e-12, axis=1)
+check("a TURNED box selects exactly what the shader's own test selects",
+      np.array_equal(tbox.inside(probe), want),
+      int((tbox.inside(probe) != want).sum()))
+check("...and the turn is carried through the conversion unchanged",
+      (ty, tp, tr) == (30.0, 0.0, 0.0), (ty, tp, tr))
+
+# --- 18. the export path the Export-tray button drives ----------------------
+print("\nthe outline export: writer options, tripods, and the summary")
+
+# ⛔⛔ THE WALLS ARE SAMPLED FINELY FOR THIS SECTION, AND THE REASON IS A REAL
+# PROPERTY OF `free_space`. It bins azimuth into FREE_AZIMUTH_BINS, so at 3 m a
+# bin is about 9 mm across -- finer than the 20 mm cell. A wall sampled at 25 mm
+# leaves bins with NO return, those bins contribute nothing by design, and the
+# free space comes out STRIPED: 25061 free cells that any opening erases
+# completely (measured). A real capture has many returns per bin, so this is a
+# fixture problem -- but it is also the assumption the ray casting rests on, and
+# it is worth having written down somewhere that runs.
+DENSE = np.vstack([FURN] + [
+    wall_face(a[0], a[1], a[2], a[3], 0.85, 1.65, 0.005)
+    for a in ((0, 0, 6, 0), (0, 4, 6, 4), (0, 0, 0, 4), (6, 0, 6, 4))])
+
+check("drawing-only options are REFUSED by a point writer, not dropped",
+      _refused(lambda: export.writer_for("x.laz", slice_marks=False)))
+check("...and accepted for a drawing", isinstance(
+    export.writer_for(os.path.join(tempfile.gettempdir(), "z.dxf"),
+                      slice_marks=False, grid_step_m=0.0),
+    drawing.DrawingWriter))
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "outline.dxf")
+    # min_count=1: the synthetic cloud is one point per cell by construction,
+    # so the writer's default of 2 throws the whole plan slice away (measured:
+    # 4 cells survived). A real capture is many returns per cell.
+    w = drawing.DrawingWriter(p, units="m", slice_marks=False,
+                              grid_step_m=0.0, min_count=1)
+    # ⭐ WHERE THE TRIPOD STOOD. `pipeline.merge` sets this; free space is cast
+    # FROM the instrument, so without it there is no room outline at all.
+    w.tripods = [(3.0, 2.0)]
+    w.write(DENSE)
+    s = w.close()
+    _, ents = read_dxf(p)
+
+    check("the export writes the levels it found",
+          len(s.get("levels") or ()) >= 2, s.get("levels"))
+    check("...the platform among them",
+          any(abs(d["over_base_m"] - 0.20) < 0.12
+              for d in (s.get("levels") or ())),
+          [round(d["over_base_m"], 2) for d in (s.get("levels") or ())])
+    check("...each on its own height-named layer",
+          any(e.get(8, [""])[0].startswith("TLS-LVL-") for e in ents))
+    check("...and a room outline, which needs the tripod",
+          s.get("outline_vertices", 0) >= 3, s.get("outline_vertices"))
+    check("slice_marks=False leaves the evidence dots out",
+          not by_layer(ents, "TLS-SLICE"), len(by_layer(ents, "TLS-SLICE")))
+    check("grid_step_m=0 leaves the world grid out -- the operator asked",
+          not by_layer(ents, "TLS-GRID"), len(by_layer(ents, "TLS-GRID")))
+    check("...and the notes still name the heights to extrude to",
+          any("extrude UP" in t for t in texts_of(ents, "TLS-NOTES")),
+          texts_of(ents, "TLS-NOTES")[-1:])
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "notrip.dxf")
+    w = drawing.DrawingWriter(p, units="m", slice_marks=False,
+                              grid_step_m=0.0, min_count=1)
+    w.write(FURN)                       # no tripods set
+    s = w.close()
+    check("with no tripod there is no room outline, and it says so quietly",
+          s.get("outline_vertices") == 0, s.get("outline_vertices"))
+    check("...but the levels still come out, because they need no eye",
+          len(s.get("levels") or ()) >= 2, s.get("levels"))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

@@ -961,10 +961,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/project/browse":
                 return self._json(srv.browse_project(bool(body.get("save"))))
             if path == "/save":
+                # ⛔⛔ `hidden` AND `out` WERE BEING DROPPED HERE. The client has
+                # always sent both and `save` has always accepted both, and
+                # this route forwarded four of the six -- so hiding a cloud and
+                # pressing Export wrote it anyway, and the "⚠ HIDDEN, so NOT
+                # written" warning could never fire because the server computed
+                # it from an empty set. The export completed, the file looked
+                # right, and the cloud the operator had hidden was in it. Same
+                # shape as the stale-scope check inside `save`: a thing that
+                # silently does nothing is the failure that looks like success.
                 return self._json(srv.save(body.get("setups") or [],
                                            body.get("voxel"),
                                            body.get("edit"),
-                                           body.get("level")))
+                                           body.get("level"),
+                                           body.get("hidden"),
+                                           body.get("out"),
+                                           bool(body.get("outline"))))
         except Exception as exc:                       # noqa: BLE001
             return self._json({"ok": False, "error": str(exc)}, 500)
         self.send_error(404)
@@ -4527,7 +4539,7 @@ class AlignServer(object):
         return {"ok": True, "out": got}
 
     def save(self, setups, voxel=None, edit=None, level=None, hidden=None,
-             out=None):
+             out=None, outline=False):
         """
         Write every cloud that is on screen into one file.
 
@@ -4545,6 +4557,16 @@ class AlignServer(object):
             return {"ok": False, "error": "no output path was given"}
         if not self.scans:
             return {"ok": False, "error": "there is nothing open to save"}
+        # ⛔ AN OUTLINE NEVER OVERWRITES THE CLOUD PATH. The operator's output
+        # is a .laz they may have spent an hour on; the drawing goes beside it
+        # under its own name, and `self.out_path` is left pointing where it was.
+        target = self.out_path
+        writer_kw = None
+        if outline:
+            target = os.path.splitext(self.out_path)[0] + " outline.dxf"
+            # no evidence dots and no metre grid: the operator asked for the
+            # grid to go, and the slice layer is 200k points of scaffolding.
+            writer_kw = {"slice_marks": False, "grid_step_m": 0.0}
         for i, data in enumerate(setups):
             if i < len(self.scans):
                 _take_placement(self.scans[i], data)
@@ -4613,7 +4635,7 @@ class AlignServer(object):
                 mine = None if keep is None else keep.for_scan(0)
                 pose = self.colour_pose(only) or {}
                 info = pipeline.convert(
-                    only.path, self.out_path,
+                    only.path, target, writer_kw=writer_kw,
                     clean_spec=getattr(only, "clean", None),
                     photo=pose.get("photo"), yaw_deg=pose.get("yaw_deg"),
                     pitch_deg=pose.get("pitch_deg") or 0.0,
@@ -4627,12 +4649,16 @@ class AlignServer(object):
                     voxel_m=(self.merge_voxel if voxel is None
                              else float(voxel)))
                 written = info.get("points", info.get("written", 0))
-                return {"ok": True, "out": self.out_path, "points": written,
+                draw = info.get("drawing") or {}
+                return {"ok": True, "out": target, "points": written,
+                        "levels": draw.get("levels"),
+                        "outline_vertices": draw.get("outline_vertices"),
                         "edit": None if keep is None else keep.describe(),
                         "level": None if lvl.is_identity()
                         else lvl.describe(), "single": True,
                         "written": 1, "hidden": left_out}
-            info = pipeline.merge([s.path for s in scans], self.out_path,
+            info = pipeline.merge([s.path for s in scans], target,
+                                  writer_kw=writer_kw,
                                   setups=[s.setup for s in scans],
                                   # ⛔ PASSED EXPLICITLY, BECAUSE THE SETUPS
                                   # GO OVER AS OBJECTS. `merge` reads a lean out
@@ -4657,7 +4683,10 @@ class AlignServer(object):
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
+        draw = info.get("drawing") or {}
         return {"ok": True, "out": info["out"], "points": info["points"],
+                "levels": draw.get("levels"),
+                "outline_vertices": draw.get("outline_vertices"),
                 "edit": info["edit"], "level": info["level"],
                 "thinned": info.get("thinned", 0),
                 # ⛔ WHAT WAS LEFT OUT IS PART OF THE RESULT, not a footnote.
@@ -5369,6 +5398,7 @@ PAGE = r"""<!doctype html>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
   <div class="row"><button id="save" class="go">Export merged cloud</button>
     <button id="saveclip">Clip box only</button></div>
+  <div class="row"><button id="saveoutline">Outline from clip box (DXF)</button></div>
   <div class="row"><button id="savewhere">Save as…</button></div>
   <div id="outpath" style="font-size:10.5px;color:var(--faint);margin:4px 0 2px"></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
@@ -11730,6 +11760,56 @@ async function saveMerged(clipOnly){
   $('save').disabled=false; $('saveclip').disabled=false;
 }
 
+/* ⭐ THE OUTLINE, BOUNDED BY THE CLIP BOX. The operator asked for exactly
+   this: "only trace whats inside the clip box then i can choose" -- a decision
+   they can see and move, instead of the program guessing which fitted line is a
+   wall and which is a soffit hanging into the plan's cut height. That guess was
+   tried and could not be made to separate the two.
+
+   ⛔ IT REFUSES WHEN THE BOX IS OFF rather than quietly tracing the whole job.
+   The button says "from clip box"; a press that silently did something else is
+   the shape of failure this project keeps re-learning. */
+async function saveOutline(){
+  if(!V.scans.length) return say('Nothing to trace yet.', 'warn');
+  if(!V.clip) return say('The clip box is off, so there is nothing to trace '+
+                         'inside. Switch it on and set it around what you '+
+                         'want drawn, then press this again.', 'warn');
+  const on=V.scans.filter(s=>shown(s.index));
+  if(!on.length) return say('Every cloud is hidden, so there is nothing to '+
+                            'trace. Show at least one first.', 'warn');
+  if(!OUTPATH && !await chooseOut()) return;
+  const plan=editPlan();
+  plan.keep.push(boxSpec());
+  const hid=V.scans.filter(s=>!shown(s.index)).map(s=>s.index);
+  say('tracing the outline inside the clip box …'); watch(true);
+  $('save').disabled=true; $('saveclip').disabled=true;
+  $('saveoutline').disabled=true;
+  try{
+    const r=await fetch('save',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({setups:V.scans.map(s=>s.setup),
+                           voxel:0, edit:plan, level:V.level,
+                           hidden:hid, out:OUTPATH, outline:true})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||'outline failed');
+    watch(false);
+    const lv=(j.levels||[]);
+    say('outline written to '+j.out+
+        (lv.length ? ' — '+lv.length+' level'+(lv.length===1?'':'s')+
+          ' at '+lv.map(d=>d.over_base_m.toFixed(2)+' m').join(', ')+
+          ' above the base plane' : ' — no levels found')+
+        (j.outline_vertices ? '. Room outline: '+j.outline_vertices+
+          ' points.' : '')+
+        ' Everything sits FLAT on the base plane, so in SketchUp you '+
+        'Push/Pull each closed loop up to the height printed beside it.'+
+        ((j.hidden&&j.hidden.length)
+          ? '  ⚠ HIDDEN, so NOT traced: '+j.hidden.join(', ')+'.' : ''),
+        (j.hidden&&j.hidden.length) ? 'warn' : null);
+  }catch(e){ watch(false); say('Outline failed: '+e.message, 'bad'); }
+  $('save').disabled=false; $('saveclip').disabled=false;
+  $('saveoutline').disabled=false;
+}
+
 addEventListener('resize', invalidate);
 addEventListener('load', boot);
 document.addEventListener('contextmenu', e=>e.preventDefault());
@@ -12440,6 +12520,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('multi').onclick=multiAlign;
   $('survey').onclick=surveyAlign;
   $('save').onclick=()=>saveMerged(false);
+  $('saveoutline').onclick=()=>saveOutline();
   $('savewhere').onclick=chooseOut;
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');

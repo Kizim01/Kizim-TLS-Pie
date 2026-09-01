@@ -963,7 +963,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
             per_laser_azimuth=False, min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None,
-            setup=None, writer=None, edit=None, level=None,
+            setup=None, writer=None, writer_kw=None, edit=None, level=None,
             photo=LOOK_BESIDE, pitch_deg=0.0, roll_deg=0.0,
             clean_spec=None, lean=None, image_up_px=0):
     """
@@ -1007,7 +1007,17 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     comment = "%s | %s" % (os.path.basename(pcap_path), frame.describe())
     own_writer = writer is None
     if own_writer:
-        writer = export.writer_for(out_path, comment=comment)
+        writer = export.writer_for(out_path, comment=comment,
+                                   **(writer_kw or {}))
+    # ⭐ ONE CAPTURE IS STILL A TRIPOD, and the drawing writer needs to know
+    # where it stood -- free space is cast FROM the instrument. `merge` does
+    # the same for its list; without this the single-capture path would export
+    # a drawing with no room outline and nothing to say why.
+    if hasattr(writer, "tripods") and not writer.tripods and setup is not None:
+        eye = np.array([[setup.dx, setup.dy, setup.dz]], dtype=float)
+        if level is not None and not level.is_identity():
+            eye = level.apply(eye)
+        writer.tripods = [(float(eye[0][0]), float(eye[0][1]))]
     # ⛔ THE DESTINATION IS ONLY WRITTEN OVER IF THE WHOLE CLOUD ARRIVES. See
     # `export.PART_EXT`: the writer works beside the chosen path and moves
     # onto it at close, so `close(keep=...)` is the moment that decides
@@ -1146,6 +1156,10 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     return {
         "out": out_path,
         "points": writer.count - before,
+        # the drawing writer's own account of what it drew, or None from a
+        # point writer -- the caller checks rather than guessing by extension
+        "drawing": (getattr(writer, "summary", None) or None) if own_writer
+        else None,
         "decoded": decoded,
         "packet_stride": stride,
         "voxel_m": voxel_m,
@@ -1220,7 +1234,7 @@ def _pose_kwargs(colours, i):
             "camera": tuple(pose.get("camera") or (0.0, 0.0, 0.0))}
 
 
-def merge(captures, out_path, setups=None, progress=None, edit=None,
+def merge(captures, out_path, setups=None, progress=None, edit=None, writer_kw=None,
           level=None, colours=None, cleans=None, leans=None, thin_m=None,
           **kwargs):
     """
@@ -1273,7 +1287,16 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
         # a different door and looking like a partial success.
         raise ValueError("colours must name every capture: %d given for %d"
                          % (len(colours), len(captures)))
-    writer = export.writer_for(out_path, comment=comment)
+    writer = export.writer_for(out_path, comment=comment, **(writer_kw or {}))
+    # ⭐ WHERE THE TRIPODS STOOD, for the writers that can use it -- only the
+    # drawing one can, because free space is cast FROM the instrument. Guarded
+    # by `hasattr` so no other writer grows an argument it would ignore, and
+    # LEVELLED with the points so the eye and the cloud share one frame.
+    if hasattr(writer, "tripods"):
+        eye = np.array([[s.dx, s.dy, s.dz] for s in setups], dtype=float)
+        if level is not None and not level.is_identity():
+            eye = level.apply(eye)
+        writer.tripods = [(float(p[0]), float(p[1])) for p in eye]
     # ⛔ ONE GRID FOR THE FINISHED CLOUD, NOT ONE PER CAPTURE. Without this the
     # voxel is applied in each capture's own frame and the overlaps stack --
     # measured at 35% of the points on the live job, and surfaces several
@@ -1315,6 +1338,7 @@ def merge(captures, out_path, setups=None, progress=None, edit=None,
     return {
         "out": out_path,
         "points": writer.count,
+        "drawing": getattr(writer, "summary", None) or None,
         "thinned": (0 if sink is writer else int(sink.dropped)),
         "edit": None if edit is None else edit.describe(),
         "level": None if level is None else level.describe(),
