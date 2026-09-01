@@ -5296,7 +5296,10 @@ backslash halved) and the crash landed AFTER an 18-minute measurement pass, losi
 scripts that gate long work now go through the Write tool too, and persist their measurements
 before reporting.
 
-### ⚠ LIVE STATE AT SESSION END — THE OPERATOR HAS NOT PRESSED THE BUTTON YET
+### ✅ RESOLVED 2026-09-01: the operator DID press it — their 00:39 save matches the loop-closed poses to ≤1.2 cm / 0.33° on all 18 captures. Kept for the trail:
+
+<!-- superseded -->
+### ⚠ (superseded) THE OPERATOR HAD NOT PRESSED THE BUTTON YET
 
 After the rebuild, the operator reported *"scan still not aligning"* and confirmed it is **scan
 18 / the bartop, in the original project**. That is the EXPECTED state, not a failure: their 09:22
@@ -5316,6 +5319,61 @@ press, run **Fit to its neighbours** on folder 20.
 ⚠ **Folders 19, 21, 22 exist on disk and are NOT yet imported.** The rhythm told to the operator:
 auto-align each into place as usual, then ONE Close-the-loop at the end of the survey — the press
 spends the walk's accumulated error, so it is a per-survey action, not per-scan.
+
+### 2026-09-01, twenty-second pass — scan 21's photograph: the pose was a compensation stack
+
+**The report:** *“deep align on image of scan 21 is not working”*, then *“the scan is level but the
+image isn’t”* — an exact description of the symptom: the cloud is level (lean 1.9°, auto-aligned
+into the survey cleanly) and the painted photograph lies tilted across it. First: the loop-press
+question from last session is CLOSED — the operator’s 00:39 re-save of `auto align error.tlspie`
+carries the loop-closed poses (≤1.2 cm everywhere), 19 scans now (folder 21 imported).
+
+**What was stored for scan 21’s photo:** yaw 73.94, pitch −10.5, roll −5.02, camera_z 0.395,
+lift +24 px, grade doubtful, rung 4. Pitch 2× anything else in the fleet (every other capture
+0–5°); camera_z the largest in the survey.
+
+**Reproduced, not assumed.** Pressing Deep align again from the stored pose “improves” to pitch
+−11.2 (gain +2.0) — the button digs the hole deeper; that IS “not working”. From a LEVEL start
+the same search lands level (yaw 72.87, pitch −0.54, roll −0.51) with edge and beacon stood down
+as noise (solo 2.43 / 1.93, bar 3.0) — **the term gate and the standardisation are taken at the
+START lean, and the verdict flips with it**: at the tilted lean edge grows a confident FALSE peak
+at −149° (solo 5.48) and votes; at level it is quiet. Which basin wins is decided by which lean
+the judge was standardised at — the exact two-judges failure the fixed standardisation was built
+to prevent, arriving one level up.
+
+**The content oracle settled it.** `paint_drift` reads only ±5°, so the image was walked through
+known pre-lifts and the true lock identified by the 1:1 line (readings that fall exactly as the
+pre-lift rises; folder 1 as control holds +0.28° over 8 rungs). Scan 21: level pose −3.82°,
+stored tilt +4.1..4.9° — NEITHER is right. The scan sweeps only 190.8°, so laser texture covers
+half the circle and a tilt acts nearly UNIFORM over the covered arc → **tilt, stitch lift and
+camera height are three-way degenerate there** (camera_z worth ~+6.5° of reading per −0.33 m at
+this room’s ~2.8 m ranges). The stack that zeroes it: **pitch +2.3, roll +0.6 (the bolted mount
+residual folder 1 and scan 3 both carry), camera_z 0.11 (fleet family), lift 0, yaw 72.755 —
+plateau −0.02°, spread 0.03°, dlon −0.11°.** The photograph was never tilted. The stored pose is
+camera_z 0.395 + tilt −10.5/−5 + lift +24 px conspiring — the climb’s judges measurably prefer
+the droop, and on a half-arc cloud nothing pins the stack.
+
+**⚠ FLEET SIGNATURE, not yet acted on:** every photo with camera_z 0.2–0.37 in this survey is
+graded doubtful (folders 4, 7, 8, 14, 16, 17) — the same disease, milder, is the suspect. Folder
+20’s photo yaw 315.4° (family: 69–112) is a separate open question.
+
+**Delivered:** `D:\RESTAURANT SCAN\auto align error - image 21 level.tlspie` — the 00:39 project
+with ONLY scan 21’s colour block corrected to the verified numbers. The original untouched. The
+seat/tilt axes are deliberately not settable in the page, so a corrected file is the only route
+without a rebuild.
+
+**The code fix this earns (NOT BUILT YET):** deep_align and the attach climb never try the rig’s
+own stack — a content-anchored candidate (mount-residual tilt taken from confirmed siblings,
+fleet camera height, zero lift) judged by the content oracle rather than the global score, which
+“measurably prefers the droop”; *a judge that fights the corrector must not speak after it* is
+already this project’s own line. Also: `_repaint` runs the settle only at fresh attach
+(`if not any(camera)`), so nothing content-checks a deep result. Build it measured and
+reversion-audited; exes need a rebuild with Studio closed — Studio was open (operator mid-survey).
+
+**Method note:** a hand-rolled per-band correlator on this data was texture-lock garbage (3
+patches cannot cancel the scan-stripe periodicity; the pooled design point of `paint_drift`
+re-proven from outside). The pre-lift ladder against the SHIPPED estimator, with a confirmed
+sibling as control, is the honest instrument.
 
 ### ▶ NEXT SESSION STARTS HERE
 
