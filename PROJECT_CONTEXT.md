@@ -5828,6 +5828,40 @@ It writes `<your output> outline.dxf` **beside** the cloud path, never over it; 
 
 Suites **144 → 155**; `test_tlsconvert` **1487 unchanged**. Commit `cac82d0`.
 
+#### ⭐⭐ `cut="box"` — the clip box IS the cut, floor or no floor
+
+*"trace only around the walls that touch the clipping box, when i go to export there will be no points
+on the floor at all only the wall outlines."* **That case refused outright**, verified before anything
+was changed: `DrawingWriter` finds the floor and ceiling in the cloud it is HANDED, and a box holding a
+band of wall has neither, so `close()` raised and no drawing was written at all.
+
+⛔ **AND THE REFUSAL IS STILL RIGHT, SO THIS IS NOT WIRED TO "DETECTION FAILED".** A cloud with no
+findable floor is usually a cloud that should not be drawn; turning that refusal into a silent fallback
+would draw every one of them. `cut="box"` is an **explicit mode** — a box drawn round a band of wall
+*states* the cut height. ⭐ *The difference that matters is between "I could not tell" and "I was
+told".* `cut="auto"` still refuses, and its message now names the mode that would do it.
+
+⚠ **NO FLOOR MEANS NO DATUM, SO THE LEVELS ARE SKIPPED — AND THE DRAWING SAYS SO.** Heights above a
+base plane are meaningless when the base plane is not in the selection, and a level list quietly
+measured from the bottom of the box would be wrong in a way nobody could see. The reason is printed
+into `TLS-NOTES` and reported by the button; `floor_m`/`ceiling_m`/`height_m` come back **None, never
+0.0**. A box that DOES hold the whole room still gets its levels — there is a test for exactly that,
+because the obvious implementation would have cost them.
+
+**Measured end to end on the restaurant, through the writer the button drives:**
+
+| box | walls fitted | outline | time |
+|---|---|---|---|
+| the operator's saved box (z 0.07–2.66) | **224** | 112 verts | 61.5 s |
+| a **wall band** z 1.70–2.30 | **126** | 124 verts | **6.1 s**, 23 kB |
+
+⛔ **AND THAT TABLE IS THE CAVEAT: WITH `cut="box"` EVERYTHING IN THE BOX IS WALL EVIDENCE.** A box
+spanning floor to ceiling fits **224** "walls" because chairs, tables and the bar are in it. A thin
+band at wall height fits 126 and runs ten times faster. *The box is not just a crop, it is the cut* —
+so set it as a BAND at wall height, not around the whole room, unless the levels are what is wanted.
+
+Suites **155 → 166**, `test_tlsconvert` **1487 unchanged**, audit **25 of 25**. Commit `3ed95b8`.
+
 ⚠ **Still open:** the seating reads only 6.1 m², which is low for a restaurant — banquettes are
 occluded by their own tables, and whether that is the data or the probe height is **not established**.
 The cell complex still finds **no** structures (61 wall lines bound none), area is still **132 m²
@@ -5841,7 +5875,11 @@ Platforms, seating, tables and the bar all come out as closed, faced loops flat 
 their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
 upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
 ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
-floor. ⭐ **THE BUTTON IS LIVE: Export tray → "Outline from clip box (DXF)".** It writes
+floor. ⭐ **THE BUTTON IS LIVE: Export tray → "Outline from clip box (DXF)", and it runs `cut="box"` — the
+box IS the cut, so a band holding only wall traces those walls instead of refusing for want of a floor.
+⛔ EVERYTHING IN THE BOX IS WALL EVIDENCE: floor-to-ceiling fits 224 "walls" (chairs and tables among
+them), a 1.70–2.30 m band fits 126 in a tenth of the time. ⚠ No floor in the box = no datum, so the
+levels are skipped and the drawing says why.** It writes
 `<output> outline.dxf` beside the cloud, traces only what is inside the Studio clip box, and refuses
 when the box is off. ⚠ The operator's saved box runs **z 0.07..2.66**, which trims the floor and
 fragments it into four pieces — lower its bottom below the floor before trusting the floor loop.
