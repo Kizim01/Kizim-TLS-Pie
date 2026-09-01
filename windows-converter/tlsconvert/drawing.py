@@ -89,6 +89,15 @@ FLOOR_BASE_PCT = 2.0         # a low percentile, never the minimum: see the fn
 FREE_AZIMUTH_BINS = 2048     # ~0.18 deg -- finer than the puck's own spacing
 FREE_MIN_LOOP_CELLS = 400    # a loop smaller than this is speckle, not a room
 SIMPLIFY_TOL_M = 0.03        # the instrument's accuracy, as FIT_TOL_M is
+SNAP_TOL_M = 0.12            # a traced edge this near a fitted wall IS it
+SNAP_MIN_RUN = 0.40          # METRES of run: a shorter touch is a graze.
+                             # Never vertices -- see the note in snap_to_walls.
+SNAP_EXTEND_M = 0.60         # a wall may run out of returns short of the corner
+SNAP_MIN_CORNER_DEG = 12.0   # below this two lines cross too far away to trust
+CLEAN_CLOSE_M = 0.25         # fill shadow holes; MUST stay under half a door
+CLEAN_OPEN_M = 0.20          # shave shadow fingers -- this is the one that
+                             # matters: it took a 191 m2 room from a 512 m
+                             # traced perimeter to 66 m. Chosen by sweep.
 _KEY_STRIDE = np.int64(1) << 26
 
 
@@ -408,6 +417,81 @@ def free_space(occupied_xy, tripods_xy, cell_m, n_azimuth=FREE_AZIMUTH_BINS,
     return mask, (float(lo[0]), float(lo[1]))
 
 
+def _win_any(m, r, axis):
+    """Sliding-window OR of half-width `r` along one axis, via cumsum."""
+    if r <= 0:
+        return m
+    n = m.shape[axis]
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (r, r)
+    cs = np.cumsum(np.pad(m.astype(np.int32), pad, mode="constant"), axis=axis)
+    zero = np.zeros_like(np.take(cs, [0], axis=axis))
+    cs = np.concatenate([zero, cs], axis=axis)
+    hi = np.take(cs, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis)
+    lo = np.take(cs, np.arange(0, n), axis=axis)
+    return (hi - lo) > 0
+
+
+def _dilate(mask, r):
+    return _win_any(_win_any(mask, r, 0), r, 1)
+
+
+def _erode(mask, r):
+    return ~_dilate(~mask, r)
+
+
+def clean_free_space(mask, close_m=CLEAN_CLOSE_M, open_m=CLEAN_OPEN_M,
+                     cell_m=DEFAULT_CELL_M):
+    """
+    Close the shadow fingers, so what gets traced is a ROOM and not a
+    visibility map.
+
+    ⛔⛔ THIS IS THE STEP THE SYNTHETIC ROOM SAID WAS UNNECESSARY AND THE REAL
+    CAPTURE PROVED WAS ESSENTIAL. Raw free space on the operator's restaurant
+    traced a perimeter of 512 m around a 191 m2 room -- a boundary six times
+    longer than the room's own walls, because it folds into every direction the
+    instrument could not see: behind chairs, past a doorway, through glazing.
+    Measured against the 61 fitted walls, a quarter of that boundary sat within
+    4 cm of a wall and the 90th percentile was 2.35 m from any wall at all. So
+    the snap was not weak; it was being fed a map of VISIBILITY rather than an
+    outline of a room, and no tolerance would have fixed that.
+
+    A binary closing (dilate, then erode) bridges gaps narrower than twice the
+    radius: it swallows shadow fingers whole and fills the small holes that are
+    shadows rather than structures. The opening afterwards removes speckle.
+
+    ⛔ THE RADIUS IS BOUNDED FROM ABOVE BY A DOORWAY, AND THAT IS THE WHOLE
+    TENSION. Closing at radius r fills any gap under 2r, so a radius past about
+    0.4 m starts sealing real doorways and the plan quietly grows a wall across
+    an opening somebody has to walk through. The default is deliberately well
+    under half a door.
+
+    ⚠ AND IT COSTS THE THING THE HOLES WERE GOOD FOR. Filling small holes
+    removes spurious shadow-structures, but a genuine column narrower than the
+    kernel goes with them. Structures smaller than the radius are not
+    detectable this way and should not be claimed.
+    ⛔ THE ORDER IS OPEN, THEN CLOSE, AND GETTING IT BACKWARDS FIXES NOTHING.
+    They are not two strengths of the same cleaner. CLOSING fills concavities:
+    it cures a shadow HOLE behind a chair. OPENING removes protrusions: it cures
+    a shadow FINGER, the spit of free space poking out where the beam slipped
+    between two chairs and saw twenty metres down the room. The 512 m perimeter
+    is mostly fingers, so closing alone leaves it almost exactly as it was --
+    which is what a first pass here did, and the mistake was mine to make, not
+    the code's.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0:
+        return mask
+    rc = int(round(close_m / float(cell_m)))
+    ro = int(round(open_m / float(cell_m)))
+    out = mask
+    if ro > 0:
+        out = _dilate(_erode(out, ro), ro)     # fingers off first
+    if rc > 0:
+        out = _erode(_dilate(out, rc), rc)     # then fill the shadow holes
+    return out
+
+
 def trace_loops(mask, cell_m, origin_xy, min_cells=FREE_MIN_LOOP_CELLS):
     """
     Closed loops around a boolean mask: the outline, and the holes in it.
@@ -531,6 +615,178 @@ def simplify_loop(xy, tol_m=SIMPLIFY_TOL_M):
             stack.append((a, idx))
             stack.append((idx, b))
     return xy[keep]
+
+
+def _point_seg_dist(pts, a, b, extend_m=0.0):
+    """Distance from each point to segment a-b, allowing a little overrun."""
+    d = b - a
+    L = float(np.hypot(*d))
+    if L < 1e-9:
+        return np.hypot(pts[:, 0] - a[0], pts[:, 1] - a[1]), np.zeros(len(pts))
+    u = d / L
+    rel = pts - a
+    t = rel @ u
+    perp = np.abs(rel[:, 0] * u[1] - rel[:, 1] * u[0])
+    outside = np.maximum(-(t + extend_m), t - (L + extend_m))
+    outside = np.maximum(outside, 0.0)
+    return np.hypot(perp, outside), t
+
+
+def snap_to_walls(xy, segments, tol_m=SNAP_TOL_M, min_run=SNAP_MIN_RUN,
+                  extend_m=SNAP_EXTEND_M, min_corner_deg=SNAP_MIN_CORNER_DEG):
+    """
+    Straighten a traced loop onto the fitted walls. Topology from the trace,
+    position from the fit.
+
+    ⭐ THIS IS THE STEP THAT MAKES THE OUTLINE MODELLABLE, AND THE MEASUREMENT
+    SAYS SO. A free-space boundary is honest but SCALLOPED -- each azimuth bin
+    stops at a slightly different range -- and on the operator's restaurant it
+    kept 2,273 vertices after simplifying at the instrument's own tolerance,
+    roughly one every 3 cm. Nobody models against that. The straightness has to
+    come from `fit_segments`, which is fitted to tens of thousands of cells and
+    lands 14-17 mm from the wall, not from the trace, which is one cell wide.
+
+    ⛔ WHERE THERE IS NO FITTED WALL, THE TRACE IS KEPT UNCHANGED. Running a
+    straight line through a stretch nothing was measured on is the invented
+    wall this file already refuses to draw elsewhere -- and in an outline it
+    would be worse, because a closed loop makes every part of itself look
+    equally surveyed. An unsnapped stretch stays visibly wiggly, which is the
+    honest signal that it is trace and not fit.
+
+    ⛔ A CORNER IS THE INTERSECTION OF TWO WALLS, NOT THE AVERAGE OF THEIR
+    ENDS. Segment ends are where a wall ran out of RETURNS -- a coverage fact,
+    as the module docstring says -- so joining end to end rounds every corner
+    off by however much each wall happened to fall short. Intersecting the two
+    lines puts the corner where the walls actually meet, which is the one place
+    neither of them measured and both of them imply.
+
+    ⚠ Two nearly parallel lines intersect a long way away, and the answer runs
+    off to infinity as the angle closes. Below `min_corner_deg` the corner is
+    refused and the two runs are simply joined, which is wrong by millimetres
+    instead of wrong by metres.
+    """
+    xy = np.asarray(xy, dtype=np.float64)
+    n = xy.shape[0]
+    if n < 3 or not segments:
+        return xy, {"snapped": 0, "runs": 0, "corners": 0}
+
+    A = np.array([s["a"] for s in segments], dtype=np.float64)
+    B = np.array([s["b"] for s in segments], dtype=np.float64)
+
+    # nearest fitted wall for every vertex, or -1
+    best = np.full(n, -1, dtype=np.int64)
+    bestd = np.full(n, np.inf)
+    for k in range(len(segments)):
+        dist, _t = _point_seg_dist(xy, A[k], B[k], extend_m)
+        closer = dist < bestd
+        bestd[closer] = dist[closer]
+        best[closer] = k
+    best[bestd > tol_m] = -1
+
+    # consecutive vertices on the same wall form a run; short runs are noise
+    runs = []
+    i = 0
+    while i < n:
+        k = best[i]
+        j = i
+        while j + 1 < n and best[j + 1] == k:
+            j += 1
+        runs.append([k, i, j])
+        i = j + 1
+    # a loop wraps: merge the last run into the first if they share a wall
+    if len(runs) > 1 and runs[0][0] == runs[-1][0] and runs[0][0] >= 0:
+        runs[0][1] = runs[-1][1] - n
+        runs.pop()
+    # ⛔⛔ A RUN IS REJECTED BY ITS LENGTH IN METRES, NEVER BY ITS VERTEX COUNT.
+    # This counted vertices at first, and it quietly gutted the snap on real
+    # data: a traced loop is simplified BEFORE it gets here, so vertex spacing
+    # is whatever Douglas-Peucker left -- 3 cm apart on the raw trace and 60 cm
+    # apart after cleaning. The same "at least four vertices" rule therefore
+    # meant 12 cm in one case and 2.4 m in the other, so on the cleaned outline
+    # it threw away every wall shorter than about three metres and the snap
+    # rate sat at 10-30% for reasons that had nothing to do with the walls.
+    # A threshold in vertices is a threshold on the SIMPLIFIER, not on the room.
+    for r in runs:
+        if r[0] < 0:
+            continue
+        idx = np.arange(r[1], r[2] + 1) % n
+        run_xy = xy[idx]
+        if run_xy.shape[0] < 2:
+            r[0] = -1
+            continue
+        length = float(np.sum(np.hypot(*(np.diff(run_xy, axis=0)).T)))
+        if length < min_run:
+            r[0] = -1
+
+    out = []
+    corners = 0
+    snapped_vertices = 0
+    m = len(runs)
+    for idx, (k, i0, i1) in enumerate(runs):
+        pts = xy[np.arange(i0, i1 + 1) % n]
+        if k < 0:
+            out.extend([tuple(p) for p in pts])
+            continue
+        a, b = A[k], B[k]
+        d = b - a
+        L = float(np.hypot(*d))
+        if L < 1e-9:
+            out.extend([tuple(p) for p in pts])
+            continue
+        u = d / L
+        t = (pts - a) @ u
+        p0 = a + u * t.min()
+        p1 = a + u * t.max()
+        snapped_vertices += pts.shape[0]
+
+        prev_k = runs[(idx - 1) % m][0] if m > 1 else -1
+        if prev_k >= 0 and prev_k != k and out:
+            hit = _line_intersect(A[prev_k], B[prev_k], a, b, min_corner_deg)
+            if hit is not None:
+                out[-1] = hit
+                corners += 1
+                out.append(tuple(p1))
+                continue
+        out.append(tuple(p0))
+        out.append(tuple(p1))
+
+    # ⛔ THE CLOSING CORNER IS A SEPARATE CASE AND IT IS EASY TO MISS. Inside
+    # the walk a corner is made when a run has a snapped run BEFORE it, and the
+    # FIRST run has nothing before it yet -- so the join between the last wall
+    # and the first was left as two loose ends a few centimetres apart. On a
+    # closed loop that is a visible notch at exactly one corner, and worse, an
+    # importer may not face the loop at all. Every other corner being right is
+    # what makes this one easy to overlook.
+    if (m > 1 and runs[0][0] >= 0 and runs[-1][0] >= 0
+            and runs[0][0] != runs[-1][0] and len(out) >= 2):
+        hit = _line_intersect(A[runs[-1][0]], B[runs[-1][0]],
+                              A[runs[0][0]], B[runs[0][0]], min_corner_deg)
+        if hit is not None:
+            out[0] = hit
+            out.pop()          # the last run ended at that same corner
+            corners += 1
+
+    return np.array(out, dtype=np.float64), {
+        "snapped": int(snapped_vertices),
+        "runs": int(sum(1 for r in runs if r[0] >= 0)),
+        "corners": int(corners)}
+
+
+def _line_intersect(a0, a1, b0, b1, min_angle_deg):
+    """Where two infinite lines cross, or None if too near parallel."""
+    d1 = np.asarray(a1, dtype=np.float64) - np.asarray(a0, dtype=np.float64)
+    d2 = np.asarray(b1, dtype=np.float64) - np.asarray(b0, dtype=np.float64)
+    n1, n2 = np.hypot(*d1), np.hypot(*d2)
+    if n1 < 1e-9 or n2 < 1e-9:
+        return None
+    d1, d2 = d1 / n1, d2 / n2
+    cross = float(d1[0] * d2[1] - d1[1] * d2[0])
+    if abs(cross) < np.sin(np.radians(min_angle_deg)):
+        return None
+    rel = np.asarray(b0, dtype=np.float64) - np.asarray(a0, dtype=np.float64)
+    t = (rel[0] * d2[1] - rel[1] * d2[0]) / cross
+    p = np.asarray(a0, dtype=np.float64) + d1 * t
+    return (float(p[0]), float(p[1]))
 
 
 def fit_segments(pts, tol_m=FIT_TOL_M, min_len_m=FIT_MIN_LEN_M,

@@ -600,7 +600,66 @@ check("...while keeping its area",
       outer[0]["area_m2"])
 
 
-# --- 10. the writer contract -----------------------------------------------
+print("\nthe snap: straightness from the fit, topology from the trace")
+
+rng2 = np.random.default_rng(1)
+ragged = []
+for t in np.arange(0, 6, 0.05):
+    ragged.append((t, 0.0 + rng2.normal(0, 0.02)))
+for t in np.arange(0, 4, 0.05):
+    ragged.append((6.0 + rng2.normal(0, 0.02), t))
+for t in np.arange(6, 0, -0.05):
+    ragged.append((t, 4.0 + rng2.normal(0, 0.02)))
+for t in np.arange(4, 0, -0.05):
+    ragged.append((0.0 + rng2.normal(0, 0.02), t))
+ragged = np.array(ragged)
+
+# ⭐ THE WALLS DELIBERATELY STOP SHORT OF EVERY CORNER (0.2 m at each end).
+# That is what a fitted wall does -- its ends are where returns ran out -- so
+# joining end to end would round every corner off by 20 cm. The corner must
+# come from the INTERSECTION, and landing exactly on (0,0) is the proof.
+WALLS = [{"a": (0.2, 0.0), "b": (5.8, 0.0)},
+         {"a": (6.0, 0.2), "b": (6.0, 3.8)},
+         {"a": (5.8, 4.0), "b": (0.2, 4.0)},
+         {"a": (0.0, 3.8), "b": (0.0, 0.2)}]
+
+snapped, sinfo = drawing.snap_to_walls(ragged, WALLS)
+check("a ragged loop collapses onto its fitted walls",
+      snapped.shape[0] == 4, (ragged.shape[0], snapped.shape[0]))
+check("...one corner per wall junction, the closing one included",
+      sinfo["corners"] == 4, sinfo)
+area = 0.5 * abs(float(np.sum(snapped[:, 0] * np.roll(snapped[:, 1], -1)
+                              - np.roll(snapped[:, 0], -1) * snapped[:, 1])))
+check("...and the enclosed area is exact, not approximately right",
+      abs(area - 24.0) < 1e-6, area)
+corners = {(round(x, 6), round(y, 6)) for x, y in snapped}
+check("...corners come from INTERSECTION, not from the walls' short ends",
+      corners == {(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)},
+      sorted(corners))
+
+# ⛔ The closing corner was genuinely wrong once: every other corner was right
+# and the loop simply did not meet itself. Pin it by name.
+gap = float(np.hypot(*(snapped[0] - snapped[-1])))
+check("...the loop actually closes (the wrap corner is not two loose ends)",
+      0.5 < gap < 6.5, gap)
+
+# ⛔ WHERE NOTHING WAS FITTED, NOTHING IS INVENTED.
+one, oinfo = drawing.snap_to_walls(ragged, [WALLS[0]])
+check("with one wall, only that stretch is straightened",
+      oinfo["runs"] == 1 and oinfo["corners"] == 0, oinfo)
+check("...and the rest of the trace SURVIVES rather than being invented",
+      one.shape[0] > 0.5 * ragged.shape[0], (ragged.shape[0], one.shape[0]))
+
+# ⚠ Two nearly parallel walls cross a long way away.
+nearly = [{"a": (0.2, 0.0), "b": (5.8, 0.0)},
+          {"a": (5.8, 0.10), "b": (0.2, 0.32)}]      # ~2.3 degrees apart
+par, _pinfo = drawing.snap_to_walls(ragged, nearly)
+check("near-parallel walls do not produce a corner out at infinity",
+      np.all(np.abs(par) < 50.0),
+      (float(np.abs(par).max()),))
+
+
+# --- 11. the writer contract -----------------------------------------------
 print("\nthe writer contract merge relies on")
 
 with tempfile.TemporaryDirectory() as td:
