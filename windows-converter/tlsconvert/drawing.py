@@ -59,6 +59,7 @@ LAYERS = (
     ("TLS-OUTLINE", 4),      # the wall perimeter, closed -- the one to extrude
     ("TLS-REACH", 6),        # the boundary of what the room actually leaves free
     ("TLS-STRUCT", 1),       # columns, bars, islands standing inside it
+    ("TLS-FACE", 5),         # 3DFACE triangles: what SketchUp can Push/Pull
     ("TLS-SLICE", 8),        # the cells they were fitted to
     ("TLS-GRID", 251),       # the metre grid
     ("TLS-NOTES", 2),        # titles, the unit label, the scale note
@@ -819,6 +820,51 @@ def _label_regions(mask):
     return remap[labels], int(uniq.size)
 
 
+def _ear_clip(pts):
+    """
+    Triangulate a simple counter-clockwise polygon. [(a, b, c), ...].
+
+    Ear clipping, because a room outline is concave far more often than not and
+    a triangle fan from one vertex would put triangles outside the room. No
+    dependency: scipy and shapely are both excluded from the build.
+
+    ⚠ It gives up rather than looping forever if no ear can be found, which is
+    what a self-intersecting loop produces. Returning the triangles it managed
+    is better than hanging, and the caller can see it got fewer than n-2.
+    """
+    def cross(o, a, b):
+        return ((a[0] - o[0]) * (b[1] - o[1])
+                - (a[1] - o[1]) * (b[0] - o[0]))
+
+    def in_tri(p, a, b, c):
+        return (cross(a, b, p) >= 0 and cross(b, c, p) >= 0
+                and cross(c, a, p) >= 0)
+
+    idx = list(range(len(pts)))
+    out = []
+    guard = 0
+    while len(idx) > 3 and guard < 4 * len(pts) + 64:
+        guard += 1
+        for k in range(len(idx)):
+            i0 = idx[k - 1]
+            i1 = idx[k]
+            i2 = idx[(k + 1) % len(idx)]
+            a, b, c = pts[i0], pts[i1], pts[i2]
+            if cross(a, b, c) <= 0:
+                continue                       # reflex corner, not an ear
+            if any(in_tri(pts[j], a, b, c)
+                   for j in idx if j not in (i0, i1, i2)):
+                continue                       # something is inside it
+            out.append((a, b, c))
+            idx.pop(k)
+            break
+        else:
+            break
+    if len(idx) == 3:
+        out.append((pts[idx[0]], pts[idx[1]], pts[idx[2]]))
+    return out
+
+
 def _point_seg_dist(pts, a, b, extend_m=0.0):
     """Distance from each point to segment a-b, allowing a little overrun."""
     d = b - a
@@ -1330,6 +1376,59 @@ class DxfWriter:
                 % (layer, a, b))
         self._ents.append("0\nSEQEND\n8\n%s\n" % layer)
         return len(pts)
+
+    def face(self, layer, xy, z=0.0):
+        """
+        A filled polygon, as `3DFACE` triangles. Returns how many were written.
+
+        ⛔⛔ THIS EXISTS BECAUSE A CLOSED POLYLINE IS NOT ENOUGH FOR SKETCHUP.
+        The polyline was the right call and it is still written -- it is one
+        editable entity and AutoCAD and Max are happy with it -- but SketchUp's
+        DXF importer brings closed CAD polylines in as EDGES, not faces, which
+        is a documented and long-standing complaint rather than anything wrong
+        with the file. Edges cannot be Push/Pulled, and Push/Pull is the entire
+        reason the operator wanted an outline. `3DFACE` is a face on arrival.
+
+        ⚠ The cost is honest: a concave outline becomes a fan of triangles
+        rather than one surface, so the result carries interior edges. They can
+        be softened in SketchUp, and a triangulated face that extrudes beats a
+        clean loop that does not.
+
+        ⛔ EAR CLIPPING NEEDS A KNOWN WINDING and gets the test backwards on the
+        other one, silently emitting nothing. The loop is forced
+        counter-clockwise here rather than assumed -- `trace_loops` already
+        returns holes clockwise, so both windings genuinely arrive.
+        """
+        pts = [(float(x), float(y)) for x, y in xy]
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        if len(pts) < 3:
+            raise ValueError("a face needs at least 3 distinct vertices, got %d"
+                             % len(pts))
+        area2 = sum(pts[i][0] * pts[(i + 1) % len(pts)][1]
+                    - pts[(i + 1) % len(pts)][0] * pts[i][1]
+                    for i in range(len(pts)))
+        if area2 < 0:
+            pts.reverse()
+
+        u = self.scale
+        n = 0
+        for a, b, c in _ear_clip(pts):
+            for p in (a, b, c):
+                self._seen(p[0] * u, p[1] * u)
+            self._ents.append(
+                "0\n3DFACE\n8\n%s\n"
+                "10\n%.4f\n20\n%.4f\n30\n%.4f\n"
+                "11\n%.4f\n21\n%.4f\n31\n%.4f\n"
+                "12\n%.4f\n22\n%.4f\n32\n%.4f\n"
+                "13\n%.4f\n23\n%.4f\n33\n%.4f\n"
+                % (layer,
+                   a[0] * u, a[1] * u, z * u,
+                   b[0] * u, b[1] * u, z * u,
+                   c[0] * u, c[1] * u, z * u,
+                   c[0] * u, c[1] * u, z * u))    # 4th == 3rd: a triangle
+            n += 1
+        return n
 
     def point(self, layer, x, y):
         u = self.scale
