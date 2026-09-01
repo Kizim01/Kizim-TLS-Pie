@@ -6184,11 +6184,9 @@ fragments the floor into four pieces (21.2, 17.5, 14.9, 14.0 m²) instead of one
 4. ⛔ `LEVEL_SIMPLIFY_M` must **exceed** `LEVEL_GRID_M`. A tolerance below the raster preserves the
    rasterisation, not the measurement.
 
-#### ⚠ The exes are STALE BY ONE COMMIT: the 23:02–23:03 build (selftest 0) carries passes 27–29
-but NOT the threaded fitter (`85f9384`). Rebuild **all three together** when Studio is next
-closed — a running --onefile exe holds itself open, and `drawing.py` is shared, so a partial
-rebuild leaves the apps disagreeing about what the same capture draws. Until then the button
-works, only slower.
+#### ✅ The exes are current: **2026-09-01 23:51–23:52, selftest 0**, all three rebuilt together and
+carrying the threaded fitter — the outline button now runs at the 1.8×. Smoke-tested through the
+console bundle (capture decoded, colour solved, 335.7 MB PLY).
 
 #### What is actually still open
 
@@ -6225,7 +6223,14 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Studio 2026-09-01 23:02:46, Converter 23:02:23, tlsconvert 23:03:05, selftest 0**
+**✅ THE EXES: Converter 2026-09-01 23:51:45, Studio 23:52:07, tlsconvert 23:52:25, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — and THIS build adds the **threaded fitter** (thirtieth pass,
+`85f9384`) on top of everything the 23:02 build carried. All three rebuilt together: `drawing.py`
+is shared. Smoke-tested through the console bundle: a real capture decoded, colour solved from the
+photo (confidence 7.0), 335.7 MB PLY written in 2.8 s.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 23:02:46, Converter 23:02:23, tlsconvert 23:03:05, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — the **twenty-ninth pass** on top of everything the 20:19
 build carried.
 
