@@ -5443,9 +5443,35 @@ starting (~1–2 min per photo, so ~20–30 min on this survey); NOT gated on Cl
 photo pose is scan-relative, so the loop press only matters through `_follow_lean`, which already
 runs. Grades never change during the batch, so the rig prior stays stable across it.
 
+### 2026-09-01, twenty-fourth pass — “Deep align them all”, and the delete that keeps the tool
+
+Operator said “build the deep align all images and yes once middle button is pressed keep the
+polygon tool armed”. Both built; suites **1487 passed** (1475 → 1487), reversion audit **3 of 3**,
+commit `8665a05`, **exes 03:50, selftest 0**.
+
+**`AlignServer.deep_all` + `/photo/deepall` + the “Deep align them all” button** (Solve-the-whole-
+shoot tray). ⭐ **THE BATCH IS THE BUTTON, PRESSED N TIMES** — each scan goes through `deep()`
+itself, so the batch cannot drift from the single press (the probe-ran-a-different-path lesson);
+the per-scan `_rebuild()` payloads are discarded as the price of one path. A typed heading is an
+input, not a guess — skipped and SAID; a scan with no pose or no photo likewise. **Every outcome
+is NAMED, alarming first**: one photograph moving FAR is the mis-paired-image signal and leads the
+report, then failures, then adoptions, then skips, then the clean count. One Ctrl-Z restores every
+photograph (`undoAllPoses`, the shoot solve's own undo). The audit's first break (dropping the
+given-guard) proved it LOAD-BEARING: the nothing-eligible case really ran a search over a typed
+heading.
+
+**`commitLasso(mode, keepTool)`**: a middle-click delete passes `keepTool` and the tool stays
+armed — outline, right-click, middle-click, next outline, the hand never leaving the mouse — and
+says so; Enter and the panel buttons keep their old manners and put the tool away.
+
+⚠ **A PARALLEL WORKSTREAM EXISTS**: commit `e10258a` (closed DXF polylines so SketchUp Push/Pull
+gets faces; layers TLS-OUTLINE / TLS-REACH / TLS-STRUCT) is the operator's own “branching build”
+— a separate session's work, landed on main mid-pass, bundled into the 03:50 exes. Not this
+record's to tell; do not treat its TODOs as this workstream's.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**✅ THE EXES: Studio 2026-09-01 03:14:09, Converter 03:13:46, tlsconvert 03:14:28, selftest 0** (RTX 3050 Ti, cuda-engine found)
+**✅ THE EXES: Studio 2026-09-01 03:50:49, Converter 03:50:27, tlsconvert 03:51:08, selftest 0** (RTX 3050 Ti, cuda-engine found; adds “Deep align them all”, the armed middle-click delete, and the operator’s own DXF closed-polyline commit `e10258a`)
 — and THIS build carries **everything through the 23rd pass**: content arbitration on Deep align, the colour tray open by default, the move tool holding the LOD twin while armed, the three polygon gestures, Close-the-loop + edge cap, and the cut that names POINTS.
 
 <!-- superseded, kept for the build trail -->
