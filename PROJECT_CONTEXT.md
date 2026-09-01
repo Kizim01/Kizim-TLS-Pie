@@ -5469,7 +5469,7 @@ gets faces; layers TLS-OUTLINE / TLS-REACH / TLS-STRUCT) is the operator's own �
 — a separate session's work, landed on main mid-pass, bundled into the 03:50 exes. Not this
 record's to tell; do not treat its TODOs as this workstream's.
 
-### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~04:00)
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~04:00) — SUPERSEDED, see the ~13:05 block above the restart marker
 
 - **Exes 03:50 carry everything through the 24th pass**, selftest 0. The operator was told to
   reopen Studio; the six doubtful high-camera_z photos (f4/7/8/14/16/17) are now curable with ONE
@@ -5900,6 +5900,24 @@ uses. Reversion audit **3 of 3**, each caught by name: the dropped keep branch, 
 hide sense, and the unstamped fast path — that last one caught BEHAVIORALLY only because the
 fast-path press test exists; the string check alone had been the guard until it was added.
 Commit `058cb87`.
+
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~13:05)
+
+- **✅ Exes: Studio 12:54:59, Converter 12:54:36, tlsconvert 12:55:17, selftest 0** — carry
+  EVERYTHING: the passes through the 24th, the operator's own outline tool (their 11:25 build),
+  and the 27th-pass **clip-limited outline cut**. Built from a **CLEAN tree** with Studio verified
+  closed, so the 03:50 build's bundled-WIP caveat is **CLEARED** (`drawing.py`/`test_drawing.py`
+  were committed by then). The operator must **reopen Studio** to get this build.
+- The clip-limited cut is proven in suite (**1506 passed**, audit 3/3, preview==exporter on both
+  the press path and the replay) but **not yet exercised by a press in Studio**.
+- **"Deep align them all": still not known pressed** — the six doubtful high-camera_z photos
+  (f4/7/8/14/16/17) presumably still await it (~a minute a photograph); if the operator has
+  pressed it since, their report supersedes this line. A photo moving FAR = the mis-paired signal.
+- Survey state unchanged: folder 20 un-refit; folders 22+ on disk unimported; one Close-the-loop
+  per survey, at the end.
+- Repo: `main` = `26bc70a`, pushed; only the standing untracked `cutjs_tmp.js`. The operator's
+  "branching build" (outline/DXF) has **LANDED on main** (`e10258a`, `b618848`, `3d15411`,
+  `50ce031`) — no in-progress files of theirs outstanding at this save.
 
 ### ▶ NEXT SESSION STARTS HERE
 
