@@ -5901,7 +5901,7 @@ hide sense, and the unstamped fast path — that last one caught BEHAVIORALLY on
 fast-path press test exists; the string check alone had been the guard until it was added.
 Commit `058cb87`.
 
-### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~13:05)
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~13:05) — SUPERSEDED, see the ~20:25 block
 
 - **✅ Exes: Studio 12:54:59, Converter 12:54:36, tlsconvert 12:55:17, selftest 0** — carry
   EVERYTHING: the passes through the 24th, the operator's own outline tool (their 11:25 build),
@@ -5918,6 +5918,51 @@ Commit `058cb87`.
 - Repo: `main` = `26bc70a`, pushed; only the standing untracked `cutjs_tmp.js`. The operator's
   "branching build" (outline/DXF) has **LANDED on main** (`e10258a`, `b618848`, `3d15411`,
   `50ce031`) — no in-progress files of theirs outstanding at this save.
+
+### 2026-09-01, twenty-eighth pass — the open stops re-solving what the file already knows, and the decode rides the card
+
+Operator: *"loading 'Scan project 2.0.tlspie' takes a long time — is there a way of cuda accelerating
+the point cloud loading?"* Measured first (cProfile on one real capture, the open's own path): **34 of a
+39-second single-scan load was `colour_scan` solving the photograph's pose FROM SCRATCH** — inside
+`load()`, on the open path, where `_carry_colour` then restored the file's SAVED pose straight over the
+answer. Nineteen scans, ten minutes computed and discarded per open. The decode itself was ~4.4 s.
+
+**Fix one — the open trusts its own file.** `open_project` and `density` now load with `colour=False`,
+repaint each scan from the pose the project saved (a GIVEN heading skips the solve entirely), and the
+new `AlignServer._first_attach` pays for a solve only where the file carries no pose. More faithful,
+not just faster: the screen now comes back wearing exactly what was saved, and the restore loop says
+whose colour is going back on instead of looking hung. **Real measurement: `open_project` on the real
+19-scan project = 91.6 s, 19/19 scans wearing their saved colour, 0 lost photos.** Was ~13 minutes.
+
+**Fix two — the CUDA that actually paid.** `decode_chunk`, `pan_angles` and `to_world` take an `xp`
+backend (NumPy or CuPy, float64 all the way — gpu.py's answers-may-not-change contract);
+`stream_world_points` picks `gpu.xp()` once and brings only the finished float32 xyz + refl home per
+chunk. Measured on TLS_26_08_20_16_03_15 (23.46M returns): decode+world 3.48 → 0.47 s, whole shipped
+stream 3.56 → 1.14 s, **output bit-identical** on xyz AND refl.
+
+⛔ **Two negative results, kept on purpose.** (1) The vectorised pcap walk — ranked the #1 win by a
+web/GitHub research sweep — died on measurement: the scalar walk is **0.32 s warm** per 98 MB; the
+2.5 s it showed cold was DISK I/O from D:, which no vectorisation and no GPU touches (GPUDirect
+Storage is Linux-only, confirmed). (2) `np.allclose`'s default `rtol=1e-5` gates on the value's own
+size: an audit break — a card-only 1e-7 laser-table drift — sailed through a check claiming
+`atol=1e-12`, because 15° × 1e-5 buys 1.5e-4 of allowance. Parity checks pass `rtol=0` now.
+
+Suites **1512 → 1518**; reversion audit **6/6 by name** across both features (the two `colour=False`
+drops, the dropped `_first_attach`, a dropped `xp=` stage, the table drift after the check was
+tightened, an unhosted refl in the yield — that last is source-pinned only: the suite has no
+end-to-end pcap run, the real-capture parity probe covered it outside). Commit `e54c6c3`.
+
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~20:25)
+
+- **✅ Exes: Studio 20:19:48, Converter 20:19:25, tlsconvert 20:20:06, selftest 0** — carry
+  everything through the **twenty-eighth pass** (92-second project open + CuPy decode) plus the
+  27th-pass clip-limited cut and the operator's outline tool. Built from a clean tree at `e54c6c3`,
+  Studio verified closed. **The operator must reopen Studio to get this build.**
+- 'Scan project 2.0.tlspie' opened in **91.6 s through the server's own open_project** (19/19 scans
+  wearing their saved colour) in this session's probe — but **not yet pressed in Studio itself**.
+- Still awaiting the operator: the clip-limited cut's first real press; "Deep align them all"
+  (six doubtful photos); folder 20 un-refit; folders 22+ unimported.
+- Repo: `main` = `e54c6c3`, pushed; only the standing untracked `cutjs_tmp.js`.
 
 ### ▶ NEXT SESSION STARTS HERE
 
@@ -5995,7 +6040,15 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Studio 2026-09-01 12:54:59, Converter 2026-09-01 12:54:36, tlsconvert 2026-09-01 12:55:17, selftest 0**
+**✅ THE EXES: Studio 2026-09-01 20:19:48, Converter 20:19:25, tlsconvert 20:20:06, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — and THIS build adds the **92-second project open** and the **CuPy decode**
+(twenty-eighth pass) on top of everything the 12:54 build carried. All three rebuilt together: `decode.py`
+is shared.
+⚠ The CLI's `-f` still offers only `las/laz/ply`: **`dxf` is reachable from Studio and the library, not from
+the command line.**
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 12:54:59, Converter 2026-09-01 12:54:36, tlsconvert 2026-09-01 12:55:17, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — and THIS build adds the **clip-limited outline cut** (twenty-seventh pass) on top of
 everything the 11:25 build carried. All three rebuilt together, as before: `pipeline.py` is shared.
 ⚠ The CLI's `-f` still offers only `las/laz/ply`: **`dxf` is reachable from Studio and the library, not from
