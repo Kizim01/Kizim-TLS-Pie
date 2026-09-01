@@ -1299,5 +1299,152 @@ with tempfile.TemporaryDirectory() as td:
 check("cut only takes the two modes it documents",
       _refused(lambda: drawing.DrawingWriter("x.dxf", cut="sideways")))
 
+# --- 20. threaded RANSAC scoring changes the speed and nothing else ----------
+
+# ⭐ THE STREAM ASSUMPTION IS LOAD-BEARING. `fit_segments` now draws each
+# round's hypotheses in ONE `randint(0, n, (iters, 2))` call where it drew
+# one pair per hypothesis; if those ever consume the generator differently,
+# every wall in every drawing exported before this version silently moves.
+_rs1 = np.random.RandomState(11)
+_rs2 = np.random.RandomState(11)
+_seq = np.array([_rs1.randint(0, 12345, 2)
+                 for _ in range(drawing.FIT_ITERS)])
+check("one batched draw == %d sequential pair draws, byte for byte"
+      % drawing.FIT_ITERS,
+      bool((_seq == _rs2.randint(0, 12345,
+                                 (drawing.FIT_ITERS, 2))).all()))
+
+# ⛔ THE SPECIFICATION IS THE OLD SEQUENTIAL LOOP, FROZEN HERE. A first
+# version of this section compared workers=1 against workers=4 on a CLEAN
+# two-wall fixture, and a reversion audit showed it catching NOTHING -- not a
+# flipped tie-break, not a reordered stream, not a mask built from the wrong
+# hypothesis -- because on clean data the refit converges to the same walls
+# whichever hypothesis wins a round, so both sides of the comparison carried
+# the same defect. Two fixes, both needed: the reference is a frozen copy of
+# the pre-threading algorithm (so the comparison has an independent side),
+# and the fixture is NOISY, so the winner of every round changes the output.
+def _fit_reference(pts):
+    """fit_segments as it stood before the threaded scorer, verbatim."""
+    tol_m, min_len_m = drawing.FIT_TOL_M, drawing.FIT_MIN_LEN_M
+    min_cells, gap_m = drawing.FIT_MIN_CELLS, drawing.FIT_GAP_M
+    max_segments, iters = drawing.FIT_MAX_SEGMENTS, drawing.FIT_ITERS
+    cell_m, min_fill = drawing.DEFAULT_CELL_M, drawing.FIT_MIN_FILL
+    max_both = drawing.FIT_MAX_BOTH
+    out = []
+    if pts.shape[0] < min_cells:
+        return out
+    occupied = np.sort(drawing._cell_keys(pts, cell_m))
+    rs = np.random.RandomState(11)
+    pool = pts.copy()
+    while pool.shape[0] >= min_cells and len(out) < max_segments:
+        n = pool.shape[0]
+        best_inl = None
+        best_cnt = 0
+        for _ in range(iters):
+            i, j = rs.randint(0, n, 2)
+            if i == j:
+                continue
+            d = pool[j] - pool[i]
+            L = float(np.hypot(d[0], d[1]))
+            if L < max(tol_m * 4.0, 1e-6):
+                continue
+            d = d / L
+            rel = pool - pool[i]
+            dist = np.abs(rel[:, 0] * d[1] - rel[:, 1] * d[0])
+            inl = dist <= tol_m
+            c = int(inl.sum())
+            if c > best_cnt:
+                best_cnt, best_inl = c, inl
+        if best_inl is None or best_cnt < min_cells:
+            break
+        sel = pool[best_inl]
+        centre = sel.mean(axis=0)
+        _u, _s, vt = np.linalg.svd(sel - centre, full_matrices=False)
+        d = vt[0]
+        nrm = np.array([-d[1], d[0]])
+        dist = np.abs((sel - centre) @ nrm)
+        keep = dist <= tol_m
+        sel = sel[keep]
+        if sel.shape[0] < min_cells:
+            pool = pool[~best_inl]
+            continue
+        t = (sel - centre) @ d
+        order = np.argsort(t)
+        t_sorted = t[order]
+        sel_sorted = sel[order]
+        breaks_ = np.nonzero(np.diff(t_sorted) > gap_m)[0]
+        starts = np.concatenate([[0], breaks_ + 1])
+        ends = np.concatenate([breaks_ + 1, [t_sorted.size]])
+        made = False
+        for s0, e0 in zip(starts, ends):
+            run = sel_sorted[s0:e0]
+            if run.shape[0] < min_cells:
+                continue
+            span = float(t_sorted[e0 - 1] - t_sorted[s0])
+            if span < min_len_m:
+                continue
+            fill = run.shape[0] / max(1.0, span / float(cell_m))
+            if fill < min_fill:
+                continue
+            off = drawing._SURFACE_PROBE_CELLS * float(cell_m)
+            both = drawing._has_both_sides(run, nrm, off, occupied, cell_m)
+            if both > max_both:
+                continue
+            resid = (run - centre) @ nrm
+            out.append({
+                "a": (float(centre[0] + t_sorted[s0] * d[0]),
+                      float(centre[1] + t_sorted[s0] * d[1])),
+                "b": (float(centre[0] + t_sorted[e0 - 1] * d[0]),
+                      float(centre[1] + t_sorted[e0 - 1] * d[1])),
+                "cells": int(run.shape[0]),
+                "rms_m": float(np.sqrt(np.mean(resid ** 2))),
+            })
+            made = True
+            if len(out) >= max_segments:
+                break
+        idx = np.nonzero(best_inl)[0]
+        drop = np.zeros(pool.shape[0], dtype=bool)
+        drop[idx[keep]] = True
+        if not drop.any():
+            drop[idx] = True
+        pool = pool[~drop]
+        if not made and pool.shape[0] < min_cells:
+            break
+    return out
+
+
+# Jittered walls in a field of noise: every round's winner is a near-tie, so
+# a wrong winner anywhere produces different segments, not the same ones by a
+# longer road.
+_wx = np.arange(0.0, 6.0, 0.02)
+_wy = np.arange(0.0, 4.0, 0.02)
+_gn = np.random.RandomState(9)
+_noisy = np.vstack([
+    np.column_stack([_wx, _gn.randn(_wx.size) * 0.01]),
+    np.column_stack([_gn.randn(_wy.size) * 0.01, _wy]),
+    _gn.rand(3000, 2) * 8.0 - 1.0,
+])
+_ref = _fit_reference(_noisy)
+check("threaded fit == the frozen sequential algorithm, on noise",
+      drawing.fit_segments(_noisy, workers=4) == _ref)
+check("...and workers=1 matches too (chunk purity both ways)",
+      drawing.fit_segments(_noisy, workers=1) == _ref)
+check("...and the fixture really fits walls, so that is not vacuous",
+      len(_ref) >= 2, len(_ref))
+
+# ⭐ AND A DEAD TIE, WHICH THE NOISE CANNOT MANUFACTURE. Two identical
+# parallel walls score the same integer count, so which one is extracted
+# FIRST is decided purely by the tie-break -- the earliest hypothesis at the
+# maximum, the rule `c > best_cnt` applied. The extraction order is visible
+# in the returned list, so a flipped tie-break cannot hide here.
+_twin = np.vstack([
+    np.column_stack([_wx, np.zeros_like(_wx)]),
+    np.column_stack([_wx, np.full_like(_wx, 3.0)]),
+])
+_tr = _fit_reference(_twin)
+check("a dead tie breaks toward the EARLIEST hypothesis, as it always did",
+      drawing.fit_segments(_twin, workers=4) == _tr and len(_tr) == 2,
+      len(_tr))
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
