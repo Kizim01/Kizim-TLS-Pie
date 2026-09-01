@@ -4566,7 +4566,11 @@ class AlignServer(object):
             target = os.path.splitext(self.out_path)[0] + " outline.dxf"
             # no evidence dots and no metre grid: the operator asked for the
             # grid to go, and the slice layer is 200k points of scaffolding.
-            writer_kw = {"slice_marks": False, "grid_step_m": 0.0}
+            # ⭐ `cut="box"` -- the box the operator drew IS the cut height, so
+            # a box holding only a band of wall traces those walls instead of
+            # refusing for want of a floor it was never given.
+            writer_kw = {"slice_marks": False, "grid_step_m": 0.0,
+                         "cut": "box"}
         for i, data in enumerate(setups):
             if i < len(self.scans):
                 _take_placement(self.scans[i], data)
@@ -4653,6 +4657,7 @@ class AlignServer(object):
                 return {"ok": True, "out": target, "points": written,
                         "levels": draw.get("levels"),
                         "outline_vertices": draw.get("outline_vertices"),
+                        "levels_skipped": draw.get("levels_skipped"),
                         "edit": None if keep is None else keep.describe(),
                         "level": None if lvl.is_identity()
                         else lvl.describe(), "single": True,
@@ -4687,6 +4692,7 @@ class AlignServer(object):
         return {"ok": True, "out": info["out"], "points": info["points"],
                 "levels": draw.get("levels"),
                 "outline_vertices": draw.get("outline_vertices"),
+                "levels_skipped": draw.get("levels_skipped"),
                 "edit": info["edit"], "level": info["level"],
                 "thinned": info.get("thinned", 0),
                 # ⛔ WHAT WAS LEFT OUT IS PART OF THE RESULT, not a footnote.
@@ -11797,7 +11803,9 @@ async function saveOutline(){
     say('outline written to '+j.out+
         (lv.length ? ' — '+lv.length+' level'+(lv.length===1?'':'s')+
           ' at '+lv.map(d=>d.over_base_m.toFixed(2)+' m').join(', ')+
-          ' above the base plane' : ' — no levels found')+
+          ' above the base plane'
+          : (j.levels_skipped ? ' — no levels: '+j.levels_skipped
+                              : ' — no levels found'))+
         (j.outline_vertices ? '. Room outline: '+j.outline_vertices+
           ' points.' : '')+
         ' Everything sits FLAT on the base plane, so in SketchUp you '+

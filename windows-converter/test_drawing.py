@@ -76,6 +76,22 @@ def read_dxf(path):
     return header, ents
 
 
+def _message(fn, want):
+    """True if `fn` raises with `want` in the message -- refusals must say how."""
+    try:
+        fn()
+    except Exception as exc:                              # noqa: BLE001
+        return want in str(exc)
+    return False
+
+
+def _loop_area(polys):
+    if not polys:
+        return 0.0
+    v = np.array(polys[0][1], dtype=float)[:, :2]
+    return 0.5 * abs(float(np.sum(v[:, 0] * np.roll(v[:, 1], -1)
+                                  - np.roll(v[:, 0], -1) * v[:, 1])))
+
 def _refused(fn):
     """True if `fn` raises -- for options that must not be silently dropped."""
     try:
@@ -1220,6 +1236,68 @@ with tempfile.TemporaryDirectory() as td:
           s.get("outline_vertices") == 0, s.get("outline_vertices"))
     check("...but the levels still come out, because they need no eye",
           len(s.get("levels") or ()) >= 2, s.get("levels"))
+
+# --- 19. a clip box that holds only wall ------------------------------------
+print("\ncut=box: no floor in the selection, and it still draws the walls")
+
+# The operator's case: "trace only around the walls that touch the clipping
+# box, when i go to export there will be no points on the floor at all".
+BAND = np.vstack([wall_face(0, 0, 6, 0, 1.20, 1.50, 0.005),
+                  wall_face(0, 4, 6, 4, 1.20, 1.50, 0.005),
+                  wall_face(0, 0, 0, 4, 1.20, 1.50, 0.005),
+                  wall_face(6, 0, 6, 4, 1.20, 1.50, 0.005)])
+
+check("a wall-only band has no findable floor or ceiling -- by construction",
+      drawing.find_floor_and_ceiling(
+          *grid_of(np.floor(BAND / 0.02).astype(np.int64).tolist(), 0.02),
+          cell_m=0.02) is None)
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "auto.dxf")
+    w = drawing.DrawingWriter(p, units="m", min_count=1)
+    w.write(BAND)
+    check("cut=auto still REFUSES it, and that refusal is not weakened",
+          _refused(w.close))
+    check("...and the refusal now names the mode that would do it",
+          _message(w.close, 'cut="box"'))
+
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "box.dxf")
+    w = drawing.DrawingWriter(p, units="m", min_count=1, cut="box",
+                              slice_marks=False, grid_step_m=0.0)
+    w.tripods = [(3.0, 2.0)]
+    w.write(BAND)
+    s = w.close()
+    _, ents = read_dxf(p)
+    check("cut=box draws the walls that the box caught",
+          len(s["segments"]) == 4, len(s["segments"]))
+    check("...and closes an outline round them",
+          s["outline_vertices"] >= 4, s["outline_vertices"])
+    check("...the outline is the room, not a sliver",
+          _loop_area(polylines_of(ents, "TLS-OUTLINE")) > 18.0,
+          _loop_area(polylines_of(ents, "TLS-OUTLINE")))
+    check("...levels are SKIPPED, because there is no base plane in the box",
+          s["levels"] == [] and s["levels_skipped"], s["levels_skipped"])
+    check("...and the DRAWING says so, not just the return value",
+          any("levels not drawn" in t for t in texts_of(ents, "TLS-NOTES")))
+    check("...floor and ceiling are reported as unknown, never as zero",
+          s["floor_m"] is None and s["height_m"] is None,
+          (s["floor_m"], s["height_m"]))
+
+# ⭐ AND WHEN THE BOX DOES HOLD A FLOOR, cut=box MUST NOT COST THE LEVELS.
+with tempfile.TemporaryDirectory() as td:
+    p = os.path.join(td, "boxfull.dxf")
+    w = drawing.DrawingWriter(p, units="m", min_count=1, cut="box",
+                              slice_marks=False, grid_step_m=0.0)
+    w.tripods = [(3.0, 2.0)]
+    w.write(DENSE)
+    s = w.close()
+    check("a box holding the whole room still finds its levels",
+          len(s["levels"] or ()) >= 2 and not s["levels_skipped"],
+          (s["levels"], s["levels_skipped"]))
+
+check("cut only takes the two modes it documents",
+      _refused(lambda: drawing.DrawingWriter("x.dxf", cut="sideways")))
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

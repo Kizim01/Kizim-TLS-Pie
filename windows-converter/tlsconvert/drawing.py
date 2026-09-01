@@ -2135,7 +2135,7 @@ class DrawingWriter:
                  plan_lo_m=DEFAULT_PLAN_LO_M, plan_hi_m=DEFAULT_PLAN_HI_M,
                  min_count=2, sections=True, grid_step_m=1.0,
                  max_slice=MAX_SLICE_ENTITIES, fit=True, margin_m=1.0,
-                 levels=True, outline=True, slice_marks=True):
+                 levels=True, outline=True, slice_marks=True, cut="auto"):
         self.path = path
         self.comment = comment
         self.cell_m = float(cell_m)
@@ -2148,6 +2148,9 @@ class DrawingWriter:
         self.max_slice = int(max_slice)
         self.fit = bool(fit)
         self.margin_m = float(margin_m)
+        if cut not in ("auto", "box"):
+            raise ValueError('cut must be "auto" or "box", got %r' % (cut,))
+        self.cut = cut
         self.levels = bool(levels)
         self.outline = bool(outline)
         self.slice_marks = bool(slice_marks)
@@ -2186,7 +2189,7 @@ class DrawingWriter:
                 "no returns reached the drawing, so there is nothing to draw")
 
         found = find_floor_and_ceiling(ijk, counts, self.cell_m)
-        if found is None:
+        if found is None and self.cut != "box":
             # ⛔ REFUSE RATHER THAN CUT AT A GUESSED HEIGHT. See
             # `find_floor_and_ceiling` -- a plan sliced out of noise is a
             # drawing of nothing that looks like a drawing of something.
@@ -2194,18 +2197,48 @@ class DrawingWriter:
                 "could not find a floor and a ceiling in this cloud, so there "
                 "is no height to cut a plan at. Level the scans first (a plan "
                 "needs to know which way is up), and check the capture covers "
-                "a room rather than an open space.")
-        floor_z, ceil_z = found
-        z_lo = floor_z + self.plan_lo_m
-        z_hi = floor_z + self.plan_hi_m
+                "a room rather than an open space. (If you meant to trace a "
+                "clip box that holds only wall, that is cut=\"box\".)")
+        floor_z, ceil_z = (None, None) if found is None else found
 
-        pts = slice_xy(ijk, counts, self.cell_m, z_lo, z_hi,
-                       min_count=self.min_count)
-        if pts.shape[0] == 0:
-            raise ValueError(
-                "the plan's cut height caught no returns at all "
-                "(%.2f-%.2f m above a floor at %.2f m)"
-                % (self.plan_lo_m, self.plan_hi_m, floor_z))
+        if self.cut == "box":
+            # ⭐⭐ THE CLIP BOX IS THE CUT, AND THAT IS AN EXPLICIT MODE RATHER
+            # THAN A FALLBACK. The operator's words: "trace only around the
+            # walls that touch the clipping box, when i go to export there will
+            # be no points on the floor at all only the wall outlines". A box
+            # drawn round a band of wall says the cut height out loud, so there
+            # is nothing left to detect and nothing to guess.
+            #
+            # ⛔ IT IS NOT WIRED TO "find_floor_and_ceiling FAILED". That
+            # refusal is correct and stays correct: a cloud with no findable
+            # floor is usually a cloud that should not be drawn, and turning
+            # the refusal into a silent fallback would draw every one of them.
+            # What makes this different is a STATEMENT OF INTENT, not a failure
+            # -- the difference between "I could not tell" and "I was told".
+            #
+            # ⚠ WITH NO FLOOR IN THE BOX THERE IS NO DATUM, so the levels are
+            # skipped and the drawing says why. Heights above a base plane are
+            # meaningless when the base plane is not in the selection, and a
+            # level list quietly measured from the bottom of the box would be
+            # wrong in a way nobody could see.
+            z_lo = z_hi = None
+            pts = slice_xy(ijk, counts, self.cell_m, -np.inf, np.inf,
+                           min_count=self.min_count)
+            if pts.shape[0] == 0:
+                raise ValueError(
+                    "nothing inside the clip box survived the minimum count "
+                    "of %d returns per cell -- widen the box, or lower "
+                    "min_count." % self.min_count)
+        else:
+            z_lo = floor_z + self.plan_lo_m
+            z_hi = floor_z + self.plan_hi_m
+            pts = slice_xy(ijk, counts, self.cell_m, z_lo, z_hi,
+                           min_count=self.min_count)
+            if pts.shape[0] == 0:
+                raise ValueError(
+                    "the plan's cut height caught no returns at all "
+                    "(%.2f-%.2f m above a floor at %.2f m)"
+                    % (self.plan_lo_m, self.plan_hi_m, floor_z))
 
         # ⛔⛔ THE PLAN IS BOUNDED TO THE ROOM BEFORE ANYTHING IS DRAWN OR
         # FITTED, and it has to happen here rather than at the grid. A glazed
@@ -2248,9 +2281,15 @@ class DrawingWriter:
                             step_m=self.grid_step_m))
 
         # --- the outline: the thing the operator actually models on --------
-        base_z, _ = floor_base_z(ijk, counts, self.cell_m, floor_z)
+        base_z = 0.0
+        skipped = None
+        if floor_z is not None:
+            base_z, _ = floor_base_z(ijk, counts, self.cell_m, floor_z)
+        elif self.levels:
+            skipped = ("no floor is inside the clip box, so there is no base "
+                       "plane to measure a height from")
         found_levels = []
-        if self.levels:
+        if self.levels and floor_z is not None:
             top = top_face_cells(ijk, self.cell_m)
             found_levels = find_levels(ijk, counts, self.cell_m, floor_z,
                                        ceil_z, top=top)
@@ -2286,12 +2325,19 @@ class DrawingWriter:
             "TLS-Pie drawing -- units: %s (1 grid square = %g %s)"
             % (self.units, self.grid_step_m * UNITS[self.units][0],
                self.units),
-            "plan cut %.2f-%.2f m above floor; floor %.3f m, ceiling %.3f m, "
-            "height %.3f m" % (self.plan_lo_m, self.plan_hi_m, floor_z,
-                               ceil_z, ceil_z - floor_z),
+            ("plan cut %.2f-%.2f m above floor; floor %.3f m, "
+             "ceiling %.3f m, height %.3f m"
+             % (self.plan_lo_m, self.plan_hi_m, floor_z, ceil_z,
+                ceil_z - floor_z)) if floor_z is not None else
+            "cut by the clip box -- every return inside it was used; no floor "
+            "in the box, so no base plane and no levels",
             "cell %.0f mm; %d walls fitted from %d slice cells"
             % (self.cell_m * 1000.0, len(segments), pts.shape[0]),
         ]
+        if skipped:
+            # ⛔ NEVER A SILENT OMISSION. A drawing with no level outlines and
+            # no explanation is indistinguishable from a room with no platforms.
+            notes.append("NOTE: levels not drawn -- %s" % skipped)
         if found_levels:
             notes.append(
                 "levels (extrude UP from this sheet): %s"
@@ -2320,9 +2366,11 @@ class DrawingWriter:
             "units": self.units,
             "points": self.count,
             "cells": int(ijk.shape[0]),
+            "cut": self.cut,
+            "levels_skipped": skipped,
             "floor_m": floor_z,
             "ceiling_m": ceil_z,
-            "height_m": ceil_z - floor_z,
+            "height_m": (None if floor_z is None else ceil_z - floor_z),
             "plan_cut_m": (z_lo, z_hi),
             "slice_cells": int(pts.shape[0]),
             "slice_drawn": int(drawn),
