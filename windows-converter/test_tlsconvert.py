@@ -4949,6 +4949,44 @@ if _node:
           "happens once",
           _t3.get("disarmed") is False and _t3.get("disarmedGrab") is False,
           _t3)
+
+    # ⭐ A MIDDLE-CLICK DELETE KEEPS THE TOOL ARMED -- asked for on
+    # 2026-09-01, completing the draw-then-delete loop. The panel buttons
+    # and Enter keep their old manners and put the tool away.
+    _probe4 = _js_func("commitLasso") + """
+    const V={pending:{matrix:[1], ndc:[[0,0]]}, tool:'poly'};
+    let edits=0, tooled=[], said=[];
+    function pushEdit(){ edits++; }
+    function askLasso(){}
+    function setTool(t){ tooled.push(t); }
+    function invalidate(){}
+    function whoSuffix(){ return ''; }
+    function say(m){ said.push(m); }
+    const out={};
+    commitLasso('cut', true);
+    out.keptToolCalls=tooled.length;
+    out.keptSaid=said[0]||'';
+    out.keptEdits=edits;
+    V.pending={matrix:[1], ndc:[[0,0]]};
+    commitLasso('cut');
+    out.plainToolCalls=tooled.length;
+    out.plainTooledWith=tooled[0];
+    console.log(JSON.stringify(out));
+    """
+    _t4p = os.path.join(tempfile.mkdtemp(prefix="tlscommit"), "commit.js")
+    with io.open(_t4p, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe4)
+    _t4r = subprocess.run([_node, _t4p], capture_output=True, text=True)
+    check("the commit rules run", _t4r.returncode == 0,
+          (_t4r.stderr or "")[:400])
+    _t4 = (json.loads(_t4r.stdout.strip().splitlines()[-1])
+           if _t4r.returncode == 0 else {})
+    check("A MIDDLE-CLICK DELETE KEEPS THE TOOL ARMED, and says so",
+          _t4.get("keptToolCalls") == 0 and _t4.get("keptEdits") == 1
+          and "still armed" in (_t4.get("keptSaid") or ""), _t4)
+    check("...while Enter and the panel buttons still put the tool away",
+          _t4.get("plainToolCalls") == 1
+          and _t4.get("plainTooledWith") == "", _t4)
 else:
     print("  (node missing: the tray rules were not run)")
 
@@ -6502,8 +6540,8 @@ check("...while a second Esc, hands empty, still puts the tool away",
       "setTool('');" in _kd_esc[_kd_esc.find("} else {"):])
 check("A MIDDLE CLICK DELETES A PENDING SELECTION -- gated press-vs-drag, "
       "so the pan the middle button has always been is untouched",
-      "if(midDown && drift<5 && V.pending){ midDown=false; "
-      "commitLasso('cut'); }" in _ALIGN_SRC
+      "if(midDown && drift<5 && V.pending){ midDown=false;" in _ALIGN_SRC
+      and "commitLasso('cut', true); }" in _ALIGN_SRC
       and "midDown=(e.button===1);" in _ALIGN_SRC)
 check("...and the flag cannot outlive its drag",
       "lassoing=false; midDown=false;" in _ALIGN_SRC)
@@ -9079,6 +9117,86 @@ check("no confirmed siblings, no challenge: content_offset is never asked "
       _r_ns.get("ok") and not _ct_calls
       and ((_rs.colour_info or {}).get("deep") or {}).get("content") is None,
       (_ct_calls, ((_rs.colour_info or {}).get("deep") or {}).get("content")))
+
+# ⭐ THE BATCH IS THE BUTTON, PRESSED N TIMES -- "Deep align them all", asked
+# for on 2026-09-01. Each scan goes through deep() itself so the batch cannot
+# drift from the single press; what these pin is who is eligible and that
+# every outcome is NAMED, the alarming ones first.
+print("\nalign: deep align every photograph, outcomes named")
+_rsrv4 = align.AlignServer.__new__(align.AlignServer)
+_rsrv4._progress = {}
+_rsrv4._rebuild = lambda: ["fresh"]
+_b_runA = _mscan("runA", _lc_pts)
+_b_runA.photo = "a.jpg"
+_b_runA.colour_info = {"ok": True, "yaw_deg": 10.0, "given": False}
+_b_given = _mscan("typed", _lc_pts)
+_b_given.photo = "g.jpg"
+_b_given.colour_info = {"ok": True, "yaw_deg": 5.0, "given": True}
+_b_noyaw = _mscan("unposed", _lc_pts)
+_b_noyaw.photo = "n.jpg"
+_b_noyaw.colour_info = {"ok": False, "yaw_deg": None}
+_b_nophoto = _mscan("bare", _lc_pts)
+_b_nophoto.colour_info = None
+_b_far = _mscan("farA", _lc_pts)
+_b_far.photo = "f.jpg"
+_b_far.colour_info = {"ok": True, "yaw_deg": 20.0}
+_b_err = _mscan("errA", _lc_pts)
+_b_err.photo = "e.jpg"
+_b_err.colour_info = {"ok": True, "yaw_deg": 30.0}
+_rsrv4.scans = [_b_runA, _b_given, _b_noyaw, _b_nophoto, _b_far, _b_err]
+_b_calls = []
+
+
+def _b_deep(i, seconds=None):
+    _b_calls.append(i)
+    if i == 4:
+        return {"ok": True, "far": True, "note": "moved",
+                "info": {"deep": {"content": {"adopted": False}}}}
+    if i == 5:
+        return {"ok": False, "error": "boom"}
+    return {"ok": True, "far": False, "note": "fine",
+            "info": {"deep": {"content": {"adopted": True}}}}
+
+
+_rsrv4.deep = _b_deep
+_b_got = _rsrv4.deep_all()
+check("THE BATCH RUNS THE SINGLE PRESS ON EXACTLY THE ELIGIBLE SCANS, "
+      "in order", _b_got.get("ok") and _b_calls == [0, 4, 5], _b_calls)
+_b_rows = {r["name"]: r for r in _b_got.get("rows") or []}
+check("...a typed heading is left alone AND SAID to be an input",
+      "input" in (_b_rows.get("typed") or {}).get("skipped", "")
+      and "typed was left alone" in _b_got.get("text", ""),
+      _b_rows.get("typed"))
+check("...a scan with no pose yet is named, and one with no photo is not "
+      "listed at all",
+      "no pose" in (_b_rows.get("unposed") or {}).get("skipped", "")
+      and "bare" not in _b_rows, sorted(_b_rows))
+check("...THE FAR MOVE LEADS THE REPORT -- a mis-paired photograph must "
+      "not scroll away inside a count",
+      _b_got.get("text", "").startswith("⚠ farA moved FAR")
+      and "errA failed: boom" in _b_got["text"], _b_got.get("text"))
+check("...adoptions and the clean count are named too",
+      "runA" in _b_got["text"]
+      and "2 of 5 searched clean" in _b_got["text"], _b_got.get("text"))
+check("...and the batch ends with the bar honestly idle",
+      _rsrv4._progress.get("busy") is False, _rsrv4._progress)
+_rsrv5 = align.AlignServer.__new__(align.AlignServer)
+_rsrv5._progress = {}
+_rsrv5._rebuild = lambda: []
+_rsrv5.scans = [_b_given, _b_nophoto]
+_b_no = _rsrv5.deep_all()
+check("...with nothing eligible the refusal is NAMED, not an empty success",
+      not _b_no.get("ok") and "typed heading" in (_b_no.get("error") or ""),
+      _b_no)
+check("the page has the door and the server one path: the batch calls the "
+      "single press",
+      'id="deepall"' in _page and "$('deepall').onclick" in _ALIGN_SRC
+      and '"/photo/deepall"' in _ALIGN_SRC
+      and "got = self.deep(i, seconds=seconds)"
+      in inspect.getsource(align.AlignServer.deep_all))
+check("...remembered as ONE undo, built from the per-scan undo",
+      "remember('deep aligning every photograph', undoAllPoses());"
+      in _ALIGN_SRC)
 
 # ⛔⛔ ON ARRIVAL THE CAPTURE STANDS UP BEFORE ITS PHOTOGRAPH ARRIVES. The
 # photograph used to be solved WHILE the capture streamed -- before the scan

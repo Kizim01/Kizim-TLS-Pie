@@ -912,6 +912,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/photo/deep":
                 return self._json(srv.deep(body.get("index"),
                                            body.get("seconds")))
+            if path == "/photo/deepall":
+                return self._json(srv.deep_all(body.get("seconds")))
             if path == "/photo/tilt":
                 return self._json(srv.set_tilt(body.get("index"),
                                                body.get("pitch"),
@@ -3783,6 +3785,93 @@ class AlignServer(object):
                 "far": bool(got.get("far")),
                 "scans": self._rebuild()}
 
+    def deep_all(self, seconds=None):
+        """
+        The deep search with its content check, run on every photograph.
+
+        ⭐ THE BATCH IS THE BUTTON, PRESSED N TIMES. Each scan goes through
+        `deep()` itself, so this cannot drift from the single press -- a
+        batch that takes its own path is how the operator's experience and
+        the code's stop describing each other (measured 2026-08-28, when a
+        probe ran the blind path and reported conclusions about the hinted
+        one). The per-scan `_rebuild()` payloads are discarded and one fresh
+        one returned at the end; that redundancy is the price of one path.
+
+        ⛔ A HEADING THE OPERATOR TYPED IS AN INPUT, NOT A GUESS -- skipped,
+        and SAID to be skipped, never searched over.
+
+        ⛔ EVERY OUTCOME IS NAMED, THE ALARMING ONES FIRST. A batch that
+        reports one summary line hides the single most important thing it
+        can find: one photograph moving FAR is the shape of a mis-paired
+        image, and it must not scroll away inside "18 done".
+        """
+        jobs = []
+        for i, sc in enumerate(self.scans):
+            info = getattr(sc, "colour_info", None) or {}
+            photo = getattr(sc, "photo", None) or info.get("photo")
+            if not photo:
+                continue
+            if info.get("given"):
+                jobs.append((i, sc.name,
+                             "its heading was typed by hand -- an input, "
+                             "not a guess"))
+            elif info.get("yaw_deg") is None:
+                jobs.append((i, sc.name, "it has no pose to search from yet"))
+            else:
+                jobs.append((i, sc.name, None))
+        if not any(skip is None for _i, _n, skip in jobs):
+            return {"ok": False,
+                    "error": "nothing here can be deep aligned: it needs at "
+                             "least one scan with a photograph and a SOLVED "
+                             "heading -- a typed heading is an input this "
+                             "search must not overwrite"}
+        rows, total = [], len(jobs)
+        for at, (i, name, skip) in enumerate(jobs):
+            if skip is not None:
+                rows.append({"index": i, "name": name, "skipped": skip})
+                continue
+            got = self.deep(i, seconds=seconds)
+            row = {"index": i, "name": name, "ok": bool(got.get("ok"))}
+            if got.get("ok"):
+                content = (((got.get("info") or {}).get("deep") or {})
+                           .get("content") or {})
+                row["adopted"] = bool(content.get("adopted"))
+                row["far"] = bool(got.get("far"))
+                row["note"] = got.get("note")
+            else:
+                row["error"] = got.get("error")
+            rows.append(row)
+            self._progress = {"stage": "deep aligned %d of %d photographs"
+                                       % (at + 1, total),
+                              "n": at + 1, "total": total, "busy": True}
+        self._progress = {"stage": "done", "n": 1, "total": 1,
+                          "busy": False}
+        far = [r["name"] for r in rows if r.get("far")]
+        bad = [(r["name"], r.get("error")) for r in rows
+               if not r.get("ok") and not r.get("skipped")]
+        adopted = [r["name"] for r in rows if r.get("adopted")]
+        skipped = [(r["name"], r["skipped"]) for r in rows
+                   if r.get("skipped")]
+        ran = sum(1 for r in rows if r.get("ok"))
+        text = ""
+        if far:
+            text += ("⚠ %s moved FAR — that is the shape of a photograph "
+                     "paired with the wrong capture; look at %s before "
+                     "anything else. "
+                     % (", ".join(far), "it" if len(far) == 1 else "them"))
+        for name, why in bad:
+            text += "⚠ %s failed: %s. " % (name, why or "no reason given")
+        if adopted:
+            text += ("%d photograph%s came back to the rig's own bolted "
+                     "geometry on the content check: %s. "
+                     % (len(adopted), "" if len(adopted) == 1 else "s",
+                        ", ".join(adopted)))
+        for name, why in skipped:
+            text += "%s was left alone: %s. " % (name, why)
+        text += "%d of %d searched clean through." % (ran, total)
+        return {"ok": True, "rows": rows, "text": text,
+                "scans": self._rebuild()}
+
     def set_tilt(self, index, pitch=None, roll=None, by=False):
         """
         Lean the photograph, absolutely or by a nudge.
@@ -5170,6 +5259,16 @@ PAGE = r"""<!doctype html>
     be rescued by any threshold). Scans that are <b>confident and disagree</b>
     are named rather than overruled: that is how you find out the camera was
     seated differently that time.</div>
+  <label style="margin-top:8px">Deep align every photograph</label>
+  <div class="row"><button id="deepall" class="go">Deep align them all
+    </button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
+    The whole-circle search with the content check, on each photographed scan
+    in turn — about a minute a photograph, and every outcome is named. A pose
+    searched into a wrong basin comes back to the rig's own bolted geometry
+    when the picture content prefers it; a heading you typed by hand is an
+    input, not a guess, and is left alone. One Ctrl-Z puts every photograph
+    back.</div>
   </div></div>
 <div class="tray" id="ty_clean"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clean')"><span class="fold">▾</span><b class="grow">Strays and weak returns</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clean')">✕</button></div><div class="traybody">
   <div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
@@ -8768,14 +8867,21 @@ function polyClose(){
   V.draft=pts; finishDraft();
   return true;
 }
-function commitLasso(mode){
+function commitLasso(mode, keepTool){
   if(!V.pending) return;
   pushEdit({kind:'lasso', mode:mode, matrix:V.pending.matrix,
             poly:V.pending.ndc});
-  V.pending=null; askLasso(false); setTool(''); invalidate();
+  V.pending=null; askLasso(false);
+  /* ⭐ A MIDDLE-CLICK DELETE KEEPS THE TOOL ARMED -- asked for on
+     2026-09-01, completing the draw-then-delete loop: outline, right-click,
+     middle-click, next outline, with the hand never leaving the mouse. The
+     panel buttons and Enter keep their old manners and put the tool away. */
+  if(!keepTool) setTool('');
+  invalidate();
   say((mode==='keep' ? 'Deleted everything outside the outline'
                     : 'Deleted the points inside the outline')+
-      whoSuffix()+'.');
+      whoSuffix()+'.'+
+      (keepTool ? ' The tool is still armed — draw the next outline.' : ''));
 }
 
 /* ---- point-pair picking ----
@@ -10884,6 +10990,27 @@ async function deepAlignPhoto(index, btn){
   finally{ busy(btn, false); }
 }
 
+/* ⭐ EVERY PHOTOGRAPH, THE HARD WAY, WHILE YOU MAKE TEA. The single press is
+   safe to repeat -- the content check adopts only what the picture itself
+   prefers and can never make a pose worse -- so the batch is the same press
+   N times ON THE SERVER: one path, not two. Remembered as ONE undo, built
+   from the per-scan undo the same way the shoot solve is. */
+async function deepAlignAll(btn){
+  remember('deep aligning every photograph', undoAllPoses());
+  say('searching every photograph with every measure — about a minute '+
+      'each. The bar names each one as it goes…');
+  watch(true); busy(btn, true);
+  try{
+    const j=await post('photo/deepall', {});
+    if(!j.ok) throw new Error(j.error||'could not search');
+    await afterColour(j);
+    const worry=(j.rows||[]).some(r=>r.far||(!r.ok && !r.skipped));
+    say(j.text, worry ? 'warn' : null);
+  }catch(e){ watch(false); say('Could not deep align them: '+e.message,
+                               'bad'); }
+  finally{ busy(btn, false); }
+}
+
 /* The photograph's lean, absolute or nudged. */
 async function sendTilt(index, body, what){
   coalesce('pose'+index, 'leaning the photograph', ()=>undoPose(index));
@@ -11933,7 +12060,8 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
        middle button has always been. It fires only while a selection is
        PENDING, where it is the same act as Enter -- everywhere else the
        middle button stays the camera, as its own comment above insists. */
-    if(midDown && drift<5 && V.pending){ midDown=false; commitLasso('cut'); }
+    if(midDown && drift<5 && V.pending){ midDown=false;
+                                         commitLasso('cut', true); }
     if(lassoing) finishDraft();
     if(moving && V.edits.length) recomputeLive();   /* the cut follows the
                                                        scan it was made on */
@@ -12338,6 +12466,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('orgclear').onclick=clearOrigin;
   $('sortshoot').onclick=sortShoot;
   $('shootsolve').onclick=solveShoot;
+  $('deepall').onclick=e=>deepAlignAll(e.target);
   $('clnstray').onclick=cleanStray;
   $('clnweak').onclick=cleanWeak;
   $('clnoff').onclick=cleanOff;
