@@ -900,7 +900,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.clean_scan(
                     body.get("index"), body.get("stray"),
                     body.get("drop_weakest"), body.get("voxel_m"),
-                    body.get("neighbours")))
+                    body.get("neighbours"), body.get("min_refl")))
             if path == "/clean/levels":
                 return self._json(srv.strength_of(body.get("index")))
             if path == "/photo/shoot":
@@ -3149,7 +3149,7 @@ class AlignServer(object):
                               "busy": False}
 
     def clean_scan(self, index, stray=None, drop_weakest=None,
-                   voxel_m=None, neighbours=None):
+                   voxel_m=None, neighbours=None, min_refl=None):
         """
         Take the rubbish out of one cloud: strays, weak returns, or both.
 
@@ -3203,6 +3203,17 @@ class AlignServer(object):
                                  "re-open the capture instead."}
             pct = max(0.0, min(90.0, float(drop_weakest)))
             spec["min_refl"] = float(np.percentile(np.asarray(refl), pct))
+        elif min_refl is not None:
+            # ⛔⛔ AN UNDO CANNOT RE-DERIVE A PERCENTILE, SO IT HANDS BACK THE
+            # THRESHOLD ITSELF. `drop_weakest` is a share of THIS cloud ("the
+            # weakest 10%") and what gets stored is the absolute reflectivity
+            # that share worked out to -- so a caller putting a rule back had
+            # no way to say it, and `undoClean` was quietly sending the empty
+            # body instead. That CLEARS the rule rather than restoring it: undo
+            # a weak-return clean and the cloud came back with more points than
+            # it had before the thing being undone. One extra way in, used only
+            # by the two undos, and it never re-measures anything.
+            spec["min_refl"] = float(min_refl)
 
         if not spec:
             scan.clean, scan.keep = None, None
@@ -5059,6 +5070,18 @@ PAGE = r"""<!doctype html>
 <div class="pnl" id="panel">
 <div id="traysay"></div>
 <div class="tray" id="ty_scans"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'scans')"><span class="fold">▾</span><b class="grow">Scans in this job</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('scans')">✕</button></div><div class="traybody">
+  <!-- ⭐ Asked for by the operator, 2026-09-01. Double-clicking a row was the
+       only way to say which cloud to work on, and on a nineteen-tripod survey
+       the rows are all the same room from somewhere else — so choosing the one
+       you can SEE meant guessing a name. Arm this and click the thing itself.
+       Above the list, because what it changes is which row is selected. -->
+  <div class="row"><button id="whose" title="Click a point in the view and the
+      cloud it came off becomes the one you are working on: the movement
+      controls, its rotation ring, new cuts and the photograph tray all follow
+      it, and its row below is selected. Shortcut K.">Pick a cloud</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    <b>Light</b> on a row turns the other clouds down so you can see where that
+    one sits — they are not hidden, and nothing about the export changes.</div>
   <div id="legend"></div>
   <div id="hidsay" style="font-size:10.5px;margin:3px 0 4px"></div>
   <div id="finds" style="font-size:10.5px;color:var(--dim)"></div>
@@ -5438,6 +5461,25 @@ PAGE = r"""<!doctype html>
       </button></div>
   <div class="row"><button id="undo">Undo</button>
     <button id="clearedit">Clear all</button></div>
+  <!-- ⭐ Asked for by the operator, 2026-09-01. Clear all above takes back the
+       CUT LIST and stops there; points also leave by a CLEANING RULE, and an
+       operator who had pressed Remove strays cleared every cut and still had a
+       hole. These two switch off both, so one press means "put it back"
+       whichever of them took the points. Nothing is re-read: a cut is an
+       operation and a clean is a rule, so the capture and the buffers on the
+       card were never touched by either. -->
+  <div class="row"><button id="putback" title="Every cut undone and every
+      cleaning rule switched off, on every cloud, so the whole job is back at
+      full return. Nothing is re-read from disk — no point was ever thrown
+      away — and Ctrl-Z puts it all back exactly as it was.">Put every point
+      back</button>
+    <button id="putback1" title="The same for one cloud: cuts aimed at it are
+      dropped, a cut that went through the whole job stops naming it and goes
+      on cutting the others, and its cleaning rule is switched off.">Put this
+      cloud back</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    “This cloud” is <b id="pbwho">— pick a scan first</b>. Double-click a
+    scan’s name to change it.</div>
   <div id="lassoask" style="display:none">
     <div class="row"><button id="lin" class="go">Delete inside</button>
       <button id="lout" class="go">Delete outside</button></div>
@@ -5567,6 +5609,11 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:0.2,
               not change what is written -- taking a cloud out of the job is
               Remove, a different button with a different meaning. */
            hidden:{},
+           /* ⛔ WHICH CLOUD IS LIT, AND IT IS NOT `hidden` WITH THE SENSE
+              FLIPPED. A spotlit cloud changes brightness and NOTHING else --
+              the others stay drawn, pickable, cut from and exported -- which
+              is exactly what hiding does not do. -1 is "no spotlight". */
+           spot:-1,
            box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
            /* Which cloud the next cut belongs to: -1 for all of them. */
            editWho:-1,
@@ -5680,11 +5727,58 @@ function preset(yaw,pitch){
 /* ⛔ STRAIGHT DOWN NEEDS A DIFFERENT UP VECTOR. look() builds its right vector
    from forward x up, and looking along world Z with world Z as up makes that
    cross product zero -- a blank screen. The old plan view dodged it by stopping
-   at 85.9 degrees, which is not a plan view. North stands in as up instead. */
+   at 85.9 degrees, which is not a plan view. Something horizontal stands in.
+
+   ⭐⭐ AND IT IS THE HEADING'S OWN LIMIT, NOT NORTH, WHICH IS WHY THE PLAN VIEW
+   NOW COMES UP FACING THE WAY YOU WERE. This returned the fixed [0,1,0] --
+   world north -- so screen-right in a top view was world +X whatever the
+   operator had been looking at, and `V.cam.yaw` was simply DISCARDED the
+   moment the pitch went vertical. Snapping to Top from a view of the kitchen
+   spun the whole restaurant to an orientation nobody chose, and the operator
+   had to find their bearings again every time ("snap taking into account my
+   current perspective", 2026-09-01).
+
+   ⛔ IT IS THE CONTINUOUS LIMIT OF `basis().up`, NOT A NEW RULE. That is
+   [-cy*sp, -sy*sp, cp]; drop the z, which is what going vertical does to it,
+   and you have exactly this. So orbiting up to straight down no longer JUMPS
+   at the moment the special case takes over -- the picture that was on screen
+   at 89 degrees is the picture at 90. It also means the old behaviour is a
+   special case rather than a casualty: at the yaw `planView` uses, -pi/2,
+   -[cos, sin] is [0,1,0] to the last bit, so Top is pixel-for-pixel unchanged
+   and only a top view reached from somewhere else is different. */
 function upVec(){
-  return Math.abs(Math.cos(V.cam.pitch)) < 0.02 ? [0,1,0] : [0,0,1];
+  const cp=Math.cos(V.cam.pitch);
+  if(Math.abs(cp) >= 0.02) return [0,0,1];
+  const sp=Math.sin(V.cam.pitch);
+  return [-Math.cos(V.cam.yaw)*sp, -Math.sin(V.cam.yaw)*sp, 0];
 }
 function planView(){ preset(-Math.PI/2, Math.PI/2); }
+/* ⭐⭐ TURN THE CAMERA WITHOUT MOVING IT -- what the world-axes widget does now.
+   `preset` above is the other half of the pair and both are wanted: Top, Front
+   and Side FRAME THE JOB (centre on everything, back off to `reach`), while a
+   click on the widget re-aims from where you are already standing, keeping the
+   target, the zoom and the part of the room you were looking at. Asked for by
+   the operator, 2026-09-01: the widget used to throw the view back to the whole
+   site, so using it to check a wall square-on meant flying back in afterwards.
+
+   ⛔ ROAM CANNOT SURVIVE THE SNAP, AND NOT FOR TIDINESS. An orthographic view's
+   HEIGHT is read off `V.cam.dist`, and roaming pins that at `CAM_FLOOR` -- a
+   few centimetres -- because in roam the distance is a step size, not a
+   framing. Snapping to a plan view from inside the room would have drawn a
+   saucer. The EYE is what is kept, so you stay standing where you were and the
+   scene is put a sensible distance in front of you.
+
+   ⛔ AND IT STILL SWITCHES ORTHOGRAPHIC ON, deliberately. That is not a
+   cosmetic side effect of the old presets: it is what makes a lasso drawn
+   afterwards cut a straight column instead of a widening cone (see FOV above),
+   and the widget is a snap-to-square-on control, which is exactly when a cut is
+   about to be drawn. Press Perspective to go back. */
+function snapLook(yaw,pitch){
+  const keep = V.free ? eye() : null;
+  V.cam.yaw=yaw; V.cam.pitch=pitch;
+  if(keep){ V.free=false; V.cam.dist=V.reach||20; setEye(keep); }
+  setOrtho(true);                       /* invalidates */
+}
 
 function mul(a,b){ const o=new Float32Array(16);
   for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;
@@ -5820,7 +5914,7 @@ attribute vec3 aPos; attribute vec3 aCol; attribute float aLive;
 uniform mat4 uVP, uModel; uniform vec3 uScale, uOffset, uTint;
 uniform vec3 uClipC, uClipH; uniform mat3 uClipRT;
 uniform float uPS, uPSmax, uMode, uZlo, uZhi, uGrey, uClipOn, uClipIn,
-              uOrtho, uOrthoW;
+              uOrtho, uOrthoW, uDim;
 varying vec3 vCol; varying float vKill;
 vec3 ramp(float t){ t=clamp(t,0.0,1.0);
   return clamp(vec3(1.5-abs(4.0*t-3.0),1.5-abs(4.0*t-2.0),
@@ -5832,6 +5926,17 @@ void main(){
   if(uMode < 0.5)      vCol = uTint * (0.45 + 0.75*base.r);
   else if(uMode < 1.5) vCol = ramp((p.z-uZlo)/max(uZhi-uZlo,1e-4));
   else                 vCol = base;
+  /* ⭐⭐ ONE CLOUD LIT AND THE REST TURNED DOWN -- "a button that highlights
+     that point cloud" (operator, 2026-09-01). A survey of nineteen tripods in
+     one room is nineteen clouds of the same furniture, and the list gives you
+     a name and a colour swatch for each; neither answers "which of these am I
+     looking at". Dimming the OTHERS rather than brightening this one is what
+     makes it work on a photo-coloured cloud, where every scan is already the
+     colour of the room and there is no headroom left to brighten into.
+     ⛔ IT MULTIPLIES WHATEVER THE MODE PRODUCED, so it reads the same in
+     photograph colour, in height ramp and in the by-scan tint. A branch per
+     mode would be three answers to one question. */
+  vCol *= uDim;
   /* Into the box's OWN frame first, so a box turned to face a wall clips to
      that wall. uClipRT is the transpose of the box's axes: undoing the turn,
      not repeating it. */
@@ -6126,10 +6231,18 @@ function gizmoClick(mx,my){
   const v=[best.axis.v[0]*best.sign, best.axis.v[1]*best.sign,
            best.axis.v[2]*best.sign];
   /* look ALONG the axis, so the camera sits on the opposite side of it */
-  if(v[2]) preset(-Math.PI/2, v[2]>0 ? Math.PI/2 : -Math.PI/2);
-  else preset(Math.atan2(v[1],v[0]), 0);
+  /* ⭐⭐ AND THE HEADING IS KEPT WHEN THE AXIS IS THE VERTICAL ONE. Looking
+     down Z fixes the pitch and says NOTHING about which way is up the screen,
+     so there was a free number here and it was being thrown away: `preset`
+     was handed the fixed -pi/2 and the plan view arrived at one orientation
+     for the whole job. Carrying `V.cam.yaw` through means the top view comes
+     up facing the way you were already facing, which `upVec` now honours. The
+     horizontal axes have no such freedom -- "look down X" IS the yaw. */
+  if(v[2]) snapLook(V.cam.yaw, v[2]>0 ? Math.PI/2 : -Math.PI/2);
+  else snapLook(Math.atan2(v[1],v[0]), 0);
   say('looking down world '+(best.sign>0?'+':'-')+best.axis.n+
-      ' ('+axisWord(best.axis, best.sign)+').');
+      ' ('+axisWord(best.axis, best.sign)+') from where you were standing — '+
+      'Top, Front and Side under View frame the whole job instead.');
   return true;
 }
 
@@ -6962,7 +7075,16 @@ function invalidate(){ need=true; }
    from a real second release. Adding a name already in the set, or deleting
    one that was never in it, is nothing. */
 const rushWho=new Set();
-let rushT=null;
+/* ⛔⛔ A TIMER PER NAME, AND IT IS THE SAME FAULT THE SET ABOVE FIXED, ONE
+   LEVEL DOWN. This was a single `rushT`, which was correct while the wheel was
+   the only burst holder and became wrong the moment the arrow and bracket keys
+   became a second one: `rushBurst` clears the pending timer before setting its
+   own, so a key pressed during the wheel's settle interval cancelled the
+   wheel's alarm and nothing was ever going to call `rushDrop('wheel')`. The
+   set would then hold a name with no hand behind it and the view would stay on
+   the coarse twin for the rest of the session. Naming the holders is only half
+   the answer if their ALARMS still share one slot. */
+const rushT=new Map();
 function rushSet(){
   const want = rushWho.size>0;
   if(V.rush!==want){ V.rush=want; invalidate(); }
@@ -6976,8 +7098,14 @@ function rushDrop(who){ rushWho.delete(who); rushSet(); }
    exactly where it was. */
 function rushBurst(who, ms){
   rushGrab(who);
-  clearTimeout(rushT);
-  rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }, ms||200);
+  clearTimeout(rushT.get(who));
+  rushT.set(who, setTimeout(()=>{ rushT.delete(who); rushDrop(who); },
+                            ms||200));
+}
+/* Take one burst holder's hand off now, alarm and all -- for a gesture that
+   supersedes it. ⛔ BY NAME, like every other operation here. */
+function rushCancel(who){
+  clearTimeout(rushT.get(who)); rushT.delete(who); rushDrop(who);
 }
 /* ⭐ HELD, NOT TIMED, FOR A CONTROL THAT REPORTS ITS OWN RELEASE. This is what
    the operator asked for in those words: while the slider is held the twin
@@ -7000,6 +7128,37 @@ function rushWhileHeld(el){
   el.addEventListener('blur', ()=>rushDrop(who));
   addEventListener('pointerup', ()=>rushDrop(who));
   addEventListener('pointercancel', ()=>rushDrop(who));
+}
+
+/* --- the spotlight ---------------------------------------------------------
+
+   ⭐⭐ "A BUTTON THAT HIGHLIGHTS THAT POINT CLOUD" (operator, 2026-09-01). On a
+   survey of nineteen tripods in one room every row in the list is the same
+   furniture seen from somewhere else, and neither the name (a timestamp) nor
+   the swatch (a colour handed out by load order) answers "which of these am I
+   looking at". One press lights one cloud and turns the rest down.
+
+   ⛔ IT IS NOT HIDING, AND THAT IS THE WHOLE POINT OF HAVING BOTH. Hiding takes
+   a cloud out of the drawing, out of the picking and out of the export; the
+   question here is where one cloud sits AMONG the others, which cannot be
+   answered by removing the others. Nothing about a spotlit job exports or cuts
+   differently -- `shown` is untouched, so no cut, no pick and no written file
+   can tell the spotlight was ever on.
+
+   ⛔ AND IT IS A VIEW STATE, SO IT IS NOT SAVED. A project reopened with one
+   cloud lit and no memory of pressing anything is a picture the operator would
+   have to debug. */
+function dimOf(s){
+  return (V.spot<0 || V.spot===s.index) ? 1.0 : 0.26;
+}
+function spotScan(i){
+  V.spot = (V.spot===i) ? -1 : i;
+  refreshLists(); invalidate();
+  const s=V.scans.find(x=>x.index===i);
+  say(V.spot<0 ? 'Every cloud back to full brightness.'
+      : 'Lighting '+(s?s.name:('cloud '+(i+1)))+' — the rest are turned down, '+
+        'not hidden: they are still drawn, still pickable, still cut from and '+
+        'still exported. Press it again to put them back.');
 }
 
 /* Sustained slowness leaves one line in the log: 30 back-to-back drawn
@@ -7039,6 +7198,11 @@ function draw(){
       gl.uniform3fv(loc.uOffset,s.offset);
       gl.uniform3fv(loc.uTint,s.tintf);
       gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
+      /* ⛔ THE REFINEMENT FRAMES DIM TOO. These chunks land on the very pixels
+         the scene frame drew, so a spotlight applied in one and not the other
+         would un-dim the cloud point by point as it sharpened -- the highlight
+         fading out over the second after it was switched on. */
+      gl.uniform1f(loc.uDim, dimOf(s));
       gl.bindBuffer(gl.ARRAY_BUFFER,e.c.pos);
       gl.vertexAttribPointer(loc.aPos,3,gl.SHORT,false,0,0);
       gl.bindBuffer(gl.ARRAY_BUFFER,e.c.col);
@@ -7112,6 +7276,7 @@ function draw(){
     gl.uniform3fv(loc.uOffset,s.offset);
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
+    gl.uniform1f(loc.uDim, dimOf(s));
     const comps=s.rgb?3:1;
     /* ⛔⛔ GROWN ONLY WHILE THE HAND IS MOVING, AND THE REASON IS WHAT COVERS
        WHAT. A stand-in point has to cover the area of the K it stands for or
@@ -7332,7 +7497,7 @@ function buildGL(){
   loc={};
   for(const u of ['uVP','uModel','uScale','uOffset','uTint','uPS','uPSmax',
                   'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipC',
-                  'uClipH','uClipRT','uOrtho','uOrthoW'])
+                  'uClipH','uClipRT','uOrtho','uOrthoW','uDim'])
     loc[u]=gl.getUniformLocation(prog,u);
   loc.aPos=gl.getAttribLocation(prog,'aPos');
   loc.aCol=gl.getAttribLocation(prog,'aCol');
@@ -8525,6 +8690,172 @@ function undoEdit(){
   showEdits(); recomputeLive(); dirty();
   say('undid '+(e.mode==='keep'?'keep':'delete')+' '+e.kind+'.');
 }
+
+/* ---- putting every point back ---------------------------------------------
+
+   ⭐⭐ ASKED FOR BY THE OPERATOR, 2026-09-01: "a button that reloads all
+   pointclouds in the full return in case i deleted wrong points, and a button
+   that just reloads the selected point cloud."
+
+   ⛔⛔ NOTHING IS RE-READ, BECAUSE NOTHING WAS EVER THROWN AWAY. It is worth
+   being plain about this, because the word the operator reached for is
+   "reload" and reloading is the one thing this must not do: opening this
+   project takes a minute and a half, and every point of it is already in
+   memory. A cut is an OPERATION on a list (see `editPlan`) and a clean is a
+   RULE held on the server (see `clean_scan`) -- neither has ever touched the
+   capture on disk or the buffers on the card. Taking the operations away
+   is the whole restore, and it is instant.
+
+   ⛔⛔ AND IT COVERS BOTH WAYS POINTS LEAVE, WHICH IS WHY `Clear all` WAS NOT
+   ALREADY THIS BUTTON. Clear all next door empties the cut list and stops --
+   an operator who had also pressed Remove strays cleared every cut, watched
+   most of the points come back, and still had a hole where the clean rule
+   was. Two mechanisms, two undos, and the operator has no reason to know
+   there were two. One press now answers "put it back" whichever of them took
+   the points. */
+
+/* The cut list with one cloud taken out of it -- or emptied, for `only` null.
+   Pure: it returns the new list and how many cuts it changed, so the caller
+   can refuse before anything has moved.
+
+   ⛔⛔ A WHOLE-JOB CUT IS NARROWED, NEVER DROPPED. This is the difference
+   between the two buttons and the only hard part of either. A cut with no
+   scope goes through every cloud, so restoring ONE cloud cannot simply delete
+   it: that would put the tripod back into the four other scans as the price of
+   restoring this one, silently, in the other direction from the mistake the
+   operator is fixing. A scope has held a SET of clouds since hiding arrived
+   (`cutScope` returns a list whenever anything is off screen), so taking one
+   name out of it is a shape the preview, the saved file and `pipeline._scope`
+   all already understand.
+
+   ⛔ NORMALISED THE WAY `pipeline._scope` NORMALISES. One cloud goes back to
+   being a bare number so a saved project stays readable by eye, and an EMPTY
+   scope is dropped rather than written -- an empty list means "no cloud", so
+   the cut could never take another point and would sit in the list saying it
+   would.
+
+   ⛔ THE FRAMES ARE LEFT ALONE, and that is not an oversight. `forgetScan`
+   renumbers them because a cloud LEAVING the job shifts every index above it;
+   nothing leaves here, so every key still names the cloud it named. A frame
+   for a cloud no longer in the scope is never asked for -- `frameFor` is
+   reached only through `planFor`, which has already filtered on the scope. */
+function editsWithout(only){
+  if(only==null) return {edits:[], touched:V.edits.length};
+  const others = V.scans.map(s=>s.index).filter(i=>i!==only);
+  const kept=[]; let touched=0;
+  for(const e of V.edits){
+    if(!inScope(e.scan, only)){ kept.push(e); continue; }
+    touched++;
+    const left = (e.scan==null ? others
+                  : (Array.isArray(e.scan) ? e.scan : [e.scan])
+                      .filter(i=>i!==only));
+    if(!left.length) continue;
+    /* ⛔ A COPY, NOT A MUTATION, for the reason `forgetScan` copies: the undo
+       stack holds edit IDs and the snapshot below holds the old objects, and
+       an edit rewritten in place would rewrite the thing being kept to go
+       back to. The id travels with the copy, so its stack entry still finds
+       it. */
+    kept.push(Object.assign({}, e,
+                            {scan: left.length===1 ? left[0] : left}));
+  }
+  return {edits:kept, touched:touched};
+}
+/* The clouds this restore has a cleaning rule to switch off. */
+function cleanedClouds(only){
+  return V.scans.filter(s => s.clean && (only==null || s.index===only));
+}
+/* `only` is a scan index, or null for the whole job. */
+async function restorePoints(only){
+  /* ⛔ THE SAME TWO LINES `Clear all` USES, not `clearPending`. A pending
+     outline is a delete waiting on an answer, and the panel asking for that
+     answer is hidden by `askLasso`, which `clearPending` does not touch --
+     leaving it up would offer Delete inside over a cut list that had just
+     been emptied. */
+  V.pending=null; askLasso(false);
+  const who = (only==null) ? null : V.scans.find(x=>x.index===only);
+  if(only!=null && !who)
+    return say('Double-click a scan’s name to choose which cloud to put '+
+               'back.', 'warn');
+  const plan = editsWithout(only), rules = cleanedClouds(only);
+  /* ⛔ REFUSED OUT LOUD RATHER THAN DOING NOTHING. A restore that ran on an
+     untouched job would clear the pending outline, mark the project unsaved
+     and put a step on the undo stack, all for a press that changed no point --
+     and the operator would have no way to tell that from a restore that had
+     silently failed. */
+  if(!plan.touched && !rules.length)
+    return say(only==null
+      ? 'Every point is already there — nothing has been cut or cleaned '+
+        'anywhere in this job.'
+      : 'Nothing has been taken out of '+who.name+': no cut names it and it '+
+        'has no cleaning rule.', 'warn');
+
+  /* ⛔ THE SNAPSHOT IS TAKEN BEFORE ANYTHING MOVES, and it holds the cleaning
+     SPECS as well as the cut list. This button can wipe an afternoon's careful
+     cutting in one press, which is precisely why it needs the same undo as
+     everything else -- a safety net with no way back is a second way to lose
+     the work. `V.edits` is REPLACED below, never mutated, so holding the old
+     array is holding the old list. */
+  const wasEdits = V.edits.slice();
+  const wasClean = rules.map(s=>({index:s.index, spec:s.clean}));
+  V.edits = plan.edits;
+  forgetEditSteps(); showEdits();
+  remember('putting the points back'+(who ? ' into '+who.name : ''),
+           async()=>{
+             V.edits = wasEdits; showEdits();
+             for(const c of wasClean) await sendCleanSpec(c.index, c.spec);
+             recomputeLive(); invalidate(); dirty();
+           });
+
+  let off=0;
+  if(rules.length){
+    watch(true);
+    try{
+      /* ⛔ ONE AT A TIME AND AWAITED. Each answer carries a rebuilt scan list
+         and `refreshScans` swaps the buffers under the drawing; two in flight
+         would have the second rebuild racing the first. */
+      for(const s of rules){
+        const j = await post('clean', {index:s.index});
+        if(!j || !j.ok)
+          throw new Error((j&&j.error) || 'the server would not clear it');
+        await refreshScans(j); off++;
+      }
+    }catch(e){
+      /* ⛔ SAID, NOT SWALLOWED, AND THE CUTS STAY BACK. Half a restore is
+         still a restore of that half; what must not happen is the operator
+         believing the cloud is whole when a rule is still hiding points.
+         The undo entry above covers both halves either way. */
+      say('The cuts are back, but a cleaning rule would not switch off: '+
+          e.message, 'bad');
+    }finally{ watch(false); }
+  }
+  recomputeLive(); invalidate(); dirty();
+  say((only==null ? 'Every point is back across the whole job'
+                  : who.name+' is whole again')+' — '+
+      (plan.touched ? plan.touched+' cut'+(plan.touched===1?'':'s')+
+                      (only==null ? ' cleared' : ' no longer take from it')
+                    : 'no cuts named it')+
+      (off ? ' and '+off+' cleaning rule'+(off===1?'':'s')+' switched off'
+           : '')+
+      '. Nothing was re-read — no point was ever thrown away — and '+
+      'Ctrl-Z puts it all back exactly as it was.');
+}
+/* Re-send one stored cleaning spec, exactly as it was.
+   ⛔ ONE HOME, because `undoClean` and the restore's undo both have to put a
+   rule back and they must put back the SAME rule. `min_refl` is the reason
+   this is not two lines at each site: the button asks for a SHARE of the
+   cloud ("the weakest 10%") and what the server stores is the reflectivity
+   that share worked out to, so a rule can only be restored by handing the
+   threshold straight back -- see `clean_scan`. */
+async function sendCleanSpec(index, spec){
+  const body = spec ? {stray:!!spec.stray,
+                       voxel_m:(spec.stray||{}).voxel_m,
+                       neighbours:(spec.stray||{}).neighbours,
+                       min_refl:(spec.min_refl==null ? null : spec.min_refl),
+                       drop_weakest:null} : {};
+  const j = await post('clean', Object.assign({index:index}, body));
+  if(j && j.ok) await refreshScans(j);
+  return j;
+}
 /* ⛔ SENT AS CENTRE +/- HALF, NOT AS THE LOCAL BOUNDS. The exporter takes a
    world-aligned lo/hi and turns it about its own centre; the workbench holds
    local bounds about a pivot. Those describe the same box only when the lo/hi
@@ -8827,7 +9158,7 @@ function setTool(t){
   const nb=$('nav'); if(nb) nb.classList.toggle('on', V.nav);
   V.tool=t;
   [['lasso','Lasso'],['rect','Rectangle'],['circle','Circle'],
-   ['poly','Polygon'],['pair','Pick pairs'],
+   ['poly','Polygon'],['pair','Pick pairs'],['whose','Pick a cloud'],
    ['level','Pick level points'],['plumb','Place / measure'],
    ['setorg','Pick a point']]
     .forEach(([id,label])=>{
@@ -9164,6 +9495,33 @@ function runPick(mx,my){
                       'warn');
   /* levelling takes a point off ANY cloud -- the floor is the floor, and picks
      spanning both is what reveals a tilt between the two setups */
+  /* ⭐⭐ CLICK A POINT, WORK ON THE CLOUD IT CAME OFF. Asked for by the
+     operator, 2026-09-01: "when i press a point in a point cloud it selects
+     the point cloud for movement and all other controls and it's highlighted
+     in the point cloud select menu."
+
+     ⭐ AND IT IS A HANDFUL OF LINES BECAUSE THE PICKER ALREADY ANSWERS THE
+     QUESTION. `pickPoint` has always returned which scan the hit belongs to --
+     the pair tool uses it to refuse a point off the wrong cloud -- so nothing
+     new is searched for. `pickScan` is the one door into "work on this one"
+     and already brings the movement controls, the rotation ring, the cut scope
+     and the photograph tray with it, and the row it lights in the list is the
+     `sel` class it has always set. Wiring a second path to any of that is how
+     two of them come to disagree.
+
+     ⛔ IT PICKS, IT DOES NOT LIGHT. The spotlight is a separate button on the
+     row, for the separate question "where is this one among the others" -- a
+     pick that also lit would leave the job dimmed after every selection, and
+     the operator would have to find the way to undo a thing they never asked
+     for. */
+  if(V.tool==='whose'){
+    pickScan(hit.scan.index);
+    return say('That point is on ' + hit.scan.name +
+               ' — now working on it: the movement controls, its rotation '+
+               'ring, new cuts and the photograph tray all follow it, and it '+
+               'is selected in Scans in this job. Light to see it among the '+
+               'others; K puts this tool away.');
+  }
   if(V.tool==='level') return levelPick(hit);
   if(V.tool==='plumb') return plumbPick(hit);
   if(V.tool==='north') return northPick(hit);
@@ -10297,7 +10655,13 @@ const MENUWHY = {
    that go with it instead of arming a tool whose panel is shut. */
 const TOOLTRAY = {rect:'cut', lasso:'cut', circle:'cut', poly:'cut',
                   pair:'pairs', level:'level',
-                  north:'north', plumb:'plumb', setorg:'level'};
+                  north:'north', plumb:'plumb', setorg:'level',
+                  /* ⛔ THE SCAN LIST, NOT THE TRAY THE BUTTON SITS IN. What
+                     this tool DOES is change which row is selected, so the
+                     tray to have open is the one holding the rows -- and
+                     arming it with K, from the canvas, would otherwise light
+                     a row nobody can see. */
+                  whose:'scans'};
 const TRAYKEY = 'tlspie.trays.v2';
 
 /* Open, and folded, per tray. ⛔ KEPT ACROSS RELOADS. A tray arrangement is a
@@ -10384,7 +10748,8 @@ const KEYHELP = [
     ['drag a grip dot', 'pull a clip-box face or turn the box \u2014 only a '+
      'drag starting on the lit dot takes it; anywhere else is the camera'],
     ['double-click a scan', 'work on that one: the movement controls, its '+
-     'ring, new cuts and the photograph tray all follow it'],
+     'ring, new cuts and the photograph tray all follow it — or press K '+
+     'and click the cloud itself'],
     ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0 \u00b7 '+
      'switch the ring on with Turn ring, under Place'],
     ['drag a tray\u2019s title', 'move it above or below another tray']]],
@@ -10403,6 +10768,8 @@ const KEYHELP = [
     ['N', 'polygon · click each corner, double-click or Enter to close · '+
      'all from one viewpoint'],
     ['P', 'pick pairs'],
+    ['K', 'pick a cloud · click a point and you are working on the cloud '+
+     'it came off'],
     ['G', 'level points'],
     ['T', 'reference lines'],
     ['B', 'hide the clip box without switching clipping off']]],
@@ -10725,6 +11092,16 @@ function refreshLists(){
       'pan track, so the detail slider and the pitch check cannot apply to '+
       'it. Aligning, levelling, clipping and colour all work.">cloud</span>'
       : '')+'</span>'+
+    /* ⛔ BEFORE Hide, BECAUSE IT IS THE GENTLER OF THE TWO and the one an
+       operator reaches for first: "which of these nineteen is that one" is
+       answered by lighting it, and only then, if it is in the way, by hiding
+       it. */
+    '<button class="mini'+(V.spot===s.index?' on':'')+
+    '" title="Light this cloud and turn the others down, so you can see where '+
+    'it sits among them. They are NOT hidden — still drawn, still pickable, '+
+    'still cut from and still exported. Press again to put them back."'+
+    ' onclick="spotScan('+s.index+')">'+
+    (V.spot===s.index?'Lit':'Light')+'</button>'+
     '<button class="mini'+(V.hidden[s.index]?' on':'')+
     /* ⛔ THE TOOLTIP USED TO PROMISE THE OPPOSITE, and it was right at the
        time: hidden meant "not drawn, not cut from, but STILL EXPORTED", with
@@ -10786,6 +11163,14 @@ function refreshLists(){
     '<option value="-1"'+(V.editWho<0?' selected':'')+'>every cloud</option>'+
     V.scans.map(s=>'<option value="'+s.index+'"'+
       (s.index===V.editWho?' selected':'')+'>only '+s.name+'</option>').join('');
+  /* ⛔⛔ AND THE "WHICH CLOUD AM I WORKING ON" LABELS FOLLOW THE PICK. This
+     call is the fix for a real staleness: `showClean` ran ONCE, at startup,
+     and on the slider events -- so the clean tray had been naming whichever
+     scan was picked when the page opened, and went on naming it after every
+     double-click in the list. Nobody noticed while the tray was only ever
+     opened straight after picking. Put this cloud back reads the same
+     answer and would have inherited the same lie. */
+  showClean();
 }
 
 /* Taking a cloud out of the session.
@@ -10893,6 +11278,12 @@ function forgetScan(gone){
   if(V.active===gone){ V.chose=false; V.active=0; }
   else if(V.active>gone) V.active--;
   if(V.picked===gone) V.picked=0; else if(V.picked>gone) V.picked--;
+  /* ⛔ AND THE SPOTLIGHT IS AN INDEX LIKE THE REST. Left alone it would start
+     lighting whichever cloud inherited the number -- a highlight the operator
+     did not ask for, on a cloud they were not asking about. Removing the LIT
+     one puts every cloud back to full brightness rather than moving the light
+     onto its neighbour. */
+  if(V.spot===gone) V.spot=-1; else if(V.spot>gone) V.spot--;
   /* ⛔ THE HIDDEN SET IS RE-KEYED WITH EVERYTHING ELSE. It is keyed on the
      index, and removing a cloud shifts every index above it -- so a set left
      alone would start hiding the wrong scan, which looks exactly like a scan
@@ -11241,6 +11632,12 @@ function cleanWho(){
 function showClean(){
   const s=cleanWho();
   $('clnwho').textContent = s ? s.name : '\u2014 pick a scan first';
+  /* \u26d4 THE OTHER TRAY'S "WHICH CLOUD" LABEL IS WRITTEN HERE, FROM THE SAME
+     ANSWER. Put this cloud back and the cleaning buttons both act on
+     `cleanWho()`, and two labels computing that separately is how they come to
+     name different scans while both look right. */
+  const pb=$('pbwho');
+  if(pb) pb.textContent = s ? s.name : '\u2014 pick a scan first';
   $('clnvv').textContent = $('clnv').value+' cm';
   $('clnnv').textContent = $('clnn').value;
   const w=+$('clnw').value;
@@ -11279,17 +11676,17 @@ function cleanOff(){
 /* ⛔ UNDOING A CLEAN MEANS RE-SENDING THE RULE THAT WAS THERE, not putting
    points back on screen: the mask lives on the server and the export reads it
    from there, so a page-side restore would show one cloud and write another. */
+/* ⛔ AND IT PUTS BACK THE WHOLE RULE, INCLUDING A WEAK-RETURN THRESHOLD. This
+   built the body by hand and had no way to say `min_refl`, so undoing a clean
+   over a cloud that already had a "drop the weakest 10%" rule sent the EMPTY
+   body -- which clears cleaning altogether. The cloud came back with more
+   points than it had before the thing being undone, which is not an undo.
+   `sendCleanSpec` is the one home for re-sending a spec and the restore
+   buttons use it too. */
 function undoClean(i){
   const s=V.scans.find(x=>x.index===i);
   const was = s ? s.clean : null;
-  return async()=>{
-    const body = was ? {stray:!!was.stray,
-                        voxel_m:(was.stray||{}).voxel_m,
-                        neighbours:(was.stray||{}).neighbours,
-                        drop_weakest:null} : {};
-    const j=await post('clean', Object.assign({index:i}, body));
-    if(j && j.ok) await refreshScans(j);
-  };
+  return ()=>sendCleanSpec(i, was);
 }
 
 /* ---- sorting a whole shoot ----------------------------------------- */
@@ -12008,7 +12405,13 @@ function syncClipSliders(){
    travelled falls through to the camera exactly as it does for pair-picking.
    (Moving the camera then abandons the outline -- see `polyStale` -- which is
    the honest end of that trade, not a bug in it.) */
-const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1, poly:1};
+/* ⛔ `whose` IS IN THIS LIST. It is a click on a point like every other entry
+   here -- it just reads which cloud the point came off instead of what it was
+   for. Left out, the press would fall through to the camera and the tool would
+   be a lit button that does nothing, which is the failure this file keeps
+   naming. */
+const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1, poly:1,
+                    whose:1};
 
 /* Is this cloud on screen? One home for the question, because the draw, the
    picker and every new cut all have to agree about it. */
@@ -12147,7 +12550,7 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
        can only drop `wheel` now -- so this line is belt and braces, and it is
        kept because a wheel rush left standing through a LASSO would be the
        same fault the other way up. */
-    clearTimeout(rushT); rushT=null; rushDrop('wheel');
+    rushCancel('wheel');
     if(!lassoing && picking===null) rushGrab('drag'); else rushDrop('drag');
     cv.classList.add('drag'); cv.setPointerCapture(e.pointerId);
   });
@@ -12373,12 +12776,17 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
        handled above, deliberately, before this line. */
     else if(e.ctrlKey || e.metaKey || e.altKey) return;
     else if(k==='c'||k==='C') setNav(!V.nav);
-    else if(k==='ArrowLeft')  nudge(-0.05,0,0);
-    else if(k==='ArrowRight') nudge(0.05,0,0);
-    else if(k==='ArrowUp')    nudge(0,0.05,0);
-    else if(k==='ArrowDown')  nudge(0,-0.05,0);
-    else if(k==='[') nudge(0,0,-0.5);
-    else if(k===']') nudge(0,0,0.5);
+    /* ⭐ HELD DOWN, THESE ARE A DRAG. A key that repeats moves or turns the
+       whole cloud thirty times a second with no `pointerup` to end it, so the
+       twin is taken on a self-releasing BURST rather than a hold -- the same
+       shape the wheel uses, and by its own name, so it cannot take a slider's
+       or a drag's hand off the twin when it expires. */
+    else if(k==='ArrowLeft')  { rushBurst('keys',250); nudge(-0.05,0,0); }
+    else if(k==='ArrowRight') { rushBurst('keys',250); nudge(0.05,0,0); }
+    else if(k==='ArrowUp')    { rushBurst('keys',250); nudge(0,0.05,0); }
+    else if(k==='ArrowDown')  { rushBurst('keys',250); nudge(0,-0.05,0); }
+    else if(k==='[') { rushBurst('keys',250); nudge(0,0,-0.5); }
+    else if(k===']') { rushBurst('keys',250); nudge(0,0,0.5); }
     else if(k==='r'||k==='R') toggleRoam();
     else if(k==='f'||k==='F') recentre();
     else if(k==='o'||k==='O') setOrtho(!V.ortho);
@@ -12391,6 +12799,7 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     else if(k==='e'||k==='E') setTool(V.tool==='circle'?'':'circle');
     else if(k==='n'||k==='N') setTool(V.tool==='poly'?'':'poly');
     else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
+    else if(k==='k'||k==='K') setTool(V.tool==='whose'?'':'whose');
     else if(k==='g'||k==='G') setTool(V.tool==='level'?'':'level');
     else if(k==='t'||k==='T'){ V.ref=!V.ref;
       $('ref').classList.toggle('on',V.ref); showPlumb(); invalidate(); }
@@ -12451,6 +12860,22 @@ document.addEventListener('DOMContentLoaded', ()=>{
      showing the twin while they are dragged would be answering the question
      they were opened to ask. */
   ['tx','ty','tz','rz','rtip','rbank'].forEach(id=>rushWhileHeld($(id)));
+  /* ⭐⭐ AND THE CLIP BOX'S NINE, WHICH IS THE SAME OMISSION ONE TRAY OVER.
+     "Rotate controls are not working like the move tool -- pressing the rotate
+     control should snap to the LOD cloud and hold it till I release the
+     slider" (operator, 2026-09-01). The six above were wired on 2026-08-28 and
+     the box's own six faces and three turns were not, so the control LABELLED
+     Turn in the clipping tray was the one still redrawing the whole project on
+     every input event -- and with clipping on, every one of those events
+     re-tests every point in the shader. Same gesture, same cost, same answer.
+
+     ⛔ AND THE EXCLUSION STANDS: point size and export/load detail still get
+     no rush. Those three exist to judge the REAL cloud, and showing a stand-in
+     while they are dragged answers a different question from the one they were
+     opened to ask. The test is not "is it a slider" but "does holding it
+     redraw the whole cloud for a reason other than looking at it". */
+  ['cx0','cx1','cy0','cy1','cz0','cz1','byaw','bpitch','broll']
+    .forEach(id=>rushWhileHeld($(id)));
   /* ⭐⭐ ONE BUTTON FOR THE WHOLE MANIPULATOR, BECAUSE THREE BUTTONS ARE NOT A
      GIZMO. Every part of this already existed -- arms, turn ring, tilt rings,
      all sharing the tripod, all with a worked-out order of precedence when
@@ -12768,6 +13193,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
     forgetEditSteps();
     showEdits(); recomputeLive();
     say('edits cleared; the whole cloud will be saved.'); };
+  $('whose').onclick=()=>setTool(V.tool==='whose'?'':'whose');
+  $('putback').onclick=()=>restorePoints(null);
+  /* ⛔ THE CLOUD THE PANEL IS NAMING, taken from `cleanWho` -- the same
+     function the label beside the button is written from and the same one the
+     cleaning buttons act on. Reading `V.picked` here directly would be a
+     second answer to "which cloud", and the label would go on naming the
+     first one. */
+  $('putback1').onclick=()=>{
+    const s=cleanWho();
+    if(!s) return say('Double-click a scan’s name to choose which cloud to '+
+                      'put back.', 'warn');
+    return restorePoints(s.index); };
   /* ⭐ THE OUTLINE AND THE CLIPPING ARE SEPARATE ON PURPOSE. Once the box is
      small the outline sits over the very points being inspected, so it can be
      hidden with the clipping left exactly as it was. (The grips only take a

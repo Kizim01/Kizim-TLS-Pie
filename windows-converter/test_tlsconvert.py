@@ -2001,7 +2001,8 @@ try:
     check("release and the wheel's settle timer both end it with a "
           "full-detail redraw",
           "rushDrop('drag');" in _page
-          and "rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }" in _page)
+          and "rushT.set(who, setTimeout(()=>{ rushT.delete(who); "
+              "rushDrop(who); }" in _page)
     # ⛔⛔ ONE OWNER FOR `V.rush`, AND THE HOLDERS ARE NAMED. It used to be set
     # and cleared from two places that knew nothing about each other -- the
     # canvas drag and the wheel's settle timer -- so whichever finished FIRST
@@ -2112,8 +2113,13 @@ try:
     # that travelled fall through to the camera. Routed the other way round,
     # the circle would need a click to start and a click to finish and the
     # polygon could not be drawn at all without the first drag eating the view.
+    # ⭐ `whose` joined on 2026-09-01 and it PICKS. It is one click that reads
+    # which cloud the point under it came off; routed as a drag it would eat
+    # the orbit, and left out of both tables the press would fall through to
+    # the camera and the tool would be a lit button that does nothing.
     check("and the point-picking tools are the ones that pick",
-          _picks == {"pair", "level", "plumb", "north", "setorg", "poly"}
+          _picks == {"pair", "level", "plumb", "north", "setorg", "poly",
+                     "whose"}
           and _draws == {"lasso", "rect", "circle"},
           "picks=%s draws=%s" % (sorted(_picks), sorted(_draws)))
     # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
@@ -2961,6 +2967,390 @@ check("and the edit list names a clip-limited cut",
 # load-bearing for cuts too, pin the picker's half of it as well.
 check("a pair or level pick still refuses a clipped-away point",
       "if(clipHides(q,wx,wy,wz)) continue;" in _js_func("pickPoint"))
+
+
+# --- putting the points back ------------------------------------------------
+#
+# ⭐⭐ THE OPERATOR'S OWN WORDS, 2026-09-01: "a button that reloads all
+# pointclouds in the full return in case i deleted wrong points, and a button
+# that just reloads the selected point cloud."
+#
+# ⛔⛔ THE HARD HALF IS THE ONE-CLOUD BUTTON, AND IT IS NOT A DELETION. A cut
+# with no scope goes through every cloud, so restoring ONE cloud must NARROW
+# that cut rather than drop it -- dropping it would put the tripod back into
+# the four other scans as the price of restoring this one, silently, in the
+# opposite direction from the mistake being fixed. So the narrowed list is run
+# through the SHIPPED `recomputeLive` over real point buffers and compared
+# against what the EXPORTER makes of the same list, which is the only
+# comparison that catches the preview and the file drifting apart.
+print("\nputting the points back")
+
+if not _node:
+    print("  ---- node is not installed; the restore's rules were NOT run")
+else:
+    # Two clouds, the same two points each. Cut the box out of everything,
+    # then restore cloud 1 -- the cut must go on taking cloud 0's point.
+    _rb_cases = [
+        # (page edit list, which cloud to restore)
+        ([("drop", None)], 1),
+        ([("drop", 1)], 1),
+        ([("drop", [0, 1])], 1),
+        ([("drop", 0)], 1),
+        ([("drop", None), ("drop", 1)], 1),
+    ]
+
+    def _rb_page(case):
+        return [{"kind": "box", "mode": mode, "box": dict(_BOX), "scan": who}
+                for mode, who in case]
+
+    _rb_js = """
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+const V={scans:[],edits:[],only:-1,editWho:-1,hidden:{},
+         alive:0,total:0,free:false,reach:37,ortho:false,spot:-1,
+         cam:{yaw:0.3,pitch:0.2,t:[5,6,7],dist:12}};
+/* ⛔ THE STUB ANSWERS EVERY ELEMENT, INCLUDING THE ONES NOT UNDER TEST.
+   `recomputeLive` writes the status line and `setOrtho` writes the button's
+   label; returning null for those is a TypeError that reads like the rule
+   being broken. */
+const $=()=>({textContent:'',innerHTML:'',value:0,classList:{toggle(){}}});
+const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showPlumb=()=>{};
+function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
+const CASES=%s, PTS=%s;
+function cloud(index){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], live:new Uint8Array(PTS.length)};
+}
+const out=CASES.map(([edits, only])=>{
+  V.scans=[cloud(0), cloud(1)]; V.edits=edits;
+  const plan=editsWithout(only);
+  V.edits=plan.edits;
+  recomputeLive();
+  return {scopes:plan.edits.map(e=>e.scan), touched:plan.touched,
+          live:V.scans.map(s=>Array.from(s.live).map(v=>v===1))};
+});
+console.log(JSON.stringify(out));
+
+/* And the whole-job button empties the list outright. */
+V.scans=[cloud(0), cloud(1)];
+V.edits=CASES[0][0];
+console.log(JSON.stringify(editsWithout(null)));
+
+/* ⛔⛔ THE OPERATOR'S OWN ACCEPTANCE TEST, 2026-09-01: "it just loads the cloud
+   at full points but keeps its attributes, position, rotation -- in exactly
+   the same location." Cut something away, restore, and count what is alive:
+   every point back, and the placement object still the very one the page was
+   holding, not a copy and not a re-read. */
+V.scans=[cloud(0), cloud(1)];
+const seat={x_m:1.5, y_m:-2.5, z_m:0.25, yaw_deg:33.5};
+V.scans[0].setup=seat;
+V.edits=[{kind:'box', mode:'drop', box:{lo:[-1,-1,-1],hi:[1,1,1]},
+          scan:null, frames:null}];
+recomputeLive();
+const cutAlive=V.scans.map(s=>Array.from(s.live).filter(v=>v===1).length);
+V.edits=editsWithout(null).edits;
+recomputeLive();
+console.log(JSON.stringify({
+  cut:cutAlive,
+  back:V.scans.map(s=>Array.from(s.live).filter(v=>v===1).length),
+  all:PTS.length,
+  seatSame:V.scans[0].setup===seat,
+  seat:V.scans[0].setup}));
+
+/* ⛔ THE ORIGINAL LIST IS NOT MUTATED. The undo holds `V.edits.slice()`, which
+   is a copy of the ARRAY and not of the edits in it -- so a narrowing that
+   rewrote an edit in place would rewrite the very thing being kept to go back
+   to, and Ctrl-Z would put back the narrowed cut rather than the whole-job
+   one. */
+const orig=[{kind:'box', mode:'drop', box:{lo:[-1,-1,-1],hi:[1,1,1]},
+             scan:null}];
+V.scans=[cloud(0), cloud(1)]; V.edits=orig;
+const kept=V.edits.slice();
+editsWithout(1);
+console.log(JSON.stringify({after:kept[0].scan, same:kept[0]===orig[0]}));
+
+/* The spotlight, and that it is brightness only. */
+V.spot=-1;
+const noSpot=[dimOf({index:0}), dimOf({index:1})];
+V.spot=1;
+const spot=[dimOf({index:0}), dimOf({index:1})];
+console.log(JSON.stringify({noSpot:noSpot, spot:spot}));
+
+/* ⛔⛔ THE SNAP AIMS AND DOES NOT REFRAME. Run, not read: the whole complaint
+   was that the widget threw the view back to the whole site. */
+V.cam={yaw:0.3, pitch:0.2, t:[5,6,7], dist:12}; V.free=false; V.ortho=false;
+snapLook(-1.0, 0.0);
+const orbitSnap={t:V.cam.t.slice(), dist:V.cam.dist, yaw:V.cam.yaw,
+                 ortho:V.ortho, free:V.free};
+/* From inside the room: the eye stays put, roam is left, and the distance
+   stops being the roaming step -- an orthographic height read off CAM_FLOOR
+   would frame a saucer. */
+V.free=true; V.cam={yaw:0.0, pitch:0.0, t:[0,0,0], dist:0.05};
+const eyeWas=eye();
+snapLook(0.0, Math.PI/2);
+const roamSnap={eye:eye().map(v=>+v.toFixed(9)),
+                eyeWas:eyeWas.map(v=>+v.toFixed(9)),
+                dist:V.cam.dist, free:V.free};
+console.log(JSON.stringify({orbit:orbitSnap, roam:roamSnap}));
+
+/* ⛔ AND THE PLAN VIEW'S UP VECTOR NOW TURNS WITH THE HEADING. */
+function upAt(yaw,pitch){ V.cam.yaw=yaw; V.cam.pitch=pitch;
+  return upVec().map(v=>+v.toFixed(9)); }
+console.log(JSON.stringify({
+  old: upAt(-Math.PI/2, Math.PI/2),
+  east: upAt(0, Math.PI/2),
+  north: upAt(Math.PI/2, Math.PI/2),
+  underneath: upAt(-Math.PI/2, -Math.PI/2),
+  level: upAt(1.2, 0.0),
+  /* one degree off vertical, where the general branch still runs: the
+     special case has to be the LIMIT of it, not a different picture */
+  nearly: (()=>{ V.cam.yaw=0.7; V.cam.pitch=Math.PI/2-0.0175;
+                 const b=basis();
+                 const n=Math.hypot(b.up[0],b.up[1]);
+                 return [+(b.up[0]/n).toFixed(3), +(b.up[1]/n).toFixed(3)]; })(),
+  atLimit: (()=>{ const u=upAt(0.7, Math.PI/2);
+                  return [+u[0].toFixed(3), +u[1].toFixed(3)]; })()}));
+""" % ("\n".join(_js_func(f) for f in
+                 ("editsWithout", "inScope", "recomputeLive", "editPlan",
+                  "planFor", "markBox", "frameFor", "cutGroups", "world",
+                  "dimOf", "snapLook", "upVec", "basis", "eye", "setEye",
+                  "setOrtho")),
+       json.dumps([[_rb_page(c), only] for c, only in _rb_cases]),
+       json.dumps(_PTS.tolist()))
+
+    _rbp = os.path.join(_rdir, "restore.js")
+    with io.open(_rbp, "w", encoding="utf-8") as _fh:
+        _fh.write(_rb_js)
+    _rbr = subprocess.run([_node, _rbp], capture_output=True, text=True)
+    check("the restore's own rules run at all", _rbr.returncode == 0,
+          (_rbr.stderr or "")[:400])
+    if _rbr.returncode == 0:
+        _rl = [l for l in _rbr.stdout.strip().splitlines() if l.strip()]
+        _rb = json.loads(_rl[0])
+
+        # ⛔ THE SCOPES FIRST, because they are what the SAVED FILE carries and
+        # what the exporter re-reads -- a preview that happened to look right
+        # over a scope written wrong is the failure this program keeps finding.
+        check("A WHOLE-JOB CUT IS NARROWED TO THE OTHERS, NEVER DROPPED",
+              _rb[0]["scopes"] == [0] and _rb[0]["touched"] == 1, _rb[0])
+        check("...a cut aimed at that cloud alone goes",
+              _rb[1]["scopes"] == [] and _rb[1]["touched"] == 1, _rb[1])
+        check("...a several-cloud scope loses just that name",
+              _rb[2]["scopes"] == [0], _rb[2])
+        check("...and a cut that never named it is left alone",
+              _rb[3]["scopes"] == [0] and _rb[3]["touched"] == 0, _rb[3])
+        check("...normalised to a bare number the way pipeline._scope writes "
+              "it, so a saved project stays readable",
+              all(not isinstance(c["scopes"][0], list)
+                  for c in (_rb[0], _rb[2])), [_rb[0], _rb[2]])
+
+        # ⛔⛔ AND WHAT THE PREVIEW KEEPS IS WHAT THE EXPORTER WRITES. The
+        # narrowed list goes through the exporter's own Edit, and the mask it
+        # produces per cloud is compared against the mask the SHIPPED
+        # recomputeLive left in the page's buffers.
+        for _i, _case in enumerate(_rb):
+            _ed = {"keep": [], "drop": [], "lassos": []}
+            for _sc in _case["scopes"]:
+                _ed["drop"].append(dict(_BOX) if _sc is None
+                                   else dict(_BOX, scan=_sc))
+            _want = [list(map(bool, pipeline.Edit.from_dict(_ed)
+                              .for_scan(_w).mask(_PTS))) for _w in (0, 1)]
+            check("THE RESTORED JOB PREVIEWS EXACTLY WHAT IT WOULD EXPORT "
+                  "(case %d)" % _i, _case["live"] == _want,
+                  "page %s want %s" % (_case["live"], _want))
+
+        _all = json.loads(_rl[1])
+        check("the whole-job button empties the cut list outright",
+              _all["edits"] == [] and _all["touched"] == 1, _all)
+
+        _acc = json.loads(_rl[2])
+        check("A RESTORE BRINGS BACK EVERY POINT -- the operator's own words, "
+              "'the full point cloud in exactly the same location'",
+              _acc["cut"][0] < _acc["all"]
+              and _acc["back"] == [_acc["all"], _acc["all"]], _acc)
+        check("...and the cloud is still standing exactly where it was, on "
+              "the very placement object the page was holding",
+              _acc["seatSame"] is True
+              and _acc["seat"]["yaw_deg"] == 33.5, _acc)
+
+        _keep = json.loads(_rl[3])
+        check("THE UNDO'S SNAPSHOT IS NOT REWRITTEN UNDER IT -- the narrowing "
+              "copies the edit rather than mutating it",
+              _keep["after"] is None and _keep["same"] is True, _keep)
+
+        _sp = json.loads(_rl[4])
+        check("with no spotlight every cloud is at full brightness",
+              _sp["noSpot"] == [1.0, 1.0], _sp)
+        check("...and lighting one turns only the others down",
+              _sp["spot"][1] == 1.0 and _sp["spot"][0] < 0.5, _sp)
+
+        _sn = json.loads(_rl[5])
+        # ⛔ THE COMPLAINT ITSELF: the widget used to call `preset`, which
+        # re-centres on the whole scene and re-zooms to `reach`. Snapping to
+        # check a wall square-on then meant flying back in.
+        check("THE WIDGET SNAP KEEPS WHERE YOU WERE LOOKING AND WHAT YOU "
+              "WERE LOOKING AT",
+              _sn["orbit"]["t"] == [5, 6, 7] and _sn["orbit"]["dist"] == 12,
+              _sn["orbit"])
+        check("...it does turn the camera, and orthographic with it",
+              _sn["orbit"]["yaw"] == -1.0 and _sn["orbit"]["ortho"] is True,
+              _sn["orbit"])
+        check("...and from inside the room the EYE stays put while roam is "
+              "left, so the ortho height is not the roaming step",
+              _sn["roam"]["eye"] == _sn["roam"]["eyeWas"]
+              and _sn["roam"]["free"] is False
+              and _sn["roam"]["dist"] == 37, _sn["roam"])
+
+        _uv = json.loads(_rl[6])
+        # ⛔ THE OLD FIXED [0,1,0] IS THE SPECIAL CASE OF THE NEW RULE, not a
+        # casualty of it: at the yaw planView uses, -[cos, sin] IS north. So
+        # Top is unchanged and only a top view reached from elsewhere differs.
+        check("THE OLD TOP VIEW IS PIXEL-FOR-PIXEL UNCHANGED",
+              _uv["old"] == [0.0, 1.0, 0.0], _uv)
+        check("...but a plan view now comes up facing the way you were",
+              _uv["east"] == [-1.0, 0.0, 0.0]
+              and _uv["north"] == [0.0, -1.0, 0.0], _uv)
+        check("...and looking straight UP flips it, as the limit does",
+              _uv["underneath"] == [0.0, -1.0, 0.0], _uv)
+        check("...while anything off vertical is still world up",
+              _uv["level"] == [0.0, 0.0, 1.0], _uv)
+        # ⛔⛔ CONTINUITY IS THE WHOLE ARGUMENT. One degree off vertical the
+        # general branch runs and the picture is basis().up; at 90 the special
+        # case takes over. If they disagreed, orbiting up to a plan view would
+        # JUMP at the last degree -- which is exactly what the old fixed north
+        # did, and why the operator had to find their bearings again.
+        check("AND THE SPECIAL CASE IS THE LIMIT OF THE GENERAL ONE, so "
+              "orbiting up to straight down no longer jumps",
+              _uv["nearly"] == _uv["atLimit"], _uv)
+
+# ⛔ AND THE PARTS THAT CANNOT BE RUN ARE PINNED WHERE THEY ARE WIRED.
+check("both restore buttons exist and are wired",
+      'id="putback"' in _page and 'id="putback1"' in _page
+      and "$('putback').onclick=()=>restorePoints(null);" in _ALIGN_SRC
+      and "$('putback1').onclick" in _ALIGN_SRC)
+_rp_src = re.sub(r"/\*.*?\*/", "", _js_func("restorePoints"), flags=re.S)
+check("a restore that would change nothing refuses out loud instead of "
+      "marking the project unsaved",
+      "if(!plan.touched && !rules.length)" in _rp_src
+      and _rp_src.find("if(!plan.touched") < _rp_src.find("V.edits = plan"),
+      _rp_src[:300])
+check("IT COVERS THE CLEANING RULES TOO, which is the half Clear all misses",
+      "cleanedClouds(only)" in _rp_src
+      and "await post('clean', {index:s.index})" in _rp_src)
+check("...and the snapshot for the undo is taken BEFORE anything moves",
+      _rp_src.find("const wasEdits") < _rp_src.find("V.edits = plan.edits")
+      and _rp_src.find("const wasClean") < _rp_src.find("V.edits = plan.edits"),
+      _rp_src[:400])
+check("...and it goes on the one undo stack like every other action",
+      "remember('putting the points back'" in _rp_src)
+# ⛔⛔ THE OPERATOR ASKED FOR THIS PROMISE IN SO MANY WORDS: "it just loads the
+# cloud at full points but keeps its attributes, position, rotation." The
+# behavioural half is above; this is the half a run cannot reach, because the
+# only way a restore could move a cloud is by writing a placement or by asking
+# the server for something other than a cleaning rule.
+check("A RESTORE MOVES NOTHING: it writes no placement, and the only route it "
+      "posts to is the one that clears a cleaning rule",
+      not re.search(r"\.setup|\.lean\b|yaw_deg|pitch_deg|roll_deg", _rp_src)
+      and sorted(set(re.findall(r"post\('([a-z/]+)'", _rp_src))) == ["clean"],
+      _rp_src)
+check("...and narrowing the cut list touches the scopes and nothing else",
+      not re.search(r"\.setup|\.live\b|\.raw\b|\.frames\s*=",
+                    _js_func("editsWithout")))
+# ⛔ The clean round-trip is the one moment a cloud is rebuilt at all, and the
+# page's own placement -- which may be newer than the server's, because the
+# server only hears a placement when asked to act on it -- goes straight back
+# on each scan as it re-arrives. Without this line the restore WOULD move
+# clouds, back to the alignment as of the last Auto-align.
+check("...and the rebuild the clean round-trip triggers puts the page's own "
+      "placement back on every cloud",
+      "if(setups[i]) s.setup=setups[i];" in _js_func("rebuildFrom"))
+check("a cleaning rule is put back WHOLE, threshold and all -- the one home "
+      "both undos use",
+      "min_refl:(spec.min_refl==null ? null : spec.min_refl)"
+      in _js_func("sendCleanSpec")
+      and "return ()=>sendCleanSpec(i, was);" in _js_func("undoClean"))
+# ⛔⛔ RUN, NOT READ, AND THE FIRST VERSION OF THIS WAS READ. It pinned the
+# three source lines -- the parameter, the route and the assignment -- and the
+# reversion audit walked straight past a break that left all three in place and
+# disabled the branch guarding them (`elif min_refl is not None:` ->
+# `elif False:`). Every line the check named was still there and the feature was
+# gone. A rule about what the server DOES has to be asked of the server.
+_mr_srv = align.AlignServer([], out_path=None)
+_mr_n = 400
+_mr_pts = np.random.RandomState(5).normal(0.0, 3.0, (_mr_n, 3)).astype(
+    np.float32)
+_mr_scan = align.Scan(os.path.join(tempfile.mkdtemp(prefix="tlsrefl"),
+                                   "r.pcap"), _mr_pts,
+                      np.full((_mr_n, 3), 128, np.uint8), _mr_pts)
+# A real spread, so a floor actually bites and the count can be checked.
+_mr_scan.view_refl = (np.arange(_mr_n) % 200).astype(np.uint8)
+_mr_srv.scans = [_mr_scan]
+# What the BUTTON does: a share of this cloud, turned into a threshold.
+_mr_pct = _mr_srv.clean_scan(0, drop_weakest=50)
+_mr_floor = (_mr_pct.get("clean") or {}).get("min_refl")
+_mr_kept = _mr_pct.get("kept")
+_mr_srv.clean_scan(0)                      # the restore: cleaning off
+check("clearing a cleaning rule really does put every point back",
+      _mr_scan.clean is None and _mr_scan.keep is None,
+      (_mr_scan.clean, _mr_scan.keep))
+# What an UNDO does: hand the threshold straight back.
+_mr_again = _mr_srv.clean_scan(0, min_refl=_mr_floor)
+check("A CLEANING RULE PUT BACK BY THRESHOLD IS THE SAME RULE, point for "
+      "point -- an undo cannot re-derive a percentile",
+      _mr_again.get("ok") and _mr_again.get("kept") == _mr_kept
+      and (_mr_again.get("clean") or {}).get("min_refl") == _mr_floor,
+      (_mr_pct, _mr_again))
+check("...and it really removed something, so the case is not vacuous",
+      _mr_kept is not None and 0 < _mr_kept < _mr_n, _mr_pct)
+check("...through the route the page posts to",
+      'body.get("min_refl")' in _ALIGN_SRC)
+check("the spotlight reaches the refinement frames as well as the scene "
+      "frame, so a highlight cannot fade out as the cloud sharpens",
+      _ALIGN_SRC.count("gl.uniform1f(loc.uDim, dimOf(s));") == 2
+      and "vCol *= uDim;" in _page)
+check("...and it is brightness only: nothing about what is drawn, picked, "
+      "cut or exported reads it",
+      "V.spot" not in _js_func("shown")
+      and "V.spot" not in _js_func("cutScope"))
+check("...and the light is re-keyed when a cloud is removed, like every "
+      "other index",
+      "if(V.spot===gone) V.spot=-1; else if(V.spot>gone) V.spot--;"
+      in _js_func("forgetScan"))
+check("clicking a point picks the cloud it came off, through the one door "
+      "that already brings the controls with it",
+      "if(V.tool==='whose'){" in _js_func("runPick")
+      and "pickScan(hit.scan.index);" in _js_func("runPick"))
+check("...the tool exists, is armed from a button and from K, and opens the "
+      "list it changes",
+      'id="whose"' in _page
+      and "$('whose').onclick=()=>setTool(V.tool==='whose'?'':'whose');"
+      in _ALIGN_SRC
+      and "k==='k'||k==='K'" in _ALIGN_SRC
+      and "whose:'scans'" in _ALIGN_SRC)
+# ⛔ AND THE WIDGET IS WHAT CALLS IT. `upVec` can only honour a heading the
+# snap actually carried: handed the old fixed -pi/2 it would turn the plan view
+# to one orientation just as before, and every check above would still pass.
+_gz_src = _js_func("gizmoClick")
+check("the world-axes widget aims rather than reframes",
+      "snapLook(" in _gz_src and "preset(" not in _gz_src, _gz_src[-300:])
+check("...and it carries your heading into a straight-down or straight-up "
+      "snap, which is the one axis that leaves it free",
+      "snapLook(V.cam.yaw, v[2]>0 ? Math.PI/2 : -Math.PI/2);" in _gz_src)
+check("...while Top, Front and Side still frame the whole job",
+      "$('front').onclick=()=>preset(" in _ALIGN_SRC
+      and "$('side').onclick=()=>preset(" in _ALIGN_SRC
+      and "function planView(){ preset(" in _ALIGN_SRC)
+check("THE CLIP BOX'S OWN NINE SLIDERS DRAW THE TWIN WHILE HELD, like the "
+      "six that move a cloud",
+      "['cx0','cx1','cy0','cy1','cz0','cz1','byaw','bpitch','broll']"
+      in _ALIGN_SRC)
+check("...and the three that exist to judge the REAL cloud still do not",
+      not re.search(r"rushWhileHeld\(\$\('(ps|det|ex)'\)", _ALIGN_SRC)
+      and "'ps'" not in _ALIGN_SRC[_ALIGN_SRC.find("rushWhileHeld($(id))"):
+                                   _ALIGN_SRC.find("rushWhileHeld($(id))")+400])
 
 
 # --- a low score no longer throws the photograph away ---------------------
@@ -6739,8 +7129,18 @@ check("a polygon corner does not go through the point picker",
 # operator repeats all afternoon: right-click closes the outline, Esc empties
 # the tool's hands without putting it away, and a middle CLICK deletes what a
 # pending selection holds.
-_pdz = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('pointerdown', e=>{"):]
+# ⛔ THE CANVAS HANDLER, NAMED BY ITS INDENT -- the same trick `_kdz` above
+# uses. This anchored on the first bare `addEventListener('pointerdown'` in the
+# file, which is a DIFFERENT handler three thousand lines earlier, and then
+# trusted the next `const left =` to end the slice somewhere inside the one it
+# actually meant. That held only while no other function in between happened to
+# declare a `left`; `editsWithout` did, and this failed while naming a rule it
+# had nothing to say about. An anchor that depends on unrelated code not using
+# a common variable name is not an anchor.
+_pdz = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('pointerdown', e=>{"):]
 _pdz_head = _pdz[:_pdz.find("const left =")]
+check("the pointerdown slice really is the canvas handler",
+      "if(e.target.id!=='cv') return;" in _pdz_head, _pdz_head[:200])
 check("RIGHT-CLICK CLOSES AN OPEN POLYGON, before the press becomes a pan",
       "if(e.button===2 && V.tool==='poly' && V.poly){ polyClose(); return; }"
       in _pdz_head, _pdz_head[-260:])
@@ -10470,10 +10870,24 @@ check("...including the rotation ring, which nothing used to clear",
 # strip the twin 200 ms into a drag that was still running. Cancelling it on
 # every press papered over that; naming the holder fixes it, and the cancel is
 # kept so a wheel rush cannot survive into a lasso either.
+# ⛔⛔ AND THE ALARMS ARE PER NAME TOO, WHICH THE SET ALONE DID NOT BUY. One
+# shared `rushT` was correct while the wheel was the only burst holder; the
+# arrow and bracket keys became a second on 2026-09-01, and `rushBurst` clears
+# the pending timer before setting its own -- so a key pressed inside the
+# wheel's settle interval cancelled the wheel's alarm and nothing was left to
+# call `rushDrop('wheel')`. The set would hold a name with no hand behind it
+# and the view would sit on the coarse twin for the rest of the session.
 check("...and the wheel's settle timer, so it cannot fire inside a drag and "
       "strip the rush the twin is being grown for",
-      "rushT=setTimeout(()=>{ rushT=null; rushDrop(who); }" in _page
-      and "clearTimeout(rushT); rushT=null; rushDrop('wheel');" in _page)
+      "rushT.set(who, setTimeout(()=>{ rushT.delete(who); rushDrop(who); }"
+      in _page
+      and "rushCancel('wheel');" in _page)
+check("A BURST HOLDER'S ALARM IS ITS OWN, so a second burst cannot cancel the "
+      "first and leave its name held for ever",
+      "const rushT=new Map();" in _page
+      and "clearTimeout(rushT.get(who));" in _page)
+check("...and the keyboard's own moves take a burst rather than nothing",
+      _page.count("rushBurst('keys',250);") == 6)
 # ⛔ The overlays are drawn with depth-testing OFF, which stops depth being
 # written as well as tested, so a refinement chunk drawn afterwards wins the
 # depth test over them and paints them out -- the grips dissolved in the

@@ -5960,7 +5960,7 @@ drops, the dropped `_first_attach`, a dropped `xp=` stage, the table drift after
 tightened, an unhosted refl in the yield — that last is source-pinned only: the suite has no
 end-to-end pcap run, the real-capture parity probe covered it outside). Commit `e54c6c3`.
 
-### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~20:25)
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~20:25) — SUPERSEDED, see the ~23:30 block
 
 - **✅ Exes: Studio 20:19:48, Converter 20:19:25, tlsconvert 20:20:06, selftest 0** — carry
   everything through the **twenty-eighth pass** (92-second project open + CuPy decode) plus the
@@ -5971,6 +5971,121 @@ end-to-end pcap run, the real-capture parity probe covered it outside). Commit `
 - Still awaiting the operator: the clip-limited cut's first real press; "Deep align them all"
   (six doubtful photos); folder 20 un-refit; folders 22+ unimported.
 - Repo: `main` = `e54c6c3`, pushed; only the standing untracked `cutjs_tmp.js`.
+
+### 2026-09-01, twenty-ninth pass — five operator asks: put the points back, snap from where you stand, pick a cloud by clicking it, light one up, and the last unrushed sliders
+
+Five requests in one sitting, all shipped, suites **1519 → 1569**, reversion audit **16/16 by name**
+across two passes — see the note at the end for why there were two.
+
+**1 — "Put every point back" / "Put this cloud back"** (*"a button that reloads all pointclouds in the
+full return in case i deleted wrong points, and a button that just reloads the selected point
+cloud"*). ⛔ **Nothing is re-read, because nothing was ever thrown away**: a cut is an OPERATION on a
+list and a clean is a RULE on the server, so neither has ever touched the capture on disk or the
+buffers on the card. The restore is instant. ⛔ **And it covers BOTH ways points leave, which is why
+`Clear all` was not already this button** — Clear all empties the cut list and stops, so an operator
+who had also pressed Remove strays cleared every cut, watched most of the points come back, and
+still had a hole. ⛔⛔ **The hard half is the one-cloud button: a whole-job cut is NARROWED, never
+dropped.** Dropping it would put the tripod back into the four other scans as the price of restoring
+this one — silently, in the opposite direction from the mistake being fixed. A scope has held a SET
+of clouds since hiding arrived, so taking one name out of it is a shape the preview, the saved file
+and `pipeline._scope` all already understand. Both buttons take a snapshot first and go on the one
+undo stack.
+
+⛔ **A latent bug fell out of building the undo**: `undoClean` built its body by hand and had no way
+to say `min_refl`, so undoing a clean over a cloud that already carried a "drop the weakest 10%" rule
+sent the EMPTY body — which CLEARS cleaning altogether. The cloud came back with **more** points than
+it had before the thing being undone. `clean_scan` now takes `min_refl` (the button asks for a SHARE
+and the server stores the reflectivity that share worked out to, so a percentile cannot be
+re-derived), and `sendCleanSpec` is the one home both undos use.
+
+**2 — the world-axes widget aims instead of reframing** (*"snap taking into account my current
+perspective"*). It called `preset`, which re-centres on the whole scene and re-zooms to `reach`, so
+snapping to check a wall square-on meant flying back in afterwards. `snapLook` keeps the target, the
+zoom and the part of the room you were looking at. ⛔ **Roam cannot survive the snap**: an
+orthographic view's HEIGHT is read off `V.cam.dist`, which roaming pins at `CAM_FLOOR`, so a plan
+view from inside the room would have framed a saucer — the EYE is kept instead. ⛔ **It still
+switches orthographic on**, deliberately: that is what makes a lasso drawn afterwards cut a straight
+column rather than a widening cone. Top/Front/Side still frame the whole job, and are now the
+documented way to do that.
+
+⭐⭐ **And `upVec` was DISCARDING the heading.** It returned the fixed `[0,1,0]`, so screen-right in
+a top view was world +X whatever you had been looking at. It is now the continuous limit of
+`basis().up` — `[-cos(yaw)*sin(pitch), -sin(yaw)*sin(pitch), 0]` — which means orbiting up to
+straight down no longer JUMPS at the last degree, and **the old fixed north is a special case of the
+new rule rather than a casualty of it**: at the yaw `planView` uses, `-[cos, sin]` IS `[0,1,0]` to the
+last bit, so Top is pixel-for-pixel unchanged and only a top view reached from somewhere else
+differs. The suite proves the continuity by comparing 89° (general branch) against 90° (special case).
+
+**3 — "Pick a cloud" (K)**: arm it, click a point, and the cloud it came off becomes the one you are
+working on. A handful of lines, because `pickPoint` has always returned which scan a hit belongs to
+and `pickScan` is already the one door that brings the movement controls, the rotation ring, the cut
+scope and the photograph tray with it. ⚠ **Double-clicking a cloud in the view already did this**
+(`scanUnder` + `pickScan`); the tool is the deliberate, armed, single-click version and opens the
+scan list, which is what it changes.
+
+**4 — "Light" on every row**: one cloud at full brightness, the rest turned down to 0.26 via a new
+`uDim` uniform. ⛔ **It is NOT hiding, and both exist on purpose.** Hiding takes a cloud out of the
+drawing, the picking and the export; the question here is where one cloud sits AMONG the others,
+which cannot be answered by removing the others. `shown` is untouched, so no cut, no pick and no
+written file can tell the light was ever on. It dims the refinement frames too, or the highlight
+would fade out over the second after it was switched on.
+
+**5 — the last unrushed sliders** (*"rotate controls are not working like the move tool — pressing
+the rotate control should snap to the LOD cloud and hold it till I release the slider"*). ⚠ **The six
+PLACEMENT sliders, `rz` included, were already wired on 2026-08-28**; the omission was one tray over
+— the clip box's own six faces and **three turns**, so the control literally LABELLED Turn in the
+clipping tray was the one still redrawing the whole project on every input event, with clipping on
+re-testing every point in the shader as it went. All nine now hold the twin, and the arrow and
+bracket keys take a self-releasing burst. ⛔ **The exclusion stands**: point size and the two detail
+sliders still get no rush, because those exist to judge the REAL cloud.
+
+⛔⛔ **AND THE SECOND BURST HOLDER EXPOSED A REAL BUG IN `rushBurst`.** It kept ONE `rushT`, which
+was correct while the wheel was the only burst holder: `rushBurst` clears the pending timer before
+setting its own, so a key pressed inside the wheel's settle interval **cancelled the wheel's alarm**
+and nothing was left to call `rushDrop('wheel')` — the set would hold a name with no hand behind it
+and the view would sit on the coarse twin **for the rest of the session**. Timers are now a Map keyed
+by holder. *Naming the holders is only half the answer if their ALARMS still share one slot* — the
+same fault the Set fixed, one level down.
+
+⭐⭐ **THE OPERATOR'S OWN ACCEPTANCE TEST, asked mid-build**: *"just to make sure it just loads the
+cloud at full points but keeps its attributes, position, rotation — in exactly the same location."*
+Yes, and **stronger than asked**: nothing is loaded, so the placement is never restored from
+anywhere, it simply never changes. The one moment a cloud is rebuilt at all is the clean round-trip,
+and `rebuildFrom` puts **the page's own** setup straight back on each scan as it re-arrives — which
+matters, because the page's copy can be NEWER than the server's (the server only hears a placement
+when asked to act on it), so without that line a restore WOULD have moved clouds, back to the
+alignment as of the last Auto-align. All three halves are pinned now: every point alive again, the
+placement object still the very one the page held, and `restorePoints` writing no placement and
+posting to no route but `clean`.
+
+⛔⛔ **AND THE AUDIT CAUGHT A WEAK TEST OF MINE, WHICH IS THE AUDIT WORKING.** The `min_refl` rule was
+pinned by READING three source lines — the parameter, the route and the assignment — and a break that
+left all three in place while disabling the branch guarding them (`elif min_refl is not None:` →
+`elif False:`) walked straight past it. Every line the check named was still there and the feature was
+gone. It is now asked of the SERVER: clean by percentile, read the threshold back, clear it, re-send
+it as `min_refl`, and assert the same points survive. **A rule about what something DOES has to be
+run, not read.** That re-audit is the second of the two passes.
+
+⚠ **A test was fixed rather than accommodated**: the right-click-closes-a-polygon check anchored on
+the first bare `addEventListener('pointerdown'` in the file, which is a different handler three
+thousand lines earlier, and then trusted the next `const left =` to end the slice inside the one it
+meant. `editsWithout` declared a `left` and the check failed while naming a rule it had nothing to
+say about. It now names the canvas handler by its indent and asserts it found the right one.
+
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~23:30)
+
+- **✅ Exes: Studio 2026-09-01 23:02:46, Converter 23:02:23, tlsconvert 23:03:05, selftest 0** — carry the **twenty-ninth pass** (both restore buttons, the aiming
+  widget, Pick a cloud, Light, the clip-box rush) on top of the 92-second open and the CuPy decode.
+- ⭐ **The operator ran the 20:19 build tonight, 20:55–21:24** (`studio.log`, RTX 3050 Ti) — so the
+  fast open HAS been exercised in Studio, and no `gl-slow` line was written. **The exes must be
+  rebuilt and Studio reopened again for this pass.**
+- ⚠ **The rotate complaint is only PARTLY answered.** The six placement sliders including Turn were
+  already rushed; this pass wired the clip box's nine. If the control the operator means is the
+  scan's own Turn under Place, the cost is somewhere other than the twin and **needs measuring, not
+  guessing**.
+- Still awaiting the operator: the clip-limited cut's first real press; "Deep align them all"
+  (six doubtful photos); folder 20 un-refit; folders 22+ unimported.
+- Repo: `main` = `HEAD`, pushed; only the standing untracked `cutjs_tmp.js`.
 
 ### ▶ NEXT SESSION STARTS HERE
 
@@ -6048,7 +6163,12 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Studio 2026-09-01 20:19:48, Converter 20:19:25, tlsconvert 20:20:06, selftest 0**
+**✅ THE EXES: Studio 2026-09-01 23:02:46, Converter 23:02:23, tlsconvert 23:03:05, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — the **twenty-ninth pass** on top of everything the 20:19
+build carried.
+
+<!-- superseded, kept for the build trail -->
+**Older: Studio 2026-09-01 20:19:48, Converter 20:19:25, tlsconvert 20:20:06, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — and THIS build adds the **92-second project open** and the **CuPy decode**
 (twenty-eighth pass) on top of everything the 12:54 build carried. All three rebuilt together: `decode.py`
 is shared.
