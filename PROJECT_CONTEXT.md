@@ -5870,28 +5870,70 @@ CLI, the GUI or Studio** — library only.
 
 ### ▶ NEXT SESSION STARTS HERE
 
-**⭐ THE OUTLINE TOOL NOW DRAWS THE LEVELS — read the twenty-SIXTH pass directly above.**
-Platforms, seating, tables and the bar all come out as closed, faced loops flat on the base plane with
-their heights printed. ⛔ The rule that does it is a **RATIO** (share of a band's own returns that are
-upward-facing), NOT Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the
-ceiling and nothing else. ⛔ Do NOT lower `LEVEL_MIN_SHARE` to 0.06 — it fuses the platform into the
-floor. ⭐ **THE BUTTON IS LIVE: Export tray → "Outline from clip box (DXF)", and it runs `cut="box"` — the
-box IS the cut, so a band holding only wall traces those walls instead of refusing for want of a floor.
-⛔ EVERYTHING IN THE BOX IS WALL EVIDENCE: floor-to-ceiling fits 224 "walls" (chairs and tables among
-them), a 1.70–2.30 m band fits 126 in a tenth of the time. ⚠ No floor in the box = no datum, so the
-levels are skipped and the drawing says why.** It writes
-`<output> outline.dxf` beside the cloud, traces only what is inside the Studio clip box, and refuses
-when the box is off. ⚠ The operator's saved box runs **z 0.07..2.66**, which trims the floor and
-fragments it into four pieces — lower its bottom below the floor before trusting the floor loop.
-⛔ The datum (floor/ceiling/base) is taken from the WHOLE survey, never from the box.
+**⭐⭐ THE OUTLINE TOOL IS FINISHED AND SHIPPED — read the twenty-SIXTH pass above for the reasoning.**
 
-⛔ **The file contains NO triangles at all** (`draw_levels` defaults to `face=False`) — the
-operator does not want construction lines, and a flag asking a reader to hide them is the reader's
-behaviour, not a guarantee. ⚠ **If the outlines will not Push/Pull, that is the thing to report**:
-pass `face=True` and they come back on `TLS-FCE-###`, declared OFF in the layer table. Open: seating reads low (6.1 m²), and none of it is wired into
-CLI/GUI/Studio.
+⚠ *This block was rewritten on 2026-09-01 because it had grown by prepending and its last line still
+said "none of it is wired into CLI/GUI/Studio" — which the button had already disproved. A restart
+pointer that contradicts itself is worse than a short one; keep this block WHOLE when editing.*
+
+#### How to use it
+
+**Studio → Export tray → "Outline from clip box (DXF)".** Writes `<your output> outline.dxf`
+**beside** the cloud path, never over it. Refuses when the clip box is off.
+
+⛔ **THE BOX IS THE CUT, NOT A CROP** (`cut="box"`). Everything inside it is wall evidence, so a
+floor-to-ceiling box fits **224 "walls"** — chairs, tables, the bar — while a **1.70–2.30 m band fits
+126** and runs ten times faster (6.1 s, 23 kB). Set a BAND at wall height unless the levels are what
+is wanted. ⚠ The operator's saved box is **z 0.07–2.66**, whose bottom sits just above the floor: it
+fragments the floor into four pieces (21.2, 17.5, 14.9, 14.0 m²) instead of one 153.6 m².
+
+⚠ **No floor inside the box means no datum**, so the levels are skipped, the reason is printed into
+`TLS-NOTES` and shown by the button, and floor/ceiling/height come back **None, never 0.0**.
+⛔ The datum is otherwise taken from the **WHOLE survey**, never from the selection.
+
+#### Four rules not to undo
+
+1. ⛔ A level is found by a **RATIO** — the share of a band's own returns that are upward-facing —
+   **not** Cloud2BIM's share-of-the-maximum, which on this capture finds the floor and the ceiling and
+   nothing else. And do **NOT** lower `LEVEL_MIN_SHARE` to 0.06: it fuses the platform into the floor.
+2. ⛔ Nothing on the ceiling is **two** rules (`LEVEL_CEILING_CLEAR_M`, `LEVEL_MAX_HEIGHT_M`) because
+   they catch different rooms; a soffit's UNDERSIDE passes the top-face test like a table top does.
+3. ⛔ The file carries **no triangles at all** (`draw_levels` defaults `face=False`) — asking a reader
+   to hide construction lines is the reader's behaviour, not a guarantee. ⚠ **If the outlines will not
+   Push/Pull, THAT is the thing to report**: `face=True` brings them back on `TLS-FCE-###`, declared
+   OFF in the layer table.
+4. ⛔ `LEVEL_SIMPLIFY_M` must **exceed** `LEVEL_GRID_M`. A tolerance below the raster preserves the
+   rasterisation, not the measurement.
+
+#### ✅ The exes are current: **2026-09-01 11:25–11:27, selftest 0** (all three rebuilt — `drawing.py`,
+`pipeline.py` and `export.py` are shared, so rebuilding only Studio leaves two apps on old library
+code). Smoke-tested: 23.7 M returns decoded, colour solved, PLY written in 6.3 s.
+
+#### What is actually still open
+
+- **Wired into Studio only.** ⚠ The **CLI's `-f` offers only `las/laz/ply`** — `dxf` is reachable from
+  Studio and the library, NOT from the command line — and the drag-and-drop Converter has no button.
+- **Seating reads 6.1 m²**, low for a restaurant: banquettes are occluded by their own tables. Whether
+  that is the data or the 0.30 m probe height is **not established**.
+- The cell complex finds **no** structures (61 wall lines bound none); area **132 m² vs 150 m²**
+  unresolved; graph-cut smoothness term and opening (door/window) detection still queued.
+- ⛔ **A soffit cannot be told from a wall hidden behind a counter.** Two tests were built and both
+  failed to separate them — see the twenty-sixth pass. The clip box is the answer instead; do not
+  re-attempt a classifier without a genuinely new signal.
+
+#### Where the working scripts are
+
+Session scratchpad `C:\Users\sunun\AppData\Local\Temp\claude\c--Users-sunun-trading-bot\
+8edb7129-9122-417d-b8ac-33eba2ffc7cf\scratchpad\`: `end_to_end.py` (the real capture through the
+writer the button drives), `trace_full.py` (the standalone trace), `audit_levels.py` (the 25-break
+reversion audit), `grid_002.npz` (the cached 0.02 m occupancy grid — rebuild by deleting it).
+⚠ These are temporary; the shipped code is in `windows-converter/tlsconvert/`.
 
 <!-- superseded, kept for the trail -->
+**⛔ The line below is KEPT ONLY FOR THE TRAIL and its named fix was DISPROVED — "every bin over 50%
+of the max" finds the floor and the ceiling and nothing else on this capture. See the twenty-sixth
+pass for what replaced it.**
+
 **⭐ THE OUTLINE TOOL IS LIVE BUT NOT FINISHED — read the twenty-fifth pass directly above.**
 It writes `D:\RESTAURANT SCAN
 estaurant outline.dxf` today. The operator's verdict: *"missing alot
