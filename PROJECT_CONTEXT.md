@@ -5469,6 +5469,21 @@ gets faces; layers TLS-OUTLINE / TLS-REACH / TLS-STRUCT) is the operator's own �
 — a separate session's work, landed on main mid-pass, bundled into the 03:50 exes. Not this
 record's to tell; do not treat its TODOs as this workstream's.
 
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~04:00)
+
+- **Exes 03:50 carry everything through the 24th pass**, selftest 0. The operator was told to
+  reopen Studio; the six doubtful high-camera_z photos (f4/7/8/14/16/17) are now curable with ONE
+  press of **Deep align them all** (~a minute a photograph) — not pressed yet as of this save.
+- ⚠ **THE 03:50 EXES BUNDLED THE PARALLEL SESSION'S UNCOMMITTED WORK**: an exe build packs the
+  WORKING TREE, and `drawing.py` + `test_drawing.py` carried the operator's in-progress
+  “branching build” (DXF closed polylines, their own separate feature, to be combined later,
+  commit `e10258a` plus uncommitted edits). Everything this workstream shipped is unaffected; if
+  DXF export misbehaves in this build, that is why — a rebuild after that feature lands resolves
+  it. **Do not touch their in-progress files; commits here always `git add` named paths only.**
+- Survey state unchanged since the 22nd pass: folder 20 still un-refit; folders 22+ on disk,
+  unimported; one Close-the-loop per survey at the end; `auto align error - image 21 level.tlspie`
+  delivered but superseded — a Deep-align press in any current build lands scan 21 itself.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **✅ THE EXES: Studio 2026-09-01 03:50:49, Converter 03:50:27, tlsconvert 03:51:08, selftest 0** (RTX 3050 Ti, cuda-engine found; adds “Deep align them all”, the armed middle-click delete, and the operator’s own DXF closed-polyline commit `e10258a`)
