@@ -551,7 +551,8 @@ def _hms(sec):
     return "%dm %02ds" % (m, sec) if m else "%ds" % sec
 
 
-def apply(made, dest, move=True, delete_aborted=True, progress=None):
+def apply(made, dest, move=True, delete_aborted=True, progress=None,
+          copy_photos=False):
     """
     Carry out a plan: one numbered folder per capture.
 
@@ -564,6 +565,13 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None):
     ⛔ PHOTOGRAPHS MOVE TOO, WITH ONE EXCEPTION: a picture that two captures
     share is copied for the second, because both genuinely need it. That is the
     only duplication left, and `plan` counts it.
+
+    ⭐ `copy_photos=True` COPIES EVERY PHOTOGRAPH INSTEAD, leaving the camera's
+    own file where the camera put it. A photograph is 20 MB against a capture's
+    98, so the size argument that forbids copying captures does not carry to
+    the pictures -- and it is the same covenant `library.attach_photo` keeps:
+    the original is never the thing at risk when a pairing turns out wrong.
+    Captures still MOVE regardless; only the photographs' fate changes.
 
     ⛔⛔ AND THE SHARES ARE TAKEN BEFORE THE MOVES, WHICH IS NOT A STYLE
     CHOICE. A shared photograph is moved into its primary capture's folder; a
@@ -670,7 +678,7 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None):
                 "that stopped part way leaves files in place; move or delete "
                 "that folder's contents and run this again."
                 % os.path.basename(target))
-        if row.get("shared") or not move:
+        if row.get("shared") or not move or copy_photos:
             shutil.copy2(got["path"], target)
         else:
             shutil.move(got["path"], target)

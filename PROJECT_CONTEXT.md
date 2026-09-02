@@ -6358,6 +6358,54 @@ Earlier the same night, and already committed (`01248ca`): the operator's record
 the 21st pass's open suspect — **the press is CPU, neither VRAM nor RAM**, and the purchase
 question closed as “buy nothing”.
 
+### 2026-09-02, thirty-fourth pass — the whole day in one press, and a fresh job waiting
+
+**"I would like the solve the shoot button to copy the images and move the scans into the numbered
+folder structure"** — and minutes later: **"theres a new project i need to solve `D:\ministry of
+sound`"**, a raw 5.5 GB shoot straight off the two devices (`Scans` + `Insta images`, ~57 captures,
+60 photographs). Asked which shape the button should take, the operator chose **the whole chain,
+one press**.
+
+**Shipped: "Sort, open and solve a shoot…"** (`wholeshoot`, top of the Sort-a-shoot tray) — the
+four existing steps run in order, NONE duplicated: `shoot/plan` → the same confirm as Sort a shoot
+(extracted to **`sortPitch`**, one pitch for two presses, so they can never describe the same move
+differently) → `shoot/apply` → `ingest` → `solveShoot`.
+
+The one departure from the plain sort: **`copy_photos`**. The chain's apply **COPIES every
+photograph in beside its capture and the camera's own files stay where the camera put them** —
+`library.attach_photo`'s covenant, and the size argument that forbids copying captures (6 GB,
+two piles) does not carry to 20 MB pictures. The captures still MOVE. "Sort a shoot…" itself is
+unchanged: the flag defaults False at every layer (`shoot.apply`, `shoot_apply`, the handler).
+
+Three load-bearing details, each with a named check:
+- **Walk order.** `shoot/apply` answers shared-photograph captures first; the chain re-sorts the
+  arrivals by stem before `ingest`, because import fits each arrival to the capture BESIDE IT IN
+  THE WALK — feeding it the sort's answer order would fit scans to the wrong neighbours.
+- **Colour forced on.** `ingest(paths, opts)` now takes handed-in options (bare = the Add-tray
+  boxes, as always); the chain passes `colour:true` regardless of the checkbox, or the solve two
+  steps later fails about photographs nobody remembers unticking. It also RETURNS whether anything
+  landed.
+- **Stops.** A declined confirm stops before anything moves or opens; a failed import RETURNS
+  rather than running the solve on top of `ingest`'s own message — a chain that stacks a second
+  error on the first teaches the operator to read neither.
+
+⛔ **`_js_func` LIFTS FROM THE WORD `function` AND SILENTLY DROPS A LEADING `async`.** The first
+harness run failed 9 checks at once on a syntax error: the lifted chain was full of `await` inside
+a non-async function. Prepend `async ` when lifting any async page function — the suite now does,
+with a comment naming the trap.
+
+**The ministry job was read before anything was built** (dry `shoot.plan`, nothing moved, log in
+the session scratchpad): **54 of 56 captures pair** at offset **1h 04m 12s, confidence 8.2** — an
+hour of clock and four minutes of hands, the restaurant shape again — 2 dark captures (positions
+11 and 23 → "no photos"), 3 sharing a photograph, **5 short sidecar-less files are genuine aborts
+and will be deleted by the press**, 9 photographs match nothing. The confirm will show exactly
+this.
+
+Suites **1619 → 1635, 0 failed**; reversion audit **4/4 by name** (copy honor in `shoot.py` /
+the chain's copy flag / the failed-import stop / the colour force) via a standalone rig running
+the suite's own assertions (`audit_wholeshoot.py`, session scratchpad). Studio was verified closed
+before the rebuild. Commit hash in the build pin below.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE OUTLINE TOOL IS THREADED (30th pass, 1.8×, DXF byte-identical) AND NOW THE SURVEY

@@ -11821,5 +11821,159 @@ check("levelling no longer warns that every cut will be left behind",
       "V.edits.some(e=>!e.frames)" in _ALIGN_SRC
       and _ALIGN_SRC.count("if(V.edits.length) say('note: the cuts") == 0)
 
+# --- the whole day in one press: sort, open, colour, solve ------------------
+#
+# ⭐ ASKED FOR BY THE OPERATOR, 2026-09-02, with a fresh unsorted job on the
+# disk: "the solve the shoot button [should] copy the images and move the
+# scans into the numbered folder structure" -- the whole chain, one press.
+# The chain is the existing steps run in order (`shoot/plan` + `shoot/apply`,
+# `ingest`, `solveShoot`), so what is tested here is the ORDER, the STOPS,
+# and the one departure: photographs are COPIED, the camera's own files stay.
+print("\nthe whole-shoot press: photographs copied, captures moved")
+_wdir = tempfile.mkdtemp(prefix="tlswhole")
+_wcaps = os.path.join(_wdir, "caps")
+_wpix = os.path.join(_wdir, "pix")
+os.makedirs(_wcaps)
+os.makedirs(_wpix)
+_WB = shoot._stamp_seconds(2026, 9, 2, 12, 0, 0)
+for _i in range(2):
+    with open(os.path.join(_wcaps, "TLS_26_09_02_12_0%d_00.pcap" % _i),
+              "wb") as _fh:
+        _fh.write(b"x" * 4096)
+    with open(os.path.join(_wcaps, "TLS_26_09_02_12_0%d_00.json" % _i),
+              "w") as _fh:
+        json.dump({"capture": {"started_epoch": _WB + 300.0 * _i},
+                   "sweep": {"track": [[0, 0], [95.0, 190.8]]}}, _fh)
+    _wshot = _WB + 300.0 * _i + 95.0 + 30.0
+    with open(os.path.join(_wpix, "IMG_%s_00_0%02d.jpg"
+              % (time.strftime("%Y%m%d_%H%M%S", time.gmtime(_wshot)), _i)),
+              "wb") as _fh:
+        _fh.write(b"not a jpeg, but a file")
+_wplan = shoot.plan(_wcaps, _wpix, offset=0.0)
+_wout = os.path.join(_wdir, "out")
+_wdid = shoot.apply(_wplan, _wout, move=True, delete_aborted=True,
+                    copy_photos=True)
+check("copy_photos still files the photograph under the capture's stem",
+      _wdid.get("ok")
+      and any(n.startswith("TLS_26_09_02_12_00_00") and n.endswith(".jpg")
+              for n in os.listdir(os.path.join(_wout, "1"))),
+      _wdid if not _wdid.get("ok") else os.listdir(os.path.join(_wout, "1")))
+# ⛔⛔ THE POINT OF THE FLAG: the camera's own file is NOT the thing at risk
+# when a pairing turns out wrong. `library.attach_photo` has kept this covenant
+# since the single-photo button existed; the whole-shoot chain keeps it too.
+check("...AND THE CAMERA'S OWN FILES ARE STILL WHERE THE CAMERA PUT THEM",
+      len(os.listdir(_wpix)) == 2, os.listdir(_wpix))
+check("...while the captures themselves still MOVED -- one pile, not two",
+      not os.path.exists(os.path.join(_wcaps, "TLS_26_09_02_12_00_00.pcap")),
+      sorted(os.listdir(_wcaps)))
+check("and left unasked, the photographs move exactly as they always did",
+      "copy_photos=False" in _ALIGN_SRC
+      and 'body.get("copy_photos", False)' in _ALIGN_SRC)
+shutil.rmtree(_wdir, ignore_errors=True)
+
+check("the whole-shoot button is on the page and wired",
+      'id="wholeshoot"' in _PAGE
+      and "$('wholeshoot').onclick=wholeShoot;" in _PAGE)
+# ⛔ ONE PITCH FOR TWO PRESSES: if the sort and the chain each built their own
+# confirm, the two would describe the same move differently within a month.
+check("both presses read the operator the SAME sort pitch",
+      "sortPitch(plan, ''" in _js_func("sortShoot")
+      and "sortPitch(plan," in _js_func("wholeShoot"))
+check("ingest reads the Add-tray boxes only when nothing is handed in",
+      "opts||importOpts()" in _js_func("ingest"))
+
+if _node:
+    _wjs = """%s
+const V={scans:[]};
+const SAYS=[]; const say=(t,k)=>SAYS.push([String(t), k||null]);
+const watch=()=>{};
+const CALLS=[];
+let CONFIRM=true, INGEST_OK=true;
+const DEST='D:/job';
+/* answered OUT of walk order on purpose: `shoot/apply` really does answer
+   shared-first, and the chain must not import in that order */
+const FOLDERS=[{scan:'TLS_26_09_02_12_05_00', folder:'D:/job/2'},
+               {scan:'TLS_26_09_02_12_00_00', folder:'D:/job/1'}];
+async function askFolder(w){
+  CALLS.push(['ask']);
+  if(w.indexOf('numbered')>=0) return DEST;
+  return w.indexOf('captures')>=0 ? 'D:/raw/Scans' : 'D:/raw/pix';
+}
+function confirm(text){ CALLS.push(['confirm']); return CONFIRM; }
+async function post(path, body){
+  CALLS.push(['post', path, body]);
+  if(path==='shoot/plan')
+    return {ok:true, note:'n', scans:[{number:1, name:'a', photos:[]}],
+            deletable:[], kept_aborted:[]};
+  if(path==='shoot/apply')
+    return {ok:true, text:'2 captures filed.', dest:DEST, folders:FOLDERS,
+            failed:[]};
+  return {ok:true};
+}
+async function ingest(paths, opt){ CALLS.push(['ingest', paths, opt]);
+                                   return INGEST_OK; }
+async function solveShoot(){ CALLS.push(['solve']); }
+/* colour deliberately OFF in the tray: the chain must colour anyway */
+function importOpts(){ return {colour:false, align:true}; }
+const out={};
+(async()=>{
+  await wholeShoot();
+  out.order = CALLS.map(c=>c[0]==='post'?c[1]:c[0]).join('>');
+  const apply = CALLS.find(c=>c[0]==='post'&&c[1]==='shoot/apply');
+  out.copies = !!apply && apply[2].copy_photos===true && apply[2].move===true;
+  const ing = CALLS.find(c=>c[0]==='ingest');
+  out.colourForced = !!ing && ing[2].colour===true && ing[2].align===true;
+  out.walkOrder = !!ing && JSON.stringify(ing[1])===JSON.stringify(
+    ['D:/job/1/TLS_26_09_02_12_00_00.pcap',
+     'D:/job/2/TLS_26_09_02_12_05_00.pcap']);
+  out.solved = CALLS.some(c=>c[0]==='solve');
+  CALLS.length=0; CONFIRM=false;
+  await wholeShoot();
+  out.declinedStops = !CALLS.some(c=>c[0]==='post'&&c[1]==='shoot/apply')
+                      && !CALLS.some(c=>c[0]==='ingest');
+  CALLS.length=0; CONFIRM=true; INGEST_OK=false;
+  await wholeShoot();
+  out.failedImportStops = CALLS.some(c=>c[0]==='ingest')
+                          && !CALLS.some(c=>c[0]==='solve');
+  CALLS.length=0; INGEST_OK=true;
+  await sortShoot();
+  const sap = CALLS.find(c=>c[0]==='post'&&c[1]==='shoot/apply');
+  out.sortStillMoves = !!sap && !('copy_photos' in sap[2]);
+  console.log(JSON.stringify(out));
+})().catch(e=>{ console.error(e && e.stack || String(e)); process.exit(1); });
+""" % ("\n".join(
+        # ⛔ `_js_func` lifts from the word `function`, which DROPS a leading
+        # `async` -- and a lifted body full of `await` then refuses to parse.
+        ("async " if f in ("sortShoot", "wholeShoot") else "") + _js_func(f)
+        for f in ("sortPitch", "sortLeftovers", "sortShoot", "wholeShoot")),)
+    _wjs_path = os.path.join(_rdir, "wholeshoot.js")
+    with io.open(_wjs_path, "w", encoding="utf-8") as _fh:
+        _fh.write(_wjs)
+    _wr = subprocess.run([_node, _wjs_path], capture_output=True, text=True)
+    check("the whole-shoot chain runs at all", _wr.returncode == 0,
+          (_wr.stderr or "")[:400])
+    _w = (json.loads(_wr.stdout.strip().splitlines()[-1])
+          if _wr.returncode == 0 else {})
+    check("THE CHAIN RUNS ITS FOUR STEPS IN ORDER: plan, confirm, sort, "
+          "open, solve",
+          _w.get("order") == "ask>ask>shoot/plan>confirm>ask>shoot/apply"
+                             ">ingest>solve", _w)
+    check("...the sort is asked to COPY the photographs and MOVE the captures",
+          _w.get("copies") is True, _w)
+    check("...the import colours REGARDLESS of the Add-tray checkbox, or the "
+          "solve two steps later fails about photographs nobody unticked",
+          _w.get("colourForced") is True, _w)
+    check("...the arrivals are handed over in WALK order, not the sort's "
+          "shared-first answer order", _w.get("walkOrder") is True, _w)
+    check("...and the heading solve really is reached", _w.get("solved") is
+          True, _w)
+    check("a declined confirm stops the chain before anything moves or opens",
+          _w.get("declinedStops") is True, _w)
+    # ⛔ `ingest` says its own failure; a solve error on top would bury it.
+    check("a failed import stops the chain INSTEAD of solving on top of it",
+          _w.get("failedImportStops") is True, _w)
+    check("and the plain Sort press still MOVES photographs, as it always did",
+          _w.get("sortStillMoves") is True, _w)
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

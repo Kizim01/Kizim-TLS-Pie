@@ -896,7 +896,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.shoot_apply(
                     body.get("scans"), body.get("images"), body.get("dest"),
                     body.get("move", True), body.get("offset"),
-                    body.get("delete_aborted", True)))
+                    body.get("delete_aborted", True),
+                    body.get("copy_photos", False)))
             if path == "/clean":
                 return self._json(srv.clean_scan(
                     body.get("index"), body.get("stray"),
@@ -3161,7 +3162,7 @@ class AlignServer(object):
                               "busy": False}
 
     def shoot_apply(self, scans, images=None, dest=None, move=True,
-                    offset=None, delete_aborted=True):
+                    offset=None, delete_aborted=True, copy_photos=False):
         """
         Carry out a plan: move the shoot into numbered folders.
 
@@ -3184,7 +3185,8 @@ class AlignServer(object):
         try:
             return shoot.apply(made, dest, move=bool(move),
                                delete_aborted=bool(delete_aborted),
-                               progress=self._note)
+                               progress=self._note,
+                               copy_photos=bool(copy_photos))
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not sort that shoot (%s)"
                                           % exc}
@@ -5164,9 +5166,19 @@ PAGE = r"""<!doctype html>
   </div>
   </div></div>
 <div class="tray" id="ty_sort"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'sort')"><span class="fold">▾</span><b class="grow">Sort a shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('sort')">✕</button></div><div class="traybody">
-  <div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
+  <div class="blurb">Open the captures, or sort a whole day's shoot into numbered folders first.</div>  <div class="row"><button id="wholeshoot" class="go">Sort, open and
+    solve a shoot…</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
+    The whole day in one press: pairs each capture with its photograph, moves
+    the captures into numbered folders with the <b>photographs COPIED in
+    beside them</b> (the camera's own files stay where they are), opens every
+    one, colours it from its picture, and solves the camera headings together.
+    The plan is shown before anything moves, and the bar names each step. A
+    long press for a long day — leave it to work.</div>
+  <div class="row"><button id="sortshoot">Sort a shoot…</button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
-    Pairs a day of captures with a folder of 360 photographs by time and puts
+    The first half alone: pairs a day of captures with a folder of 360
+    photographs by time and puts
     each into its own numbered folder. The two clocks are never synchronised,
     so the offset between them is <b>measured from the shoot itself</b> and
     reported with a confidence — if the gaps do not cluster it says so
@@ -11880,6 +11892,41 @@ async function askFolder(what){
    in one press on a pairing that a clock proposed, so the proposal is read
    first -- including the measured offset between the two devices' clocks and
    how confident it is. */
+/* The confirm both sorting presses show, in ONE home, so the two buttons can
+   never describe the same move differently. `extra` is what the pressed
+   button will do BEYOND the sort, spelled out before "Go ahead?". */
+function sortPitch(plan, extra){
+  const lines=plan.scans.slice(0,8).map(r=>
+    '  '+r.number+'. '+r.name+' \u2192 '+
+    (r.photos.length ? r.photos[0].name+' ('+
+     (r.photos[0].gap_s>=0?'+':'')+Math.round(r.photos[0].gap_s)+'s)'
+     : 'no photograph')).join('\n');
+  return plan.note+'\n\n'+lines+
+    (plan.scans.length>8 ? '\n  \u2026and '+(plan.scans.length-8)+' more'
+                         : '')+
+    '\n\nThis will MOVE '+plan.scans.length+' captures into numbered '+
+    'folders \u2014 the originals do NOT stay where they are.'+
+    ((plan.deletable||[]).length
+      ? '\n\nIt will also PERMANENTLY DELETE '+plan.deletable.length+
+        ' aborted sweep'+(plan.deletable.length===1?'':'s')+'. Those have '+
+        'no sidecar AND are far shorter than a full sweep, so nothing can '+
+        'decode them.'
+      : '')+
+    ((plan.kept_aborted||[]).length
+      ? '\n\n'+plan.kept_aborted.length+' file(s) have no sidecar but are '+
+        'the FULL size of a sweep, so they are kept rather than deleted \u2014 '+
+        'a lost sidecar is not an aborted sweep.'
+      : '')+
+    (extra||'')+
+    '\n\nGo ahead?';
+}
+/* What could not be tidied away, said the same way from either press. */
+function sortLeftovers(done){
+  return (done.failed||[]).length
+    ? '  \u26a0 '+done.failed.length+' file(s) could not be deleted \u2014 '+
+      'probably open in something else: '+done.failed.join('; ')
+    : '';
+}
 async function sortShoot(){
   try{
     const scans=await askFolder('the captures folder'); if(!scans) return;
@@ -11888,29 +11935,7 @@ async function sortShoot(){
     const plan=await post('shoot/plan', {scans, images});
     watch(false);
     if(!plan.ok) return say(plan.error||'could not read that shoot', 'bad');
-    const got=plan.scans.filter(r=>r.photos.length).length;
-    const lines=plan.scans.slice(0,8).map(r=>
-      '  '+r.number+'. '+r.name+' \u2192 '+
-      (r.photos.length ? r.photos[0].name+' ('+
-       (r.photos[0].gap_s>=0?'+':'')+Math.round(r.photos[0].gap_s)+'s)'
-       : 'no photograph')).join('\n');
-    const ok=confirm(plan.note+'\n\n'+lines+
-      (plan.scans.length>8 ? '\n  \u2026and '+(plan.scans.length-8)+' more'
-                           : '')+
-      '\n\nThis will MOVE '+plan.scans.length+' captures into numbered '+
-      'folders \u2014 the originals do NOT stay where they are.'+
-      ((plan.deletable||[]).length
-        ? '\n\nIt will also PERMANENTLY DELETE '+plan.deletable.length+
-          ' aborted sweep'+(plan.deletable.length===1?'':'s')+'. Those have '+
-          'no sidecar AND are far shorter than a full sweep, so nothing can '+
-          'decode them.'
-        : '')+
-      ((plan.kept_aborted||[]).length
-        ? '\n\n'+plan.kept_aborted.length+' file(s) have no sidecar but are '+
-          'the FULL size of a sweep, so they are kept rather than deleted \u2014 '+
-          'a lost sidecar is not an aborted sweep.'
-        : '')+
-      '\n\nGo ahead?');
+    const ok=confirm(sortPitch(plan, ''));
     if(!ok) return say('Nothing was sorted, moved or deleted.');
     const dest=await askFolder('where the numbered folders should go');
     if(!dest) return;
@@ -11920,13 +11945,72 @@ async function sortShoot(){
                            delete_aborted:true});
     watch(false);
     if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
-    say(done.text+' Under '+done.dest+'.'+
-        ((done.failed||[]).length
-          ? '  \u26a0 '+done.failed.length+' file(s) could not be deleted \u2014 '+
-            'probably open in something else: '+done.failed.join('; ')
-          : ''),
+    say(done.text+' Under '+done.dest+'.'+sortLeftovers(done),
         (done.failed||[]).length ? 'warn' : null);
   }catch(e){ watch(false); say('Could not sort: '+e.message, 'bad'); }
+}
+
+/* \u2b50\u2b50 THE WHOLE DAY IN ONE PRESS: sort, open, colour, solve. Each step is
+   the existing button run in order -- `shoot/plan` + `shoot/apply`, `ingest`,
+   `solveShoot` -- because four behaviours with one home each cannot drift
+   apart the way a second copy of any of them would.
+
+   \u26d4 THE PHOTOGRAPHS ARE COPIED, NOT MOVED, and that is this press's one
+   departure from "Sort a shoot\u2026": the camera's own files stay where the
+   camera put them -- `library.attach_photo`'s covenant -- because a chain
+   this long should cost nothing but time when a folder was picked wrong.
+   The captures still move; a shoot is six gigabytes and two piles of it is
+   worse than one.
+
+   \u26d4 AND IT STOPS AT THE FIRST STEP THAT FAILS. `ingest` says its own
+   failure; running the solve on top of one would bury that message under a
+   second error about photographs, which is how a chain teaches the operator
+   to read neither. */
+async function wholeShoot(){
+  try{
+    const scans=await askFolder('the captures folder'); if(!scans) return;
+    const images=await askFolder('the photographs folder'); if(!images) return;
+    say('reading the shoot\u2026'); watch(true);
+    const plan=await post('shoot/plan', {scans, images});
+    watch(false);
+    if(!plan.ok) return say(plan.error||'could not read that shoot', 'bad');
+    const ok=confirm(sortPitch(plan,
+      '\n\nThe PHOTOGRAPHS are COPIED in beside their captures \u2014 the '+
+      'camera\u2019s own files stay where they are.'+
+      '\n\nThen every capture is opened, coloured from its photograph, and '+
+      'the camera headings are solved together \u2014 the longest single '+
+      'press in the program. The bar names each step; leave it to work.'+
+      (V.scans.length
+        ? '\n\n\u26a0 '+V.scans.length+' scan'+
+          (V.scans.length===1?' is':'s are')+' already open. The new shoot '+
+          'lands beside them and the heading solve covers ALL of them \u2014 '+
+          'this press is usually for an empty window.'
+        : '')));
+    if(!ok) return say('Nothing was sorted, moved or deleted.');
+    const dest=await askFolder('where the numbered folders should go');
+    if(!dest) return;
+    say('sorting\u2026'); watch(true);
+    const done=await post('shoot/apply',
+                          {scans, images, dest, move:true,
+                           delete_aborted:true, copy_photos:true});
+    watch(false);
+    if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
+    say(done.text+' Under '+done.dest+'.'+sortLeftovers(done)+
+        ' Opening the sorted shoot\u2026');
+    /* \u26d4 WALK ORDER, NOT THE SORT'S ANSWER ORDER. `shoot/apply` answers
+       shared-photograph captures first and the dark ones last, but `ingest`
+       fits each arrival to the capture BESIDE IT IN THE WALK -- so the
+       arrivals must come in shoot order, which for TLS stems is name order. */
+    const caps=(done.folders||[])
+      .map(f=>({stem:f.scan, path:f.folder+'/'+f.scan+'.pcap'}))
+      .sort((a,b)=>a.stem<b.stem?-1:(a.stem>b.stem?1:0))
+      .map(f=>f.path);
+    if(!caps.length)
+      return say('Sorted, but nothing came out to open.', 'warn');
+    const opened=await ingest(caps, {colour:true, align:importOpts().align});
+    if(!opened) return;           /* ingest already said what went wrong */
+    await solveShoot();
+  }catch(e){ watch(false); say('Could not do the shoot: '+e.message, 'bad'); }
 }
 
 function nudgeHeading(index, by){
@@ -12235,11 +12319,18 @@ async function alignArrivals(from){
       bad.length ? 'warn' : null);
 }
 
-async function ingest(paths){
+/* ⭐ THE OPTIONS CAN BE HANDED IN, because the whole-shoot chain must colour
+   whatever the Add tray's checkbox says: it is about to solve every heading,
+   and a grey import would make that press fail two steps later with a message
+   about photographs nobody remembers unticking. Called bare it reads the
+   boxes, as it always did. Returns whether anything was actually added, so a
+   chain can stop instead of running its next step on top of a failure. */
+async function ingest(paths, opts){
   say('decoding…'); watch(true);
   $('add').disabled=true; $('browse').disabled=true;
+  let landed=false;
   try{
-    const opt=importOpts();
+    const opt=opts||importOpts();
     const r=await fetch('add',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({paths, colour:opt.colour})});
@@ -12319,8 +12410,10 @@ async function ingest(paths){
        also gives the solver two fewer degrees of freedom to find. */
     await levelArrivals(V.scans.slice(was).map(s=>s.index), false);
     if(opt.align && V.scans.length>1) await alignArrivals(Math.max(1, was));
+    landed = V.scans.length>was;
   }catch(e){ watch(false); say('Could not add it: '+e.message, 'bad'); }
   $('add').disabled=false; $('browse').disabled=false;
+  return landed;
 }
 
 async function browseScan(){
@@ -13255,6 +13348,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('orgz').onclick=()=>setOrigin('z');
   $('orgclear').onclick=clearOrigin;
   $('sortshoot').onclick=sortShoot;
+  $('wholeshoot').onclick=wholeShoot;
   $('shootsolve').onclick=solveShoot;
   $('deepall').onclick=e=>deepAlignAll(e.target);
   $('clnstray').onclick=cleanStray;
