@@ -6508,10 +6508,10 @@ failure — recorded rather than papered over.
 
 **Tree**: `main` = **`a72417f`**, in sync with origin, clean but for the standing untracked
 `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites **1644, 0 failed**.
-⚠ **The exes are still the 09-02 23:40 build and DO NOT carry `pair_in_order`** — the ministry
-job was repaired directly on disk by script, so Studio's own sort is still the greedy one until
-the exes are rebuilt. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is CORRECT and
-Studio's rc=0 is the gate. No parallel session landed anything during this pass.
+Exes **2026-09-03 00:49:52 / 00:50:16 / 00:50:35, Studio selftest rc=0** (RTX 3050 Ti +
+cuda-engine found), built with Studio verified closed — **these carry `pair_in_order`**, so
+Studio's own sort is order-preserving from here. ⚠ `tlsconvert.exe` has **no `--selftest` flag**;
+rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass.
 
 #### What is owed to the operator, in order
 
@@ -6520,12 +6520,10 @@ Studio's rc=0 is the gate. No parallel session landed anything during this pass.
    run the shoot solve; expect ~16 min of loading for all 54. Then look at **folders 41 and 53**
    by eye — the joint solve named them as disagreeing, and that is the signal that the camera may
    have been seated differently, not noise.
-2. **Rebuild the exes** (Studio CLOSED; verify by mtime + `dist/TLS-Pie-Studio.exe --selftest`
-   rc=0) so future sorts get the order-preserving matcher.
-3. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+2. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
    22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
    left **ON, "Hiding outside"**.
-4. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+3. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
    circular correlation over yaw as the next deep-search lever.
 
 ⛔ **What this pass changed on disk**: 14 photographs re-copied inside `D:\ministry of sound`'s
