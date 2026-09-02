@@ -6245,6 +6245,19 @@ queued as the next lever if the sweep ever dominates again; today it is 0.8 s of
 - Still awaiting the operator: folder 20 un-refit, folders 22+ unimported, one Close-the-loop per
   survey at the end.
 
+### 2026-09-02, measurement addendum (no code) — the Close-the-loop press is not memory-bound
+
+The twenty-first pass left a suspect standing: full-density edges at ~17 s/pair with 18 clouds
+resident, "memory traffic the suspect, **unproven**". The operator ran a real Close-the-loop press
+tonight (02:56–03:06, the 02:45 exes, fresh launch) with a 4-second sampler recording. **Capacity
+is now excluded on both axes**: Studio's whole footprint peaked 7.2 GB against 31.2 GB of RAM
+(free RAM ≥ 11.4 GB throughout), and the 95% VRAM reading is the viewer's resting hold — GPU
+compute idled near 0% outside decode/redraw bursts. The press's ~8.5 minutes are CPU by
+elimination, so **the next speedup is a profile of the press path** (the outline export's route:
+profile → one hot loop → thread it), not a hardware purchase. Memory *bandwidth* remains the one
+thing this recorder cannot see. ⚠ The trace's first minutes show commit above physical RAM
+(32.56 GB peak) — that was Chrome + VS open beside Studio, closed mid-press; exposure, not cause.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE OUTLINE TOOL IS FINISHED, SHIPPED, AND NOW THREADED — 41.3 s → 22.7 s on the same input,
