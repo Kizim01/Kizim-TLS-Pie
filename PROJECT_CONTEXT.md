@@ -6296,8 +6296,10 @@ operator see happen?"
 - ⚠ **The operator should also check the clip box** — still on, *Hiding outside*, from last
   night: even with this fix, a polygon over the already-cleaned tripod region will honestly
   report "0 points went" with the spared count. The message now explains itself.
-- ⚠ Exes: rebuilt right after this commit (Studio verified closed by the operator's own word
-  and by process list) — the pin commit below stamps the times.
+- Commit **`7b2cb50`**, pushed; credential scans rc=1, case-sensitive, separate calls.
+- **✅ Exes rebuilt from the committed tree, Studio verified closed (operator's word + process
+  list): Studio 2026-09-02 03:52:32, Converter 03:51:51, tlsconvert 03:53:17, selftest 0**
+  (RTX 3050 Ti + cuda-engine found). ⚠ **The operator must reopen Studio to get this build.**
 - Still awaiting the operator: the real "Deep align them all" press (FAR flags `16_20_36`,
   `16_34_46`, `16_41_12` worth the eye); folder 20 un-refit; folders 22+ unimported.
 
