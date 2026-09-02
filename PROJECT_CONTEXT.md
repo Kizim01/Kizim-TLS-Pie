@@ -6303,13 +6303,70 @@ operator see happen?"
 - Still awaiting the operator: the real "Deep align them all" press (FAR flags `16_20_36`,
   `16_34_46`, `16_41_12` worth the eye); folder 20 un-refit; folders 22+ unimported.
 
+### 2026-09-02, thirty-third pass — the survey press threaded, and the profiler that lied
+
+**"build the profile to multithread"** — the Close-the-loop press, by the outline export's route:
+measure, then touch only what the measurement names.
+
+⛔⛔ **cPROFILE TRIPLED THE PRESS AND MIS-RANKED IT.** Profiled: 1204 s, judge machinery ~310 s.
+Unprofiled with wall-clock wrappers: **397.8 s, 98% in `solve_gicp`, judge 31 s** — the 3.14
+profiler traced a second (idle, select-looping) thread and inflated every Python-level frame.
+Decisions were taken ONLY on the unprofiled rerun. *A profile is a measurement too, and it
+inherits its instrument.*
+
+**The real shape is a heavy tail**: the twelve slowest of 206 solver calls held ~234 s; two
+fine-rung aligns burned 66 s each and were then thrown away by the keep-start guard; one coarse
+align spent 119 of GICP_ITERATIONS=120; most pairs cost under a second.
+
+**Measured before code**: `small_gicp.align` reaches only 3.6× on its 16 threads
+(bandwidth-bound, the drawing.py wall again — two concurrent aligns measured 0.99× even arranged
+to exactly fill the cores) — and it is **NONDETERMINISTIC run to run at 16 threads** (five runs,
+five poses; single-thread self-identical). So the press never had byte-reproducibility to lose,
+and the shipped contract is: **given the same solver answers, the result is identical for any
+worker count** — pairs measured WHOLE, one worker each, consumed in PAIR order.
+
+**Also shipped, the profile's real find**: `solve_survey` rebuilt an identical reference panorama
+and sampling floor inside every one of its 206 `solve_gicp` calls while caching `judges[i]` one
+line up — the `judge=` parameter existed and was never passed. The admit judge is now handed
+down. Exact because `_binned_ranges` is float64 END TO END by its own contract — and the suite
+now HOLDS that contract with a pinned-solver equality check whose teeth are a different-cloud
+judge. (A float64 “twin” judge was drafted first; the teeth check itself proved the twin
+unnecessary and the code got simpler.)
+
+**Measured after**: `SURVEY_PRESS_WORKERS = 2` at **371.3 s** against 397.8 sequential; 3/4/6 all
+measured WORSE (376.9/382.6/378.9). ⚠ **The workers-vs-judge split is UNRESOLVED**: the deciding
+workers=1 rerun was lost twice — the machine slept through it (a 4.3-hour “measurement” of a
+6.6-minute press), then the T7 holding the job was unplugged. Queued: one 13-minute w1-vs-w2 run
+when the drive is back. The bigger lever — early-refusing the doomed pairs that burn 66 s and get
+discarded — is ALGORITHMIC (changes refusal semantics), the operator's call, not taken.
+
+⛔⛔ **THE FIRST AUDIT CAUGHT 3 OF 4 — the fourth break CRASHED an existing check instead of
+failing its own.** Planting “another pair's start leaks in” made `solve_survey` return its error
+dict, and an older check's bare `_lr2["text"]` raised KeyError before the named check could
+speak. Two brittle accesses hardened; audit then **4 of 4 by name** (assembly order, fresh judge,
+leaked start, bypassed gate). *A brittle assert upstream can steal a break from the check built
+for it.*
+
+⚠ **PARALLEL SESSIONS, AGAIN, SHARPER**: passes 31 AND 32 landed DURING this one — and the 32nd
+edited `align.py` CONCURRENTLY with this session's threading edits in the same working tree. The
+regions did not overlap and both commits came out clean — verified by diff afterwards
+(`7b2cb50` carries none of the threading; `0055b6b` carries all of it), not assumed.
+
+Suites **1609 → 1619, 0 failed** (1618 with the T7 unplugged — one check is conditional on the
+live project file; the count difference was CHASED, not shrugged at). Commit **`0055b6b`**.
+Earlier the same night, and already committed (`01248ca`): the operator's recorded press answered
+the 21st pass's open suspect — **the press is CPU, neither VRAM nor RAM**, and the purchase
+question closed as “buy nothing”.
+
 ### ▶ NEXT SESSION STARTS HERE
 
-**⭐⭐ THE OUTLINE TOOL IS FINISHED, SHIPPED, AND NOW THREADED — 41.3 s → 22.7 s on the same input,
-DXF byte-identical (THIRTIETH pass). ⚠ Passes 27–29 landed the same day from PARALLEL sessions —
-the clip-limited cut, the 92-second open + CuPy decode, five operator asks — and this block sat
-unrewritten through all three, claiming the 11:25 exes current while the trail below said 23:02.
-CHECK `git log` BEFORE numbering a pass or trusting this block's build line.**
+**⭐⭐ THE OUTLINE TOOL IS THREADED (30th pass, 1.8×, DXF byte-identical) AND NOW THE SURVEY
+PRESS IS TOO (THIRTY-THIRD pass: 397.8 → 371.3 s, the admit judge handed down, output identical
+for any worker count given the solver's answers — and the press is bandwidth-bound, so do not
+expect worker counts to buy more on this box). ⚠ PARALLEL SESSIONS are the standing hazard:
+passes 27–29 landed during the 30th, and 31–32 landed during the 33rd — the 32nd editing the
+SAME align.py concurrently, clean by diff-check afterwards. CHECK `git log` BEFORE numbering a
+pass or trusting this block's build line.**
 
 ⚠ *This block was rewritten on 2026-09-01 because it had grown by prepending and its last line still
 said "none of it is wired into CLI/GUI/Studio" — which the button had already disproved. A restart
@@ -6386,7 +6443,14 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Converter 2026-09-01 23:51:45, Studio 23:52:07, tlsconvert 23:52:25, selftest 0**
+**✅ THE EXES: Converter 2026-09-02 10:15, Studio 10:16, tlsconvert 10:16, selftest 0**
+(RTX 3050 Ti + cuda-engine found) — and THIS build adds the **threaded survey press + handed-down
+judge** (thirty-third pass, `0055b6b`) on top of passes 31–32 (which the 02:45 and 03:52 builds
+carried). All three rebuilt together: `align.py` is shared. Smoke-tested through the console
+bundle: 45.5 M points decoded, 651 MB PLY in 6.7 s.
+
+<!-- superseded, kept for the build trail -->
+**Older: Converter 2026-09-01 23:51:45, Studio 23:52:07, tlsconvert 23:52:25, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — and THIS build adds the **threaded fitter** (thirtieth pass,
 `85f9384`) on top of everything the 23:02 build carried. All three rebuilt together: `drawing.py`
 is shared. Smoke-tested through the console bundle: a real capture decoded, colour solved from the
