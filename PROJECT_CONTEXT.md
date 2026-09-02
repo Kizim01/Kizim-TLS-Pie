@@ -6288,7 +6288,7 @@ picture* (31st) — and **a GUARD that returns silently under a visible control 
 by construction** (32nd). Every `return` under a click deserves the question "what does the
 operator see happen?"
 
-### ⚠ LIVE STATE (2026-09-02, ~04:00) — SUPERSEDED on the build line only: the thirty-third pass rebuilt at 10:15 (see its section below); everything else here still stands
+### ⚠ LIVE STATE (2026-09-02, ~04:00) — SUPERSEDED: the build line by the thirty-third pass (10:15) and then the thirty-fourth (23:40); the whole block by the **~23:45 block** below, which is the current one
 
 - Suites `test_tlsconvert` **1606 → 1609, 0 failed**; reversion audit **3/3** by name (the leak
   restored, the guard silenced, the guard's tidy-up dropped — each named its own check).
@@ -6406,6 +6406,34 @@ the chain's copy flag / the failed-import stop / the colour force) via a standal
 the suite's own assertions (`audit_wholeshoot.py`, session scratchpad). Studio was verified closed
 before the rebuild. Commit **`8388270`**; exes **23:40, Studio selftest 0** — the build the
 ministry job needs.
+
+### ⚠ LIVE STATE (2026-09-02, ~23:45) — the current one
+
+**Tree**: `main` = **`db8accc`**, in sync with origin, clean but for the standing untracked
+`windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites **1635, 0 failed**.
+Exes **23:40:06 / 23:40:32 / 23:40:54, Studio selftest 0** (RTX 3050 Ti + cuda-engine).
+⚠ `tlsconvert.exe` has **no `--selftest` flag** — an argparse usage message and rc=2 there is
+CORRECT, not a failed build. Studio's rc=0 is the gate. No parallel session landed anything
+during this pass (`git log` checked at both ends); a peer session was live.
+
+#### What is owed to the operator, in order
+
+1. ⭐⭐ **THE MINISTRY JOB HAS NOT BEEN PRESSED YET.** Open Studio fresh — the **23:40** build,
+   an older window has no such button — press **"Sort, open and solve a shoot…"** in an **EMPTY
+   window** (the confirm warns if scans are already open: the heading solve would cover them
+   too), pick `D:\ministry of sound\Scans`, then `Insta images`, then `D:\ministry of sound`
+   itself as the destination. Read the plan; it will name the **5 aborted sweeps it DELETES**.
+   Then leave it: ~57 captures is a long press. **Save the project when it finishes.**
+2. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+   22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
+   left **ON, "Hiding outside"** — a polygon over the already-cleaned tripod region will honestly
+   report "0 points went" plus the spared count; switch the box off to take the whole column.
+3. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+   circular correlation over yaw as the next deep-search lever, only if the sweep ever dominates
+   again (today 0.8 s of 31.9).
+
+⛔ **Nothing on disk was moved by this pass.** The ministry read was a dry `shoot.plan`; both
+folders are exactly as the two devices left them.
 
 ### ▶ NEXT SESSION STARTS HERE
 
