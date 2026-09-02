@@ -6288,7 +6288,7 @@ picture* (31st) — and **a GUARD that returns silently under a visible control 
 by construction** (32nd). Every `return` under a click deserves the question "what does the
 operator see happen?"
 
-### ⚠ LIVE STATE (2026-09-02, ~04:00)
+### ⚠ LIVE STATE (2026-09-02, ~04:00) — SUPERSEDED on the build line only: the thirty-third pass rebuilt at 10:15 (see its section below); everything else here still stands
 
 - Suites `test_tlsconvert` **1606 → 1609, 0 failed**; reversion audit **3/3** by name (the leak
   restored, the guard silenced, the guard's tidy-up dropped — each named its own check).
