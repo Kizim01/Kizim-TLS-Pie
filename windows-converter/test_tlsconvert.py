@@ -1969,7 +1969,8 @@ try:
     # one and marking only its insides reaches the identical mask; keeps
     # still recompute fully, and dead points skip the transform via NaN.
     check("a drop edit is applied incrementally; a keep still recomputes",
-          "if(e.mode==='keep') recomputeLive(); else applyDrop(e);" in _page)
+          "if(e.mode==='keep'){ recomputeLive(); dirty(); return null; }"
+          in _page and "const gone=applyDrop(e);" in _page)
     # ⛔ THE SKIP MOVED INTO `world`, which is now the one home for turning a
     # block of a cloud into merged coordinates -- the fast drop path and the
     # replay both call it, and each passes the placement the CUT was drawn
@@ -2958,9 +2959,29 @@ check("markLasso honours it through the one shared hide test",
       "const q = l.clip ? prepClip(l.clip) : null;" in _ml_src)
 check("...a keep KEEPS the hidden point rather than leaving it to die",
       "if(to===1) seg[i]=1;" in _ml_src)
+_cl_src = _js_func("commitLasso")
 check("the cut's message says the clipped points were spared",
-      "V.clip ? ' Points the clip box hides were left alone.'"
-      in _js_func("commitLasso"))
+      "V.clip ? ' Points the clip box hides were left alone.'" in _cl_src)
+# ⛔ AND WITH A NUMBER ON IT. The sentence above was already there when the
+# operator reported the polygon as not working: it states a rule, and beside
+# an unchanged picture a rule is not evidence that the press was heard.
+check("...with the SIZE of what was spared, and the way to take those too",
+      "spared.toLocaleString()" in _cl_src
+      and "switch the clip box off and draw it again" in _cl_src)
+check("...and the cut says how many points it actually took",
+      "gone.toLocaleString()" in _cl_src and "gone.toLocaleString()"
+      in _js_func("addBox"))
+check("...a cut that took NOTHING is a warning, whatever spared it",
+      "(gone===0 ? 'warn' : null)" in _cl_src
+      and "(gone===0 ? 'warn' : null)" in _js_func("addBox"))
+check("...and the count is only paid for when a clip stamp was made",
+      "const spared = (cut.clip && gone!=null) ? clipSpared(cut) : 0;"
+      in _cl_src)
+# ⛔ THE DIAGNOSTIC RUNS ON A COPY. It walks the same mask the cut just
+# wrote; writing to it would delete the very points it is counting.
+check("counting the spared points cannot delete them",
+      "const seg=s.live.subarray(base,base+k), copy=seg.slice();"
+      in _js_func("clipSpared"))
 check("and the edit list names a clip-limited cut",
       "e.clip ? ', only what the clip box showed'" in _js_func("showEdits"))
 # The point-pick tools were already clip-aware; now that the doctrine is
@@ -9895,6 +9916,28 @@ check("the page has the door and the server one path: the batch calls the "
 check("...remembered as ONE undo, built from the per-scan undo",
       "remember('deep aligning every photograph', undoAllPoses());"
       in _ALIGN_SRC)
+# ⛔ AND IT SAYS HOW LONG IN THE OPERATOR'S NUMBERS, BEFORE IT STARTS -- a
+# press that runs far past its promise gets killed mid-way and reported
+# broken. ⚠ The rate is MEASURED, not derived from DEEP_SECONDS: the
+# deadline is a cap a real press uses a fraction of (the operator's own
+# 19-photograph job at the full budget: 31.7 minutes, machine shared with a
+# test suite), and the first version of this message promised 4.5 min a
+# photograph by reading the constant -- long by a factor of three.
+_da_src = _js_func("deepAlignAll")
+check("the batch estimates its own length from the scans it will run on",
+      "const jobs=deepAllJobs();" in _da_src
+      and "Math.round(jobs*1.5)" in _da_src
+      and "s.photo && !s.photoGiven && s.yaw!=null"
+      in _js_func("deepAllJobs"))
+check("...and the estimate is the measured minute-and-a-half, with the cap "
+      "named as the stubborn case",
+      "about a minute and a half a photograph" in _page
+      and "four to five minutes" not in _page
+      and "about a minute a photograph" not in _page)
+check("...and with nothing eligible the page refuses before the wait, not "
+      "after it", "if(!jobs) return say(" in _da_src)
+check("the 4-minute cap the copy warns about is still the real cap",
+      colour.DEEP_SECONDS == 240.0)
 
 # ⛔⛔ ON ARRIVAL THE CAPTURE STANDS UP BEFORE ITS PHOTOGRAPH ARRIVES. The
 # photograph used to be solved WHILE the capture streamed -- before the scan
@@ -10594,6 +10637,167 @@ check("lift_image rolls both faces up together, edge-replicating the pole",
 check("and a zero lift is the identity, not a copy",
       colour.lift_image(None, _sd_lum, 0)[1] is _sd_lum)
 
+# --- the deep search's cost, cut without changing one number ----------------
+#
+# ⭐⭐ MEASURED FIRST (2026-09-02, the operator's own job, full budget): a
+# press was ~70 s a photograph -- 32 s of search and 27 s of content ladder
+# -- NOT the four-and-a-half-minute deadline, which is a cap. Three of the
+# costs were the same answer computed repeatedly: the ladder rebuilt its
+# laser panorama identically on all eleven rungs, every objective call
+# resampled the photograph once per measure, and the height/seat probes
+# re-resampled rotations they had just left. All three fixes are caches of
+# a pure function on its exact arguments, so the bar here is EQUALITY, not
+# tolerance: verified end-to-end on the job (every returned number identical
+# to the last bit; deep 38.4->17.6 s, ladder 15.3->4.0 s), and pinned below
+# on fixtures.
+print("\ncolour: the deep search's cost, cut without changing one number")
+_pd_plain = colour.paint_drift(room, _sd_refl, _sd_low, 25.0)
+_pd_ref = colour._drift_reference(room, _sd_refl, (0.0, 0.0, 0.0))
+check("A PREBUILT LASER HALF CHANGES NOTHING -- the same dict to the last "
+      "bit",
+      _pd_plain == colour.paint_drift(room, _sd_refl, _sd_low, 25.0,
+                                      laser_edges=_pd_ref), _pd_plain)
+check("...and it is HONOURED, not decoration: a blank reference is a "
+      "refusal, whatever the cloud says",
+      not colour.paint_drift(room, _sd_refl, _sd_low, 25.0,
+                             laser_edges=np.zeros_like(_pd_ref)).get("ok"))
+check("...no reflectivity still refuses with the same words, through the "
+      "split",
+      colour.paint_drift(room, None, _sd_lum, 25.0).get("reason")
+      == "no reflectivity to measure with"
+      and colour._drift_reference(room, None, (0.0, 0.0, 0.0)) is None)
+_ref_calls = []
+_real_ref = colour._drift_reference
+
+
+def _ref_spy(*a, **k):
+    _ref_calls.append(1)
+    return _real_ref(*a, **k)
+
+
+colour._drift_reference = _ref_spy
+try:
+    _co_once = colour.content_offset(room, _sd_refl, _sd_lum, 25.0)
+finally:
+    colour._drift_reference = _real_ref
+check("THE LADDER BUILDS THE LASER HALF ONCE FOR ITS ELEVEN RUNGS",
+      len(_ref_calls) == 1 and _co_once.get("ok") is True,
+      (len(_ref_calls), _co_once))
+check("...and a ladder with nothing to measure still names the reason",
+      colour.content_offset(room, None, _sd_lum, 25.0).get("reason")
+      == "no reflectivity to measure with")
+# ⛔ THE WRAP COLUMNS ARE REAL DATA, NOT PADDING ARTIFACTS: a shift pushed
+# through the seam is read back as longitude, through the padded windows.
+_sd_seam = colour.paint_drift(room, _sd_refl, np.roll(_sd_lum, -3, axis=1),
+                              25.0)
+check("a longitude shift is read through the wrap seam",
+      _sd_seam.get("ok") and -2.1 < _sd_seam["dlon_deg"] < -0.9, _sd_seam)
+
+
+# ⛔⛔ AND THE REWRITE IS JUDGED BY A FROZEN VERBATIM COPY OF WHAT IT
+# REPLACED -- the same standard the threaded fitter was held to. The padded
+# slice must reproduce the wrapped `np.take` gather EXACTLY; a tolerance here
+# would let a pad built from the wrong edge hide inside "close enough", and
+# on clean fixtures every behavioural check above can survive that. This is
+# the original inner loop, kept as it stood, run on the same inputs.
+def _paint_drift_verbatim(xyz, refl, lum, yaw_deg, camera=(0.0, 0.0, 0.0)):
+    LON, LAT = colour.DRIFT_LON_BINS, colour.DRIFT_LAT_BINS
+    ER = colour._drift_reference(xyz, refl, camera)
+    ES = colour._drift_edges(colour.image_at_pose(
+        np.asarray(lum, dtype=np.float64), colour._grid_dirs(LON, LAT),
+        yaw_deg, 0.0, 0.0))
+    rows = np.linspace(int(LAT * 0.22), int(LAT * 0.82),
+                       colour.DRIFT_PATCH_LAT + 1).astype(int)
+    cols = np.linspace(0, LON, colour.DRIFT_PATCH_LON + 1).astype(int)
+    bar = (np.abs(ER).sum()
+           / (colour.DRIFT_PATCH_LON * colour.DRIFT_PATCH_LAT) * 0.3)
+    R = colour.DRIFT_SEARCH_PX
+    surf = np.zeros((2 * R + 1, 2 * R + 1))
+    for i in range(colour.DRIFT_PATCH_LAT):
+        r0, r1 = rows[i], rows[i + 1]
+        for j in range(colour.DRIFT_PATCH_LON):
+            c0, c1 = cols[j], cols[j + 1]
+            a = ER[r0:r1, c0:c1]
+            if float(np.abs(a).sum()) < bar:
+                continue
+            for dr in range(-R, R + 1):
+                if r0 + dr < 0 or r1 + dr > LAT:
+                    continue
+                for dc in range(-R, R + 1):
+                    b = np.take(ES[r0 + dr:r1 + dr],
+                                np.arange(c0 + dc, c1 + dc) % LON,
+                                axis=1)
+                    surf[dr + R, dc + R] += float((a * b).sum())
+    return surf
+
+
+def _surf_of(lum, yaw):
+    """The shipped surface, read back through its own peak arithmetic."""
+    got = colour.paint_drift(room, _sd_refl, lum, yaw)
+    return (got.get("dlon_deg"), got.get("dlat_deg"))
+
+
+for _fv_lum, _fv_yaw, _fv_name in ((_sd_lum, 25.0, "true pose"),
+                                   (_sd_low, 25.0, "content low"),
+                                   (np.roll(_sd_lum, -3, axis=1), 25.0,
+                                    "through the seam")):
+    _fv_surf = _paint_drift_verbatim(room, _sd_refl, _fv_lum, _fv_yaw)
+    _fv_at = np.unravel_index(int(np.argmax(_fv_surf)), _fv_surf.shape)
+    _fv_R = colour.DRIFT_SEARCH_PX
+    _fv_expect = (
+        float((_fv_at[1] - _fv_R
+               + colour._peak_frac(_fv_surf[_fv_at[0], :], _fv_at[1]))
+              * 360.0 / colour.DRIFT_LON_BINS),
+        float((_fv_at[0] - _fv_R
+               + colour._peak_frac(_fv_surf[:, _fv_at[1]], _fv_at[0]))
+              * 180.0 / colour.DRIFT_LAT_BINS))
+    check("the padded slice equals the wrapped gather EXACTLY (%s)"
+          % _fv_name, _surf_of(_fv_lum, _fv_yaw) == _fv_expect,
+          (_surf_of(_fv_lum, _fv_yaw), _fv_expect))
+
+_pc_sc = colour.PoseScorer(_te_pts, _te_lum, refl=_te_refl)
+_pc_hits = []
+_real_iap = colour.image_at_pose
+
+
+def _iap_spy(*a, **k):
+    _pc_hits.append(1)
+    return _real_iap(*a, **k)
+
+
+colour.image_at_pose = _iap_spy
+try:
+    _pc_e = _pc_sc.score(10.0, 1.0, 0.5)
+    _pc_m = _pc_sc.mutual(10.0, 1.0, 0.5)
+    _pc_b = _pc_sc.beacon(10.0, 1.0, 0.5)
+finally:
+    colour.image_at_pose = _real_iap
+check("ONE ROTATION IS RESAMPLED ONCE, SHARED BY ALL THREE MEASURES",
+      len(_pc_hits) == 1, len(_pc_hits))
+check("...and the shared image is the very one the direct call returns",
+      np.array_equal(_pc_sc._at_pose(10.0, 1.0, 0.5)["img"],
+                     colour.image_at_pose(_pc_sc.pre, _pc_sc.dirs,
+                                          10.0, 1.0, 0.5)))
+check("...so the three measures still answer exactly as the direct "
+      "arithmetic does",
+      _pc_e == float((_pc_sc.cloud_edges()[0]
+                      * colour._edges(colour.image_at_pose(
+                          _pc_sc.pre, _pc_sc.dirs, 10.0, 1.0, 0.5))).sum()),
+      _pc_e)
+for _pc_i in range(colour.CACHE_POSES + 5):
+    _pc_sc._at_pose(float(_pc_i), 0.0, 0.0)
+check("...and the rotation cache is bounded like the position cache",
+      len(_pc_sc._img) <= colour.CACHE_POSES
+      and len(_pc_sc._img_order) <= colour.CACHE_POSES,
+      len(_pc_sc._img))
+check("the ray grids are built once per shape and shared read-only",
+      colour._grid_dirs(90, 30) is colour._grid_dirs(90, 30)
+      and np.array_equal(colour._grid_dirs(90, 30),
+                         colour.grid_directions(90, 30))
+      and "self.dirs = _grid_dirs(self.lon_bins, self.lat_bins)"
+      in inspect.getsource(colour.PoseScorer.__init__)
+      and "_grid_dirs(LON, LAT)" in inspect.getsource(colour.paint_drift))
+
 # ⛔⛔ NO POLISH MAY RUN AFTER THE LIFT. The first build re-polished on the
 # corrected image, and the end-to-end run on folder 1 watched that polish
 # drag the content straight back to a 0.81 degree residual -- its judge is
@@ -10728,6 +10932,80 @@ check("a reopened project's seed names its photo, and a failed restore "
       '"photo": pose.get("photo")' in _cc_src
       and '.get("ok")' in _cc_src
       and "scan.colour_info = None" in _cc_src)
+
+# --- a restored heading is not a typed one ----------------------------------
+#
+# ⛔⛔ MEASURED ON THE OPERATOR'S OWN JOB, 2026-09-02: "deep align the all
+# photograph button not working". Nineteen photographs, every one of them
+# SOLVED (11 doubtful, 3 confirmed, 3 sure, 2 unsure -- not one graded
+# "given"), and `deep_all` refused the lot with "nothing here can be deep
+# aligned: it needs at least one scan with a photograph and a SOLVED
+# heading". The refusal was right about the flag and the flag was wrong:
+# `colour_scan` marks any heading it is HANDED as given, and the restore
+# hands it the one out of the file, so reopening a project promoted every
+# solved pose to hand-typed. The rule "a typed heading is an input, not a
+# guess" is obeyed in four places; all four were reading a lie.
+print("\nreopening a project must not promote its headings to typed")
+_gv_srv = align.AlignServer.__new__(align.AlignServer)
+_gv_photo = os.path.join(_rdir, "carry.jpg")
+io.open(_gv_photo, "w", encoding="utf-8").write("not really a jpeg")
+_gv_seen = []
+
+
+def _gv_fake_colour(scan, photo, **kw):
+    """`colour_scan` as it really behaves: a handed yaw is marked given."""
+    _gv_seen.append(kw.get("yaw"))
+    scan.colour_info = {"ok": True, "photo": photo,
+                        "yaw_deg": float(kw.get("yaw") or 0.0),
+                        "given": kw.get("yaw") is not None,
+                        "grade": "given" if kw.get("yaw") is not None else "sure"}
+    return scan.colour_info
+
+
+def _gv_carry(pose):
+    scan = _mscan("carried", _lc_pts)
+    _real, align.colour_scan = align.colour_scan, _gv_fake_colour
+    try:
+        align.AlignServer._carry_colour(_gv_srv, scan, pose)
+    finally:
+        align.colour_scan = _real
+    return scan.colour_info or {}
+
+
+_gv_base = {"photo": _gv_photo, "yaw_deg": 92.5, "camera_z": 0.06}
+check("the stand-in matches the real door: a handed yaw IS marked given "
+      "there", 'info["yaw_deg"], info["given"] = float(yaw), True' in _cs_src)
+_gv_solved = _gv_carry(dict(_gv_base, grade="confirmed", rung=4))
+check("A REOPENED SOLVED HEADING IS NOT TYPED -- the whole of the operator's "
+      "report", _gv_solved.get("given") is False, _gv_solved)
+check("...and the pose itself still comes back exactly as it was saved",
+      _gv_solved.get("yaw_deg") == 92.5
+      and _gv_solved.get("grade") == "confirmed"
+      and _gv_seen[-1] == 92.5, _gv_solved)
+check("...so the batch will now run on it rather than refusing the job",
+      not (_gv_solved.get("given") or _gv_solved.get("yaw_deg") is None))
+_gv_typed = _gv_carry(dict(_gv_base, grade="given", given=True))
+check("A HEADING THE OPERATOR TYPED IS STILL TYPED AFTER A REOPEN -- the "
+      "other half, and the one the deep search must not overwrite",
+      _gv_typed.get("given") is True, _gv_typed)
+_gv_old = _gv_carry(dict(_gv_base, grade="given"))
+check("...and a project saved BEFORE the flag was written keeps the "
+      "distinction, because the grade has always recorded it",
+      _gv_old.get("given") is True, _gv_old)
+_gv_pose_scan = _mscan("posed", _lc_pts)
+_gv_pose_scan.photo = _gv_photo
+_gv_pose_scan.colour_info = {"ok": True, "photo": _gv_photo, "yaw_deg": 11.0,
+                             "given": True, "grade": "given"}
+check("and the file is told, so the next open does not have to infer it",
+      align.AlignServer.colour_pose(_gv_srv, _gv_pose_scan).get("given")
+      is True)
+_gv_pose_scan.colour_info["given"] = False
+_gv_pose_scan.colour_info["grade"] = "sure"
+check("...while a solved pose writes given=False, which `save_project` "
+      "drops, so an old project reads back byte for byte",
+      align.AlignServer.colour_pose(_gv_srv, _gv_pose_scan).get("given")
+      is False)
+
 _pc_src = inspect.getsource(pipeline.prepare_colour)
 check("the CLI records the door lift and accumulates the settle's on top",
       'info["image_up_px"] = int(image_up_px or 0)' in _pc_src
@@ -11155,6 +11433,81 @@ console.log(JSON.stringify(out));
     check("...and the exporter agrees about that too",
           list(_mix.for_scan(0).mask(_LOCAL, local=_LOCAL)) == _ORDERED,
           list(_mix.for_scan(0).mask(_LOCAL, local=_LOCAL)))
+
+    # ⛔⛔ "POLYGON DELETE POINTS NOT WORKING" -- operator, 2026-09-02, and
+    # the cut was working. Replayed on the job's own saved edits: the outline
+    # enclosed 1,377,627 points of the cloud it was aimed at, the clip box was
+    # hiding all but 4,605 of them (a tripod column, floor and ceiling either
+    # side of a 2.4 m slab), and the second press took ZERO because the first
+    # had already taken every point that was on screen. The rule is right --
+    # a cut must not delete what the box was hiding -- and the REPORT was the
+    # fault: "Deleted the points inside the outline. Points the clip box hides
+    # were left alone" beside a picture that has not visibly changed reads as
+    # a button that does nothing. A press that takes almost nothing has to say
+    # how little, and how much was spared.
+    _CLIP_PTS = [[0.0, 0.0, -1.0], [0.0, 0.0, -0.5], [0.0, 0.0, 0.5],
+                 [0.0, 0.0, 1.0], [0.0, 0.0, 3.0]]
+    _SLAB = {"lo": [-9.0, -9.0, 0.0], "hi": [9.0, 9.0, 2.0],
+             "yaw_deg": 0, "pitch_deg": 0, "roll_deg": 0}
+    _clipjs = """%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+let EDIT_ID = 0;
+const V={scans:[], edits:[], hidden:{}, only:-1, editWho:-1, alive:0,
+         total:0, clip:true, inside:false};
+const HIST=[];
+const $=()=>({textContent:'', innerHTML:'', value:0});
+const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
+      dirty=()=>{}, whoName=()=>'a cloud', recomputeLive=()=>{};
+function remember(){ HIST.push({}); }
+/* the box the operator had on: a slab, hiding everything OUTSIDE it */
+const SLAB=%s, LOOK=%s, SQUARE=%s, PTS=%s;
+function boxSpec(){ return JSON.parse(JSON.stringify(SLAB)); }
+function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
+function cloud(index){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], setup:{x_m:0},
+          live:new Uint8Array(PTS.length).fill(1)};
+}
+const alive=()=>Array.from(V.scans[0].live).filter(v=>v===1).length;
+const out={};
+V.scans=[cloud(0)];
+const cut={kind:'lasso', mode:'drop', matrix:LOOK, poly:SQUARE};
+out.gone = pushEdit(cut);                /* what the press actually took */
+out.stamped = !!cut.clip;
+out.spared = clipSpared(cut);            /* and what the box kept back */
+out.left = alive();                      /* asking must not delete */
+/* the same outline, the same points, with the clip box switched off */
+V.clip=false; V.edits=[]; V.scans=[cloud(0)]; V.alive=0; V.total=0;
+out.all = pushEdit({kind:'lasso', mode:'drop', matrix:LOOK, poly:SQUARE});
+console.log(JSON.stringify(out));
+""" % ("\n".join(_js_func(f) for f in
+                 ("pushEdit", "applyDrop", "clipSpared", "inScope",
+                  "frameFor", "cutFrames", "cutScope", "shown", "world",
+                  "markBox", "markLasso", "prepClip", "clipHides", "rotOf")),
+       json.dumps(_SLAB), json.dumps(list(_look_down())), json.dumps(_SQ),
+       json.dumps(_CLIP_PTS))
+    _clip_path = os.path.join(_rdir, "clipcount.js")
+    with io.open(_clip_path, "w", encoding="utf-8") as _fh:
+        _fh.write(_clipjs)
+    _kr = subprocess.run([_node, _clip_path], capture_output=True, text=True)
+    check("the clip-limited cut's own rules run at all", _kr.returncode == 0,
+          (_kr.stderr or "")[:400])
+    _k = (json.loads(_kr.stdout.strip().splitlines()[-1])
+          if _kr.returncode == 0 else {})
+    check("A CLIP-LIMITED CUT TAKES ONLY WHAT WAS ON SCREEN -- the rule, and "
+          "it is right", _k.get("gone") == 2 and _k.get("stamped") is True, _k)
+    check("...AND THE PRESS NOW RETURNS THAT NUMBER, which is the whole of "
+          "what the operator could not see", _k.get("gone") == 2, _k)
+    check("...AND WHAT THE BOX SPARED IS COUNTED, so a picture that barely "
+          "changed has a reason attached to it", _k.get("spared") == 3, _k)
+    check("...counting the spared points does not delete them",
+          _k.get("left") == 3, _k)
+    check("...and the identical outline with the box off takes every point, "
+          "which is what the message tells the operator to do",
+          _k.get("all") == 5, _k)
 
 # ⛔ A SCOPE CAN NAME SEVERAL CLOUDS AND `forgetScan` ONLY EVER HANDLED ONE.
 # `cutScope` returns a LIST whenever anything is hidden, and an array is never

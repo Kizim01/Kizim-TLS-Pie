@@ -6072,7 +6072,7 @@ thousand lines earlier, and then trusted the next `const left =` to end the slic
 meant. `editsWithout` declared a `left` and the check failed while naming a rule it had nothing to
 say about. It now names the canvas handler by its indent and asserts it found the right one.
 
-### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~23:30)
+### ⚠ LIVE STATE AT SESSION END (2026-09-01, ~23:30) — SUPERSEDED, see the 09-02 block
 
 - **✅ Exes: Studio 2026-09-01 23:02:46, Converter 23:02:23, tlsconvert 23:03:05, selftest 0** — carry the **twenty-ninth pass** (both restore buttons, the aiming
   widget, Pick a cloud, Light, the clip-box rush) on top of the 92-second open and the CuPy decode.
@@ -6142,6 +6142,105 @@ timing was comparable. A record and a measurement both inherit the moment they w
 Suites **166 → 171**; `test_tlsconvert` **1569, 0 failed** (grown by the parallel sessions);
 audit **4 of 4**. Commit `85f9384`. ⚠ **Exes NOT rebuilt** — Studio was open again; the 23:02
 build lacks only this commit.
+
+### 2026-09-02, thirty-first pass — two operator reports: "deep align them all not working" and "polygon delete points not working". Neither was a broken button, and one of them was not a bug at all
+
+**Both were REPRODUCED on the operator's own job before a line was changed** — `Scan project
+2.0.tlspie`, saved at 00:04 that morning, opened headlessly and pressed through the same server
+methods the buttons post to. That is the whole reason this pass is short and the answers are
+certain.
+
+**1 — "Deep align them all" refused the entire job, and the refusal was reading a lie.**
+⛔⛔ **A RESTORED HEADING IS NOT A TYPED ONE.** `colour_scan` marks any heading it is HANDED as
+`given` (the operator typed it, so do not overwrite it) and `_carry_colour` hands it the pose out of
+the file — so **reopening a project promoted every solved heading to hand-typed**. `deep_all`
+skips a typed heading on purpose, so on nineteen photographs graded 11 doubtful / 3 confirmed /
+3 sure / 2 unsure — **not one of them graded "given"** — the button answered *"nothing here can be
+deep aligned"* and stopped. Fixed where the truth is: the restore puts `given` back from the file,
+and `colour_pose` now WRITES it so it never has to be inferred again; a project saved before that
+line falls back on the **grade**, which has always recorded a typed heading as `"given"`.
+✅ **Verified by re-pressing the button on the same job: 19 of 19 eligible, 17 searched, 10 adopted
+the rig's geometry, 2 flagged as moving FAR** (`16_20_36`, `16_51_45` — the shape of a mis-paired
+photograph, worth the operator's eye).
+
+⚠ **THREE OTHER PLACES WERE READING THE SAME FLAG**, and all three now behave after a reopen as
+they do in the session that made the pose: the lean resolver re-solves a heading a big lean
+invalidates, `set_camera` re-solves when the seat moves, and the page stops labelling a solved
+heading as typed. **A flag with four readers is four bugs when it is set wrongly in one place.**
+
+⚠ **AND THE BUTTON NOW SAYS HOW LONG, IN THE OPERATOR'S NUMBERS, BEFORE IT STARTS** — counting
+the eligible scans **the way the server counts them**. The first version of that estimate was
+derived from `DEEP_SECONDS` as if the deadline were always spent — wrong, see part 3, which is
+where the honest figure was finally MEASURED.
+
+**2 — "Polygon delete points not working" — and the cut was working exactly as designed.**
+Replayed through the shipped `pipeline.Lasso` against the real points: the outline enclosed
+**1,377,627** points of the cloud it was aimed at, and the clip box was hiding all but **4,605** of
+them. The operator had a **2.4 m slab** on with *Hiding outside*, and had drawn round the tripod
+column — floor below the slab, ceiling above it, so **99.7% of what the prism enclosed was off
+screen**. The second press took **ZERO**, because the first had already taken every point that was
+visible. ⛔ **THE RULE IS RIGHT AND STAYS**: a cut must not delete what the box was hiding. The
+**REPORT** was the fault — *"Deleted the points inside the outline. Points the clip box hides were
+left alone"* beside a picture that has not visibly changed is a sentence about a rule, not evidence
+that the press was heard.
+
+⭐⭐ So a cut now **returns and says its own size**: `applyDrop` counts what it took, `pushEdit`
+hands the number back, and the message reads *"4,605 points went. The clip box was hiding 1,373,022
+more inside that outline, and they were left alone — switch the clip box off and draw it again to
+take those too."* A cut that took **nothing at all** is a `warn`, whatever spared it. ⛔ The spared
+count is **one pass and only when a stamp was made**: run AFTER the cut, the enclosed points still
+alive are exactly the ones something spared, and it walks a **copy** of the mask because a
+diagnostic that wrote to `s.live` would delete the points it was counting.
+
+⭐ **THE GENERAL LESSON, AND IT IS THE THIRD TIME THIS FILE HAS WRITTEN IT**: *a correct refusal
+and a broken button are the same picture.* Hidden scans, cut scopes and now the clip box all spare
+points on purpose — every one of them has to say **how many**, in numbers, or the operator's only
+evidence is a screen that did not change.
+
+**3 — "can we speed up the 4 min per scan?" — and the 4 minutes was MY error before it was a cost.**
+Profiled one real photograph at the full budget: **deep_align took 31.9 s, not 240** — the deadline
+is a cap, and I had extrapolated the estimate from it as if it were always spent, exactly the
+unmeasured-claim mistake this file keeps naming. The real cost: ~32 s of search + **13.7 s of
+content ladder, called twice** — ~70 s a photograph.
+
+⭐⭐ **THREE CACHES OF PURE FUNCTIONS, SO THE BAR IS EQUALITY, NOT TOLERANCE.** (1) The content
+ladder rebuilt its LASER panorama — a million-point walk, two histograms, a 1440x360 hole-fill, a
+gradient — identically on all eleven rungs: built once (`_drift_reference`), handed down
+(`laser_edges=`). (2) Every objective call resampled the photograph once per measure and the
+height/seat probes re-resampled rotations they had just left: one resample per rotation, kept
+(`PoseScorer._at_pose`, `CACHE_POSES`), edges riding in the entry. (3) The 1440x360 ray grid was
+rebuilt per rung: memoised by shape (`_grid_dirs`). Plus the ladder's `np.take` wrap-gather — 441
+windows per voting patch, most of the ladder's cost — replaced by slice views into a wrap-padded
+array, **same products, same summation order**.
+
+✅ **Verified as an A/B on untouched-vs-edited package copies against the real job: every returned
+number IDENTICAL to the last bit; deep 38.4→17.6 s, ladder 15.3→4.0 s (~2.5x a photograph).**
+In-suite, the rewrite is judged by a **frozen verbatim copy** of the original inner loop (the
+threaded fitter's standard), pinned to EXACT equality on three fixtures including one through the
+wrap seam — a tolerance would let a pad built from the wrong edge hide inside "close enough".
+Literature check (operator asked): FFT circular correlation over yaw is the standard trick
+(RING++, matched-filter LiDAR place recognition; `solve_yaw` already does it for the edge term) —
+queued as the next lever if the sweep ever dominates again; today it is 0.8 s of 31.9.
+
+### ⚠ LIVE STATE (2026-09-02, ~02:35)
+
+- Suites `test_tlsconvert` **1569 → 1606, 0 failed**; reversion audits **12/12** (the two report
+  fixes) and **7/7** (the speed pass), all caught by name — including the wrong-edge pad, caught
+  ONLY by the frozen-verbatim exact checks.
+- ✅ **Both operator reports answered and MEASURED, not guessed**: the deep-align refusal is fixed
+  and re-pressed on the operator's own job (19 of 19 eligible); the polygon cut was correct and now
+  reports its own size.
+- ✅ **The deep search is ~2.5x faster with every number bit-identical** — the full 19-photograph
+  batch ran END TO END on the operator's job at the real budget: **19 of 19 searched, no timeouts,
+  31.7 minutes while SHARING the machine with the audit's suite runs** (a quiet machine is well
+  under that; the button promises ~1.5 min a photograph, the over-estimate-safe side).
+- ⚠ **The operator must reopen Studio** to get this build — they ran the 23:51 exes 23:56–00:04.
+- ⭐ Worth their eye when the real press finishes: at the full budget the batch flagged
+  **`16_20_36`, `16_34_46` and `16_41_12` as moving FAR** — the shape of a photograph paired with
+  the wrong capture. (⚠ The stub-budget run had flagged `16_51_45` instead of the latter two — a
+  deadline-starved search flags DIFFERENT scans, so only the full-budget list is worth the eye.)
+- Still awaiting the operator: folder 20 un-refit, folders 22+ unimported, one Close-the-loop per
+  survey at the end.
 
 ### ▶ NEXT SESSION STARTS HERE
 

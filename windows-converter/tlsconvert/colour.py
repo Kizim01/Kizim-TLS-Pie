@@ -1043,6 +1043,23 @@ def grid_directions(lon_bins=SOLVE_LON_BINS, lat_bins=SOLVE_LAT_BINS):
                     axis=-1)
 
 
+#: ⭐ THE GRIDS ARE PURE FUNCTIONS OF THEIR SHAPE, AND THERE ARE FOUR SHAPES.
+#: The content ladder alone rebuilt the 1440x360 ray grid -- half a million
+#: cells of trig -- eleven times per call, for eleven identical answers
+#: (measured 2026-09-02, on the way to the deep batch's own numbers). Kept by
+#: shape and handed out read-only; nothing anywhere writes into a grid.
+_GRID_DIRS = {}
+
+
+def _grid_dirs(lon_bins, lat_bins):
+    key = (int(lon_bins), int(lat_bins))
+    got = _GRID_DIRS.get(key)
+    if got is None:
+        got = grid_directions(key[0], key[1])
+        _GRID_DIRS[key] = got
+    return got
+
+
 def image_at_pose(pre, dirs, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
     """
     The photograph resampled onto the cloud's own grid, at one pose.
@@ -1100,9 +1117,22 @@ class PoseScorer(object):
         self.lat_bins = int(lat_bins)
         self.pre = _prefiltered(lum, lon_bins=self.lon_bins,
                                 lat_bins=self.lat_bins)
-        self.dirs = grid_directions(self.lon_bins, self.lat_bins)
+        self.dirs = _grid_dirs(self.lon_bins, self.lat_bins)
         self.weight = _solid_angle_weight(self.lat_bins, self.lon_bins)
         self.evaluations = 0
+        # ⭐⭐ ONE RESAMPLE PER POSE, SHARED BY ALL THREE MEASURES. Every
+        # objective call asked `image_at_pose` the identical question three
+        # times -- once each for the edge, MI and beacon terms -- and the
+        # pattern search then asked it again for poses it had just left
+        # (probing the camera's height or seat moves the TRIPOD, not the
+        # photograph, so the rotation is unchanged through all six of those
+        # probes). Measured 2026-09-02: 3,893 resamples, 17.5 s of a 31.9 s
+        # press, for at most a third that many distinct poses. Keyed on the
+        # exact floats, so a hit is bit-identical to the call it spares; the
+        # edge field rides in the same entry, filled the first time the edge
+        # term wants it.
+        self._img = {}
+        self._img_order = []
         # ⛔⛔ MORE THAN ONE HEIGHT IS KEPT, AND KEEPING ONE WAS A REAL FAULT
         # RATHER THAN A MISSED OPTIMISATION. A pattern search probes an axis
         # both ways from where it stands: it asks about z+step, then z-step,
@@ -1151,13 +1181,28 @@ class PoseScorer(object):
     def filled(self, camera_z=None):
         return self._at(camera_z)["filled"].mean()
 
+    def _at_pose(self, yaw_deg, pitch_deg, roll_deg):
+        """The photograph resampled at one rotation, built once, kept."""
+        key = (float(yaw_deg), float(pitch_deg), float(roll_deg))
+        got = self._img.get(key)
+        if got is None:
+            got = {"img": image_at_pose(self.pre, self.dirs,
+                                        key[0], key[1], key[2]),
+                   "edges": None}
+            self._img[key] = got
+            self._img_order.append(key)
+            while len(self._img_order) > CACHE_POSES:
+                self._img.pop(self._img_order.pop(0), None)
+        return got
+
     def score(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
               camera_x=None, camera_y=None):
         self.evaluations += 1
         a = self.cloud_edges(camera_z, camera_x, camera_y)[0]
-        b = _edges(image_at_pose(self.pre, self.dirs,
-                                 yaw_deg, pitch_deg, roll_deg))
-        return float((a * b).sum())
+        got = self._at_pose(yaw_deg, pitch_deg, roll_deg)
+        if got["edges"] is None:
+            got["edges"] = _edges(got["img"])
+        return float((a * got["edges"]).sum())
 
     def refl_cells(self, camera_z=None, camera_x=None, camera_y=None):
         """
@@ -1221,7 +1266,7 @@ class PoseScorer(object):
         if cell is None:
             return None
         self.evaluations += 1
-        img = image_at_pose(self.pre, self.dirs, yaw_deg, pitch_deg, roll_deg)
+        img = self._at_pose(yaw_deg, pitch_deg, roll_deg)["img"]
         b = _quantise(img, cell["mask"], bins)[cell["rows"], cell["cols"]]
         joint = np.bincount(cell["a"] * bins + b, weights=cell["w"],
                             minlength=bins * bins).reshape(bins, bins)
@@ -1254,7 +1299,7 @@ class PoseScorer(object):
         if cell is None or not cell["bright"].size:
             return None
         self.evaluations += 1
-        img = image_at_pose(self.pre, self.dirs, yaw_deg, pitch_deg, roll_deg)
+        img = self._at_pose(yaw_deg, pitch_deg, roll_deg)["img"]
         v = img[cell["rows"], cell["cols"]]
         mean = float(np.average(v, weights=cell["w"]))
         sd = float(math.sqrt(np.average((v - mean) ** 2, weights=cell["w"])))
@@ -1702,6 +1747,13 @@ DEEP_LAT_BINS = 45
 #: identical pose out of both. A cached position at the fine grid is a few
 #: megabytes, so twelve of them cost less than one photograph.
 CACHE_HEIGHTS = 12
+
+#: And how many ROTATIONS. The height/seat probes ask about the same rotation
+#: from six nearby camera positions, so the working set mirrors the one
+#: above: the incumbent plus the probes either side of it, across the axes
+#: the search currently has live. A fine-grid entry is the resampled image
+#: plus its edge field, ~2 MB, so sixteen cost a fraction of one photograph.
+CACHE_POSES = 16
 
 #: How many distinct bumps of the sweep are followed up, besides the pose the
 #: operator already has. ⛔ The incumbent is ALWAYS one of the candidates: that
@@ -2185,8 +2237,51 @@ def _peak_frac(line, at):
     return float(np.clip(0.5 * (l - r) / d, -0.5, 0.5))
 
 
+def _drift_edges(img):
+    """`paint_drift`'s edge field -- kept verbatim from the inner `_e` it
+    used to close over, zero-norm guard included, so the split that let the
+    laser half be built once changed no number anywhere."""
+    gy, gx = np.gradient(img)
+    e = np.hypot(gx, gy)
+    e -= e.mean()
+    n = np.linalg.norm(e)
+    return e / (n if n > 0 else 1.0)
+
+
+def _drift_reference(xyz, refl, camera):
+    """
+    The LASER half of `paint_drift`: the cloud's reflectivity edge field at
+    one camera, which no lift of the image can change.
+
+    ⭐ BUILT ONCE PER LADDER, NOT ONCE PER RUNG. `content_offset` reads
+    eleven lifted copies of the photograph against the SAME cloud, and this
+    half -- a walk of a million points, two histograms, a 1440x360 hole-fill
+    and a gradient -- was rebuilt identically for each of them (measured
+    2026-09-02: the ladder was 13.7 s a call, twice per photograph, and most
+    of it was this). Returns None exactly where `paint_drift` refused with
+    "no reflectivity to measure with", and the caller says exactly that.
+    """
+    if refl is None or len(refl) != len(xyz) or len(xyz) < 5000:
+        return None
+    LON, LAT = DRIFT_LON_BINS, DRIFT_LAT_BINS
+    d, _rng = directions(xyz, camera)
+    lon = np.arctan2(d[:, 0], d[:, 1])
+    lat = np.arcsin(np.clip(d[:, 2], -1.0, 1.0))
+    u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * LON, 0,
+                LON - 1).astype(np.int64)
+    v = np.clip((0.5 - lat / math.pi) * LAT, 0, LAT - 1).astype(np.int64)
+    flat = v * LON + u
+    vals = np.log1p(np.maximum(np.asarray(refl, dtype=np.float64), 0))
+    tot = np.bincount(flat, weights=vals, minlength=LON * LAT)
+    cnt = np.bincount(flat, minlength=LON * LAT)
+    mask = (cnt.reshape(LAT, LON) > 0)
+    laser = fill_holes(np.where(cnt > 0, tot / np.maximum(cnt, 1),
+                                0.0).reshape(LAT, LON), mask)
+    return _drift_edges(laser)
+
+
 def paint_drift(xyz, refl, lum, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
-                camera=(0.0, 0.0, 0.0)):
+                camera=(0.0, 0.0, 0.0), laser_edges=None):
     """
     Where the photograph's content sits relative to the laser's, in degrees.
 
@@ -2210,34 +2305,14 @@ def paint_drift(xyz, refl, lum, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
     Never raises.
     """
     try:
-        if refl is None or len(refl) != len(xyz) or len(xyz) < 5000:
+        ER = (laser_edges if laser_edges is not None
+              else _drift_reference(xyz, refl, camera))
+        if ER is None:
             return {"ok": False, "reason": "no reflectivity to measure with"}
         LON, LAT = DRIFT_LON_BINS, DRIFT_LAT_BINS
-        d, _rng = directions(xyz, camera)
-        lon = np.arctan2(d[:, 0], d[:, 1])
-        lat = np.arcsin(np.clip(d[:, 2], -1.0, 1.0))
-        u = np.clip(((lon / (2.0 * math.pi)) + 0.5) * LON, 0,
-                    LON - 1).astype(np.int64)
-        v = np.clip((0.5 - lat / math.pi) * LAT, 0, LAT - 1).astype(np.int64)
-        flat = v * LON + u
-        vals = np.log1p(np.maximum(np.asarray(refl, dtype=np.float64), 0))
-        tot = np.bincount(flat, weights=vals, minlength=LON * LAT)
-        cnt = np.bincount(flat, minlength=LON * LAT)
-        mask = (cnt.reshape(LAT, LON) > 0)
-        laser = fill_holes(np.where(cnt > 0, tot / np.maximum(cnt, 1),
-                                    0.0).reshape(LAT, LON), mask)
-
-        def _e(img):
-            gy, gx = np.gradient(img)
-            e = np.hypot(gx, gy)
-            e -= e.mean()
-            n = np.linalg.norm(e)
-            return e / (n if n > 0 else 1.0)
-
-        ER = _e(laser)
-        ES = _e(image_at_pose(np.asarray(lum, dtype=np.float64),
-                              grid_directions(LON, LAT),
-                              yaw_deg, pitch_deg, roll_deg))
+        ES = _drift_edges(image_at_pose(np.asarray(lum, dtype=np.float64),
+                                        _grid_dirs(LON, LAT),
+                                        yaw_deg, pitch_deg, roll_deg))
         # The poles are excluded: the lidar never fills them, so a patch
         # there would vote with the hole-fill's invention.
         rows = np.linspace(int(LAT * 0.22), int(LAT * 0.82),
@@ -2259,6 +2334,14 @@ def paint_drift(xyz, refl, lum, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
         # a 0.8 degree yaw sweep and falls 1:1 with a known lift.
         surf = np.zeros((2 * R + 1, 2 * R + 1))
         voted = 0
+        # ⭐ THE WRAP IS PAID ONCE, NOT PER SHIFT. The inner loop gathered its
+        # window with `np.take(..., arange % LON)` -- a fancy-indexed COPY of
+        # every candidate window, 441 of them per voting patch, and that
+        # gather was most of the ladder's cost (measured 2026-09-02). With R
+        # columns of each edge mirrored onto the other, every window is a
+        # plain slice VIEW of the same array; the products and the summation
+        # order are untouched, so the surface is bit-identical.
+        ES_pad = np.concatenate([ES[:, LON - R:], ES, ES[:, :R]], axis=1)
         for i in range(DRIFT_PATCH_LAT):
             r0, r1 = rows[i], rows[i + 1]
             for j in range(DRIFT_PATCH_LON):
@@ -2271,10 +2354,9 @@ def paint_drift(xyz, refl, lum, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
                 for dr in range(-R, R + 1):
                     if r0 + dr < 0 or r1 + dr > LAT:
                         continue
+                    band = ES_pad[r0 + dr:r1 + dr]
                     for dc in range(-R, R + 1):
-                        b = np.take(ES[r0 + dr:r1 + dr],
-                                    np.arange(c0 + dc, c1 + dc) % LON,
-                                    axis=1)
+                        b = band[:, c0 + dc + R:c1 + dc + R]
                         surf[dr + R, dc + R] += float((a * b).sum())
         if voted < DRIFT_MIN_PATCHES:
             return {"ok": False,
@@ -2465,12 +2547,17 @@ def content_offset(xyz, refl, lum, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
     """
     try:
         px_per_deg = float(lum.shape[0]) / 180.0
+        # ⭐ THE LASER HALF IS THE SAME ON EVERY RUNG -- the ladder lifts the
+        # IMAGE, and nothing about the cloud, the camera or the reflectivity
+        # moves with it. Built once here; None reproduces the per-rung
+        # refusal exactly (every rung fails with the same named reason).
+        ref = _drift_reference(xyz, refl, camera)
         rows, why = [], None
         for i in range(-CONTENT_LADDER_RUNGS, CONTENT_LADDER_RUNGS + 1):
             k = int(round(i * CONTENT_LADDER_DEG * px_per_deg))
             _rgb, lifted = lift_image(None, lum, k)
             d = paint_drift(xyz, refl, lifted, yaw_deg, pitch_deg, roll_deg,
-                            camera)
+                            camera, laser_edges=ref)
             if d.get("ok") and abs(d["dlat_deg"]) < CONTENT_WINDOW_DEG:
                 rows.append((k / px_per_deg + float(d["dlat_deg"]),
                              float(d["dlon_deg"])))

@@ -4300,8 +4300,27 @@ class AlignServer(object):
         # photograph and no reason. The pose dict in the project still holds
         # the lift for the next successful repaint.
         if (scan.colour_info or {}).get("ok"):
-            scan.colour_info["grade"] = pose.get("grade") or "given"
+            saved_grade = pose.get("grade")
+            scan.colour_info["grade"] = saved_grade or "given"
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
+            # ⛔⛔ AND `given` GOES BACK TO WHAT IT WAS, WHICH IS NOT WHAT
+            # HANDING A YAW OVER MEANS. `colour_scan` marks any heading it is
+            # GIVEN as given -- right when the operator typed one, wrong here,
+            # where the number came off the file that a solve had put there.
+            # Every restored photograph therefore came back claiming to be
+            # hand-typed, and "a typed heading is an input, not a guess" is a
+            # rule several places obey: `deep_all` skips such a scan, so
+            # "Deep align them all" refused a REOPENED PROJECT outright --
+            # "nothing here can be deep aligned" on nineteen solved poses
+            # (measured on the operator's own job, 2026-09-02). The lean
+            # resolver and the auto-align guard read the same flag.
+            #
+            # ⛔ THE OLD FILES ARE COVERED BY THE GRADE, which has always been
+            # written: a heading the operator typed grades "given" (see
+            # `colour_scan`), so a project saved before `given` was recorded
+            # still restores the distinction rather than guessing at it.
+            scan.colour_info["given"] = bool(pose.get("given")
+                                             or saved_grade == "given")
         else:
             scan.colour_info = None
 
@@ -4561,6 +4580,12 @@ class AlignServer(object):
                 "roll_deg": float(info.get("roll_deg") or 0.0),
                 "camera_z": cz, "camera_x": cx, "camera_y": cy,
                 "grade": info.get("grade"),
+                # ⛔ WHETHER THE OPERATOR TYPED IT, WRITTEN DOWN RATHER THAN
+                # INFERRED ON THE WAY BACK IN. `_carry_colour` can fall back
+                # on the grade for a file saved before this line, but a fact
+                # this load-bearing -- it decides whether the deep search is
+                # allowed to overwrite the number -- belongs in the file.
+                "given": bool(info.get("given")),
                 "rung": int(info.get("rung") or 0),
                 # The stitch lift travels with the pose it was measured
                 # under, or the exporter paints from an image 0.8 degrees
@@ -5371,7 +5396,9 @@ PAGE = r"""<!doctype html>
     </button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 6px">
     The whole-circle search with the content check, on each photographed scan
-    in turn — about a minute a photograph, and every outcome is named. A pose
+    in turn — <b>about a minute and a half a photograph</b> (a stubborn one
+    can take four): the button says how long before it starts, and the bar
+    names each one as it goes. Every outcome is named at the end. A pose
     searched into a wrong basin comes back to the rig's own bolted geometry
     when the picture content prefers it; a heading you typed by hand is an
     input, not a guess, and is left alone. One Ctrl-Z puts every photograph
@@ -8581,8 +8608,21 @@ function pushEdit(e){
      ("slow to delete points"). Drops applied last always win in the full
      algorithm, so appending one and marking only its own insides reaches the
      identical mask. A KEEP flips the baseline and still recomputes fully. */
-  if(e.mode==='keep') recomputeLive(); else applyDrop(e);
+  /* ⭐⭐ AND THE CALLER IS TOLD HOW MANY POINTS ACTUALLY WENT, because a
+     delete is judged by the picture and the picture can be honestly
+     unchanged: a cut narrowed to one cloud, or limited by the clip box, can
+     take a few thousand points out of three million and look exactly like a
+     button that does nothing. "Polygon delete points not working" (operator,
+     2026-09-02) was a cut that removed 4,605 of the 1,377,627 points inside
+     the outline -- correctly, every other one having been hidden by the clip
+     box -- and said only "deleted the points inside the outline".
+     ⛔ A KEEP RETURNS null RATHER THAN A NUMBER: it recomputes the whole mask,
+     so what it "took" is the rest of the job, which is a different question
+     from the one this number answers. */
+  if(e.mode==='keep'){ recomputeLive(); dirty(); return null; }
+  const gone=applyDrop(e);
   dirty();
+  return gone;
 }
 
 /* One drop edit against the mask as it stands. Dead points skip the world
@@ -8607,7 +8647,7 @@ function applyDrop(e){
      status line reads a NEGATIVE number of points kept. Summing s.points is
      one pass over the SCANS; the mask walk runs only when the population
      really has moved. */
-  let holds=0;
+  let holds=0, gone=0;
   for(const s of V.scans) holds+=s.points;
   if(V.total!==holds){
     V.total=holds; V.alive=0;
@@ -8633,7 +8673,8 @@ function applyDrop(e){
       let before=0; for(let i=0;i<k;i++) if(seg[i]) before++;
       if(box) markBox(seg,k,box,0); else markLasso(seg,k,las,0);
       let after=0; for(let i=0;i<k;i++) if(seg[i]) after++;
-      if(after!==before){ touched=true; V.alive-=(before-after); }
+      if(after!==before){ touched=true; gone+=(before-after);
+                          V.alive-=(before-after); }
     }
     if(touched) upload(s);
   }
@@ -8641,6 +8682,34 @@ function applyDrop(e){
     (V.scans.length===1?'':'s')+' · '+V.alive.toLocaleString()+' of '+
     V.total.toLocaleString()+' points kept';
   invalidate();
+  return gone;
+}
+
+/* ⭐⭐ WHAT THE OUTLINE STILL HOLDS THAT THE CUT DID NOT TAKE.
+   ⛔ RUN AFTER THE CUT, WHICH IS WHAT MAKES IT ONE PASS AND NOT TWO. The
+   points this cut took are already dead, and `markLasso` skips a point that
+   is already at the value it would set -- so the enclosed points still alive
+   are exactly the ones something SPARED. With the clip stamp left off the
+   copy, that something is the clip box, which is the only thing between the
+   outline and the points inside it once the scope has been applied.
+   ⛔ AND IT WORKS ON A COPY OF THE MASK. This is a question, not an edit; a
+   diagnostic that wrote to `s.live` would delete the points it was counting. */
+function clipSpared(e){
+  const las={matrix:e.matrix, polygon:e.poly, keep:false,
+             scan:(e.scan==null?null:e.scan), frames:e.frames};
+  let n=0;
+  for(const s of V.scans){
+    if(!inScope(las.scan, s.index)) continue;
+    const A=frameFor(las, s);
+    for(let base=0;base<s.points;base+=BLOCK){
+      const k=Math.min(BLOCK,s.points-base);
+      const seg=s.live.subarray(base,base+k), copy=seg.slice();
+      if(!world(s, base, k, A, copy)) continue;
+      markLasso(copy,k,las,0);
+      for(let i=0;i<k;i++) if(copy[i]!==seg[i]) n++;
+    }
+  }
+  return n;
 }
 function whoSuffix(){
   if(V.editWho>=0) return ' from '+whoName(V.editWho)+' only';
@@ -8868,12 +8937,18 @@ function boxSpec(){
 }
 function addBox(which){
   const b=boxSpec(), h=boxHalf();
-  pushEdit({kind:'box', mode:which, box:b});
+  /* The count for the same reason the outline reports one: a box aimed at one
+     cloud, or drawn where that cloud has nothing, takes nothing and looks
+     exactly like a button that did not fire. */
+  const gone=pushEdit({kind:'box', mode:which, box:b});
   say((which==='keep'?'Keeping only':'Deleting')+' a box '+
       (2*h[0]).toFixed(1)+' x '+(2*h[1]).toFixed(1)+' x '+
       (2*h[2]).toFixed(1)+' m'+(boxTurned()
         ? ', turned '+(+V.box.yaw).toFixed(1)+'°' : '')+
-      whoSuffix()+'. Undo puts it back.');
+      whoSuffix()+'.'+
+      (gone==null ? '' : ' '+gone.toLocaleString()+' point'+
+                         (gone===1?'':'s')+' went.')+
+      ' Undo puts it back.', (gone===0 ? 'warn' : null));
 }
 
 /* ⛔ RECOMPUTED FROM SCRATCH, NEVER APPLIED INCREMENTALLY. A delete that only
@@ -9319,8 +9394,9 @@ function polyClose(){
 }
 function commitLasso(mode, keepTool){
   if(!V.pending) return;
-  pushEdit({kind:'lasso', mode:mode, matrix:V.pending.matrix,
-            poly:V.pending.ndc});
+  const cut={kind:'lasso', mode:mode, matrix:V.pending.matrix,
+             poly:V.pending.ndc};
+  const gone=pushEdit(cut);
   V.pending=null; askLasso(false);
   /* ⭐ A MIDDLE-CLICK DELETE KEEPS THE TOOL ARMED -- asked for on
      2026-09-01, completing the draw-then-delete loop: outline, right-click,
@@ -9328,14 +9404,33 @@ function commitLasso(mode, keepTool){
      panel buttons and Enter keep their old manners and put the tool away. */
   if(!keepTool) setTool('');
   invalidate();
+  /* ⭐⭐ THE CLIP BOX IS NAMED WITH A NUMBER, NOT WITH A CAUTION. "Points the
+     clip box hides were left alone" was already said here, and it was still
+     read as a broken button (operator, 2026-09-02): the sentence describes a
+     rule, and what the operator needs is the SIZE of what the rule took away
+     from this particular press -- 4,605 points went and 1,373,022 were spared
+     is a different message from the same words with no numbers in them.
+     ⛔ COUNTED ONLY WHEN THE CLIP BOX IS ON, because the count is a whole
+     extra pass over the cloud and the answer is zero by construction whenever
+     no stamp was made. */
+  const spared = (cut.clip && gone!=null) ? clipSpared(cut) : 0;
+  const took = (gone==null) ? ''
+             : ' '+gone.toLocaleString()+' point'+(gone===1?'':'s')+' went.';
   say((mode==='keep' ? 'Deleted everything outside the outline'
                     : 'Deleted the points inside the outline')+
-      whoSuffix()+'.'+
+      whoSuffix()+'.'+took+
       /* ⛔ SAID OUT LOUD, for the same reason whoSuffix is: a cut that
          quietly spared the clipped-away points is indistinguishable from a
          cut that failed on them. */
-      (V.clip ? ' Points the clip box hides were left alone.' : '')+
-      (keepTool ? ' The tool is still armed — draw the next outline.' : ''));
+      (spared ? ' The clip box was hiding '+spared.toLocaleString()+
+                ' more inside that outline, and they were left alone — '+
+                'switch the clip box off and draw it again to take those too.'
+              : (V.clip ? ' Points the clip box hides were left alone.' : ''))+
+      (keepTool ? ' The tool is still armed — draw the next outline.' : ''),
+      /* ⛔ A CUT THAT TOOK NOTHING IS A WARNING, WHATEVER SPARED IT. The
+         picture does not change, so nothing else on screen can tell the
+         operator that the press was heard. */
+      (gone===0 ? 'warn' : null));
 }
 
 /* ---- point-pair picking ----
@@ -11520,10 +11615,31 @@ async function deepAlignPhoto(index, btn){
    prefers and can never make a pose worse -- so the batch is the same press
    N times ON THE SERVER: one path, not two. Remembered as ONE undo, built
    from the per-scan undo the same way the shoot solve is. */
+/* ⛔ AND IT SAYS HOW LONG IN THE OPERATOR'S OWN NUMBERS, BEFORE IT STARTS.
+   A press that runs far past its promise gets killed mid-way and reported
+   as broken. The count is taken the way the SERVER counts jobs, so the
+   estimate cannot describe a different set of scans from the run.
+   ⚠ THE RATE IS MEASURED, NOT DERIVED. The first version of this message
+   read `DEEP_SECONDS` and promised four-and-a-half minutes a photograph, as
+   if the deadline were always spent -- it is a CAP, and a real press uses a
+   fraction of it (2026-09-02, the operator's own 19-photograph job, full
+   budget: the whole batch in 31.7 minutes with the machine also running a
+   test suite -- ~1.5 min a photograph as the safe, slow-side figure; a
+   stubborn scan can still take the 4-minute cap). */
+function deepAllJobs(){
+  return V.scans.filter(s=>s.photo && !s.photoGiven && s.yaw!=null).length;
+}
 async function deepAlignAll(btn){
+  const jobs=deepAllJobs();
+  if(!jobs) return say('Nothing here can be deep aligned: it needs a '+
+                       'photograph with a SOLVED heading. A heading you '+
+                       'typed is an input, not a guess, and this search '+
+                       'leaves it alone.', 'warn');
   remember('deep aligning every photograph', undoAllPoses());
-  say('searching every photograph with every measure — about a minute '+
-      'each. The bar names each one as it goes…');
+  say(jobs+' photograph'+(jobs===1?'':'s')+' to search, every heading '+
+      'against every measure — about a minute and a half each, so roughly '+
+      Math.round(jobs*1.5)+' minutes in all. The bar names each one as it '+
+      'goes…');
   watch(true); busy(btn, true);
   try{
     const j=await post('photo/deepall', {});
