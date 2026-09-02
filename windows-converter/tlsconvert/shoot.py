@@ -322,6 +322,92 @@ def estimate_offset(scan_ends, photo_times, window_s=3 * 3600.0):
     return (lo + peak + 0.5) * OFFSET_BIN_S, float(conf), near
 
 
+def pair_in_order(rows, timed, offset, window_s=WINDOW_S):
+    """
+    Hand each capture its photograph WITHOUT ever crossing two of them over.
+
+    Returns {index into `rows`: photograph}. Both lists are already in time
+    order, so a walk that pairs them may step forward through either but never
+    back: the photograph for the fifth tripod position cannot have been taken
+    before the photograph for the fourth. Skips are allowed on both sides -- a
+    capture made in the dark consumes no photograph, a spare frame consumes no
+    capture -- and the walk maximises the NUMBER of pairs first, their
+    closeness on the clock second.
+
+    ⛔⛔ WHAT IT REPLACES, AND THE SHOOT THAT EARNED IT. The old rule took every
+    candidate pair, sorted them by |gap| and assigned first-come. That is not
+    order-preserving, and on the Ministry of Sound job (2026-09-02, 54
+    photographed positions in a dark club) it crossed four adjacent pairs over
+    -- folders 3/4, 12/13, 30/31 and 35/36 each wore its neighbour's picture --
+    and then, having spent those photographs on the wrong captures, sent three
+    more (9/10, 20/21 and 32) down the "share it rather than call it
+    unphotographed" path onto a picture of somebody else's tripod position.
+    Seven of fifty-four captures were wearing the wrong room, which no amount
+    of solving can fix and which the confidence score reports as a bad
+    photograph rather than a bad sort.
+
+    ⛔ NEAREST-NEIGHBOUR NEVER HAD A CHANCE, and that is the point. The
+    photograph is taken by hand after the rig comes off the tripod, so the gap
+    scatters by more than the two to four minutes between positions -- which
+    means the nearest photograph to a capture is ROUTINELY its neighbour's.
+    Sorting the candidates better cannot repair that; only refusing to cross
+    them can.
+
+    ⭐ AND THIS DOES NOT NEED THE OFFSET TO BE RIGHT, only consistent. A clock
+    error shared by every photograph slides the whole diagonal and changes
+    nothing about the order they fall in -- which is why this survives the hour
+    of timezone the rig and the camera disagree by, where a rule that trusts
+    each gap on its own does not.
+
+    ⛔ A CAPTURE THAT ALREADY HAS ITS PHOTOGRAPH IS NOT IN THE WALK. `plan`
+    honours a picture sitting beside a capture before this runs; letting such a
+    row take a second one from the pool would spend a photograph that is then
+    overridden, orphaning it for a capture further down that needed it.
+    """
+    n, m = len(rows), len(timed)
+    if offset is None or not n or not m:
+        return {}
+    # best[i][j] -- the value of the best walk through the first i captures and
+    # the first j photographs. A skip is worth nothing, and any pairing the
+    # clock allows is worth at least 1, so more pairs always beats closer ones.
+    ninf = float("-inf")
+    best = [[0.0] * (m + 1) for _ in range(n + 1)]
+    back = [[1] * (m + 1) for _ in range(n + 1)]      # 0 skip scan, 1 skip photo, 2 pair
+    for i in range(1, n + 1):
+        row = rows[i - 1]
+        # `assigned` here means a photograph already sitting beside it; `end`
+        # is missing on a capture whose time could not be read at all.
+        end = None if row.get("assigned") is not None else row.get("end")
+        for j in range(1, m + 1):
+            drop_scan, drop_photo = best[i - 1][j], best[i][j - 1]
+            take = ninf
+            at = timed[j - 1].get("at")
+            if end is not None and at is not None:
+                gap = (at - offset) - end
+                if -window_s <= gap <= window_s:
+                    take = (best[i - 1][j - 1] + 1.0
+                            + (1.0 - abs(gap) / window_s))
+            if take >= drop_scan and take >= drop_photo:
+                best[i][j], back[i][j] = take, 2
+            elif drop_scan >= drop_photo:
+                best[i][j], back[i][j] = drop_scan, 0
+            else:
+                best[i][j], back[i][j] = drop_photo, 1
+
+    got = {}
+    i, j = n, m
+    while i > 0 and j > 0:
+        move = back[i][j]
+        if move == 2:
+            got[i - 1] = timed[j - 1]
+            i, j = i - 1, j - 1
+        elif move == 0:
+            i -= 1
+        else:
+            j -= 1
+    return got
+
+
 def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
          progress=None):
     """
@@ -413,7 +499,6 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
         offset, conf, hits = float(offset), float("inf"), len(timed)
 
     rows.sort(key=lambda r: (r["start"] is None, r["start"] or 0, r["name"]))
-    pairs = []
     for n, r in enumerate(rows, 1):
         r["number"] = n
         r["photos"] = []
@@ -431,43 +516,56 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
             if -window_s <= gap <= window_s:
                 r["photos"].append({"name": pth["name"], "path": pth["path"],
                                     "gap_s": round(gap, 1)})
-                pairs.append((abs(gap), n, pth["path"]))
         r["photos"].sort(key=lambda q: abs(q["gap_s"]))
         r["gap_s"] = r["photos"][0]["gap_s"] if r["photos"] else None
 
-    # ⭐⭐ ONE PHOTOGRAPH, ONE HOME -- ASSIGNED GREEDILY, NEAREST PAIR FIRST.
-    # Filing every photograph inside the window into every capture inside it
-    # duplicated most of the shoot: a tripod position produces TWO captures
-    # (the rig sweeps 190.8 degrees, so it takes two to cover the sphere) and
-    # TWO photographs, so a blanket rule hands each capture both pictures and
-    # copies the lot twice over. Taking them nearest-pair-first instead lands
-    # one photograph on each capture -- which is what the shoot actually is --
-    # and duplicates nothing.
-    by_number = {r["number"]: r for r in rows}
-    claimed, taken = set(), set()
-    for _gap, number, path in sorted(pairs):
-        if number in taken or path in claimed:
-            continue
-        row = by_number[number]
-        row["assigned"] = next(q for q in row["photos"] if q["path"] == path)
-        claimed.add(path)
-        taken.add(number)
-    # ⛔ A CAPTURE WHOSE ONLY PHOTOGRAPH IS ALREADY SPOKEN FOR SHARES IT RATHER
-    # THAN BEING CALLED UNPHOTOGRAPHED. That happens when a position produced
-    # two captures but only one usable frame, and sending the second to "no
-    # photos" would be a lie about the shoot -- there IS a picture of that
-    # spot. It is the only case that copies, and it is counted and reported.
-    # A capture that already had one keeps it, whatever the clock proposed.
+    # ⭐⭐ A PHOTOGRAPH ALREADY BESIDE ITS CAPTURE IS SETTLED FIRST, BEFORE
+    # ANYTHING IS PROPOSED. It is a decision somebody already made -- by an
+    # earlier run, by the CLI, or by hand in Explorer -- and settling it here
+    # rather than overriding a proposal afterwards is what lets
+    # `pair_in_order` leave the row out of its walk. Spending a pool
+    # photograph on a capture that is about to be overridden orphans that
+    # photograph for a capture further down the day that needed it.
     for r in rows:
         if r["name"] in siblings:
             r["assigned"] = {"name": os.path.basename(siblings[r["name"]]),
                              "path": siblings[r["name"]], "gap_s": 0.0}
             r["shared"] = False
             r["beside"] = True
+
+    # ⭐⭐ ONE PHOTOGRAPH, ONE HOME, AND THE DAY'S OWN ORDER KEPT. Filing every
+    # photograph inside the window into every capture inside it duplicated most
+    # of the shoot: a tripod position produces TWO captures (the rig sweeps
+    # 190.8 degrees, so it takes two to cover the sphere) and TWO photographs,
+    # so a blanket rule hands each capture both pictures and copies the lot
+    # twice over. Assigning them IN ORDER lands one photograph on each capture
+    # -- which is what the shoot actually is -- duplicates nothing, and cannot
+    # hand a capture its neighbour's picture. See `pair_in_order` for the shoot
+    # that earned the last half of that sentence.
+    for i, pth in pair_in_order(rows, timed, offset, window_s).items():
+        rows[i]["assigned"] = next(
+            (q for q in rows[i]["photos"] if q["path"] == pth["path"]), None)
+
+    # ⛔ A CAPTURE WHOSE ONLY PHOTOGRAPH IS ALREADY SPOKEN FOR SHARES IT RATHER
+    # THAN BEING CALLED UNPHOTOGRAPHED. That happens when a position produced
+    # two captures but only one usable frame, and sending the second to "no
+    # photos" would be a lie about the shoot -- there IS a picture of that
+    # spot. It is the only case that copies, and it is counted and reported.
+    #
+    # ⛔ AN UNSPOKEN-FOR PHOTOGRAPH IS PREFERRED TO SHARING, AND THAT ORDER
+    # MATTERS. The walk skips a capture when pairing it would cross two others
+    # over, not because nothing is left for it -- so reaching straight for the
+    # nearest picture would copy a neighbour's while a perfectly good spare sat
+    # unused. Sharing is the answer when the pool is genuinely empty, never a
+    # shortcut past looking.
+    spoken = {r["assigned"]["path"] for r in rows if r["assigned"]}
     for r in rows:
-        if r["assigned"] is None and r["photos"]:
-            r["assigned"] = r["photos"][0]
-            r["shared"] = True
+        if r["assigned"] is not None or not r["photos"]:
+            continue
+        free = [q for q in r["photos"] if q["path"] not in spoken]
+        r["assigned"] = free[0] if free else r["photos"][0]
+        r["shared"] = not free
+        spoken.add(r["assigned"]["path"])
 
     used = {r["assigned"]["path"] for r in rows if r["assigned"]}
     spare = [p for p in photos if p["path"] not in used]

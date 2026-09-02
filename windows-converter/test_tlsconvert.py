@@ -4672,6 +4672,76 @@ check("but a FULL-SIZE one with no sidecar is kept, not deleted",
       _plan["kept_aborted"])
 check("and the plan says why, in words, before anything is removed",
       "lost sidecar is not an aborted sweep" in _plan["note"], _plan["note"])
+check("no photograph in a clean shoot is assigned to two captures",
+      len({r["assigned"]["path"] for r in _plan["scans"] if r["assigned"]})
+      == len([r for r in _plan["scans"] if r["assigned"]]))
+check("...and nothing had to be shared to manage it", _plan["shared"] == [],
+      _plan["shared"])
+
+# --- the day was shot in order, and the matcher may not cross it over -------
+#
+# ⛔⛔ THE MINISTRY OF SOUND SHAPE, REDUCED TO FOUR POSITIONS. Greedy
+# nearest-pair assignment is not order-preserving: give it a photograph sitting
+# closer to the NEXT capture than to its own, and it spends it there, leaving
+# the earlier capture to reach forward for a later frame. Here p190 is 10 s
+# from the second capture's end and 190 s from the first's, so greedy hands it
+# to the second and the first takes p210 -- crossed. On the real job
+# (2026-09-02, a dark club, 54 photographed positions) that crossed four
+# adjacent pairs over -- folders 3/4, 12/13, 30/31, 35/36 -- and then pushed
+# three more onto a SHARED picture of somebody else's tripod position.
+_po_rows = [{"name": "s%d" % i, "end": 200.0 * i, "assigned": None,
+             "photos": [], "shared": False} for i in range(4)]
+_po_pics = [{"name": "p%d" % t, "path": "/p%d" % t, "at": float(t)}
+            for t in (190, 210, 390, 610)]
+_po = shoot.pair_in_order(_po_rows, _po_pics, 0.0)
+check("every capture in a sequential shoot gets a photograph of its own",
+      len(_po) == 4 and len({p["path"] for p in _po.values()}) == 4, _po)
+# ⭐ THE INVARIANT IS WHAT IS ASSERTED, NOT THE ANSWER. Naming the four
+# expected files would pass equally against a matcher that got this fixture
+# right by luck; what earns the function is that the walk never steps back.
+_po_seq = [_po[i]["at"] for i in sorted(_po)]
+check("...and never reaches back past the capture before it",
+      _po_seq == sorted(_po_seq), _po_seq)
+check("...which on this shoot is one photograph per position, in order",
+      _po_seq == [190.0, 210.0, 390.0, 610.0], _po_seq)
+
+# ⛔ SKIPS ON BOTH SIDES, because a real day has both: a capture made in the
+# dark consumes no photograph, a spare frame consumes no capture, and neither
+# may drag the rest of the day out of step.
+_po_dark = [{"name": "a", "end": 0.0, "assigned": None},
+            {"name": "dark", "end": 5000.0, "assigned": None},
+            {"name": "b", "end": 10000.0, "assigned": None}]
+# ⛔ THE SPARE SITS JUST OUTSIDE THE WINDOW, NOT MILES OUTSIDE, and the audit is
+# what found that out. At 3000 s the pairing scored NEGATIVE, so the walk
+# declined it on arithmetic and the check passed with the window guard deleted
+# -- a check that cannot fail is not a check. 300 s is past the 240 s window
+# while still scoring positively, so only the guard itself can refuse it.
+_po_dpix = [{"name": "x", "path": "/x", "at": 30.0},
+            {"name": "spare", "path": "/spare", "at": 5300.0},
+            {"name": "y", "path": "/y", "at": 10030.0}]
+_po_d = shoot.pair_in_order(_po_dark, _po_dpix, 0.0)
+check("a capture with nothing inside its window is left unpaired",
+      sorted(_po_d) == [0, 2], _po_d)
+check("...and a spare frame is simply not used, not forced somewhere",
+      {p["path"] for p in _po_d.values()} == {"/x", "/y"}, _po_d)
+
+# ⛔ A CAPTURE ALREADY HOLDING ITS PHOTOGRAPH IS NOT IN THE WALK. Letting it
+# take a second from the pool spends a frame that is then overridden, orphaning
+# it for a capture further down the day that needed it.
+_po_side = [{"name": "has", "end": 0.0,
+             "assigned": {"name": "beside", "path": "/beside", "gap_s": 0.0}},
+            {"name": "needs", "end": 60.0, "assigned": None}]
+# ⛔ AND THE ONE PHOTOGRAPH MUST SIT CLOSER TO THE CAPTURE THAT ALREADY HAS
+# ONE. Placed midway the two scored identically, the tie fell to the later row
+# by luck, and the check passed with the exclusion deleted. At 5 s it belongs to
+# the settled capture on every measure the walk can see, so only the exclusion
+# can hand it to the one that needs it.
+_po_s = shoot.pair_in_order(
+    _po_side, [{"name": "only", "path": "/only", "at": 5.0}], 0.0)
+check("a capture that already has its photograph is left out of the walk",
+      list(_po_s) == [1], _po_s)
+check("with no offset there is nothing to pair on, and nothing is guessed",
+      shoot.pair_in_order(_po_rows, _po_pics, None) == {})
 
 _dest2 = os.path.join(_sdir2, "out")
 _did = shoot.apply(_plan, _dest2, move=True, delete_aborted=True)
