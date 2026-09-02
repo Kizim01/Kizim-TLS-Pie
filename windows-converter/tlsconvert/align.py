@@ -8073,7 +8073,15 @@ function undoBox(){
    thing the operator did. */
 function clearPending(){
   if(!V.pending) return false;
-  V.pending=null; V.tool=''; setTool(''); invalidate();
+  /* ⛔⛔ THE PANEL GOES WITH THE OUTLINE IT ASKS ABOUT. This threw the outline
+     away and left "Delete inside / Delete outside" standing, so the next
+     press of either hit commitLasso's guard and did NOTHING, silently --
+     reported as "polygon tool is still not deleting points" (operator,
+     2026-09-02), and the 29th-pass record had even written down that this
+     function "does not hide the Delete-inside panel" without hearing it as
+     the bug it was. A control left visible after the thing it acts on is
+     gone is a button wired to nothing. */
+  V.pending=null; askLasso(false); V.tool=''; setTool(''); invalidate();
   return true;
 }
 async function undoAny(){
@@ -9393,7 +9401,17 @@ function polyClose(){
   return true;
 }
 function commitLasso(mode, keepTool){
-  if(!V.pending) return;
+  /* ⛔ THE GUARD SPEAKS AND TIDIES UP. A silent return here is a delete
+     button that does nothing with no evidence the press was heard -- and any
+     path that drops the outline while leaving the panel up (clearPending did
+     exactly that until 2026-09-02) turns that silence into "the polygon tool
+     is broken". If the state ever recurs, the operator now gets the reason
+     and a clean slate instead of a dead button. */
+  if(!V.pending){
+    askLasso(false);
+    return say('There is no outline to delete from any more — it was thrown '+
+               'away (Ctrl-Z, or the camera moved). Draw it again.', 'warn');
+  }
   const cut={kind:'lasso', mode:mode, matrix:V.pending.matrix,
              poly:V.pending.ndc};
   const gone=pushEdit(cut);

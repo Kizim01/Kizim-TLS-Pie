@@ -11458,7 +11458,10 @@ const V={scans:[], edits:[], hidden:{}, only:-1, editWho:-1, alive:0,
          total:0, clip:true, inside:false};
 const HIST=[];
 const $=()=>({textContent:'', innerHTML:'', value:0});
-const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
+const SAYS=[], ASKS=[];
+const say=(t,k)=>SAYS.push([String(t), k||null]);
+const askLasso=on=>ASKS.push(!!on);
+const setTool=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
       dirty=()=>{}, whoName=()=>'a cloud', recomputeLive=()=>{};
 function remember(){ HIST.push({}); }
 /* the box the operator had on: a slab, hiding everything OUTSIDE it */
@@ -11482,9 +11485,34 @@ out.left = alive();                      /* asking must not delete */
 /* the same outline, the same points, with the clip box switched off */
 V.clip=false; V.edits=[]; V.scans=[cloud(0)]; V.alive=0; V.total=0;
 out.all = pushEdit({kind:'lasso', mode:'drop', matrix:LOOK, poly:SQUARE});
+
+/* the Ctrl-Z leak: an outline thrown away must take its panel with it, and
+   a press on a dead panel must speak rather than do nothing */
+V.clip=true; V.edits=[]; V.scans=[cloud(0)]; V.alive=0; V.total=0;
+V.pending={screen:[[0,0]], matrix:LOOK.slice(),
+           ndc:SQUARE.map(p=>p.slice())};
+ASKS.length=0;
+clearPending();
+out.panelHidden = ASKS.length>0 && ASKS[ASKS.length-1]===false;
+out.pendingGone = V.pending===null;
+ASKS.length=0; SAYS.length=0;
+commitLasso('cut', false);
+out.deadWarns = SAYS.length===1 && SAYS[0][1]==='warn'
+                && SAYS[0][0].indexOf('thrown')>=0;
+out.deadHides = ASKS.length>0 && ASKS[ASKS.length-1]===false;
+out.deadNoEdit = V.edits.length===0;
+/* and a LIVE pending still commits and reports through the same door */
+V.pending={screen:[[0,0]], matrix:LOOK.slice(),
+           ndc:SQUARE.map(p=>p.slice())};
+SAYS.length=0;
+commitLasso('cut', false);
+out.liveCuts = V.edits.length===1 && alive()===3
+               && SAYS.length===1 && SAYS[0][1]===null
+               && SAYS[0][0].indexOf('2 points went')>=0;
 console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
-                 ("pushEdit", "applyDrop", "clipSpared", "inScope",
+                 ("pushEdit", "applyDrop", "clipSpared", "commitLasso",
+                  "clearPending", "whoSuffix", "inScope",
                   "frameFor", "cutFrames", "cutScope", "shown", "world",
                   "markBox", "markLasso", "prepClip", "clipHides", "rotOf")),
        json.dumps(_SLAB), json.dumps(list(_look_down())), json.dumps(_SQ),
@@ -11508,6 +11536,22 @@ console.log(JSON.stringify(out));
     check("...and the identical outline with the box off takes every point, "
           "which is what the message tells the operator to do",
           _k.get("all") == 5, _k)
+    # ⛔⛔ "POLYGON TOOL IS STILL NOT DELETING POINTS" -- operator, 2026-09-02,
+    # second report, and this time the cut path was healthy: Ctrl-Z on a
+    # closed outline went through clearPending, which threw the outline away
+    # and LEFT THE PANEL STANDING -- so Delete inside hit commitLasso's
+    # silent guard and did nothing, with no message. The 29th-pass record had
+    # even written "clearPending does not hide the Delete-inside panel"
+    # without hearing it as a bug. Two rules now: the panel goes with the
+    # outline it asks about, and the guard SPEAKS if the state ever recurs.
+    check("AN OUTLINE THROWN AWAY TAKES ITS PANEL WITH IT",
+          _k.get("panelHidden") is True and _k.get("pendingGone") is True, _k)
+    check("...A PRESS ON A DEAD PANEL SPEAKS AND TIDIES -- never a silent "
+          "nothing", _k.get("deadWarns") is True
+          and _k.get("deadHides") is True
+          and _k.get("deadNoEdit") is True, _k)
+    check("...and a live outline still commits and reports through the same "
+          "door", _k.get("liveCuts") is True, _k)
 
 # ⛔ A SCOPE CAN NAME SEVERAL CLOUDS AND `forgetScan` ONLY EVER HANDLED ONE.
 # `cutScope` returns a LIST whenever anything is hidden, and an array is never

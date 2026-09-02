@@ -6222,7 +6222,7 @@ Literature check (operator asked): FFT circular correlation over yaw is the stan
 (RING++, matched-filter LiDAR place recognition; `solve_yaw` already does it for the edge term) —
 queued as the next lever if the sweep ever dominates again; today it is 0.8 s of 31.9.
 
-### ⚠ LIVE STATE (2026-09-02, ~02:35)
+### ⚠ LIVE STATE (2026-09-02, ~02:35) — SUPERSEDED, see the ~04:00 block
 
 - Suites `test_tlsconvert` **1569 → 1606, 0 failed**; reversion audits **12/12** (the two report
   fixes) and **7/7** (the speed pass), all caught by name — including the wrong-edge pad, caught
@@ -6257,6 +6257,49 @@ elimination, so **the next speedup is a profile of the press path** (the outline
 profile → one hot loop → thread it), not a hardware purchase. Memory *bandwidth* remains the one
 thing this recorder cannot see. ⚠ The trace's first minutes show commit above physical RAM
 (32.56 GB peak) — that was Chrome + VS open beside Studio, closed mid-press; exposure, not cause.
+
+### 2026-09-02, thirty-second pass — "polygon tool is STILL not deleting points": same words as yesterday, different fault, and the record had already written the fault down without hearing it
+
+The operator, on the 02:45 build, with the clip box on: polygon closes, panel appears, Delete
+inside — **"no message at all"** (their answer to a direct question; the 02:45 build always
+reports a count, so no message meant the press never reached the report). No `js-error` in
+`studio.log` — the page's own error hook was silent — and the whole press REPRODUCED CLEAN in
+node at the job's real scale (19 clouds × 2.95 M points, the shipped `commitLasso` → `pushEdit`
+→ `applyDrop` chain end to end: 3.5 s, points deleted, message said). **A healthy path plus a
+silent press means the press died at a guard.**
+
+⛔⛔ **`clearPending` — the Ctrl-Z path that throws a drawn outline away — nulled `V.pending`
+and LEFT THE PANEL STANDING.** Close a polygon, press Ctrl-Z (to undo a corner, or from habit
+after yesterday's failed attempts), and the outline is gone while "Delete inside / Delete
+outside" still shows: the next press hits `commitLasso`'s `if(!V.pending) return;` and does
+nothing, silently, forever. ⚠ **The 29th-pass record had literally written "clearPending does
+not hide the Delete-inside panel" — as a reason to avoid calling it, not as the bug it was.**
+A fact recorded as a workaround's justification is a defect report nobody filed.
+
+Two fixes, both audited: **the panel goes with the outline it asks about** (`clearPending` now
+calls `askLasso(false)`), and **the guard speaks and tidies** — a press on a dead panel now says
+*"There is no outline to delete from any more — it was thrown away (Ctrl-Z, or the camera
+moved). Draw it again."* and hides the panel, so if the state is ever reachable again it
+converts to a legible message instead of a dead button. The Enter path keeps its own quiet
+guard on purpose: Enter with nothing drawn is not a press on a visible button.
+
+⭐ The lesson joins yesterday's as a pair: *a correct refusal and a broken button are the same
+picture* (31st) — and **a GUARD that returns silently under a visible control is a broken button
+by construction** (32nd). Every `return` under a click deserves the question "what does the
+operator see happen?"
+
+### ⚠ LIVE STATE (2026-09-02, ~04:00)
+
+- Suites `test_tlsconvert` **1606 → 1609, 0 failed**; reversion audit **3/3** by name (the leak
+  restored, the guard silenced, the guard's tidy-up dropped — each named its own check).
+- ✅ The dead-panel press is fixed at both ends (panel hidden with its outline; loud guard).
+- ⚠ **The operator should also check the clip box** — still on, *Hiding outside*, from last
+  night: even with this fix, a polygon over the already-cleaned tripod region will honestly
+  report "0 points went" with the spared count. The message now explains itself.
+- ⚠ Exes: rebuilt right after this commit (Studio verified closed by the operator's own word
+  and by process list) — the pin commit below stamps the times.
+- Still awaiting the operator: the real "Deep align them all" press (FAR flags `16_20_36`,
+  `16_34_46`, `16_41_12` worth the eye); folder 20 un-refit; folders 22+ unimported.
 
 ### ▶ NEXT SESSION STARTS HERE
 
