@@ -8580,10 +8580,10 @@ if registration.have_gicp():
         _lr2 = _lsrv.solve_survey()
         check("pressed again, nothing moves and it says so",
               _lr2.get("ok") and not _lr2.get("applied")
-              and "nothing was moved" in _lr2["text"]
+              and "nothing was moved" in _lr2.get("text", "")
               and all(_s.setup is _w
                       for _s, _w in zip(_lsrv.scans, _lag)),
-              _lr2.get("text"))
+              _lr2.get("text") or _lr2.get("error"))
 
     # ⛔⛔ A CAPTURE WHOSE EVERY PAIR READS FAR APART IS LEFT OUT AND NAMED,
     # NOT EATEN. ⚠ THE ROTTEN CAPTURE IS A NOISE BALL, AND HONESTY REQUIRES
@@ -8632,7 +8632,8 @@ if registration.have_gicp():
           (_lr3.get("stranded"), _lr3.get("error")))
     check("...and a kept survey with a stranded capture says so, instead of "
           "'already agrees' full stop",
-          not _lr3.get("applied") and "Left out entirely" in _lr3["text"],
+          not _lr3.get("applied") and "Left out entirely" in _lr3.get("text",
+                                                                     ""),
           _lr3.get("text"))
 
     # ⛔⛔ AND THE GRAPH ITSELF IS HELD TO THE REFINEMENT LINE. Edges can
@@ -8702,6 +8703,256 @@ if registration.have_gicp():
                   and "loop1" in o["name"]
                   for o in _lr5.get("odd") or []),
           (_lr5.get("error"), _lr5.get("odd")))
+
+    # --- the pairs are measured CONCURRENTLY, and the output must not
+    # depend on it. The reference below is a FROZEN VERBATIM copy of the
+    # sequential per-pair loop as it stood before the threading — the
+    # independent side this comparison stands on. workers=1 against
+    # workers=4 alone would compare the changed code to itself (the
+    # fit_segments lesson: that caught 0 of 4 planted breaks), so the
+    # captured edges are held to the frozen loop, and only the
+    # threading-only failure modes (assembly order, shared state) lean on
+    # the 1-vs-4 comparison, where workers=1 IS independent of them.
+    _corig = [(0.0, 0.0), (3.0, 1.0), (6.0, -1.0), (5.5, 3.0), (2.0, 4.0)]
+    _cyaw = [0.0, 25.0, -80.0, 140.0, 60.0]
+    _cdrift = [(0.0, 0.0, 0.0), (0.03, -0.02, 0.2), (-0.02, 0.04, -0.3),
+               (0.04, 0.03, 0.25), (-0.03, -0.02, 0.15)]
+
+    def _cserver():
+        """A fresh 5-capture drifted survey — same arrays every time, new
+        Scan objects, because an APPLIED press moves the previous ones."""
+        _srv5 = align.AlignServer([], out_path=None)
+        _srv5.scans = []
+        for _k, ((_x, _y), _w) in enumerate(zip(_corig, _cyaw)):
+            _own = registration.Setup(0.0, 0.0, 0.0, -_w).apply(
+                _room_from([_x, _y, 1.4], seed=40 + _k))
+            _sc = _mscan("press%d" % _k, _own)
+            _dx, _dy, _dw = _cdrift[_k]
+            _sc.setup = registration.Setup(_x + _dx, _y + _dy, 0.0, _w + _dw)
+            _srv5.scans.append(_sc)
+        return _srv5
+
+    def _cpairs(scans):
+        """The pair enumeration, frozen from the pre-threading loop."""
+        _nodes = [k for k, s in enumerate(scans)
+                  if s.sample is not None and len(s.sample)
+                  and (k == 0 or s.setup.sited)]
+        _prs = []
+        for _a, _i in enumerate(_nodes):
+            for _j in _nodes[_a + 1:]:
+                _d = float(np.hypot(scans[_i].setup.dx - scans[_j].setup.dx,
+                                    scans[_i].setup.dy - scans[_j].setup.dy))
+                if _d <= registration.MULTI_REACH_M:
+                    _prs.append((_i, _j))
+        return _nodes, _prs
+
+    _ctpose = [registration._pose_matrix(
+        registration.Setup(_x, _y, 0.0, _w), registration.Lean())
+        for (_x, _y), _w in zip(_corig, _cyaw)]
+
+    def _cstub_for(scans):
+        """A deterministic stand-in solver: the answer is the TRUE relative
+        pose composed with a per-pair millimetre nudge, so the press has a
+        real correction to apply. It records the start and the judge it is
+        handed: the start must be THIS pair's own (a start carried in from
+        another pair — the closure-capture class of threading bug — is
+        CAUGHT by the recorded-starts check), and the judge must be the
+        admit judge itself. The sleep scrambles COMPLETION order on
+        purpose: results must come out in PAIR order regardless."""
+        _who = {id(s.sample): k for k, s in enumerate(scans)}
+        _seen = {}
+
+        def _stub(ref, mov, start=None, lean=None, voxel=None, judge=None,
+                  **_kw):
+            _i, _j = _who[id(ref)], _who[id(mov)]
+            time.sleep(((_i * 3 + _j) % 4) * 0.003)
+            _seen[(_i, _j, voxel)] = (judge, (start.dx, start.dy, start.dz,
+                                              start.yaw_deg))
+            _nudge = registration.Setup(
+                0.001 * ((_i * 7 + _j * 3) % 5 - 2),
+                0.001 * ((_i * 5 + _j * 11) % 5 - 2),
+                0.0, 0.01 * ((_i + _j) % 3 - 1))
+            _su, _le, _ok = registration._decompose(
+                np.linalg.inv(_ctpose[_i]) @ _ctpose[_j]
+                @ registration._pose_matrix(_nudge, registration.Lean()))
+            _s = registration.Solution(_su, 0.001, 0.001, 1.0)
+            _s.lean = _le
+            _s.voxel = voxel
+            return _s
+
+        return _stub, _seen
+
+    def _cpress_reference(scans, pairs, samp, was_pose):
+        """FROZEN VERBATIM: the sequential measurement loop as committed
+        before the threading (notes dropped, appends recorded), run against
+        the same stub. Do not modernise it — its whole value is that it is
+        NOT the code under test."""
+        judges, edges, odd, blind = {}, [], [], 0
+        fine = registration.SURVEY_EDGE_VOXELS[-1]
+        for i, j in pairs:
+            s0, l0, ok = registration._decompose(
+                np.linalg.inv(was_pose[i]) @ was_pose[j])
+            if not ok:
+                odd.append(("tilt", i, j))
+                continue
+            jd = judges.get(i)
+            if jd is None:
+                jd = judges[i] = registration.Judge([(samp[i], None)])
+            ss, ll, sol = s0, l0, None
+            for voxel in registration.SURVEY_EDGE_VOXELS:
+                got = registration.solve_gicp(samp[i], samp[j],
+                                              start=ss, lean=ll, voxel=voxel)
+                if got is None:
+                    break
+                sol = got
+                ss, ll = sol.setup, sol.lean
+            if sol is None:
+                continue
+            far = registration.refine_refused(ss, ll, s0, l0)
+            if far is not None:
+                odd.append(("far", i, j))
+                continue
+            (rc, nc), = jd.measure(samp[j], ss, ll,
+                                   registration.GICP_LADDER[0])
+            if rc != rc or nc < registration.MULTI_MIN_BINS:
+                blind += 1
+                continue
+            if rc > registration.MULTI_ROGUE_FLOORS * jd.floor():
+                odd.append(("apart", i, j))
+                continue
+            (before, _nb), = jd.measure(samp[j], s0, l0, fine)
+            edges.append((i, j,
+                          registration._pose_matrix(ss, ll).tobytes(),
+                          float(nc), float(before)))
+        return edges, odd, blind
+
+    # the reference, computed on a throwaway copy of the fixture
+    _crsrv = _cserver()
+    _cnodes, _cprs = _cpairs(_crsrv.scans)
+    _crsamp = {k: align.AlignServer._survey_sample(_crsrv.scans[k].sample)
+               for k in _cnodes}
+    _crwas = [registration._pose_matrix(s.setup, s.lean)
+              for s in _crsrv.scans]
+    _cstub_ref, _ = _cstub_for(_crsrv.scans)
+    registration.solve_gicp = _cstub_ref
+    try:
+        _cref_edges, _cref_odd, _cref_blind = _cpress_reference(
+            _crsrv.scans, _cprs, _crsamp, _crwas)
+    finally:
+        registration.solve_gicp = _real_gicp
+    check("the concurrency fixture measures a real spread of pairs",
+          len(_cprs) >= 8 and len(_cref_edges) >= 6,
+          (len(_cprs), len(_cref_edges)))
+
+    def _cpress(workers):
+        """One press at a worker count, edges captured on their way into
+        close_loop, the judge= contract recorded."""
+        _srv5 = _cserver()
+        _stub, _seen = _cstub_for(_srv5.scans)
+        _got_edges = []
+
+        def _catching_close(poses, edges, fixed=0, **kw):
+            _got_edges.append([(i, j, np.asarray(m).tobytes(), float(w))
+                               for i, j, m, w in edges])
+            return _real_close(poses, edges, fixed=fixed, **kw)
+
+        registration.solve_gicp = _stub
+        registration.close_loop = _catching_close
+        try:
+            _res = _srv5.solve_survey(workers=workers)
+        finally:
+            registration.solve_gicp = _real_gicp
+            registration.close_loop = _real_close
+        return _res, _got_edges[0] if _got_edges else [], _seen, _srv5
+
+    _cr1, _ce1, _cj1, _cs1 = _cpress(1)
+    _cr4, _ce4, _cj4, _cs4 = _cpress(4)
+    check("THE THREADED PRESS FEEDS THE GRAPH THE FROZEN LOOP'S EDGES, "
+          "BYTE FOR BYTE, IN PAIR ORDER",
+          _ce4 == [(i, j, m, w) for i, j, m, w, _b in _cref_edges],
+          (len(_ce4), len(_cref_edges)))
+    check("...and so does workers=1",
+          _ce1 == [(i, j, m, w) for i, j, m, w, _b in _cref_edges])
+    check("...the whole RESULT is identical at 1 and 4 workers — moves, "
+          "prices, refusals, text",
+          _cr1 == _cr4, (_cr1.get("text"), _cr4.get("text")))
+    check("...and so are the poses actually applied",
+          all(a.setup.dx == b.setup.dx and a.setup.dy == b.setup.dy
+              and a.setup.yaw_deg == b.setup.yaw_deg
+              for a, b in zip(_cs1.scans, _cs4.scans)))
+    check("...the press APPLIED — this fixture exercises the whole tail, "
+          "not just the loop", _cr4.get("ok") and _cr4.get("applied"),
+          (_cr4.get("error"), _cr4.get("text")))
+    check("every solver call was handed THE admit judge itself — ONE judge "
+          "object per capture for the whole press, not a fresh twin per "
+          "call, or the profile cache buys nothing",
+          len(_cj4) > 0 and all(
+              _j is not None and _j.views[0][0] is _cs4.scans[_i].sample
+              for (_i, _jj, _v), (_j, _st) in _cj4.items())
+          and all(len({id(_j) for (_i2, _jj, _v), (_j, _st)
+                       in _cj4.items() if _i2 == _i}) == 1
+                  for _i in {p[0] for p in _cprs}),
+          sorted(_cj4)[:3])
+    _cwas4 = [registration._pose_matrix(
+        registration.Setup(_x + _dx, _y + _dy, 0.0, _w + _dw),
+        registration.Lean())
+        for ((_x, _y), _w, (_dx, _dy, _dw))
+        in zip(_corig, _cyaw, _cdrift)]
+    check("...and every pair's FIRST rung started from that pair's own "
+          "placement — no start leaked in from another pair's task",
+          all(_cj4[(_i, _jj, registration.SURVEY_EDGE_VOXELS[0])][1]
+              == (lambda _s: (_s.dx, _s.dy, _s.dz, _s.yaw_deg))(
+                  registration._decompose(
+                      np.linalg.inv(_cwas4[_i]) @ _cwas4[_jj])[0])
+              for (_i, _jj) in _cprs),
+          sorted(_cj4)[:3])
+
+    # --- and the judge handed DOWN must score exactly what the per-call
+    # judge scored. The solver is pinned to one fixed answer so the only
+    # thing varying is who does the pricing. Handing down the float32-backed
+    # admit judge is exact BECAUSE `_binned_ranges` is float64 end to end by
+    # contract — this is the check that holds that contract, so a future
+    # backend that priced float32 input differently goes red HERE, not as a
+    # silent drift in every survey. The different-cloud case is proof the
+    # comparison CAN fail — without it, "identical" would also pass if the
+    # scores never depended on the judge at all.
+    import small_gicp as _csg
+    _creal_align = _csg.align
+
+    class _cfixed(object):
+        T_target_source = registration._pose_matrix(
+            registration.Setup(3.51, 1.02, 0.0, 0.4), registration.Lean())
+        iterations = 3
+        num_inliers = 1000
+
+    _csg.align = lambda *a, **k: _cfixed
+    try:
+        _ca32 = np.ascontiguousarray(_ma.astype(np.float32))
+        _cb32 = np.ascontiguousarray(_mb_own.astype(np.float32))
+        _cst = registration.Setup(3.5, 1.0, 0.0, 0.0)
+        _cr_none = registration.solve_gicp(_ca32, _cb32, start=_cst,
+                                           voxel=0.05)
+        _cj32 = registration.Judge([(_ca32, None)])
+        _cr_j32 = registration.solve_gicp(_ca32, _cb32, start=_cst,
+                                          voxel=0.05, judge=_cj32)
+        _cjodd = registration.Judge([(_ca32[::2], None)])
+        _cr_jodd = registration.solve_gicp(_ca32, _cb32, start=_cst,
+                                           voxel=0.05, judge=_cjodd)
+    finally:
+        _csg.align = _creal_align
+    check("A JUDGE HANDED DOWN SCORES EXACTLY WHAT THE PER-CALL JUDGE "
+          "SCORED — residual, floor and baseline to the last bit, float32 "
+          "sample and all",
+          _cr_none.residual == _cr_j32.residual
+          and _cr_none.floor == _cr_j32.floor
+          and _cr_none.baseline == _cr_j32.baseline,
+          (_cr_none.residual, _cr_j32.residual))
+    check("...and the comparison has TEETH: a judge over a different cloud "
+          "prices the same pose differently",
+          _cr_jodd.residual != _cr_none.residual
+          or _cr_jodd.floor != _cr_none.floor
+          or _cr_jodd.baseline != _cr_none.baseline,
+          (_cr_none.residual, _cr_jodd.residual))
 
 # ⭐ THE EDGE MEASUREMENT IS CAPPED, BECAUSE THE CAP WAS MEASURED FIRST: on
 # the live 18-capture job the capped press landed within 0.017 m and 0.33°

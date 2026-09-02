@@ -46,6 +46,7 @@ import socketserver
 import threading
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -1711,9 +1712,25 @@ class AlignServer(object):
             return sample
         return np.ascontiguousarray(sample[::stride])
 
-    def solve_survey(self):
+    def solve_survey(self, workers=None):
         """
         Move EVERY placed capture a little, so the walk agrees with itself.
+
+        ⭐ THE PAIRS ARE MEASURED CONCURRENTLY AND THE OUTPUT DOES NOT DEPEND
+        ON IT. Each pair is measured WHOLE by one worker — its own start from
+        `was_pose`, both GICP rungs, the admit gate and the fine 'before',
+        exactly the sequential sequence — and the results are consumed in
+        pair order, so `edges`, `odd` and `blind` come out as the sequential
+        loop built them. The pairs share only read-only inputs (`samp`,
+        `was_pose`) and the per-capture judges, whose lazy profile cache can
+        at worst compute the same profile twice (same input, same value; a
+        dict store is atomic). Given the same per-pair GICP answers the
+        result is IDENTICAL for any worker count — the solver itself is the
+        only nondeterminism, and it was already nondeterministic run to run
+        (small_gicp reduces across its own threads in no fixed order).
+        ⛔ Anything that lets one pair's measurement read another pair's
+        answer — or assembles results in completion order — forfeits that
+        and must not be done.
 
         ⭐⭐ THE ERROR THIS EXISTS FOR IS IN NO ONE SCAN, WHICH IS WHY NO
         PER-SCAN TOOL CAN SPEND IT. Aligning a walk pair by pair leaves each
@@ -1774,81 +1791,108 @@ class AlignServer(object):
         # in this press — solver, judge and verdict alike, so the floor the
         # bars scale from is the floor of the points actually measured.
         samp = {k: self._survey_sample(self.scans[k].sample) for k in nodes}
-        judges, edges, odd, blind = {}, [], [], 0
+        edges, odd, blind = [], [], 0
         fine = registration.SURVEY_EDGE_VOXELS[-1]       # scored where solved
         old = [(s.setup, getattr(s, "lean", None) or registration.Lean())
                for s in self.scans]
         was_pose = [registration._pose_matrix(su, le) for su, le in old]
+        if workers is None:
+            workers = max(1, min(registration.SURVEY_PRESS_WORKERS,
+                                 os.cpu_count() or 1))
+        # The judges are built UP FRONT, one per fixed capture, and the SAME
+        # judge is handed into `solve_gicp` — which otherwise rebuilds an
+        # identical reference profile and sampling floor inside every call
+        # (206 times on the live job, for 19 captures). Handing down the
+        # float32-backed judge is exact, not approximate: `_binned_ranges`
+        # casts to float64 END TO END by its own contract, so the profile of
+        # the float32 sample and of `solve_gicp`'s own float64 copy are the
+        # same array — held to the last bit by the suite.
+        judges = {i: registration.Judge([(samp[i], None)])
+                  for i in sorted({i for i, _j in pairs})}
+
+        def measure_pair(i, j):
+            """One pair, whole: reads only `samp`, `was_pose` and the two
+            judges, so pairs can run concurrently without an order."""
+            s0, l0, ok = registration._decompose(
+                np.linalg.inv(was_pose[i]) @ was_pose[j])
+            if not ok:
+                return "odd", {"name": "%s / %s" % (self.scans[i].name,
+                                                    self.scans[j].name),
+                               "why": "their placements differ by a tilt "
+                                      "past what a standing tripod can "
+                                      "hold"}
+            jd = judges[i]
+            ss, ll, sol = s0, l0, None
+            for voxel in registration.SURVEY_EDGE_VOXELS:
+                got = registration.solve_gicp(
+                    samp[i], samp[j],
+                    start=ss, lean=ll, voxel=voxel, judge=jd)
+                if got is None:
+                    break
+                sol = got
+                ss, ll = sol.setup, sol.lean
+            if sol is None:
+                return "skip", None
+            # ⛔ AN EDGE PAST THE REFINEMENT LIMITS IS A CLAIM THAT ONE OF
+            # THESE SCANS IS SOMEWHERE ELSE. That is a finding for the
+            # operator's eye, not a constraint for the graph.
+            far = registration.refine_refused(ss, ll, s0, l0)
+            if far is not None:
+                return "odd", {"name": "%s / %s" % (self.scans[i].name,
+                                                    self.scans[j].name),
+                               "why": "the pair wanted to move %.2f m and "
+                                      "turn %.1f° — a different answer, so "
+                                      "one of them is probably misplaced; "
+                                      "check that pair by eye" % far[:2]}
+            # Admitted at the coarse bins, like the multi fit: a view that
+            # shares enough directions there is safe all the way down.
+            (rc, nc), = jd.measure(samp[j], ss, ll,
+                                   registration.GICP_LADDER[0])
+            if rc != rc or nc < registration.MULTI_MIN_BINS:
+                return "blind", None
+            # ⛔⛔ AN EDGE THAT DID NOT CONVERGE IS NOT A MEASUREMENT. A
+            # genuinely misplaced capture defeats the gate above -- GICP
+            # cannot cross metres, so it keeps the start or lands in a
+            # wrong basin NEAR it, both inside the refinement limits --
+            # but it cannot fake the residual: the pair still reads far
+            # apart after the fit. The same bar the multi fit holds a
+            # rogue neighbour to, for the same reason: fed to the graph,
+            # this edge would not close a loop, it would spread a
+            # misplacement over the whole room.
+            if rc > registration.MULTI_ROGUE_FLOORS * jd.floor():
+                return "odd", {"name": "%s / %s" % (self.scans[i].name,
+                                                    self.scans[j].name),
+                               "why": "still %.2f m apart after the fit — "
+                                      "one of them is probably misplaced; "
+                                      "check that pair by eye" % rc}
+            (before, _nb), = jd.measure(samp[j], s0, l0, fine)
+            return "edge", {"i": i, "j": j, "w": float(nc),
+                            "m": registration._pose_matrix(ss, ll),
+                            "before": float(before)}
+
         self._progress = {"stage": "starting", "n": 0, "total": len(pairs),
                           "busy": True}
+        ex = ThreadPoolExecutor(workers) if workers > 1 else None
+        futs = ([ex.submit(measure_pair, i, j) for i, j in pairs]
+                if ex is not None else None)
         try:
+            # ⛔ CONSUMED IN PAIR ORDER, NEVER COMPLETION ORDER — `edges` and
+            # `odd` must come out as the sequential loop built them.
             for n, (i, j) in enumerate(pairs):
                 self._note("measuring %s against %s"
                            % (self.scans[j].name, self.scans[i].name),
                            n, len(pairs))
-                s0, l0, ok = registration._decompose(
-                    np.linalg.inv(was_pose[i]) @ was_pose[j])
-                if not ok:
-                    odd.append({"name": "%s / %s" % (self.scans[i].name,
-                                                     self.scans[j].name),
-                                "why": "their placements differ by a tilt "
-                                       "past what a standing tripod can "
-                                       "hold"})
-                    continue
-                jd = judges.get(i)
-                if jd is None:
-                    jd = judges[i] = registration.Judge([(samp[i], None)])
-                ss, ll, sol = s0, l0, None
-                for voxel in registration.SURVEY_EDGE_VOXELS:
-                    got = registration.solve_gicp(
-                        samp[i], samp[j],
-                        start=ss, lean=ll, voxel=voxel)
-                    if got is None:
-                        break
-                    sol = got
-                    ss, ll = sol.setup, sol.lean
-                if sol is None:
-                    continue
-                # ⛔ AN EDGE PAST THE REFINEMENT LIMITS IS A CLAIM THAT ONE OF
-                # THESE SCANS IS SOMEWHERE ELSE. That is a finding for the
-                # operator's eye, not a constraint for the graph.
-                far = registration.refine_refused(ss, ll, s0, l0)
-                if far is not None:
-                    odd.append({"name": "%s / %s" % (self.scans[i].name,
-                                                     self.scans[j].name),
-                                "why": "the pair wanted to move %.2f m and "
-                                       "turn %.1f° — a different answer, so "
-                                       "one of them is probably misplaced; "
-                                       "check that pair by eye" % far[:2]})
-                    continue
-                # Admitted at the coarse bins, like the multi fit: a view that
-                # shares enough directions there is safe all the way down.
-                (rc, nc), = jd.measure(samp[j], ss, ll,
-                                       registration.GICP_LADDER[0])
-                if rc != rc or nc < registration.MULTI_MIN_BINS:
+                kind, got = (futs[n].result() if futs is not None
+                             else measure_pair(i, j))
+                if kind == "odd":
+                    odd.append(got)
+                elif kind == "blind":
                     blind += 1
-                    continue
-                # ⛔⛔ AN EDGE THAT DID NOT CONVERGE IS NOT A MEASUREMENT. A
-                # genuinely misplaced capture defeats the gate above -- GICP
-                # cannot cross metres, so it keeps the start or lands in a
-                # wrong basin NEAR it, both inside the refinement limits --
-                # but it cannot fake the residual: the pair still reads far
-                # apart after the fit. The same bar the multi fit holds a
-                # rogue neighbour to, for the same reason: fed to the graph,
-                # this edge would not close a loop, it would spread a
-                # misplacement over the whole room.
-                if rc > registration.MULTI_ROGUE_FLOORS * jd.floor():
-                    odd.append({"name": "%s / %s" % (self.scans[i].name,
-                                                     self.scans[j].name),
-                                "why": "still %.2f m apart after the fit — "
-                                       "one of them is probably misplaced; "
-                                       "check that pair by eye" % rc})
-                    continue
-                (before, _nb), = jd.measure(samp[j], s0, l0, fine)
-                edges.append({"i": i, "j": j, "w": float(nc),
-                              "m": registration._pose_matrix(ss, ll),
-                              "before": float(before)})
+                elif kind == "edge":
+                    edges.append(got)
         finally:
+            if ex is not None:
+                ex.shutdown(wait=False, cancel_futures=True)
             self._progress = {"stage": "done", "n": len(pairs),
                               "total": len(pairs), "busy": False}
         if len(edges) < len(nodes) - 1:

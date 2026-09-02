@@ -1020,6 +1020,19 @@ SURVEY_EDGE_VOXELS = (0.05, 0.02)
 #: because there one fit is the whole answer rather than one vote among
 #: fifty.
 SURVEY_EDGE_POINTS = 300_000
+#: ⭐ HOW MANY SURVEY PAIRS ARE MEASURED AT ONCE — the fastest MEASURED
+#: configuration, not a core count and not a theory. On the live 19-capture
+#: job (2026-09-02): sequential pre-fix 397.8 s; with the handed-down judge,
+#: workers=2 371.3 s, and 3/4/6 all measured WORSE (376.9/382.6/378.9) —
+#: this box is memory-bandwidth-bound (two concurrent aligns measured 0.99x
+#: even arranged to exactly fill the cores), so concurrency stops paying
+#: almost immediately. ⚠ How much of the 26 s is the workers and how much
+#: the judge is UNRESOLVED: the deciding workers=1 rerun was lost twice, to
+#: a sleeping machine (a 4.3-hour "measurement") and then to the unplugged
+#: T7 holding the job. Each pair is measured WHOLE by one worker, results
+#: are consumed in pair order, and every number a pair produces is computed
+#: exactly as the sequential loop computed it.
+SURVEY_PRESS_WORKERS = 2
 
 
 def _rot_vector(R):
