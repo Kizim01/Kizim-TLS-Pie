@@ -6407,7 +6407,7 @@ the suite's own assertions (`audit_wholeshoot.py`, session scratchpad). Studio w
 before the rebuild. Commit **`8388270`**; exes **23:40, Studio selftest 0** — the build the
 ministry job needs.
 
-### ⚠ LIVE STATE (2026-09-02, ~23:45) — the current one
+### ⚠ LIVE STATE (2026-09-02, ~23:45) — SUPERSEDED by the 09-03 block below, which is the current one
 
 **Tree**: `main` = **`db8accc`**, in sync with origin, clean but for the standing untracked
 `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites **1635, 0 failed**.
@@ -6434,6 +6434,102 @@ during this pass (`git log` checked at both ends); a peer session was live.
 
 ⛔ **Nothing on disk was moved by this pass.** The ministry read was a dry `shoot.plan`; both
 folders are exactly as the two devices left them.
+
+### 2026-09-03, thirty-fifth pass — the shoot was walked in order, and one hypothesis was refused
+
+The operator pressed the button on `D:\ministry of sound` and came back with three reports:
+*"scan numbering is incorrect, i did them sequentially so one should be the first scan taken
+with an image taken sequentially in time"*, then *"images are not aligning correctly either i
+used a higher resolution capture on this shoot from the insta camera"*, then *"the club was dark
+so some photos are darker than others"*. Read on the disk rather than in the code, only one of
+the three was what it looked like.
+
+**The numbering was never wrong.** Folders 1→54 are in exact capture-time order and folder 1 *is*
+the first sweep. What was scrambled was the PAIRING: folders 3/4, 12/13, 30/31 and 35/36 each
+wore their neighbour's photograph, and 9/10, 20/21 and 32 wore a shared copy of somebody else's
+tripod position — seven of fifty-four captures showing the wrong room. ⚠ One thing that *can*
+still read as a numbering fault: the numbers run over surviving PHOTOGRAPHED captures only, so
+they skip the 2 dark ones and the 5 deleted aborts — the operator's 12th sweep is folder 11.
+
+**Cause: greedy nearest-pair assignment is not order-preserving.** Fixed by `pair_in_order`
+(see the commit and the function's own docstring). Measured on the real job: **0 crossings and 0
+duplicates** against greedy's 4 and 3, 54 of 56 paired, the 6 leftovers being the two pre-shoot
+test frames and the tail. Folders 1–10 now take photographs 073…082, one per position, in order.
+**The job was repaired in place** — 14 photographs re-copied into the existing numbered folders,
+no capture moved, no camera original touched (they were COPIED by the sort, so all 60 survive in
+`Insta images`).
+
+#### ⛔⛔ THE HYPOTHESIS THE MEASUREMENT REFUSED, WHICH IS THE REAL FINDING
+
+The agreed third item was to **normalise contrast for the solve only, not for the paint**, on the
+theory that dark frames starve the yaw solve. **The data refused it, and it was not built.**
+
+- The photographs really are dark — **8.8× spread** in mean luminance (17.0 to 149.2) — but
+  **gradient energy on the solve's own 360×90 grid spreads only 2.7×**, and does not track
+  brightness: the darkest frame (mean 17) and a *bright* one (mean 136) sit within 1.5 of each
+  other on edges.
+- Then the decisive one. Solve confidence measured on eight real captures spanning the range:
+  darkest **3.51**, best-edged **3.84**, and the BRIGHT-BUT-FLAT control **5.72 — the highest of
+  the eight**. ⭐ Brightness and edge energy predict confidence **not at all**, so a normalisation
+  keyed on either would have been tuning a variable that does not drive the outcome.
+- `solve_yaw` reduces BOTH sides to edge strength and scores the peak against its own shoulders,
+  so its confidence is **scale-free**: a uniformly darker or brighter image changes nothing. The
+  intuition that darkness starves it is wrong for this estimator, and the code already said so.
+
+**What the shoot actually needed was the joint solve, and it works.** All eight scored 1.65–5.72
+alone (six "doubtful"), at or below what pure noise scored on the restaurant rig — yet
+`solve_shoot` over 20 captures returned **one coherent answer: the camera sits 6.08° from the
+head's own zero, joint confidence 4.05, 19 of 20 used**, naming only **two** disagreements
+(folder 41 at 116° apart, folder 53 at 20.5° — both with decent alone-confidence, which is
+precisely the "the camera was seated differently for that scan" case the docstring warns about
+and refuses to smooth away). This is the Pandey et al. situation the module cites, arriving
+exactly as predicted.
+
+⛔ **So the headings the operator saw were solved with seven wrong photographs poisoning the
+consensus.** The fix is not new code — it is to RE-SOLVE now the pairing is right.
+
+#### Two smaller findings
+
+- **Folder 1 is nested one level deeper** (`1\TLS_26_09_02_12_08_38\…`) while 2–54 are flat.
+  `shoot._place` writes flat, so something after the sort organised it — most likely
+  `library.attach_photo`'s `organise_first`. **Unconfirmed**, harmless, not yet straightened.
+- **Folder 1's capture has no `anchor_deg`**, so `solve_shoot` excludes it (19 used of 20 loaded).
+  Unexplained; every other capture's anchor is a clean multiple of the rig's 190.8° sweep.
+- Timing, for planning: **~18 s to load a capture** (366 s for 20), **39 s for the joint solve**.
+  A full 54-scan re-solve is therefore roughly **16 minutes of loading plus a minute of solving**.
+
+Suites **1644, 0 failed** (1635 → +9). Reversion audit **3/3 by name**, and ⭐ *the audit earned
+its keep*: two of the four fixtures could not tell the break from a tie and passed with the guard
+deleted, so both were rebuilt to discriminate and the reasoning written into the test file. There
+is **no fourth reversion** because distinctness is implied by the ordering and has no independent
+failure — recorded rather than papered over.
+
+### ⚠ LIVE STATE (2026-09-03) — the current one
+
+**Tree**: `main` = **`a72417f`**, in sync with origin, clean but for the standing untracked
+`windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites **1644, 0 failed**.
+⚠ **The exes are still the 09-02 23:40 build and DO NOT carry `pair_in_order`** — the ministry
+job was repaired directly on disk by script, so Studio's own sort is still the greedy one until
+the exes are rebuilt. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is CORRECT and
+Studio's rc=0 is the gate. No parallel session landed anything during this pass.
+
+#### What is owed to the operator, in order
+
+1. ⭐⭐ **RE-SOLVE THE MINISTRY HEADINGS.** The pairing on disk is now correct but the solve the
+   operator has seen was poisoned by seven wrong photographs. Open the job, let it colour, and
+   run the shoot solve; expect ~16 min of loading for all 54. Then look at **folders 41 and 53**
+   by eye — the joint solve named them as disagreeing, and that is the signal that the camera may
+   have been seated differently, not noise.
+2. **Rebuild the exes** (Studio CLOSED; verify by mtime + `dist/TLS-Pie-Studio.exe --selftest`
+   rc=0) so future sorts get the order-preserving matcher.
+3. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+   22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
+   left **ON, "Hiding outside"**.
+4. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+   circular correlation over yaw as the next deep-search lever.
+
+⛔ **What this pass changed on disk**: 14 photographs re-copied inside `D:\ministry of sound`'s
+numbered folders. **No capture was moved and no camera original was touched.**
 
 ### ▶ NEXT SESSION STARTS HERE
 
