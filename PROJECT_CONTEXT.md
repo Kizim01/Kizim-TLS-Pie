@@ -6234,6 +6234,9 @@ queued as the next lever if the sweep ever dominates again; today it is 0.8 s of
   batch ran END TO END on the operator's job at the real budget: **19 of 19 searched, no timeouts,
   31.7 minutes while SHARING the machine with the audit's suite runs** (a quiet machine is well
   under that; the button promises ~1.5 min a photograph, the over-estimate-safe side).
+- Commit **`422bf3e`**, pushed; credential scans rc=1, case-sensitive, separate calls.
+- **✅ Exes rebuilt from the committed tree, Studio verified closed: Studio 2026-09-02 02:45:26,
+  Converter 02:45:03, tlsconvert 02:45:44, selftest 0** (RTX 3050 Ti + cuda-engine found).
 - ⚠ **The operator must reopen Studio** to get this build — they ran the 23:51 exes 23:56–00:04.
 - ⭐ Worth their eye when the real press finishes: at the full budget the batch flagged
   **`16_20_36`, `16_34_46` and `16_41_12` as moving FAR** — the shape of a photograph paired with
