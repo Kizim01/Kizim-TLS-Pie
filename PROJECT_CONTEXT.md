@@ -6529,6 +6529,18 @@ rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed 
 ⛔ **What this pass changed on disk**: 14 photographs re-copied inside `D:\ministry of sound`'s
 numbered folders. **No capture was moved and no camera original was touched.**
 
+**09-03, second sitting — "sort the shoot correctly", closed with a verdict.** Folder 1's
+one-level-deeper nesting was flattened to match folders 2–54 (four files moved up, the emptied
+stem-dir removed; its jpg was already the corrected 073 by size). Then a read-only verifier
+recomputed the order-preserving pairing from the disk and checked the WHOLE tree against it:
+numbering 1..54 with no gaps, every folder flat and complete (pcap+json+cloud+jpg on one stem, no
+strangers), stems in capture-time order, `no photos` holding exactly the two dark captures and no
+jpg, `Scans` empty, all 60 originals still in `Insta images` — and **all 54 photographs
+MD5-identical to the camera originals the matcher assigns**. VERDICT: **the shoot is sorted
+correctly.** (⚠ No saved project references the old nested path — none exists on the job drive —
+so the flatten broke nothing; a project saved from the button's own press would have recorded the
+FLAT path anyway, which now exists again.)
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE OUTLINE TOOL IS THREADED (30th pass, 1.8×, DXF byte-identical) AND NOW THE SURVEY
