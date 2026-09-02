@@ -6404,7 +6404,8 @@ this.
 Suites **1619 → 1635, 0 failed**; reversion audit **4/4 by name** (copy honor in `shoot.py` /
 the chain's copy flag / the failed-import stop / the colour force) via a standalone rig running
 the suite's own assertions (`audit_wholeshoot.py`, session scratchpad). Studio was verified closed
-before the rebuild. Commit hash in the build pin below.
+before the rebuild. Commit **`8388270`**; exes **23:40, Studio selftest 0** — the build the
+ministry job needs.
 
 ### ▶ NEXT SESSION STARTS HERE
 
@@ -6491,7 +6492,14 @@ is a horizontal surface**, which gives seat tops, platforms and the bar in ONE p
 ⛔ **And do NOT press `Level to a surface` on this project** — 41 walls measured plumb while the floor
 slopes 0.24°, so levelling would tilt the walls to flatten a floor that was never flat.
 
-**✅ THE EXES: Converter 2026-09-02 10:15, Studio 10:16, tlsconvert 10:16, selftest 0**
+**✅ THE EXES: Converter 2026-09-02 23:40:06, Studio 23:40:32, tlsconvert 23:40:54, Studio
+selftest 0** (RTX 3050 Ti + cuda-engine found) — and THIS build adds **"Sort, open and solve a
+shoot…"** (thirty-fourth pass, `8388270`) on top of everything the 10:15 build carried. All three
+rebuilt together: `align.py` and `shoot.py` are shared. ⭐ **This is the build the ministry job
+needs** — the operator has not pressed the button yet.
+
+<!-- superseded, kept for the build trail -->
+**Older: Converter 2026-09-02 10:15, Studio 10:16, tlsconvert 10:16, selftest 0**
 (RTX 3050 Ti + cuda-engine found) — and THIS build adds the **threaded survey press + handed-down
 judge** (thirty-third pass, `0055b6b`) on top of passes 31–32 (which the 02:45 and 03:52 builds
 carried). All three rebuilt together: `align.py` is shared. Smoke-tested through the console
