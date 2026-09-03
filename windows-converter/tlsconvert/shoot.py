@@ -331,8 +331,14 @@ def pair_in_order(rows, timed, offset, window_s=WINDOW_S):
     back: the photograph for the fifth tripod position cannot have been taken
     before the photograph for the fourth. Skips are allowed on both sides -- a
     capture made in the dark consumes no photograph, a spare frame consumes no
-    capture -- and the walk maximises the NUMBER of pairs first, their
-    closeness on the clock second.
+    capture. A pairing is worth 1 plus its closeness and a skip is worth
+    nothing, which PREFERS more pairs but does not guarantee them -- and that
+    turned out to be right rather than a defect. Measured on the ministry tail
+    (2026-09-03): admitting one marginal +353 s pair would have dragged four
+    neighbours onto gaps three times worse, and the walk left that capture
+    honestly unpaired instead. A floor big enough to force count-first would
+    have bought the worse answer. (This sentence used to CLAIM count-first;
+    the same measurement corrected it.)
 
     ⛔⛔ WHAT IT REPLACES, AND THE SHOOT THAT EARNED IT. The old rule took every
     candidate pair, sorted them by |gap| and assigned first-come. That is not

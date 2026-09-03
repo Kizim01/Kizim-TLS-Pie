@@ -6528,6 +6528,36 @@ they correct by hand grades `given` and is never overwritten. ⚠ The operator A
 own small `scan project.tlspie` at 01:54 from the open Studio — two project files now sit on
 the job; the full one is `ministry of sound.tlspie`.
 
+**09-03, fifth sitting — the operator's RULE, and the third correction of the pairing model.**
+*"sort images of the shoot by time closest to each other scan - image or image - scan."* Two
+facts fell out. ⭐⭐ **Both device names carry the SAME wall clock** (stem `TLS_26_09_02_12_08_38`
+vs `IMG_20260902_120721`) — no offset estimation needed at all on this rig; the whole 3852-vs-3438
+peak fight was over a number the filenames already settle. And ⭐⭐ **the operator had hand-attached
+images in Studio** (folders 1, 2, 3, 7 — found NESTED again, `attach_photo`'s organise, with their
+picks 072/073/074/078 inside): those picks match the nearest-either-side rule EXACTLY, supersede
+their earlier "071 is scan 1" statement (071 is a spare warm-up frame), and settle the model:
+**one photo per scan, taken around it — not two-per-position, not after-the-sweep.** Third
+structural correction on one job; the standing lesson is that the operator's hand actions on the
+disk are ground truth to READ.
+
+Applied: nearest-on-name-clock, monotonic, window 420 s, plus one pin (113 → scan 42, its
+break-position photo at −424 s). **43 rewritten, 12 already right, scan 24's stale copy REMOVED —
+no image belongs to it** (both neighbours sit far tighter elsewhere; better honestly grey than
+quietly the wrong room). 55 images MD5-verified, 60 originals untouched. Spares:
+071/098/113→pinned/118/129/130. ⚠ Window note: at 480 s the walk bought a 56th pair by dragging
+five scans off their true nearest — 420 + the pin is the rule-faithful answer.
+
+⛔ **`pair_in_order`'s docstring overclaimed count-first and the same measurement corrected it**:
+a pairing is worth 1 + closeness, which PREFERS more pairs without guaranteeing them — and on the
+ministry tail that balance was RIGHT (forcing the 56th pair took four neighbours to gaps three
+times worse). Docstring now says so, with the old claim struck through in words. Suite 1644 green.
+
+⚠ Consequences standing: both saved projects' colour poses are stale for the 43 changed scans, and
+the headless project's paths to folders 1/2/3/7 broke when the operator's attaches nested them.
+The layout was deliberately LEFT ALONE (their open session references those paths). Product queue
+grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
+when the two names disagree.
+
 ### ⚠ LIVE STATE (2026-09-03) — the current one
 
 **Tree**: `main` = **`a72417f`**, in sync with origin, clean but for the standing untracked
@@ -6539,20 +6569,19 @@ rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed 
 
 #### What is owed to the operator, in order
 
-1. ⭐⭐ **OPEN `D:\ministry of sound\ministry of sound.tlspie`** — the re-solve is DONE headlessly
-   (fourth sitting): 56 scans, coloured on the right photographs, joint heading applied to 53,
-   world levelled. Eyeball a few colours; folders **1–2** are the standing hand-fix candidates
-   (no head angle, solo doubtful solves), and any heading typed by hand grades `given` and is
-   never overwritten. Also the five-second pairing check: folder 42's jpg (113) and folder 56's
-   (127) should show those rooms — the tail is the one stretch timestamps cannot pin.
-2. **Rebuild the exes once Studio is CLOSED** — the drag-to-move reversal (`9c7d922`) is not in
-   the 00:50 build the operator is running.
-3. **The queued product work from the third sitting**: an anchor the operator can give the sort,
-   rival peaks surfaced from `estimate_offset`, and the after-the-sweep assumption revisited.
-4. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+1. ⭐⭐ **ONCE STUDIO CLOSES: rebuild the exes** (drag-to-move reversal `9c7d922` is not in the
+   00:50 build), **then re-run the headless colour+solve+save** (`solve_ministry.py` in the
+   session scratchpad, ~35 min) — the fifth sitting changed 43 scans' images, so
+   `ministry of sound.tlspie`'s colours and headings are STALE and its paths to folders 1/2/3/7
+   broke when the operator's attaches nested them. Scan 24 has no image by design and will be
+   grey; folders 1–2 stay solo-solve hand-fix candidates (no head angle).
+2. **The queued product work (third + fifth sittings)**: the sorter reads the NAME clocks first
+   (offset estimation only when the two names disagree); an anchor the operator can give the
+   sort; rival peaks surfaced from `estimate_offset`; the after-the-sweep assumption revisited.
+3. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
    22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
    left **ON, "Hiding outside"**.
-5. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+4. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
    circular correlation over yaw as the next deep-search lever.
 
 ⛔ **What this pass changed on disk**: first sitting, 14 photographs re-copied; third sitting,
