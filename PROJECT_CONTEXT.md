@@ -6504,6 +6504,30 @@ deleted, so both were rebuilt to discriminate and the reasoning written into the
 is **no fourth reversion** because distinctness is implied by the ordering and has no independent
 failure — recorded rather than papered over.
 
+**09-03, fourth sitting — the drag-to-move twin, reversed by the operator.** *"drag to move now
+only shows the lod point cloud when button is pressed i would like it to show full scan on that
+button when its pressed."* The tool-wide rush hold being complained about was **the same
+operator's own 09-01 ask** ("starts as smooth control but then gets really laggy") — priorities
+flipped once the job became placing a 56-scan club by eye, where placement is judged on detail
+the 250k twin lacks. `setGrab` now holds nothing; the per-drag/wheel/keys holders raise the twin
+only while the hand moves. ⚠ The 09-01 lag this re-admits is NAMED at the function with the next
+lever (smaller refine chunks — never a third flip). Suite pins reversed with the behaviour;
+**1644, 0 failed**; audit 3/3 (holder put back → arming check, between-drags check and source pin
+all fire). Commit `9c7d922`. ⛔ **NOT yet in any exe** — Studio was open (operator, 01:55), so no
+rebuild; the running Studio is the 00:50 build and still shows the old coarse-while-armed
+behaviour. Meanwhile the headless ministry solve finished: **all 56 loaded/stood-up/coloured (31 min,
+suite running beside it), 53 of 56 solved together — camera −7.17° from the head's zero,
+joint confidence 2.7, 53 repainted, 0 named odd** — world levelled to the floor (8.6M floor
+points agreeing to 0.0°), **project saved: `D:\ministry of sound\ministry of sound.tlspie`
+(56 scans)**. Folders 1–2 keep solo doubtful answers (no head angle in their sidecars — the two
+sweeps before the operator hand-aligned the head). ⚠ Joint confidence 2.7 on RIGHT photos vs
+4.05 on the earlier wrong-photo 20-scan run — not comparable across N and scan sets, but worth
+an honest eye: a dark club is genuinely hard for the edge solve, so the operator's eyeball and
+the deep search (works on solved poses since the 31st pass) are the next levers, and any scan
+they correct by hand grades `given` and is never overwritten. ⚠ The operator ALSO saved their
+own small `scan project.tlspie` at 01:54 from the open Studio — two project files now sit on
+the job; the full one is `ministry of sound.tlspie`.
+
 ### ⚠ LIVE STATE (2026-09-03) — the current one
 
 **Tree**: `main` = **`a72417f`**, in sync with origin, clean but for the standing untracked
@@ -6515,18 +6539,20 @@ rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed 
 
 #### What is owed to the operator, in order
 
-1. ⭐⭐ **RE-SOLVE THE MINISTRY HEADINGS, FROM SCRATCH.** After the third sitting EVERY folder's
-   photograph changed (the whole diagonal moved one position), so any headings seen so far —
-   including the 09-03 joint solve's 6.08° and its odd-list — were computed against the wrong
-   rooms and are void. Open the job (56 folders now), let it colour, run the shoot solve;
-   ~17 min of loading. And spend five seconds confirming folder 42's and folder 56's jpgs show
-   those rooms — the tail's pairing is the one stretch the timestamps alone cannot pin.
-2. **The queued product work from the third sitting**: an anchor the operator can give the sort,
+1. ⭐⭐ **OPEN `D:\ministry of sound\ministry of sound.tlspie`** — the re-solve is DONE headlessly
+   (fourth sitting): 56 scans, coloured on the right photographs, joint heading applied to 53,
+   world levelled. Eyeball a few colours; folders **1–2** are the standing hand-fix candidates
+   (no head angle, solo doubtful solves), and any heading typed by hand grades `given` and is
+   never overwritten. Also the five-second pairing check: folder 42's jpg (113) and folder 56's
+   (127) should show those rooms — the tail is the one stretch timestamps cannot pin.
+2. **Rebuild the exes once Studio is CLOSED** — the drag-to-move reversal (`9c7d922`) is not in
+   the 00:50 build the operator is running.
+3. **The queued product work from the third sitting**: an anchor the operator can give the sort,
    rival peaks surfaced from `estimate_offset`, and the after-the-sweep assumption revisited.
-3. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+4. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
    22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
    left **ON, "Hiding outside"**.
-4. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+5. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
    circular correlation over yaw as the next deep-search lever.
 
 ⛔ **What this pass changed on disk**: first sitting, 14 photographs re-copied; third sitting,
