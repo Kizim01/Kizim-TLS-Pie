@@ -5148,7 +5148,7 @@ PAGE = r"""<!doctype html>
        Above the list, because what it changes is which row is selected. -->
   <div class="row"><button id="whose" title="Click a point in the view and the
       cloud it came off becomes the one you are working on: the movement
-      controls, its rotation ring, new cuts and the photograph tray all follow
+      controls, its rotation ring and the photograph tray all follow
       it, and its row below is selected. Shortcut K.">Pick a cloud</button></div>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
     <b>Light</b> on a row turns the other clouds down so you can see where that
@@ -7986,12 +7986,28 @@ function showHidden(){
    status line -- the import writes its own, longer one, and a second `say`
    would only overwrite it a moment later.
 
-   ⛔ THE RULES FOR WHAT GETS AIMED LIVE HERE, ONCE. Copying the three
+   ⛔ THE RULES FOR WHAT GETS AIMED LIVE HERE, ONCE. Copying the
    assignments into the import instead is how the two callers drift: the
-   reference exception below is exactly the kind of clause a copy loses. */
+   reference exception below is exactly the kind of clause a copy loses.
+
+   ⛔⛔ THE CUT SCOPE DOES NOT FOLLOW THE PICK — REMOVED 2026-09-04, and the
+   evidence is the operator's own saved project. Aiming used to set
+   `V.editWho` too, so every gesture that means "work on this one" — a
+   double-click, a list row, a point picked for movement, even a scan
+   arriving — silently rescoped every FUTURE delete to that one cloud, for
+   the rest of the session. An evening of placing twenty overlapping scans
+   left the scope on the last cloud touched; a freehand lasso and a polygon
+   then each took points from ONE cloud of the twenty, the other nineteen
+   kept theirs in the same spot, and the picture did not change: "delete
+   points tools are not deleting points." The status line had said "from …
+   only" every time — the fourth message in four days to be right and
+   unread — so the COUPLING goes, not the wording. Scoping a cut to one
+   cloud is still a real thing to want (the 2026-08 rationale was cutting a
+   stale cloud someone else was picked on), but it is chosen in the Delete
+   points tray, beside the buttons it governs, where the choice and its
+   effect sit in one place — never as a rider on selecting a scan to move. */
 function aimAt(index){
   V.picked=index;
-  V.editWho=index;
   /* ⭐ AND THE CHOICE IS RECORDED AS A CHOICE. From here on `measure` leaves
      the moving scan alone: a rebuild reports what is on screen, it does not
      decide what the next drag will move. Picking the reference is not a choice
@@ -8009,8 +8025,8 @@ function pickScan(index){
      find. */
   openTray('photo', false);
   refreshLists(); syncSliders(); invalidate();
-  say('Working on '+s.name+'. Cuts now take from this scan only'+
-      (index>0 ? ', and the movement controls and the rotation ring turn it.'
+  say('Working on '+s.name+'.'+
+      (index>0 ? ' The movement controls and the rotation ring turn it.'
        : ' \u2014 but it is the REFERENCE, so it cannot be moved: everything '+
          'else is aligned to it. Pick another scan to move that one instead.'));
 }
@@ -9680,10 +9696,11 @@ function runPick(mx,my){
      QUESTION. `pickPoint` has always returned which scan the hit belongs to --
      the pair tool uses it to refuse a point off the wrong cloud -- so nothing
      new is searched for. `pickScan` is the one door into "work on this one"
-     and already brings the movement controls, the rotation ring, the cut scope
-     and the photograph tray with it, and the row it lights in the list is the
+     and already brings the movement controls, the rotation ring and the
+     photograph tray with it, and the row it lights in the list is the
      `sel` class it has always set. Wiring a second path to any of that is how
-     two of them come to disagree.
+     two of them come to disagree. (The cut scope stopped following the pick
+     on 2026-09-04 -- see `aimAt`.)
 
      ⛔ IT PICKS, IT DOES NOT LIGHT. The spotlight is a separate button on the
      row, for the separate question "where is this one among the others" -- a
@@ -9694,7 +9711,7 @@ function runPick(mx,my){
     pickScan(hit.scan.index);
     return say('That point is on ' + hit.scan.name +
                ' — now working on it: the movement controls, its rotation '+
-               'ring, new cuts and the photograph tray all follow it, and it '+
+               'ring and the photograph tray all follow it, and it '+
                'is selected in Scans in this job. Light to see it among the '+
                'others; K puts this tool away.');
   }
@@ -10924,7 +10941,7 @@ const KEYHELP = [
     ['drag a grip dot', 'pull a clip-box face or turn the box \u2014 only a '+
      'drag starting on the lit dot takes it; anywhere else is the camera'],
     ['double-click a scan', 'work on that one: the movement controls, its '+
-     'ring, new cuts and the photograph tray all follow it — or press K '+
+     'ring and the photograph tray all follow it — or press K '+
      'and click the cloud itself'],
     ['drag a scan\u2019s ring', 'turn it \u00b7 shift snaps to 5\u00b0 \u00b7 '+
      'switch the ring on with Turn ring, under Place'],
@@ -11239,7 +11256,7 @@ function refreshLists(){
   $('legend').innerHTML = V.scans.map(s=>
     '<div class="scanrow'+(s.index===V.picked?' sel':'')+
     '" ondblclick="pickScan('+s.index+')" title="Double-click to work on '+
-    'this scan: the movement controls, the rotation ring and new cuts all '+
+    'this scan: the movement controls and the rotation ring '+
     'follow whichever scan is picked."><div class="head">'+
     '<span class="grow"><span class="sw" style="background:rgb('+
     s.tint.join(',')+');color:rgb('+s.tint.join(',')+')"></span>'+
@@ -12381,8 +12398,8 @@ async function ingest(paths, opts){
            cloud from the one the sliders now move, which is worse than
            saying nothing at all. */
         (fresh && fresh.index>0
-          ? '. Working on '+fresh.name+' — the movement controls, the '+
-            'rotation ring and new cuts are aimed at it. Double-click another '+
+          ? '. Working on '+fresh.name+' — the movement controls and the '+
+            'rotation ring are aimed at it. Double-click another '+
             'cloud in the list to work on that one instead.'
           : '')+
         (V.scans.length>1

@@ -6558,15 +6558,15 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-03) — the current one
+### ⚠ LIVE STATE (2026-09-04) — the current one
 
-**Tree**: `main` = **`e9204f4`** plus this block's own pin commit, in sync with origin, clean but
-for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo).
-Suites **1644, 0 failed**. Exes **2026-09-03 02:36:10 / 02:36:33 / 02:36:51, Studio selftest
-rc=0** (RTX 3050 Ti + cuda-engine found), built with Studio verified closed — **these carry
-`pair_in_order` AND the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has **no
-`--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session
-landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
+**Tree**: `main` = the thirty-sixth pass's own commit (on top of `cc4bfbc`), in sync with origin,
+clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
+the repo). Suites **1649, 0 failed**. Exes **2026-09-04 00:32:18 / 00:33:02 / 00:33:38, Studio
+selftest rc=0**, built with Studio verified closed — **these carry the cut-scope decoupling
+(36th pass), `pair_in_order` AND the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has
+**no `--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel
+session landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
 sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
 scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
 `ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
@@ -6582,8 +6582,8 @@ also sits there).
    confident solo answers — the operator's eyeball list**: scan 7 (76.8° apart, alone 6.30 — one
    of the operator's own hand-attached images), scan 11 (133.5°, alone 5.07, the ex-dark), scan
    12 (86.1°, alone 5.13). Scan 24 is grey by design (no image belongs to it); scans 1–2 keep
-   solo doubtful headings (no head angle). **Owed: the operator opens the project in the 02:36
-   build and eyeballs 7/11/12 (+1/2).**
+   solo doubtful headings (no head angle). **Owed: the operator opens the project in the current
+   build (00:33 on 09-04 or newer) and eyeballs 7/11/12 (+1/2).**
 2. **The queued product work (third + fifth sittings)**: the sorter reads the NAME clocks first
    (offset estimation only when the two names disagree); an anchor the operator can give the
    sort; rival peaks surfaced from `estimate_offset`; the after-the-sweep assumption revisited.
@@ -6651,6 +6651,44 @@ MD5-identical to the camera originals the matcher assigns**. VERDICT: **the shoo
 correctly.** (⚠ No saved project references the old nested path — none exists on the job drive —
 so the flatten broke nothing; a project saved from the button's own press would have recorded the
 FLAT path anyway, which now exists again.)
+
+### 2026-09-04, thirty-sixth pass — the deletes were landing, on one cloud of twenty
+
+*"delete points tools are not deleting points, try again"* — the third "not deleting" report in
+four days, and like the first two it was a press that did everything it was told. The evidence
+was not in the code diff (nothing since 09-02 touches the cut path) but in **the operator's own
+`scan project.tlspie`, saved 00:02**: twenty scans open, and **both of their delete edits — a
+freehand lasso and a five-corner polygon, two different tools — stamped `"scan": 19`**. Every
+delete was scoped to ONE cloud of twenty. In a club where twenty scans overlap, the other
+nineteen keep their points in the same spot, so the picture does not change and both tools read
+as broken.
+
+**Cause: the cut scope followed the pick.** `aimAt` — the one door every "work on this one"
+gesture goes through (double-click a cloud, click a list row, the point-pick the operator asked
+for on 09-01, even a scan arriving from an import) — set `V.editWho` alongside the movement aim.
+An evening of placing scans by hand left the scope parked on the last cloud touched, for the
+rest of the session. The status line said "from … only" at every cut — **the fourth message in
+four days to be right and unread**, so this time the coupling went, not the wording:
+
+- `aimAt` no longer touches `V.editWho`. A pick aims the movement controls, the ring and the
+  photograph tray; it does not decide what a delete takes from.
+- Scoping a cut to one cloud is still there, chosen **in the Delete points tray's own dropdown,
+  beside the buttons it governs** — the choice and its effect in one place. (The 2026-08
+  rationale for the coupling — two selections in two places meant nudging one cloud while
+  cutting another — stays answered: there is still exactly one scope, it just isn't set as a
+  rider on selection.)
+- Every promise of the old behaviour rewritten with it: the pick-a-cloud button title, the
+  double-click row title, the keyboard help, `pickScan`'s and the import's "Working on …" lines.
+
+Suites **1644 → 1649, 0 failed**. Reversion audit: the coupling put back fired **7 named
+checks** (headline: "AIMING THE CONTROLS DOES NOT TOUCH THE CUT SCOPE" and "PICKING A SCAN
+LEAVES THE CUT SCOPE ON EVERY CLOUD" — the whole report in one line), restored byte-for-byte,
+final run green.
+
+⚠ **The operator's two saved cuts still carry `"scan": 19`** — cuts keep what they were aimed at
+(that rule is right and untouched), so on reopening `scan project.tlspie` those two outlines
+still only take from that one cloud. If they were meant for the whole job: Ctrl-Z them (or Clear
+all cuts) and redraw in the new build. Their project file was **not** modified — it is theirs.
 
 ### ▶ NEXT SESSION STARTS HERE
 

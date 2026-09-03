@@ -3885,9 +3885,10 @@ check("and shows a confirmed alignment as its own state",
 #
 # ⭐ A RING ROUND THE TRIPOD, dragged to turn the scan, the way every other
 # package does it -- and ONE pick, by double-clicking a scan's name, that the
-# movement controls, the ring and new cuts all follow. Before it there were two
-# selections set in two places, so nudging one cloud while cutting another was
-# a normal thing to do by accident.
+# movement controls and the ring follow. The pick used to take the CUT SCOPE
+# with it too (the 2026-08 answer to two selections in two places); that
+# coupling was removed on 2026-09-04 after it silently scoped an evening's
+# deletes to the last cloud touched -- see the story in `aimAt`.
 print("\nthe rotation ring and the picked scan")
 
 if not _node:
@@ -4029,14 +4030,19 @@ console.log(JSON.stringify(out));
               abs(_o["snapped"] % 5.0) < 1e-9, _o["snapped"])
         check("the ring is grabbable on the ring and not at its centre",
               _o["gapOn"] < 1.0 and _o["gapOff"] > 20.0, _o)
-        # ⛔ ONE PICK, BOTH JOBS. They were two selections in two places.
-        check("picking a scan aims the cuts AND the movement controls at it",
-              _o["pick1"] == {"picked": 1, "active": 1, "who": 1}, _o["pick1"])
-        # ⛔ AND THE REFERENCE CAN BE PICKED FOR CUTTING WITHOUT BECOMING THE
-        # SCAN THE MOVEMENT CONTROLS DRIVE -- it cannot be moved, and silently
+        # ⛔⛔ ONE PICK, ONE JOB -- THE MOVEMENT CONTROLS, NOT THE CUT SCOPE.
+        # "Both jobs" was the 2026-08 design and it is the reason two delete
+        # outlines each took points from one cloud of twenty on 2026-09-03:
+        # the scope had silently followed an evening of placement picks.
+        check("PICKING A SCAN AIMS THE CONTROLS AND LEAVES THE CUT SCOPE "
+              "ALONE",
+              _o["pick1"] == {"picked": 1, "active": 1, "who": -1},
+              _o["pick1"])
+        # ⛔ AND THE REFERENCE CAN BE PICKED WITHOUT BECOMING THE SCAN THE
+        # MOVEMENT CONTROLS DRIVE -- it cannot be moved, and silently
         # pointing the sliders at it would be a control that does nothing.
-        check("the reference can be picked for cutting but not for moving",
-              _o["pick0"]["picked"] == 0 and _o["pick0"]["who"] == 0
+        check("the reference can be picked without taking the move controls",
+              _o["pick0"]["picked"] == 0 and _o["pick0"]["who"] == -1
               and _o["pick0"]["active"] == 1, _o["pick0"])
         check("and it says why, rather than just refusing to move",
               "REFERENCE" in _o["said0"], _o["said0"])
@@ -6950,8 +6956,17 @@ check("...but picking the reference does not, because it cannot be moved",
 # the reference exception is exactly the clause a second copy loses -- so
 # neither is allowed to assign the selection itself.
 check("...and there is exactly one function that aims the controls",
-      _ALIGN_SRC.count("V.editWho=index;") == 1
-      and "V.editWho=index;" in _js_func("aimAt"))
+      _ALIGN_SRC.count("V.picked=index;") == 1
+      and "V.picked=index;" in _js_func("aimAt"))
+# ⛔⛔ THE CUT SCOPE IS NOT AMONG WHAT GETS AIMED -- REMOVED 2026-09-04. Aiming
+# set `V.editWho` too, so every "work on this one" gesture -- a double-click,
+# a list row, a point picked for movement, even a scan arriving -- silently
+# rescoped every FUTURE delete to that one cloud for the rest of the session.
+# See the story in `aimAt` and the behavioural pin in the node probe below.
+check("AIMING THE CONTROLS DOES NOT TOUCH THE CUT SCOPE",
+      "editWho" not in _js_func("aimAt"))
+check("...the Delete points tray's dropdown is where cuts are scoped instead",
+      "V.editWho=parseInt(e.target.value,10);" in _ALIGN_SRC)
 check("...which pickScan calls rather than re-implementing",
       "aimAt(index);" in _js_func("pickScan")
       and "V.picked=index" not in _js_func("pickScan"))
@@ -6992,6 +7007,12 @@ measure(); out.unchosen=V.active;
 
 /* The operator picks the middle cloud -- then a clean rebuilds everything. */
 pickScan(1); out.picked=V.active;
+/* \\u26d4\\u26d4 AND THE PICK DOES NOT DECIDE WHAT A DELETE TAKES FROM. On
+   2026-09-03 the scope had followed an evening of placement picks, and two
+   delete outlines each took points from ONE cloud of twenty -- the other
+   nineteen kept theirs in the same spot and the picture did not change. */
+out.scopeAfterPick=cutScope();
+V.editWho=1; out.scopeChosen=cutScope(); V.editWho=-1;
 measure(); out.afterRebuild=V.active;
 measure(); measure(); out.afterThree=V.active;
 
@@ -7034,9 +7055,10 @@ V.active=1; V.picked=1; V.chose=true; V.editWho=1;
 aimAt(2);
 out.arrived=[V.active, V.picked, V.editWho, V.chose];
 
-/* \\u26d4 The FIRST cloud to arrive is the reference. It takes the cuts, but
-   it has no placement to change, so it must not be recorded as a choice of
-   moving scan -- that would freeze the aim on a cloud that cannot move. */
+/* \\u26d4 The FIRST cloud to arrive is the reference. It has no placement to
+   change, so it must not be recorded as a choice of moving scan -- that
+   would freeze the aim on a cloud that cannot move. And like every other
+   aim it leaves the cut scope exactly where the operator put it. */
 V.active=0; V.picked=1; V.chose=false; V.editWho=1;
 aimAt(0);
 out.arrivedFirst=[V.active, V.picked, V.editWho, V.chose];
@@ -7056,6 +7078,16 @@ console.log(JSON.stringify(out));
               _o["unchosen"] == 2, _o)
         check("picking one aims the movement controls at it",
               _o["picked"] == 1, _o)
+        # ⭐⭐ THE WHOLE 2026-09-04 REPORT IN ONE LINE. "Delete points tools
+        # are not deleting points": an evening of picking scans to place them
+        # had left every delete scoped to the last cloud touched, so a lasso
+        # and a polygon each took points from ONE cloud of twenty while the
+        # other nineteen kept theirs in the same spot. A pick aims the
+        # movement controls; it does not decide what a delete takes from.
+        check("PICKING A SCAN LEAVES THE CUT SCOPE ON EVERY CLOUD",
+              _o["scopeAfterPick"] is None, _o.get("scopeAfterPick"))
+        check("...and the Delete points tray's own choice still narrows it",
+              _o["scopeChosen"] == 1, _o.get("scopeChosen"))
         # ⭐⭐ THE WHOLE REPORT, IN ONE LINE. This read 2 before the fix.
         check("A REBUILD DOES NOT MOVE THE AIM OFF THE PICKED SCAN",
               _o["afterRebuild"] == 1, _o)
@@ -7071,12 +7103,14 @@ console.log(JSON.stringify(out));
               _o["removedChoice"] == [0, 0, False], _o)
         # ⭐⭐ THE REQUEST ITSELF, IN ONE LINE.
         check("A SCAN THAT HAS JUST ARRIVED TAKES THE CONTROLS",
-              _o["arrived"] == [2, 2, 2, True], _o)
+              _o["arrived"] == [2, 2, 1, True], _o)
         check("...over a pick the operator had made before it arrived",
               _o["arrived"][0] == 2, _o)
-        check("...but the first arrival is the reference, which takes the cuts "
-              "without being recorded as a moving scan",
-              _o["arrivedFirst"] == [0, 0, 0, False], _o)
+        check("...while the cut scope stays where the operator put it",
+              _o["arrived"][2] == 1, _o)
+        check("...and the first arrival is the reference, aimed without being "
+              "recorded as a moving scan and without touching the cut scope",
+              _o["arrivedFirst"] == [0, 0, 1, False], _o)
 
 
 # --- "when a new scan is loaded, that scan is selected for controls" ---------
