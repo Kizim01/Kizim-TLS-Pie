@@ -6560,12 +6560,17 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-03) — the current one
 
-**Tree**: `main` = **`a72417f`**, in sync with origin, clean but for the standing untracked
-`windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites **1644, 0 failed**.
-Exes **2026-09-03 00:49:52 / 00:50:16 / 00:50:35, Studio selftest rc=0** (RTX 3050 Ti +
-cuda-engine found), built with Studio verified closed — **these carry `pair_in_order`**, so
-Studio's own sort is order-preserving from here. ⚠ `tlsconvert.exe` has **no `--selftest` flag**;
-rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass.
+**Tree**: `main` = **`e9204f4`** plus this block's own pin commit, in sync with origin, clean but
+for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo).
+Suites **1644, 0 failed**. Exes **2026-09-03 02:36:10 / 02:36:33 / 02:36:51, Studio selftest
+rc=0** (RTX 3050 Ti + cuda-engine found), built with Studio verified closed — **these carry
+`pair_in_order` AND the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has **no
+`--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session
+landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
+sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
+scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
+`ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
+also sits there).
 
 #### What is owed to the operator, in order
 
