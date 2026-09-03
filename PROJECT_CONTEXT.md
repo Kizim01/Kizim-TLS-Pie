@@ -6569,12 +6569,16 @@ rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed 
 
 #### What is owed to the operator, in order
 
-1. ⭐⭐ **ONCE STUDIO CLOSES: rebuild the exes** (drag-to-move reversal `9c7d922` is not in the
-   00:50 build), **then re-run the headless colour+solve+save** (`solve_ministry.py` in the
-   session scratchpad, ~35 min) — the fifth sitting changed 43 scans' images, so
-   `ministry of sound.tlspie`'s colours and headings are STALE and its paths to folders 1/2/3/7
-   broke when the operator's attaches nested them. Scan 24 has no image by design and will be
-   grey; folders 1–2 stay solo-solve hand-fix candidates (no head angle).
+1. ⭐⭐ **DONE (sixth sitting, ~02:58): exes rebuilt at 02:36 (selftest 0, carries the
+   drag-to-move reversal + the order-preserving sorter) and the headless solve re-ran on the
+   corrected images.** Fresh **`ministry of sound.tlspie`** saved: 56 scans, 53 solved together,
+   camera **−45.95°** from the head's zero, joint confidence **3.6** (up from 2.7 on the
+   mis-paired images), 50 repainted, world levelled. ⚠ **Three scans NAMED ODD, all with
+   confident solo answers — the operator's eyeball list**: scan 7 (76.8° apart, alone 6.30 — one
+   of the operator's own hand-attached images), scan 11 (133.5°, alone 5.07, the ex-dark), scan
+   12 (86.1°, alone 5.13). Scan 24 is grey by design (no image belongs to it); scans 1–2 keep
+   solo doubtful headings (no head angle). **Owed: the operator opens the project in the 02:36
+   build and eyeballs 7/11/12 (+1/2).**
 2. **The queued product work (third + fifth sittings)**: the sorter reads the NAME clocks first
    (offset estimation only when the two names disagree); an anchor the operator can give the
    sort; rival peaks surfaced from `estimate_offset`; the after-the-sweep assumption revisited.
