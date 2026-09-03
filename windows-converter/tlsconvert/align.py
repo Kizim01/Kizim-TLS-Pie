@@ -9251,21 +9251,28 @@ function wantWidget(){
    places -- the click and the Esc-to-camera path -- which is how one of them
    goes stale.
 
-   ⭐⭐ THE TWIN STANDS THE WHOLE TIME THE TOOL IS ARMED. "Starts as smooth
-   control but then gets really laggy" (operator, 2026-09-01): each release
-   let the full cloud start refining between nudges, so the NEXT grab's first
-   frames waited behind a four-million-point chunk -- lag that grows with the
-   session. The holder here is the TOOL, not the gesture: the per-drag and
-   wheel holders come and go underneath it, nothing refines until the tool is
-   put down, and the sharpening then happens once. That is what was asked
-   for, in nearly those words. */
+   ⭐⭐ THE TWIN RISES FOR THE GESTURE, NOT THE TOOL -- THE SECOND WRITING OF
+   THIS RULE, AND THE REVERSAL IS THE OPERATOR'S OWN. On 2026-09-01 the ask
+   was smooth control ("starts as smooth control but then gets really laggy")
+   and the answer was a tool-wide hold: coarse the whole time the tool was
+   armed, sharpening once on put-down. On 2026-09-03, placing a 56-scan club
+   by eye, the same operator asked for the opposite -- "i would like it to
+   show full scan on that button when its pressed" -- because whether a wall
+   sits ON a wall is judged on detail the 250k twin does not have. So the
+   tool now holds NOTHING: the per-drag, wheel and arrow-key holders
+   underneath it raise the twin only while the hand actually moves, and a
+   still hand sees the full cloud, armed or not.
+
+   ⚠ THE COST THAT COMES BACK, NAMED SO IT IS NOT REDISCOVERED: between
+   nudges the full cloud starts refining, and a grab landing mid-refinement
+   waits for the chunk in flight -- the exact 09-01 lag. If that bites again
+   the lever is SMALLER REFINE CHUNKS, not a third flip of this holder. */
 function setGrab(on){
   V.grab=!!on;
   const b=$('grab');
   if(b){ b.classList.toggle('on',V.grab);
          b.textContent=V.grab?'Moving scan':'Drag to move'; }
   cv.classList.toggle('move',V.grab);
-  if(V.grab) rushGrab('movetool'); else rushDrop('movetool');
   if(V.grab) setNav(false);
 }
 function setNav(on){

@@ -5603,11 +5603,15 @@ if _node:
           "recorded having run",
           _t2.get("choiceKept") is True, _t2)
 
-    # ⭐⭐ THE MOVE TOOL HOLDS THE TWIN FOR AS LONG AS IT IS ARMED. "Starts as
-    # smooth control but then gets really laggy" (operator, 2026-09-01): each
-    # release let the full cloud start refining between nudges, and the next
-    # grab waited behind a chunk. The holder is the TOOL, not the gesture --
-    # per-drag and wheel holders come and go underneath it.
+    # ⭐⭐ THE TWIN RISES FOR THE GESTURE, NOT THE TOOL -- the second writing of
+    # this rule, and the reversal is the operator's own. 2026-09-01 asked for
+    # smooth control and got a tool-wide hold; 2026-09-03, placing a 56-scan
+    # club by eye, the same operator asked for "full scan on that button when
+    # its pressed" -- placement is judged on detail the 250k twin lacks. The
+    # tool arms with the twin DOWN; only the hand's own holders (drag, wheel,
+    # keys) raise it, and a drag ending under the armed tool lets the full
+    # cloud back. The 09-01 lag this re-admits is named at setGrab, with the
+    # next lever (smaller refine chunks) written beside it.
     _probe3 = "\n".join(_js_func(f) for f in
                         ("rushSet", "rushGrab", "rushDrop", "setGrab")) + """
     const rushWho=new Set();
@@ -5620,10 +5624,10 @@ if _node:
     const out={};
     setGrab(true);
     out.armedRush=V.rush; out.armedGrab=V.grab;
-    rushGrab('drag'); rushDrop('drag');
+    rushGrab('drag');
+    out.dragRush=V.rush;
+    rushDrop('drag');
     out.betweenDrags=V.rush;
-    rushDrop('wheel');
-    out.afterWheelDrop=V.rush;
     setGrab(false);
     out.disarmed=V.rush; out.disarmedGrab=V.grab;
     console.log(JSON.stringify(out));
@@ -5636,15 +5640,15 @@ if _node:
           (_t3r.stderr or "")[:400])
     _t3 = (json.loads(_t3r.stdout.strip().splitlines()[-1])
            if _t3r.returncode == 0 else {})
-    check("ARMING THE MOVE TOOL RAISES THE TWIN AND KEEPS IT RAISED",
-          _t3.get("armedRush") is True and _t3.get("armedGrab") is True, _t3)
-    check("...A DRAG ENDING UNDER THE ARMED TOOL DOES NOT LET THE FULL "
-          "CLOUD BACK -- the tool's own hold stands between nudges",
-          _t3.get("betweenDrags") is True, _t3)
-    check("...and the wheel's settle timer takes only its own hand off",
-          _t3.get("afterWheelDrop") is True, _t3)
-    check("...putting the tool down releases the twin, and the sharpening "
-          "happens once",
+    check("ARMING THE MOVE TOOL LEAVES THE FULL CLOUD UP",
+          _t3.get("armedRush") is False and _t3.get("armedGrab") is True,
+          _t3)
+    check("...THE HAND'S OWN DRAG RAISES THE TWIN",
+          _t3.get("dragRush") is True, _t3)
+    check("...AND ITS RELEASE LETS THE FULL CLOUD BACK, TOOL STILL ARMED "
+          "-- the 09-03 reversal of the 09-01 tool-wide hold",
+          _t3.get("betweenDrags") is False, _t3)
+    check("...and putting the tool down holds nothing either",
           _t3.get("disarmed") is False and _t3.get("disarmedGrab") is False,
           _t3)
 
@@ -9257,8 +9261,10 @@ check("the grab button arms the tool through its one home",
 check("...and the camera-mode door disarms through the same home",
       "if(V.grab) setGrab(false);" in _wsrc
       and "$('grab').classList.remove('on')" not in _wsrc)
-check("...which holds the twin by the TOOL's name, not the gesture's",
-      "rushGrab('movetool')" in _wsrc and "rushDrop('movetool')" in _wsrc)
+check("...which holds NO rush of its own since the 09-03 reversal -- the "
+      "twin belongs to the hand's gestures, never to the armed tool",
+      "rushGrab('movetool')" not in _wsrc
+      and "rushDrop('movetool')" not in _wsrc)
 
 # ⛔⛔ THE PAGE AND THE EXPORTER ARE TWO IMPLEMENTATIONS OF ONE SENTENCE, and
 # this program has been bitten before by them drifting. Both must rotate about
