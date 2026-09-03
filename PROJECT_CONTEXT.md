@@ -6515,21 +6515,68 @@ rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session landed 
 
 #### What is owed to the operator, in order
 
-1. ⭐⭐ **RE-SOLVE THE MINISTRY HEADINGS.** The pairing on disk is now correct but the solve the
-   operator has seen was poisoned by seven wrong photographs. Open the job, let it colour, and
-   run the shoot solve; expect ~16 min of loading for all 54. Then look at **folders 41 and 53**
-   by eye — the joint solve named them as disagreeing, and that is the signal that the camera may
-   have been seated differently, not noise.
-2. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
+1. ⭐⭐ **RE-SOLVE THE MINISTRY HEADINGS, FROM SCRATCH.** After the third sitting EVERY folder's
+   photograph changed (the whole diagonal moved one position), so any headings seen so far —
+   including the 09-03 joint solve's 6.08° and its odd-list — were computed against the wrong
+   rooms and are void. Open the job (56 folders now), let it colour, run the shoot solve;
+   ~17 min of loading. And spend five seconds confirming folder 42's and folder 56's jpgs show
+   those rooms — the tail's pairing is the one stretch the timestamps alone cannot pin.
+2. **The queued product work from the third sitting**: an anchor the operator can give the sort,
+   rival peaks surfaced from `estimate_offset`, and the after-the-sweep assumption revisited.
+3. **Restaurant job, still open from earlier passes**: folder 20's multi-fit un-refit; folders
    22+ on disk unimported; one **Close the loop** per survey at the end. ⚠ Their clip box was
    left **ON, "Hiding outside"**.
-3. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
+4. **Queued, not owed**: the w1-vs-w2 survey-press rerun (13 min, needs the T7 back); FFT
    circular correlation over yaw as the next deep-search lever.
 
-⛔ **What this pass changed on disk**: 14 photographs re-copied inside `D:\ministry of sound`'s
-numbered folders. **No capture was moved and no camera original was touched.**
+⛔ **What this pass changed on disk**: first sitting, 14 photographs re-copied; third sitting,
+the WHOLE job renumbered to 56 folders (one per sweep, shoot order, "no photos" dissolved) and
+all 56 photographs (re)written per the anchored pairing, MD5-verified. **No capture file was
+ever lost and no camera original was ever touched.**
 
-**09-03, second sitting — "sort the shoot correctly", closed with a verdict.** Folder 1's
+**09-03, third sitting — THE OPERATOR'S GROUND TRUTH OVERTURNED THE PAIRING, and the second
+sitting's verdict with it.** The operator: *"this image is scan 1 —
+IMG_20260902_120721_00_071.jpg"* — the photograph the matcher had called a pre-shoot test frame.
+They were right and the data agreed once asked properly:
+
+- ⛔⛔ **`estimate_offset` had locked a WRONG PEAK.** The histogram has rivals — 3657.5 s (25
+  hits), 3857.5 s (23, the one taken), 3327.5 s (18) — because this shoot's workflow broke the
+  assumption the gap is measured under: the operator took BOTH photographs **BEFORE** the two
+  sweeps at each position, so true gaps from a scan's END run −2 to −9 min and drift, while the
+  NEXT position's photos sit at a tidy +2…+4 min. The tidy wrong rhythm out-scored the drifting
+  true one, shifting the whole diagonal one position over.
+- ⛔ **Every internal check passed under the wrong offset.** The monotonic matcher reported 0
+  crossings (a global one-position shift IS monotonic); the joint yaw solve looked coherent
+  (neighbouring positions in a club score 2.7–3.8 either way — the A/B witness was MUTE); and
+  the second sitting's "VERDICT: sorted correctly" verified the disk against the matcher's OWN
+  offset — **a verifier that shares the estimator's assumption cannot catch the estimator's
+  error.** Only the operator could, and did.
+- **Anchored + widened**: with 071 pinned to c1 as a CONSTRAINT (pre-assigned like a beside-
+  photograph, 071 removed from the pool) and window 600 s for the before-the-sweep drift, the
+  walk pairs **56 of 56** — near-perfectly consecutive, c_k ↔ photo 070+k, skipping only 112
+  (taken just before the ~13-min break), spares 112/128/129/130. ⭐⭐ **The two "dark" captures
+  were never dark**: c11 ↔ 081, c23 ↔ 093 — their photos simply fell outside every window under
+  the wrong offset. "no photos" was an artifact.
+- **Applied**: two-phase renumber to **56 folders, folder N = the Nth sweep of the day** (what
+  the operator asked for from the first message), "no photos" gone, every photograph
+  MD5-verified against its camera original. Camera originals still untouched, all 60 in
+  `Insta images`.
+
+⚠ **Residual ambiguity, named for the operator's eye**: from the break onward (folders 42–56)
+the timestamps admit a one-photo-shifted alternative (112 used, 113 spare, tail sliding one on);
+the applied answer is the closeness-maximal one. A five-second check: open folder 42's jpg (113)
+and folder 56's (127) and confirm they show those rooms.
+
+⛔ **Product gap, queued not fixed**: the sorter cannot take an anchor. `plan` already accepts
+`offset=`/`window_s=` — what is missing is (a) the operator saying "this photograph is this
+scan's" through any surface, (b) `estimate_offset` exposing its rival peaks instead of silently
+taking the tallest, and (c) the docstring assumption "the photograph is taken after the rig
+comes off the tripod", which this shoot's photos-first workflow broke. ⚠ Note for the design:
+choosing the offset by which peak explains the most pairs would have picked the WRONG one here
+(54/56 tidy-wrong vs 49/56 drifting-true at window 240) — the disambiguator must be the
+operator, not a count.
+
+**Superseded second sitting (kept for the trail):** Folder 1's
 one-level-deeper nesting was flattened to match folders 2–54 (four files moved up, the emptied
 stem-dir removed; its jpg was already the corrected 073 by size). Then a read-only verifier
 recomputed the order-preserving pairing from the disk and checked the WHOLE tree against it:
