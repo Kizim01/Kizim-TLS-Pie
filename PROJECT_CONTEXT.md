@@ -6560,8 +6560,8 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-04, thirty-seventh pass) — the current one
 
-**Tree**: `main` = the thirty-seventh pass's second commit (**the polygon camera park**, this
-block included) on `db7e554` (Straighten from the walls) on `672e809`, in sync with origin,
+**Tree**: `main` = **`bc293ef`** (the polygon camera park) on **`db7e554`** (Straighten from
+the walls) on `672e809`, plus this block's own pin commit, in sync with origin,
 clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
 the repo). Suites **1679, 0 failed** (1651 + 19 wall checks + 10 polygon-park checks − 1
 replaced pin; ⚠ one run exited 255 with no summary and no FAIL, unreproducible — identical
