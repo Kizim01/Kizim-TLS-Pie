@@ -6560,7 +6560,8 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-04) — the current one
 
-**Tree**: `main` = the thirty-sixth pass's own commit (on top of `cc4bfbc`), in sync with origin,
+**Tree**: `main` = **`db8b55f`** (the refine slice) on `493aca2` (the cut-scope decoupling) plus
+this block's own pin commit, in sync with origin,
 clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
 the repo). Suites **1651, 0 failed**. Exes **2026-09-04 01:19:47 / 01:20:10 / 01:20:29, Studio
 selftest rc=0**, built after the operator's "go for it" with Studio verified closed — **these
