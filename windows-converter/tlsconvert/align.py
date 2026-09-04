@@ -5686,9 +5686,9 @@ PAGE = r"""<!doctype html>
       covered. Shortcut E.">Circle</button>
     <button id="poly" title="Click each corner in turn, then right-click,
       double-click or press Enter to close it; a middle click then deletes
-      what is inside. Esc throws the outline away and keeps the tool. Every
-      corner has to be placed from one viewpoint — moving the camera abandons
-      the outline. Shortcut N.">Polygon
+      what is inside. Esc throws the outline away and keeps the tool. The
+      camera is parked while the outline is open, so every corner lands in
+      the view it was aimed at. Shortcut N.">Polygon
       </button></div>
   <div class="row"><button id="undo">Undo</button>
     <button id="clearedit">Clear all</button></div>
@@ -9621,10 +9621,19 @@ function finishDraft(){
    orbit would then describe a column through somewhere nobody pointed at: a
    cut that looks deliberate and lands in the wrong part of the room.
 
-   So the matrix is frozen at the first corner and the outline is ABANDONED the
-   moment the camera disagrees with it -- loudly, and before any cut can be
-   made from it. Refusing to move the camera was the other option and it is
-   worse: the view stops working and nothing on screen says why. */
+   So the matrix is frozen at the first corner -- and while corners are down
+   the camera is PARKED: pans, orbits, zooms and the world-axes widget are
+   refused, each with the sentence saying how to get the view back (close the
+   outline, or Esc). The first design made the opposite trade -- obey the
+   camera, abandon the outline loudly -- reasoning that refusing to move the
+   camera is worse because "the view stops working and nothing on screen says
+   why". The operator's chair overruled that on 2026-09-04 ("right click also
+   moves the cloud, which is causing the polygon tool to reset"): the refusal
+   SAYS why while the work still stands, where the abandonment could only
+   explain after the work was gone. `polyStale` remains as the backstop for
+   any camera path that does not come through the pointer or the wheel -- Fit
+   to view, a saved view restored, the ortho toggle -- where the outline is
+   still abandoned, loudly, before any cut can be made from it. */
 function polyStart(x,y){
   V.poly={pts:[[x,y]], vp:Array.from(V.vp), at:[x,y]};
 }
@@ -9634,14 +9643,21 @@ function polyDrop(why){
   if(why) say(why, 'warn');
   return true;
 }
+/* ⭐ ONE SENTENCE FOR EVERY PARKED GESTURE -- the press, the drag and the
+   wheel all land here, so the reason cannot drift apart between them. */
+function polyParked(){
+  say('The camera is parked while a polygon is open — right-click, '+
+      'double-click or Enter closes the outline, Esc throws it away; then '+
+      'the view moves again.', 'warn');
+}
 function polyPick(x,y){
   if(!V.poly){
     polyStart(x,y);
     return say('Polygon started — click each corner in turn, then '+
                'right-click, double-click or press Enter to close it. Esc '+
-               'throws it away and keeps the tool. Every corner has to be '+
-               'placed from THIS viewpoint: moving the camera abandons the '+
-               'outline.');
+               'throws it away and keeps the tool. The camera is parked '+
+               'while the outline is open, so every corner lands in the '+
+               'view it was aimed at.');
   }
   V.poly.pts.push([x,y]); V.poly.at=[x,y]; invalidate();
   const n=V.poly.pts.length;
@@ -9672,13 +9688,18 @@ function polyClose(){
     if(q && Math.hypot(p[0]-q[0], p[1]-q[1]) < 3) continue;
     pts.push(p);
   }
-  V.poly=null;
+  /* ⛔ TOO FEW CORNERS KEEPS THE OUTLINE -- changed 2026-09-04. This used to
+     throw the corners away, so the very button that CLOSES a finished
+     outline destroyed an early one: "the polygon tool resets", in the
+     operator's words. A close that cannot close now says what is missing
+     and leaves the corners standing; Esc stays the one gesture that
+     discards, and every message that mentions it says so. */
   if(pts.length<3){
-    invalidate();
-    say('A polygon needs at least three corners in different places. Thrown '+
-        'away.', 'warn');
+    say('A polygon needs three corners in different places — '+pts.length+
+        ' so far. Keep clicking; Esc throws it away.', 'warn');
     return true;
   }
+  V.poly=null;
   V.draft=pts; finishDraft();
   return true;
 }
@@ -11161,8 +11182,8 @@ const KEYHELP = [
     ['M', 'rectangle'],
     ['L', 'lasso'],
     ['E', 'circle · drag out from its centre'],
-    ['N', 'polygon · click each corner, double-click or Enter to close · '+
-     'all from one viewpoint'],
+    ['N', 'polygon · click each corner, right-click or Enter to close · '+
+     'the camera parks until it closes'],
     ['P', 'pick pairs'],
     ['K', 'pick a cloud · click a point and you are working on the cloud '+
      'it came off'],
@@ -12899,10 +12920,14 @@ function syncClipSliders(){
 /* ⛔ THE POLYGON IS A PICK TOOL, NOT A DRAW TOOL, and the distinction is the
    button rather than the shape. A draw tool owns the press: down, drag, up,
    done. The polygon needs the operator to click, look, click again -- so it
-   takes its corners on RELEASE like the other pick tools, and anything that
-   travelled falls through to the camera exactly as it does for pair-picking.
-   (Moving the camera then abandons the outline -- see `polyStale` -- which is
-   the honest end of that trade, not a bug in it.) */
+   takes its corners on RELEASE like the other pick tools. Before the first
+   corner, anything that travels is the camera, exactly as for pair-picking;
+   once corners are down the camera is PARKED instead (operator, 2026-09-04
+   -- see the guard at the top of the pointerdown handler), because a camera
+   move cannot coexist with a screen-space outline and obeying it meant
+   destroying the work in hand. `polyStale` stays as the backstop for the
+   camera paths that come through neither the pointer nor the wheel: Fit to
+   view, a saved view, the ortho toggle. */
 /* ⛔ `whose` IS IN THIS LIST. It is a click on a point like every other entry
    here -- it just reads which cloud the point came off instead of what it was
    for. Left out, the press would fall through to the camera and the tool would
@@ -12944,16 +12969,34 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
   let axis=null;
   addEventListener('pointerdown', e=>{
     if(e.target.id!=='cv') return;
+    /* ⭐⭐ THE CAMERA IS PARKED WHILE A POLYGON IS OPEN -- operator,
+       2026-09-04: "right click also moves the cloud, which is causing the
+       polygon tool to reset". A screen-space outline cannot survive a
+       camera move (see polyStale), and the first design punished that
+       honestly: obey the camera, abandon the outline, say so afterwards.
+       The report is what that feels like from the chair -- the outline dies
+       under the operator's own habitual gesture. So with corners down the
+       trade is reversed: camera presses are REFUSED, with the sentence
+       saying how to get the view back, and the outline survives.
+       ⛔ THIS OUTRANKS THE MIDDLE BUTTON'S "ALWAYS THE CAMERA" RULE BELOW,
+       deliberately. That rule exists so a live tool cannot pin the view
+       into uselessness -- and for every other tool the view move is
+       HARMLESS. Here it destroys the work in hand, so obeying it is the
+       self-defeat the right-click close was built to stop; the close or
+       Esc is one gesture away, the corners are not.
+       ⛔ AND IT COMES BEFORE THE WORLD-AXES WIDGET, which snaps the camera
+       and would kill the outline through the same door. */
+    if(V.poly){
+      /* ⭐ Right-click closes the polygon -- asked for on 2026-09-01 --
+         and below three corners it now explains instead of discarding;
+         both sentences live in polyClose. */
+      if(e.button===2){ polyClose(); return; }
+      if(e.button===1 || e.shiftKey
+         || gizmoZone(e.clientX,e.clientY)){ polyParked(); return; }
+    }
     /* the world widget is a control, and it is drawn over the canvas */
     if(gizmoClick(e.clientX,e.clientY)) return;
     lx=e.clientX; ly=e.clientY;
-    /* ⭐ RIGHT-CLICK CLOSES THE POLYGON -- asked for on 2026-09-01. With
-       corners down, a right-button pan could only ABANDON the outline (the
-       matrix froze at the first corner), so the button was a gesture spent
-       on self-defeat; it now closes the outline, the same act as Enter or
-       the double-click. With no outline in progress it pans as it always
-       has. */
-    if(e.button===2 && V.tool==='poly' && V.poly){ polyClose(); return; }
     down=true; grip=null; lassoing=false; spin=null; picking=null; drift=0;
     midDown=(e.button===1);
     /* ⭐ THE WHEEL BUTTON IS THE CAMERA, WHATEVER ELSE IS SWITCHED ON. Every
@@ -13101,6 +13144,10 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
       const b=basis(), k=Math.max(V.cam.dist,1.0)*0.0022;
       const f=[-b.up[0],-b.up[1]];
       nudge((b.right[0]*dx + f[0]*dy)*k, (b.right[1]*dx + f[1]*dy)*k, 0);
+    } else if(V.poly){
+      /* parked: a corner-click that wobbles a pixel must not orbit the
+         outline to death. The deliberate drag gets its sentence on
+         release, where the gesture ends. */
     } else if(panning) pan(dx,dy);
     else orbit(dx,dy);
   });
@@ -13139,6 +13186,11 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     if(picking && drift<5){
       if(V.tool==='poly') polyPick(picking[0],picking[1]);
       else takePick(picking[0],picking[1]);
+    } else if(picking && V.poly){
+      /* the drag that used to orbit -- and abandon the outline -- was
+         parked in the move handler; a silent park is a broken camera, so
+         the reason arrives here, where the gesture ends. */
+      polyParked();
     }
     picking=null;
     /* ⭐ A MIDDLE CLICK DELETES WHAT THE OUTLINE HOLDS -- asked for on
@@ -13170,6 +13222,11 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
   addEventListener('wheel', e=>{
     if(e.target.id!=='cv') return;
     e.preventDefault();
+    /* ⛔ THE WHEEL IS PARKED TOO, and on a touchpad this line is most of
+       the 2026-09-04 fix: a two-finger tap is the right click and the same
+       two fingers drifting a millimetre is a scroll -- so "right click"
+       arrived as a zoom, the camera moved, and the outline died. */
+    if(V.poly) return polyParked();
     /* A wheel zoom is a burst with no release event, so the rush ends on a
        short settle timer instead: full detail 200 ms after the last notch. */
     rushBurst('wheel', 200);

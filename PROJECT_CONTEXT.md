@@ -6560,17 +6560,17 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-04, thirty-seventh pass) — the current one
 
-**Tree**: `main` = the thirty-seventh pass's own commit (**Straighten from the walls**, this
-block included) on `672e809`/`db8b55f`, in sync with origin,
+**Tree**: `main` = the thirty-seventh pass's second commit (**the polygon camera park**, this
+block included) on `db7e554` (Straighten from the walls) on `672e809`, in sync with origin,
 clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
-the repo). Suites **1670, 0 failed** (1651 + 19 wall checks; ⚠ one run exited 255 with no
-summary and no FAIL, unreproducible — identical bytes green on unfiltered rerun; if a second
-255 appears, treat it as real). Exes **2026-09-04 12:45:52 / 12:46:35 / 12:47:09, Studio
-selftest rc=0**, built with Studio verified closed — **these carry the walls button AND
-everything the 01:19 build carried (cut-scope decoupling, `REFINE_POINTS` refine slice,
-`pair_in_order`, the `9c7d922` drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no
-`--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session
-landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
+the repo). Suites **1679, 0 failed** (1651 + 19 wall checks + 10 polygon-park checks − 1
+replaced pin; ⚠ one run exited 255 with no summary and no FAIL, unreproducible — identical
+bytes green on unfiltered rerun; if a second 255 appears, treat it as real). Exes **2026-09-04
+13:55:49 / 13:56:11 / 13:56:31, Studio selftest rc=0**, built with Studio verified closed —
+**these carry the walls button AND the polygon camera park AND everything the 01:19 build
+carried (cut-scope decoupling, `REFINE_POINTS` refine slice, `pair_in_order`, the `9c7d922`
+drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is
+CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
 sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
 scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
 `ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
@@ -6753,6 +6753,39 @@ reinserted fired exactly the two odd-capture checks (odd came back `[]`, tilt 5.
 **12:45–12:47, selftest rc=0** — the button ships. For the operator: on the ministry job the
 club's walls are the natural witnesses; press it after Close the loop and read the per-capture
 list in the tray — a capture named as leaning another way is most likely a misplaced scan.
+
+**Second sitting — the camera is PARKED while a polygon is open.** Operator: *"right click also
+moves the cloud, which is causing the polygon tool to reset — only when I stop drawing should
+right click go back to moving the cloud."* The polygon froze its matrix at the first corner and
+**abandoned the outline the moment the camera moved**, its own comment defending the trade
+("refusing to move the camera is worse: the view stops working and nothing on screen says
+why"). ⭐⭐ **The chair overruled the comment**: obedience destroys the work in hand under a
+habitual gesture, where a refusal can say why while the work still stands. And there were
+**several doors to the same death**, so the class was closed, not the button:
+
+- **pointerdown**: with corners down, right-click still closes (the 09-01 gesture); middle,
+  shift and the world-axes widget are refused with one sentence (`polyParked`) — the guard
+  sits **above `gizmoClick`**, which snaps the camera. ⛔ Deliberately outranks the middle
+  button's "always the camera" mantra: for every other tool a view move is harmless, here it
+  kills the outline.
+- **pointermove**: a corner-click that wobbled a pixel fell through to `orbit()` — the matrix
+  changed — the outline died on the next frame. Parked silently (a wobble must not spam);
+  the deliberate drag gets the sentence on release (a silent park is a broken camera — the
+  09-02 lesson applied forward).
+- **wheel**: ⭐ **the touchpad door, and most of the reported sequence** — a two-finger tap IS
+  the right click and the same fingers drifting a millimetre IS a scroll, so "right click"
+  arrived as a zoom. Parked.
+- **`polyClose` under three corners keeps the corners** and says what is missing; it used to
+  say "Thrown away", so the very button that closes a finished outline destroyed an early one.
+  Esc stays the only discarding gesture, and every message that names it says so.
+
+`polyStale` stays as the backstop for camera paths outside the pointer and wheel (Fit to view,
+a saved view, the ortho toggle) — those still abandon, loudly. Six UI texts rewritten with the
+park (button title, key help, polyPick's start message among them). Suites **1670 → 1679**
+(+10, −1 replaced pin, incl. a node probe on polyClose). Reversion audit: the old
+obey-and-abandon behavior reinserted wholesale fired exactly **7 named checks** — the probe
+caught the old "Thrown away." message returning verbatim — restored byte-for-byte
+(MD5-verified). Exes **13:55–13:56, selftest rc=0** — both sittings ship in them.
 
 ### ▶ NEXT SESSION STARTS HERE
 

@@ -7291,11 +7291,82 @@ _pdz = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('pointerdown', e=>{"):]
 _pdz_head = _pdz[:_pdz.find("const left =")]
 check("the pointerdown slice really is the canvas handler",
       "if(e.target.id!=='cv') return;" in _pdz_head, _pdz_head[:200])
-check("RIGHT-CLICK CLOSES AN OPEN POLYGON, before the press becomes a pan",
-      "if(e.button===2 && V.tool==='poly' && V.poly){ polyClose(); return; }"
-      in _pdz_head, _pdz_head[-260:])
+# ⭐⭐ THE CAMERA IS PARKED WHILE A POLYGON IS OPEN -- operator, 2026-09-04:
+# "right click also moves the cloud, which is causing the polygon tool to
+# reset". The first design obeyed the camera and abandoned the outline loudly
+# (that comment argued refusal was worse -- "nothing on screen says why");
+# the report is what obedience feels like from the chair. Now, with corners
+# down, every pointer camera gesture is refused WITH the sentence saying how
+# to get the view back, and the outline survives. `polyStale` stays as the
+# backstop for the paths that come through neither pointer nor wheel.
+check("THE CAMERA IS PARKED WHILE A POLYGON IS OPEN, ahead of every branch "
+      "including the world-axes widget",
+      0 < _pdz_head.find("if(V.poly){") < _pdz_head.find("if(gizmoClick"),
+      _pdz_head[:300])
+check("...right-click still closes an open polygon instead of panning",
+      "if(e.button===2){ polyClose(); return; }" in _pdz_head)
+check("...middle, shift and the widget are refused with the reason",
+      "if(e.button===1 || e.shiftKey" in _pdz_head
+      and "|| gizmoZone(e.clientX,e.clientY)){ polyParked(); return; }"
+      in _pdz_head)
 check("...and with no outline the right button still pans",
       "(e.button===2 || e.shiftKey)" in _pdz)
+# ⛔ THE WHEEL IS PARKED TOO -- on a touchpad a right-tap that drifts a
+# millimetre IS a scroll, so "right click" arrived as a zoom, the camera
+# moved, and the outline died. That is the reported sequence.
+_whz = _ALIGN_SRC[_ALIGN_SRC.find("addEventListener('wheel'"):]
+_whz = _whz[:_whz.find("{passive:false});")]
+check("...the wheel is parked too, before it can rush or zoom",
+      0 < _whz.find("if(V.poly) return polyParked();")
+      < _whz.find("rushBurst('wheel'"), _whz[:300])
+# ⛔ A corner-click that wobbles a pixel used to fall through to orbit --
+# which changed the matrix, which threw the polygon away on the next frame.
+_pmz = _ALIGN_SRC[_ALIGN_SRC.find("\n  addEventListener('pointermove', e=>{"):]
+_pmz = _pmz[:_pmz.find("function endDrag()")]
+check("...a wobbling corner-click cannot orbit the outline to death",
+      0 < _pmz.find("else if(V.poly){")
+      < _pmz.find("else if(panning) pan(dx,dy);"), _pmz[-400:])
+check("...while a deliberate parked drag is told WHY where it ends, not "
+      "silently eaten",
+      "} else if(picking && V.poly){" in _ALIGN_SRC)
+check("...one sentence for every parked gesture, from one function",
+      "function polyParked(){" in _ALIGN_SRC
+      and _ALIGN_SRC.count("polyParked(") == 4)
+# ⛔ TOO FEW CORNERS KEEPS THE OUTLINE. polyClose used to throw the corners
+# away below three, so the same right-click that closes a finished outline
+# DESTROYED an early one -- "the polygon tool resets". Run, not read.
+if _node:
+    _probe_pc = _js_func("polyClose") + """
+    const said=[];
+    let finished=0;
+    function say(m,k){ said.push(m); }
+    function finishDraft(){ finished++; }
+    function invalidate(){}
+    const V={poly:{pts:[[0,0],[50,0]]}, draft:null};
+    const out={};
+    out.fewTook = polyClose();
+    out.fewKept = V.poly !== null && V.poly.pts.length === 2;
+    out.fewSaid = said[0] || '';
+    V.poly={pts:[[0,0],[50,0],[50,50],[0,50]]};
+    out.fullTook = polyClose();
+    out.fullClosed = V.poly === null && finished === 1;
+    console.log(JSON.stringify(out));
+    """
+    _pcp = os.path.join(tempfile.mkdtemp(prefix="tlspolyc"), "polyclose.js")
+    with io.open(_pcp, "w", encoding="utf-8") as _fh:
+        _fh.write(_probe_pc)
+    _pcr = subprocess.run([_node, _pcp], capture_output=True, text=True)
+    check("the close rules run", _pcr.returncode == 0, (_pcr.stderr or "")[:400])
+    _pc_out = (json.loads(_pcr.stdout.strip().splitlines()[-1])
+               if _pcr.returncode == 0 else {})
+    check("A CLOSE THAT CANNOT CLOSE KEEPS THE CORNERS AND SAYS WHAT IS "
+          "MISSING",
+          _pc_out.get("fewTook") is True and _pc_out.get("fewKept") is True
+          and "Esc throws it away" in (_pc_out.get("fewSaid") or ""),
+          _pc_out)
+    check("...while a full outline still closes through finishDraft",
+          _pc_out.get("fullTook") is True
+          and _pc_out.get("fullClosed") is True, _pc_out)
 _kd_esc = _kdz[_kdz.find("k==='Escape'"):]
 _kd_esc = _kd_esc[:_kd_esc.find("else if(e.ctrlKey")]
 check("ESC WITH THE POLYGON TOOL ARMED THROWS THE OUTLINE AWAY AND KEEPS "
