@@ -879,6 +879,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.pick_out(body.get("suggest")))
             if path == "/level/floor":
                 return self._json(srv.level_from_floor(body.get("level")))
+            if path == "/level/walls":
+                return self._json(srv.level_from_walls(body.get("level")))
             if path == "/level/scan":
                 return self._json(srv.level_scan(body.get("index"),
                                                  force=body.get("force")))
@@ -2560,6 +2562,137 @@ class AlignServer(object):
                              ", and the floor is now the grid (it was %.2f m "
                              "off it, which is the tripod's height)"
                              % abs(float(pivot[2])))))}
+
+    def level_from_walls(self, level=None):
+        """
+        Straighten the survey off the walls the captures stand between.
+
+        ⭐⭐ THE OTHER HALF OF `level_from_floor`, MEASURING THE OTHER
+        SURFACES. The shape is the same start to finish -- measured per
+        capture, combined in the merged frame, applied ONCE to the world's
+        tilt, never to a scan -- but where a floor names "up" directly as its
+        own normal, the walls name it as the one direction perpendicular to
+        EVERY wall normal at once (`registration.wall_planes`). On a job
+        whose floor is cluttered, stepped or genuinely sloping, the walls are
+        the surfaces that were BUILT plumb, and there are usually many more
+        square metres of them.
+
+        ⛔ ONE DIRECTION OF WALL IS REFUSED, NOT AVERAGED. A single wall pins
+        a roll axis, not a vertical -- the room can lean along it and every
+        normal still fits -- so a survey whose walls all face one way gets an
+        explanation instead of a guess. See WALL_SPREAD_MIN. A capture whose
+        OWN walls face one way still contributes its normals to the joint
+        answer; it just cannot be judged alone, and is reported as such
+        rather than accused.
+
+        ⛔ AND THE WALLS SAY NOTHING ABOUT WHERE THE GROUND IS. Unlike
+        `level_from_floor` nothing here touches the origin: a wall's height
+        is not a datum, so the heading and the zero pass through exactly as
+        `level` passes them.
+        """
+        had = registration.Level.from_dict(level)
+        seen, missing = [], []
+        for i, scan in enumerate(self.scans):
+            if getattr(scan, "source", "capture") == "cloud":
+                continue      # no capture position, so no walls of its own
+            xyz = scan.sample if scan.sample is not None else scan.xyz
+            fit = registration.wall_planes(xyz)
+            if fit is None:
+                missing.append(scan.name)
+                continue
+            # ⛔ NORMALS AND THE CAPTURE'S OWN UP ARE DIRECTIONS, so they
+            # take the rotation only -- same rule as the floor's normal. The
+            # cell centres are places, and take the whole placement.
+            M = registration._pose_matrix(scan.setup, scan.lean)
+            R = M[:3, :3]
+            own = None if fit.up is None else R @ fit.up
+            if own is not None and own[2] < 0:
+                own = -own
+            seen.append({"index": i, "name": scan.name,
+                         "folderNo": _folder_number(scan.path),
+                         "normals": fit.normals @ R.T,
+                         "weights": fit.weights, "own": own,
+                         "centre": registration.apply_matrix(
+                             M, fit.centre[None, :])[0],
+                         "points": fit.count, "cells": fit.cells,
+                         "rms": fit.rms})
+        if not seen:
+            return {"ok": False,
+                    "error": "no walls could be found in any capture — flat "
+                             "standing surface within %.0f m of a tripod is "
+                             "what this measures."
+                             % registration.WALL_FAR_M}
+
+        def _solve(group):
+            return registration.up_from_wall_normals(
+                np.concatenate([s["normals"] for s in group]),
+                np.concatenate([s["weights"] for s in group]))
+
+        up, _spread = _solve(seen)
+        if up is None:
+            return {"ok": False,
+                    "error": "every wall found faces the same way, and one "
+                             "direction of wall cannot say which way is up "
+                             "— the room could still lean along it. Walls "
+                             "facing two different ways are needed."}
+        # ⛔ A DISAGREEING CAPTURE IS REPORTED, NOT AVERAGED IN -- and it is
+        # judged against EVERYONE ELSE'S walls, never against an average it
+        # is itself part of. Measured on the fixture that earned this: one
+        # capture leaning 12° away, at a quarter of the weight, pulls the
+        # joint vertical 3° toward itself and then sits at 9° off it --
+        # inside a 10° bar, undetected, with the answer visibly wrong. The
+        # bar was fine; the reference was contaminated. Leave-one-out asks
+        # the question the bar means: how far off the building EVERYONE ELSE
+        # measured does this capture stand?
+        for s in seen:
+            if s["own"] is None:
+                s["off_deg"] = None       # one-way walls: contributed, not
+                continue                  # judged -- and never accused
+            rest = [t for t in seen if t is not s]
+            other, _sp = _solve(rest) if rest else (None, 0.0)
+            ref = up if other is None else other
+            s["off_deg"] = float(np.degrees(np.arccos(
+                min(1.0, max(-1.0, float(np.dot(s["own"], ref)))))))
+        odd = [s for s in seen if s["off_deg"] is not None
+               and s["off_deg"] > registration.WALL_ODD_DEG]
+        agreed = [s for s in seen if s not in odd]
+        if not agreed:
+            return {"ok": False,
+                    "error": "the walls found in each capture do not agree "
+                             "with each other, so there is no one vertical "
+                             "to straighten to. Check the alignment first."}
+        if odd:
+            up, _spread = _solve(agreed)
+            if up is None:
+                return {"ok": False,
+                        "error": "after leaving out the captures whose "
+                                 "walls lean another way, what remains all "
+                                 "faces the same way and cannot say which "
+                                 "way is up. Check the alignment first."}
+        w = np.array([float(s["points"]) for s in agreed])
+        pivot = np.average(np.array([s["centre"] for s in agreed]),
+                           axis=0, weights=w)
+        made = registration.Level(up, pivot, had.heading_deg,
+                                  origin=had.origin,
+                                  origin_axes=had.origin_axes)
+        judged = [s["off_deg"] for s in agreed if s["off_deg"] is not None]
+        spread = float(max(judged)) if judged else 0.0
+        oneway = [s["name"] for s in seen if s["off_deg"] is None]
+        total = int(sum(s["points"] for s in agreed))
+        return {"ok": True, "level": made.as_dict(),
+                "tilt_deg": made.tilt_deg,
+                "walls": [{"index": s["index"], "name": s["name"],
+                           "folderNo": s["folderNo"], "points": s["points"],
+                           "cells": s["cells"], "rms": s["rms"],
+                           "off_deg": s["off_deg"]} for s in seen],
+                "spread_deg": spread, "points": total,
+                "odd": [s["name"] for s in odd],
+                "oneway": oneway, "missing": missing,
+                "text": ("the walls across %d capture%s say the survey "
+                         "leans %.2f° — %s points of standing surface, "
+                         "agreeing to within %.1f°"
+                         % (len(agreed), "" if len(agreed) == 1 else "s",
+                            made.tilt_deg, "{:,}".format(total), spread))}
 
     def set_origin(self, point, level=None, axes="xyz"):
         """
@@ -5311,6 +5444,21 @@ PAGE = r"""<!doctype html>
     once, each link giving back what it took. Nothing moves unless the survey
     measures better afterwards.</div>
   <div id="sused" style="font-size:10.5px;color:var(--faint);margin-bottom:5px"></div>
+  <hr>
+  <button class="go" id="lvlwalls">Straighten from the walls</button>
+  <div style="font-size:10.5px;color:var(--faint);margin:5px 0 2px">
+    Walls are built plumb, so they know which way is up. This measures every
+    flat standing surface in every capture — walls, doors, cupboard fronts —
+    carries them through their scans&#39; placements, takes the one direction
+    they jointly stand up in, and turns the <b>whole survey</b> at once so
+    that direction is truly vertical. The wall counterpart of <b>Level to the
+    floor</b>, for a job whose floor is cluttered or genuinely slopes. ⛔ Same
+    rule: it changes the <i>room&#39;s</i> tilt, never a scan&#39;s — a lean
+    shared by every capture cancels between them, and taking it out one scan
+    at a time pulls the alignment apart. Walls facing two different ways are
+    needed: one direction of wall only pins the axis the room could still
+    lean along.</div>
+  <div id="wused" style="font-size:10.5px;color:var(--faint);margin-bottom:5px"></div>
   </div></div>
 <div class="tray" id="ty_pairs"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'pairs')"><span class="fold">▾</span><b class="grow">Align from pairs</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('pairs')">✕</button></div><div class="traybody">
   <div class="row" style="margin-top:7px"><button id="pair">Pick pairs</button>
@@ -7873,6 +8021,41 @@ function showFloors(j){
     (f.rms*1000).toFixed(0)+' mm rough, '+f.off_deg.toFixed(2)+'° off</span>')
     .join('<br>') + ((j.missing&&j.missing.length)
       ? '<br><span style="color:var(--faint)">no floor in view: '+
+        j.missing.join(', ')+'</span>' : '');
+}
+function postLevelWalls(){
+  return fetch('level/walls',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({level:V.level})}).then(r=>r.json());
+}
+/* ⭐ THE WALL COUNTERPART OF levelToFloor, and deliberately the SAME kind of
+   answer: it writes V.level -- the room's tilt, one thing, undone as one
+   thing by undoLevel -- and never a scan's placement. It lives under Close
+   the loop because, like it, it takes no selection and moves the whole
+   survey at once. */
+async function levelToWalls(){
+  remember('straightening from the walls', undoLevel());
+  say('measuring the walls in each capture…');
+  try{
+    const j = await postLevelWalls();
+    if(!j.ok) return say(j.error||'no walls could be found', 'warn');
+    V.level=j.level; showLevel(); showWalls(j); recomputeLive();
+    invalidate(); editsFollow(); dirty();
+    say(j.text + (j.odd.length
+        ? '. ⚠ Left out — their walls lean another way entirely, so most '+
+          'likely a misplaced scan: '+j.odd.join(', ')
+        : '.'), j.odd.length ? 'warn' : null);
+  }catch(e){ say('Could not straighten from the walls: '+e.message, 'bad'); }
+}
+function showWalls(j){
+  const box=$('wused'); if(!box || !j) return;
+  box.innerHTML = (j.walls||[]).map(f=>
+    '<span class="fno">'+(f.folderNo ? '#'+f.folderNo : '?')+'</span> '+
+    '<span class="num">'+f.points.toLocaleString()+' pts of wall, '+
+    (f.off_deg==null ? 'facing one way — contributed, not judged'
+                     : f.off_deg.toFixed(2)+'° off')+'</span>')
+    .join('<br>') + ((j.missing&&j.missing.length)
+      ? '<br><span style="color:var(--faint)">no wall in view: '+
         j.missing.join(', ')+'</span>' : '');
 }
 
@@ -13382,6 +13565,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
   $('refclear').onclick=clearPlumb;
   $('lvlfloor').onclick=levelToFloor;
+  $('lvlwalls').onclick=levelToWalls;
   $('wgrid').onclick=e=>{ V.wgrid=!V.wgrid;
     e.target.classList.toggle('on',V.wgrid); invalidate();
     say(V.wgrid ? 'World grid on — metre squares at Z = 0, every fifth drawn '+

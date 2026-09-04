@@ -9496,6 +9496,154 @@ check("...and there is a button to run it again",
       "id=\"lvlfloor\"" in _fsrc and "$('lvlfloor').onclick=levelToFloor"
       in _fsrc and 'path == "/level/floor"' in _fsrc)
 
+# --- straightening from the walls --------------------------------------------
+print("\nstraightening from the walls")
+
+
+def _walled(tip_deg=0.0, n=40_000, seed=0, yaw_deg=0.0, one_way=False):
+    """
+    A capture standing between walls, in the rig's frame.
+
+    ⭐ WITH A FLOOR, A CEILING AND STRAYS IN IT, because the whole job of
+    `wall_planes` is telling the standing surfaces from the lying ones -- a
+    fixture of bare walls would test none of that. The walls carry 8 mm of
+    noise: the roughness that exposed the cell-normal attenuation the
+    per-wall grouping exists to remove. Same yaw convention as `_floored`:
+    the tilt is turned back by the scan's own heading, so placed captures
+    describe ONE leaning room, not N tripods each leaning its own way.
+    """
+    _rng = np.random.RandomState(seed)
+    _wa = _rng.uniform([-9, 0, -1.5], [9, 0, 1.4], (n, 3))
+    _wa[:, 1] = 4.0 + _rng.normal(0, 0.008, n)
+    _parts = [_wa]
+    if not one_way:
+        _wb = _rng.uniform([0, -9, -1.5], [0, 9, 1.4], (n, 3))
+        _wb[:, 0] = -5.0 + _rng.normal(0, 0.008, n)
+        _parts.append(_wb)
+    _fl = _rng.uniform([-9, -9, 0], [9, 9, 0], (n, 3))
+    _fl[:, 2] = -1.5
+    _ce = _rng.uniform([-9, -9, 0], [9, 9, 0], (n, 3))
+    _ce[:, 2] = 1.4
+    _parts += [_fl, _ce,
+               _rng.uniform([-8, -8, -1.5], [8, 8, 1.4], (n // 10, 3))]
+    _p = np.concatenate(_parts)
+    _a = math.radians(tip_deg)
+    _R = np.array([[1, 0, 0], [0, math.cos(_a), -math.sin(_a)],
+                   [0, math.sin(_a), math.cos(_a)]])
+    _b = math.radians(-yaw_deg)
+    _Z = np.array([[math.cos(_b), -math.sin(_b), 0],
+                   [math.sin(_b), math.cos(_b), 0], [0, 0, 1]])
+    return _p @ _R.T @ _Z.T
+
+
+_wl0 = registration.wall_planes(_walled())
+check("the walls are found among the floor, the ceiling and the strays",
+      _wl0 is not None and _wl0.count > 20_000, _wl0 and _wl0.count)
+check("...and a straight room measures straight",
+      _wl0 is not None and _wl0.tilt_deg is not None
+      and _wl0.tilt_deg < 0.2, _wl0 and _wl0.tilt_deg)
+# ⛔⛔ TO A TENTH OF A DEGREE, NOT MERELY NEARBY -- this bar is the record of
+# a real estimator fault. Solved from per-CELL normals, this same fixture
+# came back 2.77°: 8 mm of wall noise across 25 cm cells does not average
+# out of the up-solve, it ATTENUATES it (regression dilution), and no second
+# press recovers the loss because the level always re-measures the same raw
+# frame. Grouping the cells into WALLS removed it; a bar at ±0.4° --
+# the floor's -- would let that fault back in unseen.
+_wl3 = registration.wall_planes(_walled(tip_deg=3.0, seed=2))
+check("A LEANING ROOM IS MEASURED TO A TENTH OF A DEGREE",
+      _wl3 is not None and _wl3.tilt_deg is not None
+      and abs(_wl3.tilt_deg - 3.0) < 0.1, _wl3 and _wl3.tilt_deg)
+# ⛔ ONE DIRECTION OF WALL PINS A ROLL AXIS, NOT A VERTICAL -- the room can
+# still lean along it with every normal fitting perfectly.
+_wl1 = registration.wall_planes(_walled(one_way=True, seed=3))
+check("one direction of wall declines to name an up, rather than guess",
+      _wl1 is not None and _wl1.up is None and _wl1.cells > 0,
+      _wl1 and (_wl1.up, _wl1.cells))
+check("a capture with no walls at all is None, not a confident answer",
+      registration.wall_planes(_floored()) is None)
+check("too few points is None here too",
+      registration.wall_planes(np.zeros((10, 3))) is None)
+
+_wallsrv = align.AlignServer([], out_path=None)
+_wallsrv.scans = [
+    _mscan("a", _walled(tip_deg=2.0, seed=11)),
+    _mscan("b", _walled(tip_deg=2.0, seed=12, yaw_deg=35.0),
+           registration.Setup(4.0, 1.0, 0.0, 35.0)),
+    _mscan("c", _walled(tip_deg=2.0, seed=13, yaw_deg=-70.0),
+           registration.Setup(-3.0, 2.0, 0.0, -70.0)),
+]
+_wlv = _wallsrv.level_from_walls()
+check("THE SURVEY IS STRAIGHTENED FROM THE WALLS OF EVERY CAPTURE AT ONCE",
+      _wlv["ok"] and abs(_wlv["tilt_deg"] - 2.0) < 0.1,
+      _wlv.get("error") or _wlv.get("tilt_deg"))
+check("...saying how much wall it stood on and how well they agreed",
+      _wlv["ok"] and _wlv["points"] > 100_000 and _wlv["spread_deg"] < 0.5,
+      (_wlv.get("points"), _wlv.get("spread_deg")))
+check("AND NOT ONE PLACEMENT WAS TOUCHED - the tilt belongs to the room",
+      all(s.lean.is_identity() and s.setup.dz == 0.0
+          for s in _wallsrv.scans))
+# ⛔ THE WALLS SAY NOTHING ABOUT WHERE THE GROUND IS, so unlike the floor
+# this invents no datum -- and a datum the operator set rides through whole.
+_wflr = registration.Level.from_dict(_wlv["level"])
+check("...and the walls invent no datum: no origin appears out of them",
+      _wflr.origin is None, _wflr.origin)
+_wmine = registration.Level(normal=_wflr.normal, pivot=_wflr.pivot,
+                            origin=[3.0, 4.0, 5.0],
+                            origin_axes="z").as_dict()
+_wkept = registration.Level.from_dict(
+    _wallsrv.level_from_walls(level=_wmine)["level"])
+check("...while a datum the operator already set rides through, axes and all",
+      _wkept.origin is not None
+      and float(np.abs(_wkept.origin
+                       - np.array([3.0, 4.0, 5.0])).max()) < 1e-12
+      and _wkept.origin_axes == "z", (_wkept.origin, _wkept.origin_axes))
+# ⛔⛔ THE ODD CAPTURE IS JUDGED AGAINST EVERYONE ELSE, NEVER AGAINST AN
+# AVERAGE IT IS ITSELF PART OF -- and this fixture is the measurement that
+# earned the rule. Judged the obvious way (off-from-the-joint-average, which
+# is how the floors do it), this capture's 12° of disagreement pulled the
+# average 3° toward itself, sat at 9° off the result -- inside the 10° bar --
+# and the survey "straightened" to 4.9° with nothing flagged. The bar was
+# fine; the REFERENCE was contaminated.
+_wallsrv.scans.append(_mscan("leaner", _walled(tip_deg=14.0, seed=14,
+                                               yaw_deg=10.0),
+                             registration.Setup(2.0, -2.0, 0.0, 10.0)))
+_wlv2 = _wallsrv.level_from_walls()
+check("A CAPTURE WHOSE WALLS LEAN ANOTHER WAY IS LEFT OUT, AND NAMED",
+      _wlv2["ok"] and _wlv2["odd"] == ["leaner"], _wlv2.get("odd"))
+check("...while the answer stays what the agreeing walls said",
+      _wlv2["ok"] and abs(_wlv2["tilt_deg"] - 2.0) < 0.1,
+      _wlv2.get("tilt_deg"))
+_wallsrv.scans.pop()
+_wallsrv.scans.append(_mscan("d", _walled(tip_deg=2.0, seed=15, yaw_deg=90.0,
+                                          one_way=True),
+                             registration.Setup(1.0, 6.0, 0.0, 90.0)))
+_wlv3 = _wallsrv.level_from_walls()
+_wld = {_w["name"]: _w["off_deg"] for _w in _wlv3.get("walls", [])}
+check("a capture seeing walls ONE way still contributes, and is never "
+      "accused",
+      _wlv3["ok"] and _wlv3["oneway"] == ["d"] and _wld.get("d") is None
+      and "d" not in _wlv3["odd"], (_wlv3.get("oneway"), _wld.get("d")))
+_wallsrv.scans.pop()
+_wall1 = align.AlignServer([], out_path=None)
+_wall1.scans = [_mscan("solo", _walled(tip_deg=2.0, seed=16, one_way=True))]
+_wlv4 = _wall1.level_from_walls()
+check("walls all facing one way are REFUSED with the reason, not guessed at",
+      not _wlv4["ok"] and "faces the same way" in _wlv4["error"], _wlv4)
+_wall1.scans = [_mscan("nowall", _floored(seed=17))]
+_wlv5 = _wall1.level_from_walls()
+check("...and no walls anywhere is refused with a reason too",
+      not _wlv5["ok"] and "wall" in _wlv5["error"], _wlv5.get("error"))
+check("the button lives under Close the loop, wired to its own endpoint",
+      'id="lvlwalls"' in _fsrc
+      and _fsrc.find('id="lvlwalls"') > _fsrc.find('id="survey"')
+      and "$('lvlwalls').onclick=levelToWalls;" in _fsrc
+      and 'path == "/level/walls"' in _fsrc and "'level/walls'" in _fsrc)
+check("...a press is one undo of the room's level, the same as the floor's",
+      "remember('straightening from the walls', undoLevel());" in _fsrc)
+check("...and it writes the room's ONE level, never a scan's placement",
+      "V.level=j.level; showLevel(); showWalls(j); recomputeLive();"
+      in _fsrc)
+
 # --- the scan comes to the grid, not the grid to the scan --------------------
 print("\nstanding each capture up on its own floor")
 # ⛔⛔ THE COMPLAINT THIS ANSWERS: load the second scan and it leans. Levelling

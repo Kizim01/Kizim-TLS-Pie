@@ -6558,15 +6558,17 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-04) — the current one
+### ⚠ LIVE STATE (2026-09-04, thirty-seventh pass) — the current one
 
-**Tree**: `main` = **`db8b55f`** (the refine slice) on `493aca2` (the cut-scope decoupling) plus
-this block's own pin commit, in sync with origin,
+**Tree**: `main` = the thirty-seventh pass's own commit (**Straighten from the walls**, this
+block included) on `672e809`/`db8b55f`, in sync with origin,
 clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
-the repo). Suites **1651, 0 failed**. Exes **2026-09-04 01:19:47 / 01:20:10 / 01:20:29, Studio
-selftest rc=0**, built after the operator's "go for it" with Studio verified closed — **these
-carry the cut-scope decoupling AND the refine-slice lever (`REFINE_POINTS`, second sitting),
-plus `pair_in_order` and the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has **no
+the repo). Suites **1670, 0 failed** (1651 + 19 wall checks; ⚠ one run exited 255 with no
+summary and no FAIL, unreproducible — identical bytes green on unfiltered rerun; if a second
+255 appears, treat it as real). Exes **2026-09-04 12:45:52 / 12:46:35 / 12:47:09, Studio
+selftest rc=0**, built with Studio verified closed — **these carry the walls button AND
+everything the 01:19 build carried (cut-scope decoupling, `REFINE_POINTS` refine slice,
+`pair_in_order`, the `9c7d922` drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no
 `--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session
 landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
 sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
@@ -6708,6 +6710,49 @@ next suspect is the scene frame itself** — 56 twins × 250k ≈ 14M points per
 restaurant's load — measure before touching; the lever there would be the twin stride, and the
 one after a smaller `REFINE_POINTS` still. Exes rebuilt **01:19–01:20** after the operator's
 "go for it" (Studio closed), selftest rc=0 — the slice ships.
+
+### 2026-09-04, thirty-seventh pass — Straighten from the walls, and two estimators that lied to the fixture first
+
+The operator asked for *"a button under the close loop option that takes the average verticality
+of the walls and straightens all the scans together"* — and the design wrote itself as
+`level_from_floor`'s sibling, measuring the OTHER surfaces. **`Straighten from the walls`**
+(`#lvlwalls`, directly under Close the loop as asked): each capture finds its flat STANDING
+surfaces in its own frame (`registration.wall_planes` — voxel cells, batched-eigh normals, a
+flat gate AND a standing gate, so a table top fails one and a chair the other), the normals are
+carried through each scan's placement into the merged frame, and the up is the ONE direction
+perpendicular to every wall at once (`up_from_wall_normals`, smallest eigenvector of the
+normals' scatter). Applied ONCE to the room's `Level` — **never a scan's placement** — under the
+same `undoLevel` as the floor. The walls **invent no datum** (a wall's height is not a floor);
+an operator origin rides through, axes and all. **One direction of wall is refused, not
+guessed** (`WALL_SPREAD_MIN`): one wall pins a roll axis, not a vertical; a capture seeing
+walls one way still CONTRIBUTES its normals and is reported as such, never accused.
+
+**Two estimator faults were caught by fixture before shipping, both measured:**
+
+- ⭐⭐ **Per-cell normals ATTENUATE the tilt — regression dilution.** 8 mm of wall noise across
+  25 cm cells read a synthetic 3.00° lean as **2.77°**, clutter innocent (noise-free fixture:
+  3.000 exact) — and no second press recovers it, because the level always re-measures the same
+  raw frame. Fixed structurally, not by factor: cells sharing a facing direction and plane
+  offset are one WALL; their raw moments are summed and the normal taken once per wall, over
+  metres, where the same noise is nothing. The suite's bar is **±0.1°, deliberately tighter
+  than the floor's ±0.4°** — the floor's own bar would readmit this exact fault unseen. ⭐ **A
+  tolerance bar is part of the mechanism**: when a fix is quantitative, the bar goes BETWEEN
+  the fixed and the broken numbers.
+- ⭐⭐ **An odd capture judged against an average it is part of escapes the bar.** The fixture: a
+  capture leaning 12° away at a quarter of the weight pulled the joint vertical 3° toward
+  itself, sat at 9° off the result — inside the 10° bar — and the survey "straightened" to 4.9°
+  with nothing flagged. The bar was fine; **the REFERENCE was contaminated.** Fixed by
+  leave-one-out: each capture's own vertical against the joint of everyone ELSE. ⚠ Noted, not
+  touched: `level_from_floor` keeps the one-pass structure and its ramp fixture passes only
+  because it leans harder.
+
+Suites **1651 → 1670, 0 failed**. Reversion audits ×2, each restored byte-for-byte
+(MD5-verified): per-cell normals reinserted fired exactly **"A LEANING ROOM IS MEASURED TO A
+TENTH OF A DEGREE"** (2.7695 — the recorded number to the digit); average-reference judging
+reinserted fired exactly the two odd-capture checks (odd came back `[]`, tilt 5.04°). Exes
+**12:45–12:47, selftest rc=0** — the button ships. For the operator: on the ministry job the
+club's walls are the natural witnesses; press it after Close the loop and read the per-capture
+list in the tray — a capture named as leaning another way is most likely a misplaced scan.
 
 ### ▶ NEXT SESSION STARTS HERE
 

@@ -2438,6 +2438,192 @@ def lean_from_floor(normal):
     return Lean(pitch_deg=pitch, roll_deg=roll)
 
 
+#: Finding the walls in a capture, for straightening off their shared
+#: vertical. The same shape as the floor machinery above, measuring the OTHER
+#: surfaces: a wall's normal is horizontal in a plumb room, so every flat
+#: standing patch -- wall, door, cupboard front -- is a witness to which way is
+#: up. The up is the ONE direction perpendicular to all of their normals at
+#: once, which is why walls facing two different ways pin it down and one wall
+#: alone cannot: the room could still roll about that wall's own axis.
+WALL_NEAR_M = 0.6
+WALL_FAR_M = 12.0
+#: The cell size local flatness is judged over. Big enough that a cell of real
+#: wall out-votes its scanner noise (a 25 cm patch spreads ~7 cm along the
+#: plane against 1-2 cm of noise across it), small enough that curved and
+#: cluttered surfaces fail the flatness gate instead of averaging into a lie.
+WALL_CELL_M = 0.25
+WALL_MIN_CELL_POINTS = 12
+WALL_MIN_CELLS = 40
+WALL_MIN_POINTS = 2000
+#: A cell only counts as wall while its plane stands within this of vertical.
+#: Generous ON PURPOSE: the lean being measured has to fit INSIDE the gate,
+#: and a gate at a few degrees would throw away the very leaning walls that
+#: are the evidence. Past this, whatever the surface is, it was not built as
+#: a wall -- the same reasoning as FLOOR_MAX_TILT_DEG in the other direction.
+WALL_MAX_OFF_VERTICAL_DEG = 25.0
+#: Flat means the cell's out-of-plane spread is small AGAINST its in-plane
+#: spread -- a ratio, not an absolute, so near and far cells are judged alike.
+WALL_FLAT_RATIO = 0.15
+#: ⛔ ONE DIRECTION OF WALL IS NOT AN ANSWER, and this is the gate that says
+#: so. The normals' scatter matrix carries the spread of directions in its
+#: second-smallest eigenvalue: two walls facing different ways put real weight
+#: there, one wall (however big) leaves it near zero, and an up solved off it
+#: anyway would be noise dressed as a measurement. Below this share of the
+#: total, the fit reports its normals and declines to name an up.
+WALL_SPREAD_MIN = 0.05
+#: When one capture's walls disagree with everyone else's. Same reasoning and
+#: same number as FLOOR_ODD_DEG, and the lesson recorded there holds here
+#: unread: inside this the scatter is REPORTED, outside it the capture is not
+#: measuring the same building -- a misplaced scan, or another structure.
+WALL_ODD_DEG = 10.0
+
+
+class WallFit(object):
+    """The flat standing patches of one capture, in its own frame."""
+
+    def __init__(self, up, normals, weights, centre, count, rms):
+        #: The capture's own vertical -- None when its walls all face one way,
+        #: which contributes normals to a joint solve but names no up alone.
+        self.up = None if up is None else np.asarray(up, dtype=np.float64)
+        self.normals = np.asarray(normals, dtype=np.float64)
+        self.weights = np.asarray(weights, dtype=np.float64)
+        self.centre = np.asarray(centre, dtype=np.float64)
+        self.count = int(count)
+        self.rms = float(rms)
+
+    @property
+    def cells(self):
+        return int(len(self.normals))
+
+    @property
+    def tilt_deg(self):
+        if self.up is None:
+            return None
+        return float(np.degrees(np.arccos(
+            min(1.0, max(-1.0, abs(float(self.up[2])))))))
+
+
+def up_from_wall_normals(normals, weights):
+    """
+    The one direction perpendicular to every wall at once, or None.
+
+    The smallest eigenvector of the normals' weighted scatter -- the direction
+    the wall normals collectively do NOT point, which for surfaces built plumb
+    is up. Returns (up, spread): `up` is None when the walls all face one way
+    (see WALL_SPREAD_MIN), and `spread` is the second-smallest eigenvalue's
+    share of the total, so a caller can see how firmly the answer was pinned.
+    """
+    n = np.asarray(normals, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    if n.ndim != 2 or not len(n):
+        return None, 0.0
+    scatter = (n * w[:, None]).T @ n
+    total = float(np.trace(scatter)) or 1.0
+    ev, evec = np.linalg.eigh(scatter / total)
+    spread = float(ev[1])
+    if spread < WALL_SPREAD_MIN:
+        return None, spread
+    u = evec[:, 0]
+    if u[2] < 0:
+        u = -u
+    return u / (float(np.linalg.norm(u)) or 1.0), spread
+
+
+def wall_planes(xyz, near=WALL_NEAR_M, far=WALL_FAR_M, cell=WALL_CELL_M):
+    """
+    The flat, standing surfaces of one capture, in that capture's own frame.
+
+    ⭐ FLATNESS IS MEASURED LOCALLY, IN CELLS, NOT FITTED GLOBALLY. A room's
+    walls face every which way, so there is no one plane to fit the way
+    `floor_plane` fits the ground. Each cell answers for itself -- covariance,
+    smallest axis, how flat -- and only cells that are both FLAT and STANDING
+    are kept. Furniture mostly fails one of the two: a table top is flat but
+    lying down, a chair is standing but not flat. What survives is exactly
+    the set of witnesses to "which way is up".
+
+    Returns a WallFit, or None when the capture holds too little wall to say
+    anything at all. `WallFit.up` is None when every wall found faces the
+    same way -- see WALL_SPREAD_MIN for why that is a refusal, not a guess.
+    """
+    p = np.asarray(xyz, dtype=np.float64)
+    if p.ndim != 2 or p.shape[0] < WALL_MIN_POINTS:
+        return None
+    r = np.hypot(p[:, 0], p[:, 1])
+    p = p[(r >= near) & (r <= far)]
+    if len(p) < WALL_MIN_POINTS:
+        return None
+    # Bounded work whatever arrives: a full capture is tens of millions of
+    # points, and the per-point outer products below are the expensive part.
+    if len(p) > 400_000:
+        p = p[::len(p) // 400_000 + 1]
+    q = np.floor(p / cell).astype(np.int64)
+    order = np.lexsort((q[:, 2], q[:, 1], q[:, 0]))
+    q, p = q[order], p[order]
+    starts = np.concatenate(
+        [[0], np.nonzero(np.any(np.diff(q, axis=0) != 0, axis=1))[0] + 1])
+    counts = np.diff(np.concatenate([starts, [len(p)]]))
+    s1 = np.add.reduceat(p, starts, axis=0)
+    s2 = np.add.reduceat(
+        (p[:, :, None] * p[:, None, :]).reshape(len(p), 9),
+        starts, axis=0).reshape(-1, 3, 3)
+    full = counts >= WALL_MIN_CELL_POINTS
+    if not full.any():
+        return None
+    cnt = counts[full].astype(np.float64)
+    mean = s1[full] / cnt[:, None]
+    cov = s2[full] / cnt[:, None, None] - mean[:, :, None] * mean[:, None, :]
+    ev, evec = np.linalg.eigh(cov)                    # ascending, batched
+    n = evec[:, :, 0]                                 # each cell's normal
+    flat = ev[:, 0] <= WALL_FLAT_RATIO * np.maximum(ev[:, 1], 1e-12)
+    standing = (np.abs(n[:, 2])
+                <= math.sin(math.radians(WALL_MAX_OFF_VERTICAL_DEG)))
+    wall = flat & standing
+    if (int(wall.sum()) < WALL_MIN_CELLS
+            or float(cnt[wall].sum()) < WALL_MIN_POINTS):
+        return None
+    n, cnt, mean = n[wall], cnt[wall], mean[wall]
+    s1w, s2w = s1[full][wall], s2[full][wall]
+    rms = float(np.sqrt(np.average(np.maximum(ev[wall, 0], 0.0),
+                                   weights=cnt)))
+    # ⛔⛔ THE NORMALS HANDED BACK ARE PER WALL, NOT PER CELL, AND THAT IS AN
+    # ACCURACY FIX, NOT TIDINESS. A cell's normal wobbles by its noise over
+    # its size -- 8 mm across 25 cm is a degree or two -- and that wobble
+    # does not average out of the up-solve, it ATTENUATES it: measured on a
+    # synthetic room, a 3.00° lean came back 2.77° from cell normals and
+    # 3.000° with the noise removed. Regression dilution, and no second
+    # press can recover it, because the level always re-measures the same
+    # raw frame. So cells that face the same way AND sit in the same plane
+    # -- one wall -- have their raw moments SUMMED, and the normal is taken
+    # once per wall, over metres of surface, where the same noise is
+    # nothing. A wall split at a bin boundary just becomes two witnesses
+    # that agree; a curved surface smeared across a group fails the group's
+    # own flatness gate instead of voting.
+    d = np.einsum("ij,ij->i", n, mean)
+    n = np.where((d < 0)[:, None], -n, n)
+    az = np.degrees(np.arctan2(n[:, 1], n[:, 0])) % 360.0
+    key = (np.floor(az / 10.0).astype(np.int64) * 1000
+           + np.floor(np.abs(d) / 0.5).astype(np.int64))
+    order = np.argsort(key, kind="stable")
+    key, cnt, s1w, s2w = key[order], cnt[order], s1w[order], s2w[order]
+    gat = np.concatenate([[0], np.nonzero(np.diff(key) != 0)[0] + 1])
+    gcnt = np.add.reduceat(cnt, gat)
+    gmean = np.add.reduceat(s1w, gat, axis=0) / gcnt[:, None]
+    gcov = (np.add.reduceat(s2w.reshape(len(s2w), 9), gat,
+                            axis=0).reshape(-1, 3, 3) / gcnt[:, None, None]
+            - gmean[:, :, None] * gmean[:, None, :])
+    gev, gvec = np.linalg.eigh(gcov)
+    gn = gvec[:, :, 0]
+    good = ((gev[:, 0] <= WALL_FLAT_RATIO * np.maximum(gev[:, 1], 1e-12))
+            & (np.abs(gn[:, 2])
+               <= math.sin(math.radians(WALL_MAX_OFF_VERTICAL_DEG))))
+    if not good.any():
+        return None
+    gn, gcnt, gmean = gn[good], gcnt[good], gmean[good]
+    up, _spread = up_from_wall_normals(gn, gcnt)
+    centre = np.average(gmean, axis=0, weights=gcnt)
+    return WallFit(up, gn, gcnt, centre, int(gcnt.sum()), rms)
+
+
 class LevelFit(object):
     """A Level measured off picked points, and how flat those points were."""
 
