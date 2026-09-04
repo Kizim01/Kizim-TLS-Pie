@@ -6562,11 +6562,12 @@ when the two names disagree.
 
 **Tree**: `main` = the thirty-sixth pass's own commit (on top of `cc4bfbc`), in sync with origin,
 clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
-the repo). Suites **1649, 0 failed**. Exes **2026-09-04 00:32:18 / 00:33:02 / 00:33:38, Studio
-selftest rc=0**, built with Studio verified closed — **these carry the cut-scope decoupling
-(36th pass), `pair_in_order` AND the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has
-**no `--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel
-session landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
+the repo). Suites **1651, 0 failed**. Exes **2026-09-04 01:19:47 / 01:20:10 / 01:20:29, Studio
+selftest rc=0**, built after the operator's "go for it" with Studio verified closed — **these
+carry the cut-scope decoupling AND the refine-slice lever (`REFINE_POINTS`, second sitting),
+plus `pair_in_order` and the drag-to-move reversal (`9c7d922`)**. ⚠ `tlsconvert.exe` has **no
+`--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the gate. No parallel session
+landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
 sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
 scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
 `ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
@@ -6689,6 +6690,23 @@ final run green.
 (that rule is right and untouched), so on reopening `scan project.tlspie` those two outlines
 still only take from that one cloud. If they were meant for the whole job: Ctrl-Z them (or Clear
 all cuts) and redraw in the new build. Their project file was **not** modified — it is theirs.
+
+**Second sitting — the predicted cost bit, and the named lever was pulled.** *"moving scans is
+back to being really slow"* — the exact 09-01 lag the `9c7d922` reversal re-admitted, arriving
+as the comment at `setGrab` said it would: with the move tool no longer holding the twin, the
+full cloud refines between nudges and the next grab waits behind the refinement draw in flight —
+which was a whole 4M-point GPU buffer, because the refine quantum WAS the buffer. The recorded
+lever ("smaller refine chunks, not a third flip of this holder") is now pulled: **the idle-frame
+refinement draws a `REFINE_POINTS` = 500k SLICE per frame** (`drawArrays` takes a first and a
+count, so the buffers, uploads and memory are untouched — only the queue and the draw sliced),
+cutting the worst wait 8×. The full sharpen takes more idle frames, which is invisible — it was
+always progressive. Suites **1649 → 1651**; reversion audit: slicing reverted + quantum raised
+back to 4M fired **3 named checks** (headline: "THE REFINE SLICE IS AT MOST AN EIGHTH OF A
+BUFFER"), restored byte-for-byte, final green. ⚠ **If moving is STILL slow at 56 scans, the
+next suspect is the scene frame itself** — 56 twins × 250k ≈ 14M points per rushed frame, 3× the
+restaurant's load — measure before touching; the lever there would be the twin stride, and the
+one after a smaller `REFINE_POINTS` still. Exes rebuilt **01:19–01:20** after the operator's
+"go for it" (Studio closed), selftest rc=0 — the slice ships.
 
 ### ▶ NEXT SESSION STARTS HERE
 

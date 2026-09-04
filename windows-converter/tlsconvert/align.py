@@ -7255,12 +7255,25 @@ let drawT=0, slowN=0, slowTold=false;
    frame (measured, studio.log 2026-08-27), and the NEXT grab had to wait
    behind it -- "works for one bit of a turn, then hangs" is that frame.
    So the full cloud is never drawn in one go again: every scene frame draws
-   the twins, and the full-detail chunks REFINE in on the idle frames that
-   follow, at most one chunk per frame, accumulating in the kept drawing
+   the twins, and the full-detail points REFINE in on the idle frames that
+   follow, one SLICE per frame, accumulating in the kept drawing
    buffer (preserveDrawingBuffer). Identical points land on identical pixels
    at identical depth, so the sharpening is seamless -- and a new drag simply
-   resets the queue: the most it ever waits behind is ONE chunk. This is
-   Potree's "progressive rendering" in miniature. */
+   resets the queue: the most it ever waits behind is ONE slice. This is
+   Potree's "progressive rendering" in miniature.
+
+   ⭐ THE REFINE QUANTUM IS SMALLER THAN THE BUFFER -- the lever named at
+   `setGrab`, pulled on 2026-09-04 ("moving scans is back to being really
+   slow"). With the move tool no longer holding the twin (the operator's own
+   09-03 reversal), the full cloud refines between nudges and the next grab
+   waits behind the refinement draw in flight. When the quantum was the
+   buffer's own 4M points, that wait was the exact 09-01 lag come back. A
+   slice an eighth the size cuts the worst wait the same way, and it costs
+   nothing: `drawArrays` takes a first and a count, so the buffers, the
+   uploads and the memory stay exactly as they were -- only the queue and
+   the draw are sliced. The full sharpen takes more idle frames, which is
+   invisible: it was always progressive. */
+const REFINE_POINTS=500000;
 let fillQ=[], fillAt=0;
 
 function draw(){
@@ -7292,7 +7305,8 @@ function draw(){
       gl.vertexAttribPointer(loc.aCol,comps,gl.UNSIGNED_BYTE,true,0,0);
       gl.bindBuffer(gl.ARRAY_BUFFER,e.c.live);
       gl.vertexAttribPointer(loc.aLive,1,gl.UNSIGNED_BYTE,false,0,0);
-      gl.drawArrays(gl.POINTS,0,e.c.n);
+      /* the slice: first and count, into buffers bound whole */
+      gl.drawArrays(gl.POINTS,e.at,e.n);
       /* ⛔⛔ AND THE OVERLAYS GO BACK ON TOP, EVERY TIME. They are drawn with
          DEPTH_TEST off -- which in ES2 stops depth being WRITTEN as well as
          tested -- so a grip leaves the far cleared depth behind it, and the
@@ -7387,7 +7401,9 @@ function draw(){
       gl.drawArrays(gl.POINTS,0,c.n);
     }
     if(!V.rush && s.coarse)
-      for(const c of s.chunks) fillQ.push({s:s, c:c});
+      for(const c of s.chunks)
+        for(let at=0;at<c.n;at+=REFINE_POINTS)
+          fillQ.push({s:s, c:c, at:at, n:Math.min(REFINE_POINTS,c.n-at)});
   }
   drawWorldGrid(vp);
   drawBox(vp);
@@ -9281,8 +9297,12 @@ function wantWidget(){
 
    ⚠ THE COST THAT COMES BACK, NAMED SO IT IS NOT REDISCOVERED: between
    nudges the full cloud starts refining, and a grab landing mid-refinement
-   waits for the chunk in flight -- the exact 09-01 lag. If that bites again
-   the lever is SMALLER REFINE CHUNKS, not a third flip of this holder. */
+   waits for the refinement draw in flight -- the exact 09-01 lag. It BIT
+   on 2026-09-04 ("moving scans is back to being really slow") and the
+   lever named here was pulled: the refine quantum is now REFINE_POINTS, an
+   eighth of a buffer, so the worst wait shrank the same way -- see the
+   comment at `fillQ`. If it ever bites again the next lever is a smaller
+   REFINE_POINTS still, not a third flip of this holder. */
 function setGrab(on){
   V.grab=!!on;
   const b=$('grab');

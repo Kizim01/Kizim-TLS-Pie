@@ -1920,18 +1920,39 @@ try:
     # ⭐⭐ NO FRAME EVER DRAWS THE WHOLE PROJECT. The twin alone was not
     # enough ("works for one bit of a turn, then hangs"): the full-detail
     # redraw on release was one 46M-point frame and the next grab waited
-    # behind it. Scene frames draw the twins and QUEUE the real chunks;
-    # idle frames refine one chunk each into the preserved drawing buffer,
+    # behind it. Scene frames draw the twins and QUEUE the real points;
+    # idle frames refine one SLICE each into the preserved drawing buffer,
     # and a new drag resets the queue -- the most it waits behind is one
-    # chunk.
-    check("scene frames draw the twin and queue the full chunks for later",
+    # slice.
+    check("scene frames draw the twin and queue the full points for later",
           "for(const c of (s.coarse ? s.coarse.chunks : s.chunks))" in _page
           and "if(!V.rush && s.coarse)" in _page
-          and "fillQ.push({s:s, c:c})" in _page)
-    check("idle frames refine one chunk each, and a scene frame resets "
+          and "fillQ.push({s:s, c:c, at:at, n:Math.min(REFINE_POINTS,c.n-at)})"
+          in _page)
+    check("idle frames refine one slice each, and a scene frame resets "
           "the queue",
           "if(fillAt<fillQ.length){" in _page
           and "fillQ=[]; fillAt=0;" in _page)
+    # ⭐⭐ THE REFINE QUANTUM IS SMALLER THAN THE BUFFER -- 2026-09-04,
+    # "moving scans is back to being really slow": with the move tool no
+    # longer holding the twin (the operator's own 09-03 reversal), the next
+    # grab waits behind the refinement draw in flight, and when that quantum
+    # was the buffer's own 4M points the wait was the exact 09-01 lag come
+    # back. The lever named at setGrab was pulled: drawArrays takes a first
+    # and a count, so the queue slices while the buffers, uploads and memory
+    # stay exactly as they were. The floor of 8 slices per buffer is the
+    # check -- a REFINE_POINTS quietly raised back to the buffer size is the
+    # 09-01 lag reintroduced with this comment still standing over it.
+    # ⛔ `.group(1)` of a search that found nothing is an AttributeError, not
+    # a failure -- the 2026-08-28 trap. Searched once, guarded, then judged.
+    _rpm = re.search(r"const REFINE_POINTS=(\d+);", _page)
+    check("THE REFINE SLICE IS AT MOST AN EIGHTH OF A BUFFER",
+          _rpm is not None
+          and int(_rpm.group(1)) * 8 <= viewer.CHUNK_POINTS,
+          _rpm and _rpm.group(1))
+    check("...and the idle frame draws the slice, not the whole buffer",
+          "gl.drawArrays(gl.POINTS,e.at,e.n);" in _page
+          and "gl.drawArrays(gl.POINTS,0,e.c.n);" not in _page)
     # ⛔⛔ A STAND-IN POINT COVERS WHAT IT STANDS FOR. One point in K at the
     # same size punches holes in every surface, and through the near cloud's
     # holes you see the far one -- two clouds of one wall interleave as two
