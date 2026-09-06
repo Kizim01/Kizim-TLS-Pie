@@ -38,6 +38,7 @@ exists to cut into a solid room, so the one thing that must never happen is a
 handle buried in the wall it is there to cut through.
 """
 
+import hashlib
 import http.server
 import json
 import os
@@ -286,6 +287,31 @@ def solve_sample(scan):
         sample = sample[spare]
         if refl is not None:
             refl = refl[spare]
+    return sample, refl
+
+
+def match_picture_points(scan, world, sample, refl):
+    """
+    The points the feature matcher renders its reflectivity picture from.
+
+    ⭐ THE WHOLE CLOUD WHEN IT MAY BE, THE SOLVE SAMPLE WHEN IT MUST BE.
+    Measured 2026-09-06 on the restaurant job: the 1.2M-point solve sample
+    fills a quarter of the matcher's grid and gave DISK 80-180 consistent
+    matches; the full 23M-point capture fills it and gave 150-290 -- twice
+    the evidence for the same four seconds, and the difference between
+    xfeat clearing MATCH_MIN and not. But the operator's rule stands that a
+    point they have cut away does not vote (see `solve_sample`), and the
+    cut list is a mask over the SAMPLE, so while a cut is in force the
+    sample is what the picture is made of. `world` is `scan.xyz` in the
+    frame the photograph is painted in; `sample`/`refl` are already
+    narrowed and in that frame.
+    """
+    spare = getattr(scan, "spare", None)
+    cut = (spare is not None and len(spare) == len(sample) and not spare.all())
+    view_refl = getattr(scan, "view_refl", None)
+    if (not cut and world is not None and view_refl is not None
+            and len(view_refl) == len(world)):
+        return world, view_refl
     return sample, refl
 
 
@@ -565,10 +591,50 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     # two. No threshold could have taken that pair without taking noise with
     # it. Without a way to say "I have checked this myself", the only remaining
     # move would have been to weaken the gate for every scan.
+    matched = None
     if yaw is not None:
         info["yaw_deg"], info["given"] = float(yaw), True
         info["grade"] = "given"
     else:
+        # ⭐⭐ THE PICTURES FIRST, THE CORRELATIONS SECOND. See
+        # `match.arrival`: the reflectivity panorama and the photograph are
+        # matched feature to feature, and when enough of the room agrees
+        # on one pose, that pose -- seat included -- is the answer, graded
+        # "matched" with the count that earned it. Measured 2026-09-06 on
+        # the operator's restaurant job: right basin on every correctly
+        # paired scan tried, the architrave sitting where the ladder's
+        # pose had not, and nothing found on the one mis-paired scan the
+        # correlations had called "sure". Below the bar, the record of the
+        # attempt is kept and the sweep runs exactly as before.
+        from . import match as match_mod
+        pic_xyz, pic_refl = match_picture_points(scan, world, sample, refl)
+        matched = match_mod.arrival(pic_xyz, pic_refl, lum, camera)
+        info["matched"] = matched
+    if yaw is None and matched and matched.get("belongs"):
+        yaw = float(matched["yaw_deg"])
+        camera = (float(matched["camera_x"]), float(matched["camera_y"]),
+                  float(matched["camera_z"]))
+        info["yaw_deg"], info["confidence"] = yaw, None
+        info["pitch_deg"] = float(matched["pitch_deg"])
+        info["roll_deg"] = float(matched["roll_deg"])
+        info["camera_x"], info["camera_y"], info["camera_z"] = camera
+        info["grade"] = "matched"
+        info["rung"] = len(colour_mod.RUNGS)
+        info["judged"] = ["features"]
+        info["polished"] = True
+        scan.camera_x, scan.camera_y, scan.camera_z = camera
+        # ⛔ THE WITNESS STILL SPEAKS. The reflectivity sweep's heading and
+        # its agreement with the matched one go on the record as they do
+        # for a correlated solve, so the panel's second opinion and the
+        # shoot solve's corroboration have the same thing to read.
+        if refl is not None and len(refl) == len(sample):
+            mi_yaw, mi_conf, _p = colour_mod.solve_yaw_mi(sample, refl, lum,
+                                                          camera=camera)
+            agreed, apart = colour_mod.corroborates(yaw, float("inf"),
+                                                    mi_yaw, mi_conf)
+            info["second"] = {"yaw_deg": mi_yaw, "confidence": mi_conf}
+            info["agree_deg"], info["corroborated"] = apart, agreed
+    elif yaw is None:
         yaw, confidence, profile = colour_mod.solve_yaw(sample, lum,
                                                         camera=camera)
         info["yaw_deg"], info["confidence"] = float(yaw), float(confidence)
@@ -628,6 +694,8 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         # overwrite; climbing there would quietly undo the number they just
         # chose. A zero camera is the untouched default on every fresh
         # attach, which is exactly the case the climb exists for.
+        # (A MATCHED pose never reaches here: it is adopted in the branch
+        # above, seat and all, and this branch is the sweep's own.)
         if not any(camera):
             step = max(1, len(sample) // 600_000)
             # ⭐ THE CLIMB GETS THE REFLECTIVITY, AND THE WITNESS'S OWN
@@ -1043,6 +1111,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/photo/pins":
                 return self._json(srv.align_photo_pins(body.get("index"),
                                                        body.get("pins") or []))
+            if path == "/photo/match":
+                return self._json(srv.match_photo(body.get("index")))
             if path == "/photo/tilt":
                 return self._json(srv.set_tilt(body.get("index"),
                                                body.get("pitch"),
@@ -1220,9 +1290,21 @@ class AlignServer(object):
         per = max(1, self.max_points // max(len(self.scans), 1))
         for i, scan in enumerate(self.scans):
             buf = scan.buffer(max_points=per)
-            self.blobs.append(buf.encode())
+            blob = buf.encode()
+            self.blobs.append(blob)
             info = scan.colour_info or {}
+            # ⭐⭐ THE BLOB'S OWN FINGERPRINT, SO THE PAGE CAN KEEP WHAT DID
+            # NOT CHANGE. Every photograph door rebuilds every scan, and the
+            # page used to throw away and re-fetch all of them -- measured
+            # 2026-09-06 on the restaurant job: 18 clouds, 373 MB over the
+            # wire and back onto the card, for a press that repainted ONE.
+            # Content-addressed rather than a version counter, because a
+            # counter would have to be bumped by every one of the seventeen
+            # doors that touch points or colours, and the first one that
+            # forgot would leave a stale cloud on screen with nothing
+            # thrown. See `rebuildNow` on the page.
             meta.append({"name": scan.name, "index": i, "points": buf.count,
+                         "blob": hashlib.md5(blob).hexdigest(),
                          "total": scan.total, "tint": _tint(i),
                          # ⛔ AGAINST THE CAPTURE'S OWN TOTAL, not against
                          # whatever this buffer happened to be handed. See
@@ -1276,6 +1358,10 @@ class AlignServer(object):
                          # matters -- what each of its three measures said
                          # ALONE, and which of them was left out of the vote.
                          "deep": info.get("deep"),
+                         # What the feature matcher found on this pairing,
+                         # or why it stood aside -- the one record here
+                         # that is evidence about the PAIRING, not the fit.
+                         "matched": info.get("matched"),
                          # The cleaning rule in force, so the panel can show it
                          # and an undo can put the previous one back.
                          # ⭐ THE NUMBERED FOLDER THIS CAPTURE CAME OUT OF.
@@ -3272,11 +3358,38 @@ class AlignServer(object):
         dropped = max(0, len(names) - self.FIND_LIMIT)
         names = names[:self.FIND_LIMIT]
 
-        from . import colour as colour_mod
+        from . import colour as colour_mod, match as match_mod
         sample, refl = solve_sample(scan)
         if not len(sample):
             return {"ok": False, "error": NOTHING_SPARED}
         camera = _seat_of(scan)
+
+        # ⭐⭐ THE FEATURE MATCHER RANKS FIRST WHEN IT IS HERE. Measured
+        # 2026-09-06 over the restaurant shoot's 61 photographs: the right
+        # one came first for every scan tried, by four to ten times the
+        # runner-up's agreeing features, in 0.3 s a photograph -- where the
+        # correlation ranking below had once put an impostor first and
+        # needed both its methods to agree to be trusted at all. The
+        # correlation rows are still made, so a build without a model
+        # ranks as it always did, and the two are reported side by side.
+        by_match = {}
+        decisive = None
+        if match_mod.available() and refl is not None:
+            lean = getattr(scan, "lean", None)
+            pts = sample
+            if lean is not None and not lean.is_identity():
+                pts = lean.apply(sample)
+
+            def tell(name, at, total):
+                self._progress = {"stage": "matching features against %s"
+                                           % name, "n": at, "total": total,
+                                  "busy": True}
+            ranked = match_mod.rank_photos(
+                pts, refl, [os.path.join(where, n) for n in names],
+                camera=camera, backend="xfeat", progress=tell)
+            by_match = dict((r["path"], r) for r in ranked.get("rows", []))
+            if ranked.get("decisive"):
+                decisive = ranked["best"]["path"]
 
         rows = []
         for at, name in enumerate(names):
@@ -3302,6 +3415,7 @@ class AlignServer(object):
                 # feature useless exactly where it is most wanted.
                 rows.append({"name": name, "path": path, "error": str(exc)})
                 continue
+            m = by_match.get(path) or {}
             rows.append({"name": name, "path": path,
                          "yaw_deg": yaw, "confidence": conf,
                          "mi_yaw_deg": mi_yaw, "mi_confidence": mi_conf,
@@ -3309,14 +3423,25 @@ class AlignServer(object):
                          # The weaker of the two: a photograph has to convince
                          # both methods, not just the one it happens to suit.
                          "score": (min(conf, mi_conf) if mi_conf is not None
-                                   else conf)})
+                                   else conf),
+                         "inliers": int(m.get("inliers") or 0),
+                         "matched": bool(m.get("belongs")),
+                         "match_yaw_deg": m.get("yaw_deg")})
         self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
         good = [r for r in rows if "error" not in r]
-        good.sort(key=lambda r: (r["corroborated"], r["score"]), reverse=True)
+        if by_match:
+            good.sort(key=lambda r: (r["inliers"], r["corroborated"],
+                                     r["score"]), reverse=True)
+        else:
+            good.sort(key=lambda r: (r["corroborated"], r["score"]),
+                      reverse=True)
         return {"ok": True, "folder": where, "scanned": len(names),
                 "dropped": dropped, "unreadable": len(rows) - len(good),
                 "attached": os.path.basename(photo) if photo else None,
-                "results": good[:8], "has_second": refl is not None}
+                "results": good[:8], "has_second": refl is not None,
+                "by_features": bool(by_match),
+                "decisive": (os.path.basename(decisive) if decisive
+                             else None)}
 
     def _repaint(self, scan, photo, pose, keep):
         """
@@ -3544,7 +3669,7 @@ class AlignServer(object):
         `loader(path) -> (sample, refl)` is for the suite, which has no
         decodable capture; the real one decodes at CHECK_VOXEL.
         """
-        from . import shoot, colour as colour_mod
+        from . import shoot, colour as colour_mod, match as match_mod
         made = self.shoot_plan(scans, images, offset=offset)
         if not made.get("ok"):
             return made
@@ -3590,6 +3715,25 @@ class AlignServer(object):
                 continue
             cands = sorted(r["photos"],
                            key=lambda q: abs(q["gap_s"]))[:self.CHECK_REACH]
+            # ⭐⭐ THE FEATURE MATCHER JUDGES FIRST, WHEN IT IS HERE. The
+            # correlation judges below called seven of ten restaurant
+            # captures MUTE (2026-09-06, the measurement in the docstring);
+            # the same day, ranking the whole shoot's photographs by
+            # agreeing features put the right one first for every scan
+            # tried by four to ten times the runner-up, at 0.3 s a
+            # photograph. Same verdicts, same words, same overrides --
+            # decided on inliers with the module's own bar and margin --
+            # and the correlation numbers still ride along on every row.
+            by_feat = None
+            if match_mod.available() and refl is not None:
+                try:
+                    ranked = match_mod.rank_photos(
+                        sample, refl, [q["path"] for q in cands],
+                        backend="xfeat", loader=lum_of)
+                    by_feat = dict((row["path"], row)
+                                   for row in ranked.get("rows", []))
+                except Exception:                         # noqa: BLE001
+                    by_feat = None
             scored = []
             for q in cands:
                 try:
@@ -3608,21 +3752,54 @@ class AlignServer(object):
                     scored.append({"name": q["name"], "path": q["path"],
                                    "error": str(exc)})
                     continue
+                m = (by_feat or {}).get(q["path"]) or {}
                 scored.append({"name": q["name"], "path": q["path"],
                                "gap_s": q["gap_s"], "confidence": conf,
                                "mi_confidence": mi_conf,
                                "mark_confidence": mark_conf,
                                "corroborated": bool(agreed),
                                "score": (min(conf, mi_conf)
-                                         if mi_conf is not None else conf)})
+                                         if mi_conf is not None else conf),
+                               "inliers": int(m.get("inliers") or 0),
+                               "matched": bool(m.get("belongs"))})
             good = [s for s in scored if "error" not in s]
+            clock = r["assigned"]["path"]
+            row = {"number": r["number"], "name": r["name"],
+                   "clock": r["assigned"]["name"], "candidates": scored,
+                   "by_features": bool(by_feat)}
+            if by_feat:
+                good.sort(key=lambda s: (s["inliers"], s["corroborated"],
+                                         s["score"]), reverse=True)
+                mine = next((s for s in good if s["path"] == clock), None)
+                top = good[0] if good else None
+                second = good[1]["inliers"] if len(good) > 1 else 0
+                if top is None or mine is None:
+                    row.update(verdict="unchecked",
+                               why="no candidate photograph could be read")
+                elif top["inliers"] < match_mod.MATCH_MIN:
+                    row.update(verdict="mute", best=top["name"],
+                               score=top["inliers"])
+                elif top["path"] == clock:
+                    row.update(verdict="agrees", score=mine["inliers"],
+                               corroborated=bool(
+                                   top["inliers"] >= match_mod.MATCH_MARGIN
+                                   * max(second, 1)))
+                elif (top["inliers"] >= match_mod.MATCH_MARGIN
+                      * max(mine["inliers"], 1)):
+                    row.update(verdict="prefers", picture=top["name"],
+                               score=top["inliers"],
+                               clock_score=mine["inliers"])
+                    overrides[r["name"]] = top["path"]
+                else:
+                    row.update(verdict="unsure", picture=top["name"],
+                               score=top["inliers"],
+                               clock_score=mine["inliers"])
+                results.append(row)
+                continue
             good.sort(key=lambda s: (s["corroborated"], s["score"]),
                       reverse=True)
-            clock = r["assigned"]["path"]
             mine = next((s for s in good if s["path"] == clock), None)
             top = good[0] if good else None
-            row = {"number": r["number"], "name": r["name"],
-                   "clock": r["assigned"]["name"], "candidates": scored}
             if top is None or mine is None:
                 row.update(verdict="unchecked",
                            why="no candidate photograph could be read")
@@ -4652,6 +4829,107 @@ class AlignServer(object):
                 "rms_deg": fit.rms_deg, "tolerance": fit.tolerance,
                 "spread_deg": fit.spread_deg, "worst": fit.worst[0],
                 "trustworthy": fit.ok, "text": fit.describe(),
+                "scans": self._rebuild()}
+
+    def match_photo(self, index):
+        """
+        Line the photograph up on the features BOTH pictures show.
+
+        The one-press answer to "pin it by hand is slow": `match.match_pose`
+        renders the cloud's reflectivity panorama from the camera's current
+        seat, matches it feature to feature against the photograph, and
+        fits rotation and seat to the points that agree -- a few hundred
+        pins placed by the matcher, through the same arithmetic the hand
+        pins use. Repainted through `_repaint`; graded "matched" with the
+        count, because unlike every correlation this IS evidence about the
+        pairing (see the module's measurements). Refused, in words, when
+        too few features agree or the fit is not one a tripod camera could
+        hold; nothing is painted then.
+
+        The agreeing points come back in the scan's OWN raw frame, so the
+        page can mark them on the cloud as it marks pins.
+        """
+        from . import match as match_mod
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        if not match_mod.available():
+            return {"ok": False,
+                    "error": "no feature matcher is available in this "
+                             "build (onnxruntime and a model under "
+                             "tlsconvert/models are needed)"}
+        info = dict(scan.colour_info or {})
+        sample, refl = solve_sample(scan)
+        if not len(sample):
+            return {"ok": False, "error": NOTHING_SPARED}
+        lean = getattr(scan, "lean", None)
+        world = scan.xyz
+        if lean is not None and not lean.is_identity():
+            sample = lean.apply(sample)
+            world = lean.apply(scan.xyz)
+        camera = (float(info.get("camera_x") or getattr(scan, "camera_x", 0.0)
+                        or 0.0),
+                  float(info.get("camera_y") or getattr(scan, "camera_y", 0.0)
+                        or 0.0),
+                  float(info.get("camera_z") or getattr(scan, "camera_z", 0.0)
+                        or 0.0))
+        self._progress = {"stage": "matching %s's photograph feature to "
+                                   "feature" % scan.name,
+                          "n": 0, "total": 1, "busy": True}
+        from . import colour as colour_mod
+        try:
+            rgb_img, lum0 = colour_mod.load_panorama(photo)
+            _rgb, lum = colour_mod.lift_image(rgb_img, lum0,
+                                              info.get("image_up_px"))
+            pic_xyz, pic_refl = match_picture_points(scan, world, sample, refl)
+            got = match_mod.match_pose(pic_xyz, pic_refl, lum, camera=camera)
+        except Exception as exc:                          # noqa: BLE001
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+            return {"ok": False, "error": "could not match (%s)" % exc}
+        points = got.pop("points", []) or []
+        if lean is not None and not lean.is_identity() and points:
+            back = np.asarray(points, dtype=np.float64) @ lean.matrix()
+            points = [[float(v) for v in p] for p in back]
+        if not got.get("belongs"):
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+            return {"ok": False, "matched": match_mod.record(got),
+                    "points": points,
+                    "error": match_mod.describe(got)}
+        try:
+            fresh = self._repaint(scan, photo,
+                                  {"yaw_deg": got["yaw_deg"],
+                                   "pitch_deg": got["pitch_deg"],
+                                   "roll_deg": got["roll_deg"],
+                                   "camera_x": got["camera_x"],
+                                   "camera_y": got["camera_y"],
+                                   "camera_z": got["camera_z"]}, info)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not fresh.get("ok"):
+            return {"ok": False,
+                    "error": fresh.get("reason") or "could not repaint"}
+        # ⭐ A MATCH IS EVIDENCE ABOUT THE PAIRING, WHICH IS WHY IT MAY
+        # WRITE THE GRADE WHERE A REFINEMENT MAY NOT (see `_repaint`):
+        # a few hundred features of THIS room found in THIS photograph is
+        # the identity a hand pin asserts, measured rather than clicked.
+        fresh["grade"] = "matched"
+        fresh["given"] = False
+        fresh["caution"] = None
+        fresh["matched"] = match_mod.record(got)
+        fresh["rung"] = len(colour_mod.RUNGS)
+        fresh["judged"] = ["features"]
+        scan.camera_x = float(got["camera_x"])
+        scan.camera_y = float(got["camera_y"])
+        scan.camera_z = float(got["camera_z"])
+        scan.colour_info = fresh
+        moved = abs((float(got["yaw_deg"]) - float(info.get("yaw_deg") or 0.0)
+                     + 180.0) % 360.0 - 180.0)
+        return {"ok": True, "info": fresh, "matched": fresh["matched"],
+                "points": points, "moved_deg": float(moved),
+                "text": match_mod.describe(got),
                 "scans": self._rebuild()}
 
     def resolve(self, index, camera_z=None):
@@ -6146,6 +6424,19 @@ PAGE = r"""<!doctype html>
   <div class="grp">
   <div class="ghead"><b>Pin it by hand</b><span class="why">say where the
     picture belongs</span></div>
+  <div class="row"><button id="pinmatch" class="go" title="Let the program
+    place the pins: it matches the features both pictures show &mdash; frames,
+    corners, markings &mdash; between the cloud&#39;s reflectivity panorama
+    and the photograph, and fits the pose (seat included) to the ones that
+    agree. A few seconds. Refuses, in words, when too little of the room is
+    found in both.">Match the picture</button></div>
+  <div class="blurb">⭐ <b>Try this first.</b> Measured on this job: every
+    correctly paired photograph matched on 150&ndash;300 features and landed
+    with the architraves sitting where they should, and a photograph of the
+    wrong room matched nothing &mdash; which no confidence number here could
+    tell. The agreeing points are marked on the cloud in
+    <b style="color:#5ad8ff">cyan</b>. Ctrl-Z puts the pose back. Pin by hand
+    only where the match refuses.</div>
   <div class="row"><button id="pin" title="Click a feature&#39;s COLOUR in the
     cloud, then click the place in the room that feature really is. Repeat for
     as many features as you like, then press Line the picture up.">Pin the
@@ -8199,10 +8490,20 @@ async function loadScan(m){
      applied while the legend went on saying "no photo", with nothing thrown
      and nothing logged. `points/` is fetched here too, which is why the route
      cross-check has to look at do_GET as well as do_POST. */
-  return {index:m.index, name:m.name, points:n, total:(m.total||n),
-          rgb, scale, offset, chunks, coarse, raw:pos, live,
-          subsampled:!!m.subsampled,
-          setup:m.setup, tint:m.tint, lo, hi,
+  return Object.assign(
+    {index:m.index, name:m.name, points:n, total:(m.total||n),
+     rgb, scale, offset, chunks, coarse, raw:pos, live, lo, hi,
+     reach:(reach[Math.floor(reach.length*0.9)]||10)},
+    describeScan(m));
+}
+/* ⭐ EVERYTHING THE SERVER SAYS ABOUT A SCAN THAT IS NOT ITS POINTS -- in one
+   place, so a scan that `rebuildNow` KEEPS (same blob) can have its
+   description refreshed without its buffers being touched. Split out of
+   loadScan on 2026-09-06 for exactly that; before, a refreshed description
+   meant a refetched cloud. */
+function describeScan(m){
+  return {subsampled:!!m.subsampled,
+          setup:m.setup, tint:m.tint,
           tintf:m.tint.map(v=>v/255),
           source:m.source, folder:m.folder, organised:!!m.organised,
           folderNo:m.folderNo||null,
@@ -8220,9 +8521,11 @@ async function loadScan(m){
        these is what the check above is for, and it caught them being dropped
        the first time they were added. */
     pitch:m.pitch||0, roll:m.roll||0, rung:m.rung||0, refined:m.refined,
-    deep:m.deep||null,
+    deep:m.deep||null, matched:m.matched||null,
     clean:m.clean||null, hidden:m.hidden||0,
-          reach:(reach[Math.floor(reach.length*0.9)]||10)};
+    /* The buffer's fingerprint: `rebuildNow` keeps a scan whose blob has
+       not changed instead of fetching it again. */
+    blob:m.blob||null};
 }
 
 function link(vs,fs){
@@ -10616,7 +10919,7 @@ function halfAt(){
 }
 function drawPairs(vp){
   if(!V.pairs.length && !V.half && !V.lvl.length && !V.pins.length
-     && !V.pinHalf) return;
+     && !V.pinHalf && !(V.matched && V.matched.pts.length)) return;
   const pts=[], lines=[], green=[];
   /* ⭐ A PIN IS DRAWN AS AN ARROW WITHOUT A HEAD: the end that is WRONG and
      the end it has to reach, in two colours, joined. One colour for both ends
@@ -10634,6 +10937,9 @@ function drawPairs(vp){
     pinLines.push(e[0], e[1]);
   }
   const ph=pinHalfAt(); if(ph) pinFrom.push(ph);
+  /* The matcher's points wear the "where it belongs" colour: every one of
+     them is a place in the room the photograph was found to sit on. */
+  for(const q of matchedAt()) pinTo.push(q);
   const h=halfAt(); if(h) pts.push(h);
   for(const q of V.lvl){
     const s=scanAt(q.si); if(!s) continue;
@@ -10873,8 +11179,42 @@ function undoPin(){
   V.pinErr=null; showPins(); invalidate();
 }
 function clearPins(){
-  V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1;
+  V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1; V.matched=null;
   showPins(); invalidate(); say('Pins cleared.');
+}
+/* ⭐⭐ THE PINS PLACED BY THE PROGRAM. One press: the server matches the
+   features both pictures show and fits the pose to the ones that agree; the
+   agreeing points come back in the scan's own frame and are marked on the
+   cloud so the operator can see WHAT was matched, not just that something
+   was. Remembered before it runs, like every door that moves a pose. */
+async function matchPicture(btn){
+  const s=scanAt(V.picked);
+  if(!s) return say('Choose the scan whose photograph you are lining up '+
+                    'first — double-click it in Scans in this job.', 'warn');
+  if(!s.photo) return say(s.name.slice(0,16)+' has no photograph on it yet. '+
+                          'Add one from This scan’s photograph.', 'warn');
+  remember('matching '+s.name+'’s photograph', undoPose(s.index));
+  say('matching the pictures feature to feature…'); watch(true);
+  busy(btn, true);
+  try{
+    const j=await post('photo/match', {index:s.index});
+    V.matched={who:s.index, pts:j.points||[]};
+    if(!j.ok){
+      invalidate();
+      throw new Error(j.error||'the pictures could not be matched');
+    }
+    await afterColour(j);
+    say(j.text+(j.moved_deg>1 ? ' — the picture turned '+
+        (+j.moved_deg).toFixed(1)+'°.' : ''));
+  }catch(e){ watch(false); say('Could not match: '+e.message, 'bad'); }
+  finally{ busy(btn, false); }
+}
+/* The matched points, through the scan's current placement, as markers. */
+function matchedAt(){
+  const m=V.matched; if(!m || !m.pts.length) return [];
+  const s=scanAt(m.who); if(!s) return [];
+  const A=affine(s);
+  return m.pts.map(p=>put(A,p[0],p[1],p[2]));
 }
 async function alignPins(btn){
   if(!V.pins.length) return say(
@@ -11400,7 +11740,7 @@ async function openProject(path){
     /* ⛔ AND THE PINS ARE SESSION STATE FOR THE SAME REASON THE PAIRS ARE:
        both halves of every one are a point in a scan that is about to be
        closed, held against a photograph that is about to be replaced. */
-    V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1;
+    V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1; V.matched=null;
     /* ⛔ THE PICK IS SESSION STATE AND GOES WITH THE REST OF IT. A project
        opened over another job would otherwise keep the last one's choice --
        an index into a set of clouds that is no longer there. */
@@ -11610,12 +11950,23 @@ function photoRow(s){
      for a low score would be a lie and red would be one too -- it is amber,
      and the reason is in the tooltip. */
   let head;
+  const mt = s.matched||null;
+  /* ⭐⭐ STRONGER STILL, SINCE 2026-09-06: the photograph was lined up on
+     features found in BOTH pictures, which is evidence about the pairing
+     itself -- a photograph of the wrong room matches nothing -- and the
+     count says how much of the room agreed. */
+  if(s.grade==='matched' && mt && mt.belongs)
+    head = '<span class="grow good" title="'+mt.inliers+' features of the '+
+           'room found in both the reflectivity panorama and the photograph '+
+           'agree on this pose to '+(+mt.rms_deg).toFixed(2)+'° rms ('+
+           mt.backend+'). Seat and tilt were fitted from them, not searched.">'+
+           s.photo+' · matched on '+mt.inliers+' features</span>';
   /* ⭐ THE STRONGEST THING THE PROGRAM CAN SAY, AND THE ONLY CLAIM THAT
      SURVIVED A 57-WAY TEST: two methods that share nothing but the cloud both
      found this angle. Shown as its own state because it is a different KIND of
      statement from a high score -- a score says "the peak was sharp", this
      says "an unrelated method agreed". */
-  if(s.corroborated)
+  else if(s.corroborated)
     head = '<span class="grow good" title="Two independent methods agree to '+
            (s.agree==null?'?':(+s.agree).toFixed(1))+
            ' degrees: depth silhouettes and lidar reflectivity. That is the '+
@@ -12491,6 +12842,8 @@ function forgetScan(gone){
      perfectly plausible pose from features that are not in that room -- the
      same failure the cut-scope note above describes, one tray along. */
   if(V.pinWho===gone){ V.pins=[]; V.pinHalf=null; V.pinWho=-1; }
+  if(V.matched && V.matched.who===gone) V.matched=null;
+  else if(V.matched && V.matched.who>gone) V.matched.who--;
   else if(V.pinWho>gone) V.pinWho--;
   V.pinErr=null;
   /* ⛔⛔ AND THE UNDO STACK IS EMPTIED, WHICH IS BLUNT AND IS THE SAFE ANSWER.
@@ -12636,21 +12989,51 @@ function rebuildFrom(meta){
   REBUILDING = run.catch(()=>{});
   return run;
 }
+/* ⭐⭐ ONLY WHAT CHANGED IS FETCHED AGAIN. Every photograph door answers
+   with every scan, and this used to drop all of them and reload all of them
+   -- on the operator's 18-cloud restaurant job that is 373 MB over the wire
+   and back onto the card, and the cut mask re-derived over every point,
+   for a press that repainted ONE cloud (2026-09-06: "the pin tool is
+   extremely slow"). The server now fingerprints each blob (`_rebuild`); a
+   scan whose key and fingerprint both match is KEPT -- its buffers, its
+   live mask, its rush twin -- and only its description is refreshed.
+   Returns how many scans were actually reloaded, so the caller can skip
+   the work that only a reload makes necessary. */
 async function rebuildNow(meta){
-  const held=new Map();
-  for(const s of V.scans) held.set(scanKey(s), s.setup);
-  dropChunks(V.scans);
+  const held=new Map(), keep=new Map();
+  for(const s of V.scans){
+    held.set(scanKey(s), s.setup);
+    if(s.blob) keep.set(scanKey(s)+' '+s.blob, s);
+  }
+  const kept=new Set();
+  for(const m of meta){
+    const s=m.blob && keep.get(scanKey(m)+' '+m.blob);
+    if(s) kept.add(s);
+  }
+  dropChunks(V.scans.filter(s=>!kept.has(s)));
   V.scans=[];
+  let reloaded=0;
   /* ⛔ THE PLACEMENT GOES BACK ON EACH SCAN AS IT ARRIVES, not after the
      loop: a throw mid-list (a GPU reset during a fetch) used to abort
      before the placements were reapplied, so even the scans that HAD
      loaded came back standing at identity. */
   for(let i=0;i<meta.length;i++){
-    const s=await loadScan(meta[i]);
-    const was=held.get(scanKey(meta[i]));
+    const m=meta[i];
+    let s=m.blob && keep.get(scanKey(m)+' '+m.blob);
+    if(s){
+      /* Same points, same colours: refresh what the legend reads and the
+         index the server now knows it by, and keep everything on the card. */
+      const fresh=describeScan(m);
+      for(const k in fresh) s[k]=fresh[k];
+      s.index=m.index;
+    }else{
+      s=await loadScan(m); reloaded++;
+    }
+    const was=held.get(scanKey(m));
     if(was) s.setup=was;
     V.scans.push(s);
   }
+  return reloaded;
 }
 
 /* Attach a 360 photo to one scan: pick it, file it, solve it, repaint.
@@ -13340,15 +13723,16 @@ async function resolve(index){
 
 /* Everything the page must redo after a scan has been re-coloured. */
 async function afterColour(j){
-  await rebuildFrom(j.scans);
+  const reloaded=await rebuildFrom(j.scans);
   measure(); refreshLists(); syncSliders(); invalidate(); dirty();
   /* Same two as `refreshScans`, and for the same reasons: the controls have to
      describe the scan they will move, and a rebuild hands back every deleted
      point. Colouring a cloud is not supposed to undo a crop.
      ⛔ AND THE SPINNER STAYS UP FOR IT. Re-deriving the mask walks every point
      on the CPU; `watch(false)` used to run first, so the one part of this that
-     can take a second was the part that looked like nothing happening. */
-  if(V.edits.length) recomputeLive();
+     can take a second was the part that looked like nothing happening.
+     ⭐ Only when something WAS reloaded: a kept scan kept its live mask. */
+  if(V.edits.length && reloaded) recomputeLive();
   watch(false);
   /* Switch to photo colour, or the work reads as having done nothing -- the
      cloud is still tinted by origin until somebody asks. */
@@ -14536,6 +14920,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('pairclear').onclick=clearPairs;
   $('pin').onclick=()=>setTool(V.tool==='pin'?'':'pin');
   $('pingo').onclick=e=>alignPins(e.target);
+  $('pinmatch').onclick=e=>matchPicture(e.target);
   $('pinundo').onclick=undoPin;
   $('pinclear').onclick=clearPins;
   $('ref').onclick=e=>{ V.ref=!V.ref; e.target.classList.toggle('on',V.ref);

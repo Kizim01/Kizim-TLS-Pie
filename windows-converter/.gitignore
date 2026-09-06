@@ -9,3 +9,8 @@ __pycache__/
 *.laz
 *.ply
 *.pcap
+
+# The big learned matcher (58 MB, exported locally from DISK + LightGlue, both
+# Apache-2.0). Kept out of history; bundled into the exe when present. The
+# small one (xfeat, 2.6 MB) is committed so a fresh clone still matches.
+tlsconvert/models/disk_*.onnx

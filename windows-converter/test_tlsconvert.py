@@ -1715,7 +1715,13 @@ try:
     # behind a display that could not see it. The structural checks above did
     # NOT catch that: they prove the code is present, not that the data reaches
     # it. This compares the two lists directly.
-    _ret = re.search(r"return \{index:m\.index.*?\};", _page, re.S).group(0)
+    # ⭐ Since the forty-first pass loadScan's return is a head of buffer
+    # fields plus `describeScan(m)`, the description a KEPT scan is refreshed
+    # from -- so the list the legend must survive is that function's body.
+    _ret = (re.search(r"return Object\.assign\(.*?describeScan\(m\)\);",
+                      _page, re.S).group(0)
+            + re.search(r"function describeScan\(m\)\{.*?\n\}", _page,
+                        re.S).group(0))
     _reads = set(re.findall(r"\bs\.(\w+)",
                             re.search(r"function photoRow\(s\)\{.*?\n\}",
                                       _page, re.S).group(0)))

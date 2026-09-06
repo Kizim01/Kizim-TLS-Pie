@@ -900,6 +900,27 @@ def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
     if lean is not None and not lean.is_identity():
         pts = lean.apply(pts)
 
+    # ⭐ THE PICTURES FIRST, as Studio's `colour_scan` does through the same
+    # door -- `match.arrival` -- so the CLI and the workbench describe one
+    # photograph one way. A matched pose carries its own seat and tilt and
+    # needs no ladder; below the bar the record stays and the sweep runs.
+    from . import match as match_mod
+    matched = match_mod.arrival(pts, refl, lum, camera)
+    info["matched"] = matched
+    if matched and matched.get("belongs"):
+        info["yaw_deg"] = float(matched["yaw_deg"])
+        info["pitch_deg"] = float(matched["pitch_deg"])
+        info["roll_deg"] = float(matched["roll_deg"])
+        info["confidence"] = None
+        info["grade"] = "matched"
+        info["judged"] = ["features"]
+        info["polished"] = True
+        return colour_mod.Colouriser(
+            rgb, info["yaw_deg"],
+            (float(matched["camera_x"]), float(matched["camera_y"]),
+             float(matched["camera_z"])),
+            info["pitch_deg"], info["roll_deg"]), info
+
     yaw, confidence, _ = colour_mod.solve_yaw(pts, lum, camera=camera)
     info["yaw_deg"] = yaw
     info["confidence"] = confidence

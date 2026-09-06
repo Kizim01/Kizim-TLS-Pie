@@ -6560,6 +6560,14 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-06, fortieth pass) — the current one
 
+**⚠⚠ A FORTY-FIRST PASS IS IN PROGRESS IN THE WORKING TREE (≈17:00, WIP commit on top of
+`ca64a0c`): the photograph matched to the cloud by learned features — `tlsconvert/match.py`,
+ONNX models under `tlsconvert/models/`, arrival/`photo/match`/sort/ranking wiring, and the
+blob-fingerprint page rebuild. The suite currently ABORTS on it (a regex in one cross-check),
+unaudited, unbuilt. Read the "forty-first pass — IN PROGRESS" section below the fortieth
+pass's and finish its to-do list before anything else. Everything else in this block still
+describes the SHIPPED state.**
+
 **Tree**: `main` = **`12cdc24`** (40th: the markings judge, measured to weight 0; the
 pictures check the clock's sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture)
 on `9e96a42` (38th), plus this block's own pin commit, in sync with origin, clean but for the
@@ -7102,6 +7110,155 @@ matched NOTHING and `&&` short-circuited — the edited blocks are LF inside a C
 and assert the baseline hash before breaking*. Restored byte-for-byte (`align.py`
 `F15A5320B06D49097966D90DBB4E004A`, `colour.py` `C81ED81D7D74362D6EFE0C9E0BF5DEA9`, `shoot.py`
 `F66F3DDD9BAADF297432FE7DECA29557`), final green **1796**.
+
+### 2026-09-06, forty-first pass — ⚠ IN PROGRESS: the photograph matched to the cloud by its features
+
+**Status when this was written (≈17:00): the code is in the working tree, imports cleanly, a
+WIP commit follows; the existing suite ABORTS on it (see traps), no reversion audit has been
+done, no exe has been built from it, and the tests for the new module are NOT yet written.** The
+15:03 exes and everything the fortieth-pass live-state block says remain the shipped state. Read
+this section, then finish the list at the end.
+
+**What the operator asked (three things, one afternoon).** (1) *"the pin by hand feature is
+extremely slow to mark and implement, are there faster options"*; (2) *"the new auto align is
+getting the image matching [wrong] on scan 4 … look at the paintings and architrave shapes to
+match"*; (3) *"the process should be: straighten the point cloud using the floor and vertical
+walls, generate a 360 image of the intensity map, then align the 360 colour image to the
+intensity 360 image using shapes … then colour the point cloud — on every point cloud, image
+import and in align when image is added"* — and then *"look deep into git / the web … proper
+research, let's nail this"*.
+
+**The research (four parallel web agents; their full reports with primary-source URLs are in
+this session's transcript only).** The field's answer to (3) is exactly koide3's
+`direct_visual_lidar_calibration` (ICRA 2023, MIT, equirectangular supported): render a LiDAR
+**intensity** image, get the initial pose from a **learned feature matcher** on it (SuperGlue
+there — non-commercial), refine with NID. Leahy & Jabari (Remote Sensing 17(3):357, 2025)
+matched TLS **intensity** renders to photos with off-the-shelf SuperGlue/LoFTR at 0.7 px and
+found intensity ≫ depth as the layer. Industry (FARO SCENE, Leica Register 360, RealWorks,
+RIEGL, Z+F) does **not** solve a per-scan panorama pose automatically at all: mount calibrated
+once, or 3–6 clicked points per scan. Commercial-safe matchers: **LightGlue (Apache-2) with DISK
+(Apache-2) or ALIKED (BSD-3)**, and **XFeat (Apache-2)**; SuperPoint/SuperGlue and MASt3R are
+non-commercial; MINIMA has RGB↔depth weights. Upright/straightening: `pano_lsd_align`
+(HorizonNet, MIT, ~6 s CPU, 1–2°), Jung 2017 (1.3° mean) — **less precise than a matched pose's
+own tilt, so photo straightening by vanishing points is NOT needed when the match succeeds; a
+fallback idea only**. Cloud straightening from walls+floor (Zhang 2022 14-moment fit, Hübner
+2021) is real but a separate registration-quality item. The Insta360's stitched sphere is not
+clean at the ~1° level (Aghayari 2017) — a floor no pose can go under.
+
+**What was measured on the operator's restaurant job (18 scans, all on disk under
+`C:\Users\sunun\Desktop\RESTAURANT SCAN`):**
+
+- **Scan 4's saved pose was 130.1° with no tilt, never climbed, graded doubtful; every judge
+  run fresh says 86–87°** (edge 86.9 at conf 2.5, MI 86.9 at 6.0, reflectivity edges 86.1 at
+  3.6), the 09-04 job held 86.2, `deep_align` from 130.1 went to 86.18 in 14.5 s with MI alone
+  voting, and today's arrival solve lands at 86.6 in 21.4 s. So the 130.1 came from a later
+  press on the 09-06 morning, not from the solver. Rendered side by side, 130.1 is 44° off and
+  86.4 sits on the doorway, bar, sofas and paintings.
+- **Across all 18 scans the arrival path's edge-only heading was wrong on two (index 4 and 17,
+  the latter 139° out and saved that way in the 12:57 job), while "the heading two of the three
+  one-axis judges agree on" was right 15/15 where a majority existed** (`scratchpad/s4/all18.log`).
+- **Index 4 (`16_15_16`) is not an alignment failure but a WRONG PHOTOGRAPH**: its lidar
+  panorama is the washroom corridor with the stairs dead ahead; the photo filed beside it is the
+  lounge — **byte-identical (MD5 `2a40370d…`) to scan 4's photograph**, written into folder 5
+  at 11:45 on 09-06. The real one is `INSTA IMAGES\TLS_26_08_20_16_15_16.jpg` (MD5
+  `629b8c5b…`), which the matcher puts first for that cloud (31 XFeat / 67–132 DISK inliers at
+  85.7–86.7°, consistent with the 09-04 "sure" 86.58). ⛔ The classifier refused my copy into the
+  operator's folder, so **folder 5 still holds the wrong image; the operator must copy the INSTA
+  original over it (a backup of the wrong copy is in the session scratchpad `backup_folder5\`)
+  or re-add the photograph in Studio**. The 09-04 job had graded that wrong pairing "sure" — no
+  correlation confidence can see a wrong room that shares the furniture.
+- **Feature matching across the modalities, five scans (four right pairings + the wrong one),
+  1024×512 panoramas, CPU**: plain SIFT worked on ONE of four (33 inliers) and failed the rest
+  (3–5) — the modality gap is real. **DISK+LightGlue: 213/148/220/307 consistent matches, right
+  basin every time, ~3 s torch / 4–6 s ONNX; XFeat: 169/91/118/132 in 0.6 s torch, 41–67 with
+  numpy mutual-NN on the ONNX export in 0.3 s; LoFTR erratic (0–145). On the wrong pairing all
+  gave 3–6.** CLAHE on top of global histogram equalisation changed nothing (237/160/289 vs
+  213/148/307) → **no OpenCV needed**. The full 23.7M-point cloud doubles the picture's fill and
+  the inliers over the 1.2M solve sample (DISK 223/146/186/286 vs 89/80/178/90) for the same
+  ~4.3 s.
+- **The six-parameter fit (rotation + seat, Cauchy-weighted Gauss-Newton on angular residuals,
+  ranges from the depth panorama) puts the camera ~1–3 cm above the lidar centre on every scan;
+  the ladder had it at 0.30–0.37 m** (with a −48 px image lift compensating) — the
+  height/pitch/lift ridge the ladder's own docstring warns of, resolved geometrically by two
+  hundred points with parallax. Inlier rms 0.4–0.65° at this grid.
+- **On the architrave at full resolution the matcher's pose sits; the ladder's is visibly
+  displaced on the jamb and the steps** (`scratchpad/feat/look3_*_architrave.png`).
+- **Ranking all 61 photographs of the shoot by XFeat inliers**: the right photograph first for
+  every scan tried (76/57/60/57 vs runner-ups 7–10, median 4), 20–39 s for 61 → **0.3–0.6 s a
+  photograph; this is the sort's picture check with teeth** (the fortieth pass's judge was mute
+  on 7 of 10).
+- **Where a pin press spent its time (the "slow to implement" half)**: painting 23.7M points
+  5.5 s, then `_rebuild()` re-encodes all 18 scans (4.4 s, **373 MB**) and the page throws away
+  and re-fetches and re-uploads every cloud and re-derives the 82-edit cut mask over every point.
+  One cloud changed.
+- **Straightening, floor-only vs walls+floor (18 scans)**: disagree by 0.05–1.8° (median ≈0.45°),
+  neither provably right; the photo's pose is solved in the leaned frame and absorbs it, so
+  `stand_up` is untouched this pass (`scratchpad/feat/level18.log`).
+
+**What is built (working tree, WIP commit) — the operator's order of work, made real:**
+
+1. **`tlsconvert/match.py` (new)**: `cloud_picture` (reflectivity ERP 1024×512 from any camera
+   seat via `colour._panoramas`, holes filled, `equalise`d), `photo_picture`, `bearings` (the
+   tool's own `grid_directions` convention), `match_xfeat` (ONNX XFeat + numpy mutual-NN cosine
+   ≥ 0.82), `match_disk` (ONNX DISK+LightGlue, batch of two), `kabsch`, `ransac_rotation`
+   (2-point, seeded, `MATCH_TOL_DEG=1.0`, 4000 draws), `refine_six` (rotation + seat),
+   **`match_pose`** (never raises; `belongs` = inliers ≥ `MATCH_MIN=30` AND tilt within
+   `MAX_TILT_DEG` AND seat within 0.6 m; pose keys in `camera_matrix` convention with the seat
+   ABSOLUTE; `points` = agreeing 3-D points for markers), `rank_photos` (render once, stream
+   photographs; `decisive` = best ≥ MATCH_MIN and ≥ `MATCH_MARGIN=2.0`× runner-up), `arrival`
+   (the record both attach paths keep), `record`, `describe`, `available()`/`model_path()`/
+   `model_dirs()` (dev `tlsconvert/models/`, exe `_MEIPASS/tlsconvert/models`). **Verified in
+   the tool's own venv on six real cases** (`scratchpad/feat/mod_real.log`).
+2. **Models**: `tlsconvert/models/xfeat_2048_512x1024.onnx` (2.6 MB, committed) and
+   `disk_lightglue_k2048_512x1024.onnx` (58 MB, **gitignored**, exported locally with
+   fabio-sim/LightGlue-ONNX `export disk --num-keypoints 2048 -b 2 -h 512 -w 1024 --opset 17`
+   — batch is the PAIR; the export needs `PYTHONIOENCODING=utf-8` on Windows). `onnxruntime`
+   1.29 installed into the tool venv (cp314 wheel exists, 14 MB). `build_exe.py` adds
+   `--add-data tlsconvert/models` + `--collect-all onnxruntime` when models are present.
+3. **Arrival = pictures first** (`align.colour_scan` and `pipeline.prepare_colour`, one door
+   `match.arrival`): a matched pose is adopted seat-and-all, grade **`matched`**, rung=all,
+   `judged=["features"]`, the MI witness still recorded; otherwise the record of the attempt
+   sits in `info["matched"]` and the sweep+ladder run unchanged. `match_picture_points` picks
+   the full cloud + `view_refl` unless a cut is in force (then the operator's spare sample).
+4. **`AlignServer.match_photo` + route `/photo/match`** (behind `take_edit`): the one-press
+   answer to hand pins; repaints through `_repaint`, writes the grade `matched` (a match IS
+   pairing evidence, unlike a refinement), returns the agreeing points un-leaned into the scan's
+   raw frame. Page: **"Match the picture"** button (`#pinmatch`, `matchPicture`) at the top of
+   the *Pin it by hand* group with a blurb, `V.matched` drawn as cyan "where it belongs" markers
+   via `matchedAt()` in `drawPairs`, cleared in `clearPins`/`openProject`/`forgetScan` (index
+   shifted on removal); the legend's photo row shows "matched on N features" first.
+5. **`find_photo_for` and `shoot_check` judge by features first** when a model is present
+   (xfeat; rows carry `inliers`/`matched`; sort's verdicts agrees/prefers/unsure/mute decided
+   on `MATCH_MIN`/`MATCH_MARGIN`; correlation rows still made and reported; `by_features` flag).
+6. **The speed fix, content-addressed**: `_rebuild` puts `blob` = MD5 of each encoded buffer in
+   the meta; the page's `rebuildNow` KEEPS a scan whose key and blob match (buffers, live mask,
+   rush twin), refreshes its description through the new `describeScan(m)` (split out of
+   `loadScan`), reloads only the rest, and returns the count; `afterColour` re-derives the cut
+   mask only when something was reloaded.
+
+⛔ **Traps hit this pass**: the Edit tool wrote a literal NUL where the JS said `' '` between
+`scanKey` and the blob (the 39th-pass trap again, in a new place) — patched at byte level
+(`+'\x00'+` → `+' '+`); `grep` says "Binary file matches" and `ast.parse` says "null bytes"
+when it is there. Edit-inserted lines are LF inside the CRLF file — the `openProject` reset
+had to be patched by line number. Never `grep -v "%"` a matcher log (it eats every "(24%)"
+line). **The existing suite ABORTS at `test_tlsconvert.py` line ~1718**: the loadScan
+cross-check lifts `return {index:m.index…};` by regex, and that return is now
+`return Object.assign({…}, describeScan(m));` — the abort trap in a new costume; the fix is to
+lift `describeScan`'s body (and the small Object.assign head) for that check.
+
+**⛔ STILL TO DO, in order**: (a) fix the test at ~1718 and get the suite past it; (b) tests for
+the module (synthetic bearings → `ransac_rotation`/`refine_six` exact recovery; `equalise`;
+`bearings` against `grid_directions`; `match_pose` refusals without refl/model; a real-model
+smoke test on a fabricated textured panorama turned by a known yaw when `available()`; the
+`photo/match` route; `matchPicture`/`matchedAt`/`describeScan`/`rebuildNow` lifted with
+`_js_func` and probed — rebuildNow must NOT fetch a scan whose blob is unchanged and MUST fetch
+one whose blob changed; the meta↔`describeScan` field cross-check must see `blob` and
+`matched`); (c) reversion audit (break: `MATCH_MIN` to 0, the un-lean in `match_photo`, the
+blob keep in `rebuildNow`, the arrival adoption); (d) suite green; (e) exes with Studio closed,
+selftest 0; (f) retitle the live-state block to the forty-first pass, update memory; (g) commit
++ push with the credential scans. Then the operator: copy the INSTA original for `16_15_16`
+into folder 5, reopen the restored restaurant project on the new build, press **Match the
+picture** on scan 4.
 
 ### ▶ NEXT SESSION STARTS HERE
 

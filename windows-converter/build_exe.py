@@ -180,6 +180,21 @@ def main(argv=None):
         for module in SCANNER_MODULES:
             cmd += ["--add-data",
                     "%s%s." % (os.path.join(src, module), os.pathsep)]
+        # ⭐ THE FEATURE MATCHER'S MODELS AND ITS RUNTIME. `tlsconvert/match.py`
+        # resolves the model files at run time under _MEIPASS/tlsconvert/models
+        # (see `match.model_dirs`), so they travel as data; whichever of the
+        # two are on disk at build time are the ones the exe can use -- the
+        # big one is deliberately not in git. onnxruntime carries native DLLs
+        # that static analysis does not see, hence collect-all.
+        models = os.path.join(HERE, "tlsconvert", "models")
+        if os.path.isdir(models) and any(
+                f.endswith(".onnx") for f in os.listdir(models)):
+            cmd += ["--add-data", "%s%s%s" % (
+                models, os.pathsep, os.path.join("tlsconvert", "models"))]
+            cmd += ["--collect-all", "onnxruntime"]
+        else:
+            print("  no models under tlsconvert/models -- the exe will "
+                  "align photographs by correlation only")
         cmd.append(os.path.join(HERE, entry))
 
         print("\nBuilding %s from %s" % (name, entry))
