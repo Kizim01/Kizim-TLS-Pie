@@ -6558,7 +6558,17 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-06, forty-first pass) — the current one
+### ⚠ LIVE STATE (2026-09-07, forty-second pass) — the current one
+
+**⭐⭐ THE MATCHER NOW SEARCHES THE CAMERA'S SEAT INSTEAD OF INHERITING IT (42nd pass).** The
+six-parameter fit only ever moved a few centimetres from whatever seat it was seeded with —
+0.28 m from the ladder's 0.39, 0.045 from the sensor, both "matched" — because RANSAC had
+already chosen the pairs from the seed's seat. `match_pose` now renders from every one of the
+ladder's `SEED_HEIGHTS`, keeps the height where most pairs agree under one rotation, and fits
+there: scan 4 lands at 0.114 m from EITHER start. **A Match the picture press is now ~37 s and an
+arrival match ~25 s** (was ~6): six renders and six matches, accepted. The operator's scan 4 is
+aligned in `06.09.26 scan 4 matched.tlspie` (original untouched). Suite **1837**; audit
+3 breaks, all 3 caught.
 
 **⭐⭐ THE PHOTOGRAPH IS NOW MATCHED TO THE CLOUD BY ITS OWN FEATURES, AND IT SHIPS.**
 `tlsconvert/match.py` with DISK+LightGlue and XFeat under ONNX Runtime, models bundled
@@ -6569,14 +6579,15 @@ inliers, and the page keeps clouds whose blob fingerprint is unchanged. Suite **
 failed**; **reversion audit 8 breaks, all 8 caught, all files restored byte for byte**.
 ⚠ The selftest still does NOT check that the models packed — named and queued, not fixed.
 
-**Tree**: `main` = **`909010c`** (41st: the photograph matched by its features) on
+**Tree**: `main` = **`f9e8943`** (42nd: the seat searched by the count) on **`909010c`**
+(41st: the photograph matched by its features) on
 **`12cdc24`** (40th: the markings judge, measured to weight 0; the pictures check the clock's
 sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture) on `9e96a42` (38th),
 plus this block's own pin commit, in sync with origin, clean but for the
 standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1833, 0 failed** (1796 + 37). Exes **2026-09-06 22:04 / 22:05 / 22:05, Studio
-selftest rc=0**, built with Studio verified closed (0 processes) — **these are the first
-build carrying the feature matcher and its two ONNX models** — **these carry the sort's picture check, the reported
+**1837, 0 failed** (1833 + 4). Exes **2026-09-06 22:04 / 22:05 / 22:05, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the feature matcher
+and its two ONNX models but NOT YET the 42nd pass's seat sweep (rebuilt at the close of the 43rd)** — **these carry the sort's picture check, the reported
 `mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
 features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
 cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
@@ -7381,6 +7392,96 @@ three are graded doubtful. Not yet run through the matcher.
 
 Then the operator: reopen the restored restaurant project on the new build and press
 **Match the picture** on scan 4.
+
+### 2026-09-07, forty-second pass — ✅ FINISHED: the camera's seat is SEARCHED, not inherited — "deep align on scan 4 still not aligning properly"
+
+**The report**, first thing after the 41st pass closed: *"deep align on scan 4 still not aligning
+properly"* on `06.09.26 placements restored.tlspie`, then *"look at it and align it correctly"*.
+
+**What the file held for scan 4 (`TLS_26_08_20_16_13_14`, project index 3)**: the RIGHT photograph
+(MD5 `2a40370d`, byte-identical to the INSTA original), heading **86.31° graded `given`** — a
+number typed by hand — with **no pitch and no roll at all**, the camera seat still at the ladder's
+**0.388 m** with a −8 px lift. Every judge had agreed on 86–87° in the 41st pass, so the heading
+was never the fault: the tilt was missing and the seat was 30 cm high. Rendered at 2880×1440 the
+"WASHROOMS & CLOAKROOM" lettering, the door jamb and the painting panels are all DOUBLED at that
+pose (`scratchpad/s4/look4_saved_*.png`). And Deep align could not get out: it polishes from the
+lean and seat it is handed (the scan-21 mechanism, 2026-09-01), and `deep_all` skips a `given`
+heading outright.
+
+**⛔⛔ THEN THE SHIPPED MATCHER GAVE THE WRONG SEAT TOO, GRADED "matched".** `match_photo` on
+that scan from its stored seat: 106 inliers, 0.43° rms, `belongs`, **camera_z 0.276**. The 41st
+pass's own measurement from the sensor had said 0.027. Same cloud, same photograph, same code,
+two seats 25 cm apart, both asserted. Swept properly (`scratchpad/s4/seeds4.py`), seeding the
+six-parameter fit at 0 / 0.1 / 0.2 / 0.3 / 0.388 / 0.5 m:
+
+| seed z | DISK inliers / matches | fitted z | xfeat inliers | fitted z |
+|---|---|---|---|---|
+| 0.000 | 210 / 735 | 0.045 | 60 | 0.034 |
+| **0.100** | **551 / 738** | **0.100** | **108** | **0.096** |
+| 0.200 | 280 / 739 | 0.155 | 71 | 0.172 |
+| 0.300 | 180 / 720 | 0.216 | 48 | 0.251 |
+| 0.388 | 109 / 619 | 0.276 | 40 | 0.310 |
+| 0.500 | 79 / 597 | 0.321 | 22 | 0.469 |
+
+**The fit inherits the seed's height (it moves ≤ 5 cm) because it only ever sees the pairs RANSAC
+kept, and RANSAC kept the pairs that agreed under a rotation FROM THE SEED'S SEAT** — so the seat
+it fits is the seat it was handed, with a clean rms to prove it. What tells the seats apart is
+**the count**: from the right seat the rendered picture carries the photograph's own parallax and
+one rotation carries three-quarters of the matches; from the sensor a third, from 0.39 m a
+seventh. Both backends peak at the same height. Refined at 1 cm steps (`seat4.py`, `seat4b.py`):
+**580 of 756 at z = 0.11**, sideways within ±1 cm. At 2880×1440 the lettering, jamb, panels and
+the bar sofa all sit SINGLE at that pose (`look4_seat10_*.png`); last pass's 0.027 m pose was
+crisp on the sign but softer on the sofa.
+
+**Two cheaper routes were tried and rejected, measured:** (1) *re-projecting one render's
+matches from other seats* (`reproj4.py`) peaks at 0.05 and falls to 290 by 0.10 — features live
+on edges, where a cell's mean range is the one range it is not; (2) *xfeat as a proxy sweeper for
+DISK* peaks one step below DISK on both scans tried (99 at 0.06 where DISK has 407, 82 at 0.12
+where DISK has 536; scan 7 the same shape), so the seat it chose was the seat DISK then fitted
+from — the fault in a new costume. And a *strided cloud* for the sweep renders saves nothing
+(7.0 s at a quarter of the points against 8.8 s at all of them, `stride4.py`): the render's cost
+is the hole-filling on the 1024×512 grid, not the 23.7M points.
+
+**Across eight other scans (`seatall.py`) the count's peak is 0.10 / 0.10 / 0.00 / 0.20 / 0.10 /
+0.05 / 0.05 / 0.10 m, where the SAVED seats ran from −0.076 to 0.499** — a bolted camera, and the
+scatter drops from half a metre to ±10 cm. The two odd ones are the two with known frame trouble:
+scan 3 (the 2° floor-roll scan, wants to go BELOW the sensor) and scan 6 (`16_20_36`, the
+FAR-flagged one, 0.20). Not chased this pass; a per-scan lean error trades against height on
+exactly this ridge and is the next place to look if the seat ever matters to a centimetre.
+
+**Shipped (`match.py`):** `SEAT_HEIGHTS` = the ladder's `SEED_HEIGHTS` (same physical rule: the
+camera is mounted above the lidar); `match_pose` renders from every height (plus the caller's own
+seat if it is not one of them), matches with THE SAME backend that will fit, keeps the height
+where most pairs agree under one rotation, and fits there, reusing that render and its pairs.
+The result and `record()` carry `seats` as (height, agreeing) pairs; `describe()` names the
+height ("the camera 0.11 m above the lidar"). A ranking hands its render in and is NOT swept.
+**Cost, uncontended: a Match the picture press 6 s → 37.5 s (the match itself 30.0 s); an
+arrival match → 25.2 s.** Six renders and six DISK matches instead of one — accepted in exchange
+for a seat the count supports, and said here so no one reads the slower press as a regression.
+An xfeat-only build (fresh clone) sweeps in ~9 s.
+
+**The shipped door, re-run on scan 4 after the change**: from the stored 0.388 m it lands at
+**z = 0.114, 541 of 752**; from the sensor at **0.114, 536** — the same seat from both starts,
+which is what "not inherited" means in a number. Tests **1833 → 1837**: a fabricated-room
+photograph shot 12 cm above the sensor is FOUND there from a seed at the sensor (today's code
+cannot; the parallax at that room's walls is twice `MATCH_TOL_DEG`), the sweep covers the
+ladder's heights and peaks at that one, the sweep is in the record, and a ranking does not sweep.
+**Reversion audit 3 breaks, all 3 caught by the checks written for them: the seat inherited from the seed fired the 12 cm check AND the sweep check; the first height kept instead of the most agreeing fired the 12 cm check; a ranking swept anyway fired the ranking check. `match.py` restored to `1baae2c2`, final suite 1837 green.** Exes **NOT rebuilt for this pass on its own**: the build that closes the forty-third pass (the camera manifest, the same night) carries the seat sweep, and until it lands the 22:04 exes -- WITHOUT the sweep -- are what the operator runs.
+
+**✅ THE OPERATOR'S SCAN 4 IS ALIGNED, IN A NEW FILE:** `06.09.26 scan 4 matched.tlspie` beside
+the original, which is untouched — the full project with scan 4's colour entry replaced by the
+inlier-chosen pose (yaw 86.74, pitch 1.19, roll −0.34, seat (0.004, −0.008, 0.106), lift −8,
+grade `matched`), written through the server's own `_repaint` and `colour_pose` and then
+**reopened through `open_project` to prove it: 18 scans, 18 wearing colour, scan 4 wearing that
+pose**. Also verified on the way: ranking all 61 photographs of the shoot against scan 4's cloud
+puts its own first, 53 inliers against 9 — decisive, so the pairing was never in doubt.
+⚠ `06.09.26 placements restored.laz.part` (321 MB, 21:19) sits beside a finished `.laz` from
+21:05: an export that did not finish. Not touched.
+
+**Still open:** the selftest models check (41st); the restaurant scans 13/14/15 never through the
+matcher (41st); the per-scan seat scatter above; and the ladder's `SEED_HEIGHTS` climb still
+seeds the correlation solve at whichever height its own score prefers — the matcher's count is
+the better judge of that too, when a matcher is present, and could hand the ladder its seat.
 
 ### ▶ NEXT SESSION STARTS HERE
 
