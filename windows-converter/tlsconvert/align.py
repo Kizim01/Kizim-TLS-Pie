@@ -152,6 +152,66 @@ def project_paths(entry, project_path):
     return unique
 
 
+def photo_paths(pose, entry, project_path, scan_path):
+    """
+    Where a saved photograph might be now, best guess first.
+
+    ⛔⛔ THE CAPTURES HAD A LADDER AND THE PHOTOGRAPHS DID NOT. `project_paths`
+    has tried a scan relative to the project before its absolute path since
+    projects existed, so a job copied to another drive opened -- and then
+    every pose in it named its photograph by the absolute path of the OLD
+    drive, `open_project` tested that string verbatim, and all of them came
+    back lost. Reported exactly that way, 2026-09-06: "when I move a shoot
+    from a saved HDD to another the images lose match in the project". The
+    clouds relocated; the colour on them did not.
+
+    The rungs, best first:
+      1. `rel` -- relative to the project folder, written by every save from
+         now on. The one that survives the whole job moving, same as a scan's.
+      2. The absolute path as saved, for a job that has not moved.
+      3. ⭐ THE FILE STRUCTURE, RE-ROOTED: where the photograph sat relative
+         to the CAPTURE's folder as saved, taken from where the capture was
+         actually FOUND. This is the rung that rescues every project saved
+         before `rel` existed -- the operator's own -- because a shoot moves
+         as a tree, and the tree is the one thing a copy preserves.
+      4. The same file name beside the capture it was found with, for a
+         photograph copied in beside its scan after the save.
+
+    ⛔ NOT ON THE LADDER: a sibling image with the scan's STEM, `find_photo`'s
+    guess. That is a different file, not a relocated one, and pairing a cloud
+    with a photograph the operator never attached is the failure that paints
+    plausibly and shows nothing on screen -- the grade gate exists to stop
+    it. A photograph none of these four finds is NAMED, never guessed at.
+    """
+    out = []
+    pose = pose or {}
+    photo = pose.get("photo") or ""
+    rel = pose.get("rel")
+    if rel and project_path:
+        out.append(os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(project_path)), rel)))
+    if photo:
+        out.append(photo)
+    old_scan = (entry or {}).get("path")
+    if photo and old_scan and scan_path:
+        old_dir = os.path.dirname(os.path.abspath(old_scan))
+        new_dir = os.path.dirname(os.path.abspath(scan_path))
+        try:
+            between = os.path.relpath(os.path.abspath(photo), old_dir)
+        except ValueError:          # another drive: no structure to carry
+            between = None
+        if between:
+            out.append(os.path.normpath(os.path.join(new_dir, between)))
+        out.append(os.path.join(new_dir, os.path.basename(photo)))
+    seen, unique = set(), []
+    for p in out:
+        key = os.path.normcase(p)
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique
+
+
 def _same(a, b, tol=1e-6):
     """Two Setups the operator would call identical."""
     return (abs(a.dx - b.dx) < tol and abs(a.dy - b.dy) < tol
@@ -191,6 +251,50 @@ def _seat_of(scan):
             float(getattr(scan, "camera_z", 0.0) or 0.0))
 
 
+def solve_sample(scan):
+    """
+    The decimated points a photograph is solved against, with their
+    reflectivity -- minus whatever the operator has cut away.
+
+    ⭐⭐ THE SOLVERS READ THE FULL CLOUD; THIS IS THE ONE DOOR THAT DOES NOT.
+    A cut is an operation, replayed at preview and export and never applied
+    to the loaded points, so every fit -- the alignment, the level, and until
+    2026-09-06 the photograph's pose -- measured the raw capture. For the
+    alignment that is a guarantee (aligning after cutting measures exactly as
+    aligning before). For the PHOTOGRAPH it was the operator's report: "when
+    adding a new photo it colourises the deleted points -- only colourise
+    visible points, so I can edit the cloud and the image only matches points
+    that are visible". A person who walked through the sweep, or scaffolding
+    in one capture only, went on voting on where the picture sat after being
+    deleted for exactly that reason.
+
+    `scan.spare` is a mask over the solve sample, set by
+    `AlignServer.take_edit` from the page's own cut list on every photograph
+    press, so it is never staler than the screen. THE PAINT STILL COVERS
+    EVERY POINT: a deleted point keeps a colour -- it is hidden, not gone,
+    and Ctrl-Z brings it back coloured -- it just has no say in where the
+    photograph goes. ⛔ The reflectivity is masked with the points, or the
+    pairs stop being pairs.
+    """
+    sample = (scan.sample if scan.sample is not None and len(scan.sample)
+              else scan.xyz)
+    refl = getattr(scan, "sample_refl", None)
+    if refl is not None and len(refl) != len(sample):
+        refl = None
+    spare = getattr(scan, "spare", None)
+    if spare is not None and len(spare) == len(sample) and not spare.all():
+        sample = sample[spare]
+        if refl is not None:
+            refl = refl[spare]
+    return sample, refl
+
+
+#: What a solver says when the cut list has left it nothing to look at.
+NOTHING_SPARED = ("every point of this cloud has been cut away, so there is "
+                  "nothing left to match the photograph to. Put some back "
+                  "(Undo, or Put this cloud back) and try again.")
+
+
 def _tint(n):
     """Distinguishable at a glance, and still distinguishable when overlaid."""
     return [(255, 176, 64), (96, 190, 255), (150, 255, 150),
@@ -220,6 +324,10 @@ class Scan(object):
         # pitch check do not apply to it. Everything else does.
         self.source = source
         self.photo = None              # the image colouring it, if any
+        # A mask over `sample`: True where the operator has NOT cut the point
+        # away. Set by `AlignServer.take_edit` on every photograph press and
+        # read by `solve_sample`; None means every point has a say.
+        self.spare = None
         # ⭐ HOW FAR THE CAMERA'S OPTICAL CENTRE SAT ABOVE THE LIDAR'S, in
         # metres. The workflow puts the camera on the same tripod at the same
         # height, so zero is the intended value and was the only value this
@@ -432,15 +540,18 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     # turns about the sensor, so the rays still leave the origin, and the
     # SAME frame is used to paint, in `pipeline.convert`'s emit and here.
     lean = getattr(scan, "lean", None)
+    # ⭐ MINUS THE POINTS THE OPERATOR HAS CUT AWAY -- see `solve_sample`. The
+    # world, which is painted, stays whole; only the sample, which votes, is
+    # narrowed.
+    sample, refl = solve_sample(scan)
+    if not len(sample):
+        info["reason"] = NOTHING_SPARED
+        return info
     if lean is None or lean.is_identity():
         world = scan.xyz
-        sample = (scan.sample if scan.sample is not None and len(scan.sample)
-                  else scan.xyz)
     else:
         world = lean.apply(scan.xyz)
-        sample = lean.apply(scan.sample
-                            if scan.sample is not None and len(scan.sample)
-                            else scan.xyz)
+        sample = lean.apply(sample)
     # ⭐ A HEADING THE OPERATOR SUPPLIES IS NOT SOLVED, AND NOT JUDGED.
     # The confidence exists to answer "did the solve find anything"; there is
     # no solve here, so reporting a number would invite it to be read as a
@@ -494,8 +605,7 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
         # not arbitrary. So it is applied and GRADED, and the thing that
         # actually judges it is the picture on screen with the heading controls
         # beside it.
-        grade_solve(info, sample, getattr(scan, "sample_refl", None), lum,
-                    camera)
+        grade_solve(info, sample, refl, lum, camera)
 
         # ⭐⭐ THE CAMERA IS NOT AT THE LIDAR'S CENTRE, AND THE FIRST PAINT
         # SHOULD ALREADY KNOW IT. The rig mounts the 360 camera ABOVE the
@@ -525,10 +635,9 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
             # it. Where that witness earned a vote the whole ladder judges
             # with two eyes, silhouettes AND reflectivity; the gate and the
             # reason live at `colour.ladder_objective`. The refl is strided
-            # exactly as the points are, or the pairs stop being pairs.
-            refl = getattr(scan, "sample_refl", None)
-            if refl is not None and len(refl) != len(sample):
-                refl = None
+            # exactly as the points are, or the pairs stop being pairs --
+            # and it came through `solve_sample` beside them, already
+            # narrowed to the same points.
             pose = colour_mod.climb_pose(
                 sample[::step], lum, info["yaw_deg"],
                 refl=(None if refl is None else refl[::step]),
@@ -907,6 +1016,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     body.get("neighbours"), body.get("min_refl")))
             if path == "/clean/levels":
                 return self._json(srv.strength_of(body.get("index")))
+            # ⭐ EVERY PHOTOGRAPH DOOR FIRST HEARS WHAT HAS BEEN CUT, from
+            # this one line, so no solve behind any of them can read a point
+            # the operator deleted. The page attaches the list in ITS one
+            # place, `post()`. The picker is the one door that solves
+            # nothing, so it is spared the walk over every cloud.
+            if path.startswith("/photo/") and path != "/photo/browse":
+                srv.take_edit(body.get("edit"), body.get("level"))
             if path == "/photo/shoot":
                 return self._json(srv.solve_shoot(
                     body.get("apply", True)))
@@ -2972,6 +3088,60 @@ class AlignServer(object):
                     "error": "no native window, so no system file dialog"}
         return {"ok": True, "paths": desktop.pick_image()}
 
+    def take_edit(self, edit=None, level=None):
+        """
+        Hear what the operator has cut away, before a photograph is solved.
+
+        Called by every `/photo/` route with the page's own cut list, so the
+        mask each solver reads (`scan.spare`, see `solve_sample`) is exactly
+        what the screen shows at the moment of the press: a cut just made
+        counts, a cut just undone does not. ⛔ NOTHING IS KEPT ACROSS
+        PRESSES. A press that sends no cuts clears every mask, because a
+        stale one would have a solve honouring a deletion the operator had
+        already taken back -- with nothing on screen to say so.
+
+        The points are tested where the exporter tests them: through
+        `pipeline.Edit.for_scan` and `mask`, in the scan's own coordinates
+        for a cut that remembers its frame (every cut made since frames
+        existed), and lean → setup → level -- `convert`'s own order -- for
+        one that does not. So a KEEP cut means to the solver precisely what
+        it means to the file: only what is inside survives. ⚠ The frameless
+        path reads the placement the SERVER holds, which can trail a nudge
+        the page has not yet sent; the framed path reads nothing of the kind.
+        """
+        plan = None
+        try:
+            plan = pipeline.Edit.from_dict(edit) if edit else None
+        except Exception as exc:                          # noqa: BLE001
+            log_event("take_edit: could not read the cut list (%s)" % exc)
+        lvl = registration.Level.from_dict(level) if level else None
+        masked = 0
+        for i, scan in enumerate(self.scans):
+            scan.spare = None
+            if plan is None or plan.is_empty():
+                continue
+            mine = plan.for_scan(i)
+            if mine.is_empty():
+                continue
+            local = (scan.sample if scan.sample is not None
+                     and len(scan.sample) else scan.xyz)
+            if local is None or not len(local):
+                continue
+            xyz = np.asarray(local, dtype=np.float64)
+            lean = getattr(scan, "lean", None)
+            if lean is not None and not lean.is_identity():
+                xyz = lean.apply(xyz)
+            setup = getattr(scan, "setup", None)
+            if setup is not None and not setup.is_identity():
+                xyz = setup.apply(xyz)
+            if lvl is not None and not lvl.is_identity():
+                xyz = lvl.apply(xyz)
+            keep = np.asarray(mine.mask(xyz, local=local), dtype=bool)
+            if not keep.all():
+                scan.spare = keep
+                masked += 1
+        return {"ok": True, "masked": masked}
+
     def add_photo(self, index, image_path, organise=True):
         """
         Attach a 360 photo to one open scan: file it, solve it, repaint it.
@@ -3094,11 +3264,9 @@ class AlignServer(object):
         names = names[:self.FIND_LIMIT]
 
         from . import colour as colour_mod
-        sample = (scan.sample if scan.sample is not None and len(scan.sample)
-                  else scan.xyz)
-        refl = getattr(scan, "sample_refl", None)
-        if refl is not None and len(refl) != len(sample):
-            refl = None
+        sample, refl = solve_sample(scan)
+        if not len(sample):
+            return {"ok": False, "error": NOTHING_SPARED}
         camera = _seat_of(scan)
 
         rows = []
@@ -3612,12 +3780,13 @@ class AlignServer(object):
                                "been fitted and none of them moves any "
                                "further. What is left is a judgement by "
                                "eye."}
-        sample = (scan.sample if scan.sample is not None and len(scan.sample)
-                  else scan.xyz)
-        # ⭐ THE SAME FRAME `colour_scan` SOLVES IN. The pose lives in the
-        # LEVELLED frame -- see the note there -- and a refinement handed the
-        # raw points would "improve" the pose right out of the frame it is
-        # worn in.
+        # ⭐ THE SAME POINTS `colour_scan` SOLVES ON -- minus the cuts, see
+        # `solve_sample` -- and THE SAME FRAME. The pose lives in the LEVELLED
+        # frame (see the note there), and a refinement handed the raw points
+        # would "improve" the pose right out of the frame it is worn in.
+        sample, refl = solve_sample(scan)
+        if not len(sample):
+            return {"ok": False, "error": NOTHING_SPARED}
         lean = getattr(scan, "lean", None)
         if lean is not None and not lean.is_identity():
             sample = lean.apply(sample)
@@ -3628,10 +3797,8 @@ class AlignServer(object):
         # the attach was two-eyed and the press were edge-only, every press
         # would walk the pose from one judge's optimum toward the other's --
         # the exact two-judges failure the deep search's fixed standardisation
-        # exists to prevent, arriving through a button.
-        refl = getattr(scan, "sample_refl", None)
-        if refl is not None and len(refl) != len(sample):
-            refl = None
+        # exists to prevent, arriving through a button. The reflectivity came
+        # through `solve_sample` beside the points, narrowed with them.
         try:
             rgb_img, lum = colour_mod.load_panorama(photo)
             # ⛔ THE PRESS JUDGES THE LIFTED IMAGE THE POSE WAS FITTED ON.
@@ -3784,22 +3951,22 @@ class AlignServer(object):
                     "error": "there is no pose to search from yet -- give "
                              "this photograph a heading first, even a rough "
                              "one"}
-        sample = (scan.sample if scan.sample is not None and len(scan.sample)
-                  else scan.xyz)
-        # ⭐ THE SAME FRAME `colour_scan` SOLVES IN -- see the note there. The
-        # reflectivity below is per-point and rides along untouched.
-        lean = getattr(scan, "lean", None)
-        if lean is not None and not lean.is_identity():
-            sample = lean.apply(sample)
+        # ⭐ THE SAME POINTS `colour_scan` SOLVES ON -- minus the cuts, see
+        # `solve_sample` -- and THE SAME FRAME, see the note there. The
+        # reflectivity is per-point and rides along, narrowed with them.
         # ⛔ THE SOLVER'S OWN DECIMATED REFLECTIVITY, NOT THE ONE ON SCREEN.
         # `view_refl` lines up with the displayed points and `sample_refl` with
         # `sample`; handing over the wrong one gives arrays of different
         # lengths, and `PoseScorer` would quietly drop both measures that need
         # reflectivity rather than fail -- leaving a "deep" search that was
-        # only the edge term with a longer wait attached.
-        refl = getattr(scan, "sample_refl", None)
-        if refl is not None and len(refl) != len(sample):
-            refl = None
+        # only the edge term with a longer wait attached. `solve_sample` is
+        # the one place that pairing is made.
+        sample, refl = solve_sample(scan)
+        if not len(sample):
+            return {"ok": False, "error": NOTHING_SPARED}
+        lean = getattr(scan, "lean", None)
+        if lean is not None and not lean.is_identity():
+            sample = lean.apply(sample)
 
         def report(stage, n, total):
             self._progress = {"stage": "%s: %s" % (scan.name, stage),
@@ -4569,6 +4736,15 @@ class AlignServer(object):
             if pose:
                 entry["colour"] = {k: v for k, v in pose.items()
                                    if k != "camera" and v}
+                # ⭐ AND THE PHOTOGRAPH'S OWN RELATIVE PATH -- the rung every
+                # capture has had since projects existed and no photograph
+                # had, which is why a shoot moved to another drive came back
+                # grey. See `photo_paths`.
+                try:
+                    entry["colour"]["rel"] = os.path.relpath(
+                        os.path.abspath(pose["photo"]), folder)
+                except ValueError:      # another drive: no relative form
+                    pass
             scans.append(entry)
         body = {"format": "TLS-Pie project", "version": PROJECT_VERSION,
                 "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -4660,7 +4836,7 @@ class AlignServer(object):
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        lost = []
+        lost, refound = [], []
         entries = body.get("scans") or []
         for i, (scan, entry) in enumerate(zip(fresh, entries)):
             # The repaints used to happen after the bar had already closed,
@@ -4690,20 +4866,35 @@ class AlignServer(object):
             if not pose:
                 self._first_attach(scan)
                 continue
-            # ⛔ A PHOTOGRAPH THAT HAS MOVED IS NAMED, NOT SKIPPED. Silently
-            # falling back to a fresh solve is how the project came back
-            # wearing a different alignment from the one that was saved, with
-            # nothing on screen to say so.
-            if not os.path.exists(pose.get("photo") or ""):
+            # ⛔ A PHOTOGRAPH THAT HAS MOVED IS LOOKED FOR WHERE THE MOVE WOULD
+            # HAVE PUT IT, and one that is nowhere is NAMED, NOT SKIPPED.
+            # This used to test the saved absolute path and nothing else, so
+            # a shoot copied to another drive reopened with every cloud grey
+            # -- the captures relocated through `project_paths`, the
+            # photographs had no ladder. Silently falling back to a fresh
+            # solve would be worse still: the project comes back wearing a
+            # different alignment from the one saved, with nothing to say so.
+            found = next((p for p in photo_paths(pose, entry, path, scan.path)
+                          if os.path.exists(p)), None)
+            if not found:
                 lost.append(os.path.basename(pose.get("photo") or "?"))
                 continue
+            if (os.path.normcase(os.path.abspath(found))
+                    != os.path.normcase(os.path.abspath(
+                        pose.get("photo") or ""))):
+                refound.append(os.path.basename(found))
+                # ⭐ THE FOUND PATH IS THE ONE THE SCAN WEARS FROM HERE, so the
+                # next save writes where the photograph IS, with its own
+                # `rel`, rather than carrying the old drive's path forward
+                # for every later open to re-derive.
+                pose = dict(pose, photo=found)
             self._carry_colour(scan, pose)
         self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
         return {"ok": True, "scans": self._rebuild(), "path": path,
-                "lost_photos": lost,
+                "lost_photos": lost, "refound_photos": refound,
                 "edits": body.get("edits") or [], "box": body.get("box"),
                 "pairs": body.get("pairs") or [],
                 "level": body.get("level"),
@@ -5150,6 +5341,9 @@ PAGE = r"""<!doctype html>
     background:linear-gradient(90deg,var(--blue),var(--teal));
     transition:width .2s linear}
   #editlist{margin-top:7px;font-size:11px;color:var(--faint)}
+  #editfold summary{cursor:pointer;user-select:none;color:var(--faint)}
+  #editfold summary:hover{color:var(--text)}
+  #editfold[open] summary{margin-bottom:3px}
   /* The lasso is drawn on a 2D canvas over the scene rather than in GL: it is
      a screen-space mark, and a screen-space mark belongs in screen space. */
   #ov{position:fixed;inset:0;pointer-events:none;display:none;z-index:1}
@@ -8815,8 +9009,21 @@ function boxSize(b){
          (b.yaw_deg||b.pitch_deg||b.roll_deg
           ? ', turned '+(+(b.yaw_deg||0)).toFixed(1)+'°' : '');
 }
+/* ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in
+   a drop down tab I can expand or shrink so it doesn't take up tons of
+   space". Folded by default, and the fold is REMEMBERED: this re-renders on
+   every cut, so a fold that lived in the element alone would snap back to
+   the default on the very action it sits under, and a control that resets
+   itself is one that gets ignored. The closed line counts ENTRIES, never
+   "cuts" -- three entries can be one cut through the job and two through
+   one cloud, and the whole point of a scope is that those are not the same. */
 function showEdits(){
+  const HISTKEY='tlspie.cuthist.v1';
   if(!V.edits.length){ $('editlist').innerHTML=''; return; }
+  if(V.histOpen===undefined){
+    V.histOpen=false;
+    try{ V.histOpen=localStorage.getItem(HISTKEY)==='1'; }catch(e){}
+  }
   const rows=V.edits.map((e,i)=>
     '<div>'+(i+1)+'. '+(e.mode==='keep'?'keep only ':'delete ')+
     (e.kind==='box' ? ('the box '+boxSize(e.box))
@@ -8826,8 +9033,19 @@ function showEdits(){
        the whole point of a scope is that it is not. */
     (e.scan==null ? '' : ' — <b>'+whoName(e.scan)+'</b> only')+
     '</div>').join('');
-  $('editlist').innerHTML = rows +
-    '<div style="margin-top:4px">applied at full density on save</div>';
+  const n=V.edits.length;
+  $('editlist').innerHTML =
+    '<details id="editfold"'+(V.histOpen?' open':'')+'><summary title="'+
+    'Everything cut so far, oldest first. Click to show or hide the list; '+
+    'Ctrl-Z still takes back the last cut whether it is open or not.">'+
+    'History · '+n+(n===1?' entry':' entries')+'</summary>'+rows+
+    '<div style="margin-top:4px">applied at full density on save</div>'+
+    '</details>';
+  const d=$('editfold');
+  if(d) d.ontoggle=()=>{
+    V.histOpen=!!d.open;
+    try{ localStorage.setItem(HISTKEY, V.histOpen?'1':'0'); }catch(e){}
+  };
 }
 /* ⛔ THE SCOPE IS STAMPED HERE, not by the callers. Two of them exist today
    (a box and a lasso) and a third is the obvious next one; a caller that forgot
@@ -10700,9 +10918,27 @@ async function openProject(path){
     recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
+    /* ⛔⛔ THE PHOTOGRAPHS WERE REPORTED AND THE PAGE NEVER READ IT.
+       `lost_photos` has come back from every open since poses were saved,
+       and nothing here looked at it -- so a job whose photographs had all
+       gone missing opened "back where you left them" with every cloud
+       grey, which reads as a colour setting rather than a missing file.
+       The 2026-09-06 report ("the images lose match") was this, from the
+       outside. Found-again ones are said too: a photograph the open had to
+       go looking for is a path the next save will rewrite. */
+    const gone=j.lost_photos||[], moved=j.refound_photos||[];
+    let photos='';
+    if(moved.length) photos+=' '+moved.length+' photograph'+
+      (moved.length===1?' was':'s were')+' found again under the new folder.';
+    if(gone.length) photos+=' ⚠ '+gone.length+' photograph'+
+      (gone.length===1?' is':'s are')+' not where the project left '+
+      (gone.length===1?'it':'them')+': '+gone.join(', ')+' — '+
+      (gone.length===1?'that scan is':'those scans are')+
+      ' grey until attached again from This scan’s photograph.';
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
         (j.saved?' (saved '+j.saved+')':'')+' — '+V.scans.length+
-        ' scan'+(V.scans.length===1?'':'s')+' back where you left them.');
+        ' scan'+(V.scans.length===1?'':'s')+' back where you left them.'+
+        photos, gone.length?'warn':null);
   }catch(e){ watch(false); say('Could not open it: '+e.message, 'bad'); }
 }
 
@@ -11803,10 +12039,8 @@ async function addPhoto(index){
 
   say('aligning the photo…'); watch(true);
   try{
-    const r=await fetch('photo/add',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index, path})});
-    const j=await r.json();
+    /* Through `post`, which is where the cut list gets attached. */
+    const j=await post('photo/add', {index, path});
     if(!j.ok) throw new Error(j.error||'could not add the photo');
     await rebuildFrom(j.scans);
     measure(); refreshLists(); invalidate(); watch(false); dirty();
@@ -12451,7 +12685,15 @@ async function afterColour(j){
   $('mode').classList.remove('on');
 }
 
+/* ⭐ EVERY PHOTOGRAPH DOOR CARRIES THE CUT LIST, AND THE LEVEL IT WAS DRAWN
+   UNDER, from this one place -- mirroring the one line in the server's route
+   table that reads them. Asked for by the operator, 2026-09-06: a photograph
+   solved against the whole capture was matching points they had deleted.
+   Sent fresh on every press rather than remembered by the server, so a cut
+   just undone stops counting the moment it is undone. */
 function post(where, body){
+  if(where.startsWith('photo/'))
+    body=Object.assign({edit:editPlan(), level:V.level}, body||{});
   return fetch(where, {method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)}).then(r=>r.json());

@@ -7852,6 +7852,231 @@ for _mname in ("open_project", "density"):
           _msrc[:200])
 
 
+# --- the photographs that did not move with the shoot ------------------------
+# ⛔⛔ "WHEN I MOVE A SHOOT FROM A SAVED HDD TO ANOTHER THE IMAGES LOSE MATCH IN
+# THE PROJECT" (2026-09-06). `project_paths` had given every capture a relative
+# rung since projects existed; a photograph's pose carried the absolute path of
+# the old drive and nothing else, `open_project` tested that string verbatim,
+# and the page never read the `lost_photos` it was handed -- so the job opened
+# "back where you left them" with every cloud grey.
+print("\nprojects: the photographs move with the shoot")
+_mv = tempfile.mkdtemp(prefix="tlsmoved")
+_mold = os.path.join(_mv, "old", "shoot")
+os.makedirs(os.path.join(_mold, "captures"))
+os.makedirs(os.path.join(_mold, "photos"))
+_ma = os.path.join(_mold, "captures", "a.pcap")
+_mb = os.path.join(_mold, "captures", "b.pcap")
+_mc = os.path.join(_mold, "captures", "c.pcap")
+_mja = os.path.join(_mold, "photos", "IMG_0042.jpg")   # the camera's own name
+_mjb = os.path.join(_mold, "captures", "b.jpg")        # filed beside its scan
+_mjc = os.path.join(_mold, "photos", "GONE.jpg")       # never copied across
+for _p in (_ma, _mb, _mc, _mja, _mjb):
+    io.open(_p, "wb").close()
+# a stem sibling for c, which is NOT its photograph and must not be taken
+io.open(os.path.join(_mold, "captures", "c.jpg"), "wb").close()
+_mproj = os.path.join(_mold, "captures", "shoot" + align.PROJECT_EXT)
+
+
+def _old_project(path, scans):
+    """A project as every build before this wrote it: no `rel` on a pose."""
+    with io.open(path, "w", encoding="utf-8") as _fh:
+        json.dump({"format": "TLS-Pie project",
+                   "version": align.PROJECT_VERSION, "scans": scans}, _fh)
+
+
+_old_project(_mproj, [
+    {"path": _ma, "rel": "a.pcap", "name": "a.pcap",
+     "colour": {"photo": _mja, "yaw_deg": 45.0}},
+    {"path": _mb, "rel": "b.pcap", "name": "b.pcap",
+     "colour": {"photo": _mjb, "yaw_deg": -12.0}},
+    {"path": _mc, "rel": "c.pcap", "name": "c.pcap",
+     "colour": {"photo": _mjc, "yaw_deg": 7.0}}])
+# The whole tree goes to "another drive", as a copy leaves it.
+_mnew = os.path.join(_mv, "new", "shoot")
+shutil.move(_mold, _mnew)
+_nproj = os.path.join(_mnew, "captures", "shoot" + align.PROJECT_EXT)
+_na = os.path.join(_mnew, "captures", "a.pcap")
+
+
+def _samep(a, b):
+    return os.path.normcase(os.path.normpath(a or "")) == \
+        os.path.normcase(os.path.normpath(b or ""))
+
+
+_ladder = align.photo_paths({"photo": _mja}, {"path": _ma}, _nproj, _na)
+check("the ladder tries the saved path, then the same structure re-rooted on "
+      "where the capture was found",
+      len(_ladder) >= 3 and _ladder[0] == _mja
+      and _samep(_ladder[1], os.path.join(_mnew, "photos", "IMG_0042.jpg")),
+      _ladder)
+check("...then the file name beside the capture, as the last rung",
+      _samep(_ladder[-1], os.path.join(_mnew, "captures", "IMG_0042.jpg")),
+      _ladder)
+_ladder2 = align.photo_paths({"photo": "Q:\\gone\\x.jpg",
+                              "rel": os.path.join("..", "photos", "x.jpg")},
+                             {"path": _ma}, _nproj, _na)
+check("a pose saved WITH `rel` is tried relative to the project first",
+      _samep(_ladder2[0], os.path.join(_mnew, "photos", "x.jpg")), _ladder2)
+try:
+    _ladder3 = align.photo_paths({"photo": "Q:\\y.jpg"}, {"path": _ma},
+                                 _nproj, _na)
+    check("a photograph saved on another drive from its capture still gets "
+          "the beside-the-capture rung, and nothing raises",
+          any(os.path.basename(p) == "y.jpg" for p in _ladder3), _ladder3)
+except ValueError as _exc:
+    check("a photograph saved on another drive from its capture still gets "
+          "the beside-the-capture rung, and nothing raises", False, _exc)
+check("the stem sibling is NOT a rung: a different file is not a moved one",
+      not any(os.path.basename(p) == "c.jpg"
+              for p in align.photo_paths({"photo": _mjc}, {"path": _mc},
+                                         _nproj,
+                                         os.path.join(_mnew, "captures",
+                                                      "c.pcap"))))
+
+_msrv = align.AlignServer([], out_path=None)
+_mpaint = []
+
+
+def _mv_paint(scan, photo, **kw):
+    """The door as it really behaves on success: the scan wears the photo."""
+    _mpaint.append((os.path.basename(scan.path), kw.get("yaw"), photo))
+    scan.photo = photo
+    scan.colour_info = {"ok": True, "photo": photo,
+                        "yaw_deg": float(kw.get("yaw") or 0.0),
+                        "grade": "sure"}
+    return scan.colour_info
+
+
+try:
+    align.load = _spy_load
+    align.colour_scan = _mv_paint
+    pipeline.find_photo = lambda _p: None
+    _mo = _msrv.open_project(_nproj)
+    check("A SHOOT MOVED TO ANOTHER DRIVE OPENS WITH ITS PHOTOGRAPHS -- the "
+          "operator's report", _mo.get("ok") is True, _mo.get("error"))
+    _painted = {n: p for n, _y, p in _mpaint}
+    check("...the photograph in its own folder is found where the tree now "
+          "stands",
+          _samep(_painted.get("a.pcap"),
+                 os.path.join(_mnew, "photos", "IMG_0042.jpg")), _painted)
+    check("...and so is the one filed beside its capture",
+          _samep(_painted.get("b.pcap"),
+                 os.path.join(_mnew, "captures", "b.jpg")), _painted)
+    check("...each at the heading that was saved, never re-solved",
+          ("a.pcap", 45.0) in [(n, y) for n, y, _p in _mpaint]
+          and ("b.pcap", -12.0) in [(n, y) for n, y, _p in _mpaint], _mpaint)
+    check("...and the ones that moved are named, so the open says what it did",
+          sorted(_mo.get("refound_photos") or []) == ["IMG_0042.jpg", "b.jpg"],
+          _mo.get("refound_photos"))
+    check("A PHOTOGRAPH THAT IS NOWHERE IS STILL NAMED LOST, and its stem "
+          "sibling is not quietly taken instead",
+          _mo.get("lost_photos") == ["GONE.jpg"] and "c.pcap" not in _painted,
+          (_mo.get("lost_photos"), sorted(_painted)))
+    # The next save writes where the photographs ARE, with their own rel.
+    _nproj2 = os.path.join(_mnew, "captures", "again" + align.PROJECT_EXT)
+    _ms = _msrv.save_project(_nproj2, {"setups": []})
+    with io.open(_nproj2, "r", encoding="utf-8") as _fh:
+        _mbody = json.load(_fh)
+    _mcol = [s.get("colour") or {} for s in _mbody["scans"]]
+    check("a save after the move writes the photograph's NEW path...",
+          _ms.get("ok") and _samep(_mcol[0].get("photo"),
+                                   os.path.join(_mnew, "photos",
+                                                "IMG_0042.jpg")), _mcol[:1])
+    check("...and its path relative to the project, the rung every capture "
+          "has always had",
+          _samep(_mcol[0].get("rel"), os.path.join("..", "photos",
+                                                   "IMG_0042.jpg"))
+          and _mcol[1].get("rel") == "b.jpg", [c.get("rel") for c in _mcol])
+    # And that rung is the one tried first when the tree moves AGAIN.
+    _mnewer = os.path.join(_mv, "newer", "shoot")
+    shutil.move(_mnew, _mnewer)
+    del _mpaint[:]
+    _mo2 = _msrv.open_project(
+        os.path.join(_mnewer, "captures", "again" + align.PROJECT_EXT))
+    _painted2 = {n: p for n, _y, p in _mpaint}
+    check("a project saved by this build survives a second move on `rel` "
+          "alone",
+          _mo2.get("ok") is True
+          and _samep(_painted2.get("a.pcap"),
+                     os.path.join(_mnewer, "photos", "IMG_0042.jpg")),
+          (_mo2.get("error"), _painted2))
+finally:
+    align.load = _real_load
+    align.colour_scan = _real_paint
+    pipeline.find_photo = _real_find
+    _msrv.stop()
+    shutil.rmtree(_mv, ignore_errors=True)
+_op_js = _js_func("openProject")
+check("AND THE PAGE SAYS IT: lost photographs are read out of the answer, "
+      "not dropped on the floor",
+      "j.lost_photos" in _op_js and "j.refound_photos" in _op_js
+      and "grey until attached again" in _op_js)
+
+# --- the cut history is a fold ----------------------------------------------
+# ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in
+# a drop down tab I can expand or shrink so it doesn't take up tons of space".
+# Run, not read: the fold has to survive its own re-render, which happens on
+# every cut, and a stub that forgot the element between calls would pass a
+# version that snapped shut each time.
+print("\nthe cut history is a fold")
+check("the fold has a style of its own, so the summary reads as a control",
+      "#editfold summary{" in _page and "#editfold[open] summary{" in _page)
+if _node:
+    _hp2 = os.path.join(tempfile.mkdtemp(prefix="tlshist"), "hist.js")
+    with io.open(_hp2, "w", encoding="utf-8") as _fh:
+        _fh.write(_js_func("showEdits") + r"""
+const _els={};
+function $(id){
+  return _els[id]||(_els[id]={textContent:'',innerHTML:'',value:0});
+}
+const store={};
+const localStorage={getItem:k=>(k in store?store[k]:null),
+                    setItem:(k,v)=>{ store[k]=String(v); }};
+function whoName(i){ return 'scan '+(i+1); }
+function boxSize(b){ return '1.0 x 1.0 x 1.0 m'; }
+const V={edits:[]};
+showEdits(); const empty=$('editlist').innerHTML;
+V.edits=[{kind:'box',mode:'drop',box:{}},
+         {kind:'lasso',mode:'keep',poly:[[0,0],[1,0],[1,1]],scan:1}];
+showEdits(); const folded=$('editlist').innerHTML;
+const d=$('editfold'); d.open=true; d.ontoggle();
+showEdits(); const opened=$('editlist').innerHTML;
+delete V.histOpen; showEdits(); const remembered=$('editlist').innerHTML;
+V.edits=[{kind:'box',mode:'keep',box:{}}]; showEdits();
+const one=$('editlist').innerHTML;
+console.log(JSON.stringify({empty,folded,opened,remembered,one,store}));
+""")
+    _hr2 = subprocess.run([_node, _hp2], capture_output=True, text=True)
+    check("the history fold runs", _hr2.returncode == 0,
+          (_hr2.stderr or "")[:400])
+    _hj = (json.loads(_hr2.stdout.strip().splitlines()[-1])
+           if _hr2.returncode == 0 else {})
+    _folded = _hj.get("folded") or ""
+    _summary = _folded[_folded.find("<summary"):_folded.find("</summary>")]
+    check("THE CUT HISTORY IS A FOLD, CLOSED BY DEFAULT",
+          _folded.startswith('<details id="editfold"><summary'), _folded[:80])
+    check("...whose closed line counts ENTRIES, never cuts",
+          "2 entries" in _summary and " cuts" not in _summary, _summary)
+    check("...with every row and the density note inside it, so closed is "
+          "one line",
+          "1. delete the box" in _folded and "2. keep only a lasso" in _folded
+          and "scan 2</b> only" in _folded
+          and _folded.find("applied at full density") < _folded.find(
+              "</details>"), _folded)
+    check("opening it is REMEMBERED across the re-render every cut causes",
+          (_hj.get("opened") or "").startswith(
+              '<details id="editfold" open><summary'),
+          (_hj.get("opened") or "")[:80])
+    check("...and across a reload, through the page's own store",
+          (_hj.get("store") or {}).get("tlspie.cuthist.v1") == "1"
+          and (_hj.get("remembered") or "").startswith(
+              '<details id="editfold" open>'), _hj.get("store"))
+    check("one entry reads as one", "1 entry<" in (_hj.get("one") or ""),
+          _hj.get("one"))
+    check("and no cuts is no fold at all", _hj.get("empty") == "",
+          _hj.get("empty"))
+
+
 # --- the guard that held for every step and not for the journey --------------
 # ⛔⛔ "AUTO ALIGN IS BEING LESS SUCCESSFUL EVEN WHEN I GET THE SCANS REALLY
 # CLOSE TO ONE ANOTHER."  Measured across sixteen consecutive pairs of the
@@ -10282,6 +10507,177 @@ check("...and Deep align searches the same frame",
       _r_deep.get("ok") and _saw_deep
       and np.allclose(_saw_deep[0], _want_rs, atol=1e-4),
       _r_deep.get("error"))
+
+# --- the photograph is matched to the points that are still there ------------
+# ⭐⭐ "WHEN ADDING A NEW PHOTO IT COLOURISES THE DELETED POINTS -- ONLY
+# COLOURISE VISIBLE POINTS, so I can edit the cloud and the image only matches
+# points that are visible" (2026-09-06). A cut is an operation, never applied
+# to the loaded points, so the photograph's pose was solved against the person
+# who walked through the sweep AFTER they were deleted for exactly that. The
+# queued spare-aware solve, taken for the photograph doors -- and only them:
+# the alignment and the level still read the full cloud, by design.
+print("\nthe photograph is matched to the points that are still there")
+_sp_pts = np.asarray(_lc_pts)
+_sp_scan = _mscan("spared", _sp_pts)
+_sp_scan.sample_refl = np.arange(len(_sp_pts), dtype=float)
+_sp_half = _sp_pts[:, 0] > 0.0
+_sp_scan.spare = _sp_half
+_sp_s, _sp_r = align.solve_sample(_sp_scan)
+check("solve_sample hands back only the spared points, with their own "
+      "reflectivity beside them",
+      len(_sp_s) == int(_sp_half.sum()) and _sp_r is not None
+      and np.array_equal(_sp_r,
+                         np.arange(len(_sp_pts), dtype=float)[_sp_half]),
+      (len(_sp_s), None if _sp_r is None else len(_sp_r)))
+_sp_scan.spare = None
+check("...and every point when nothing has been cut",
+      len(align.solve_sample(_sp_scan)[0]) == len(_sp_pts))
+_sp_scan.spare = np.ones(3, dtype=bool)
+check("...and a mask of the wrong length is ignored, never mis-paired",
+      len(align.solve_sample(_sp_scan)[0]) == len(_sp_pts))
+_sp_scan.spare = _sp_half
+del _saw_solve[:], _saw_paint[:], _saw_grade[:]
+_patch_colour()
+try:
+    _sp_got = align.colour_scan(_sp_scan, "fake.jpg")
+finally:
+    _restore_colour()
+# ⛔ Shape-guarded: with the narrowing broken the solver sees 88,462 points
+# against the 49,998 expected, and `np.allclose` on unlike shapes RAISES --
+# which aborted the whole suite under the reversion audit instead of naming
+# this check. A check reports; it never takes the run down with it.
+check("THE SOLVER SEES ONLY THE POINTS THE OPERATOR LEFT",
+      _sp_got.get("ok") and _saw_solve
+      and len(_saw_solve[0]) == int(_sp_half.sum())
+      and np.allclose(_saw_solve[0], _sp_pts[_sp_half], atol=1e-5),
+      (_sp_got.get("reason"),
+       None if not _saw_solve else len(_saw_solve[0])))
+check("...the grade judges the same points",
+      _saw_grade and len(_saw_grade[0]) == int(_sp_half.sum()))
+check("...WHILE THE PAINT STILL COVERS EVERY POINT -- a deleted point is "
+      "hidden, not gone, and Ctrl-Z brings it back coloured",
+      _saw_paint and len(_saw_paint[0]) == len(_sp_pts)
+      and _sp_scan.rgb is not None and len(_sp_scan.rgb) == len(_sp_pts))
+_sp_scan.spare = np.zeros(len(_sp_pts), dtype=bool)
+_patch_colour()
+try:
+    _sp_none = align.colour_scan(_sp_scan, "fake.jpg")
+finally:
+    _restore_colour()
+check("a cloud cut away entirely is refused by name, not solved on nothing",
+      not _sp_none.get("ok") and "cut away" in (_sp_none.get("reason") or ""),
+      _sp_none.get("reason"))
+# The same narrowing at the other two doors that hand the solver the sample.
+_rs.spare = np.asarray(_lc_pts)[:, 1] > 0.0
+del _saw_refine[:], _saw_refkw[:], _saw_deep[:]
+_patch_colour()
+colour.refine_pose = (lambda pts, lum, **kw:
+                      (_saw_refine.append(np.asarray(pts)),
+                       _saw_refkw.append(dict(kw)),
+                       dict(_pose_fake))[2])
+colour.deep_align = (lambda pts, lum, **kw:
+                     (_saw_deep.append(np.asarray(pts)),
+                      dict(_pose_fake))[1])
+try:
+    _rsrv.refine(0, rung=1)
+    _rsrv.deep(0, seconds=0.1)
+finally:
+    colour.refine_pose, colour.deep_align = _real_rd
+    _restore_colour()
+check("Auto-align refines on the spared points too, reflectivity paired",
+      _saw_refine and len(_saw_refine[0]) == int(_rs.spare.sum())
+      and _saw_refkw
+      and np.array_equal(_saw_refkw[0].get("refl"),
+                         _rs.sample_refl[_rs.spare]),
+      None if not _saw_refine else len(_saw_refine[0]))
+check("...and so does Deep align",
+      _saw_deep and len(_saw_deep[0]) == int(_rs.spare.sum()),
+      None if not _saw_deep else len(_saw_deep[0]))
+_rs.spare = None
+
+# The mask comes from the page's own cut list, tested as the exporter tests it.
+_te_srv = align.AlignServer.__new__(align.AlignServer)
+_te_srv._progress = {}
+_te_srv._rebuild = lambda: []
+_te_rng = np.random.RandomState(9)
+_te_pts = _te_rng.uniform(-1.0, 1.0, (4000, 3))
+_te_a = _mscan("te_a", _te_pts)
+_te_b = _mscan("te_b", _te_pts,
+               setup=registration.Setup(10.0, 0.0, 0.0, 0.0))
+_te_srv.scans = [_te_a, _te_b]
+# A box over the +x half of cloud b, where b stands (x 10..12), named to b.
+_te_box = {"lo": [10.0, -2.0, -2.0], "hi": [12.0, 2.0, 2.0],
+           "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "scan": 1}
+_te_r = _te_srv.take_edit({"keep": [], "drop": [_te_box], "lassos": []})
+check("take_edit masks the cloud a cut names, and only that one",
+      _te_r.get("masked") == 1 and _te_a.spare is None
+      and _te_b.spare is not None
+      and np.array_equal(_te_b.spare, ~(_te_pts[:, 0] > 0.0)),
+      (_te_r, None if _te_b.spare is None else int((~_te_b.spare).sum())))
+# The cut remembers where b stood. Move b afterwards: the same POINTS stay cut.
+_te_framed = dict(_te_box, frames={"1": [1, 0, 0, 10.0, 0, 1, 0, 0.0,
+                                         0, 0, 1, 0.0]})
+_te_b.setup = registration.Setup(0.0, 0.0, 0.0, 0.0)
+_te_srv.take_edit({"keep": [], "drop": [_te_framed], "lassos": []})
+check("...through the cut's remembered frame, so a cloud moved after the cut "
+      "keeps the same points cut -- exactly as the export would",
+      _te_b.spare is not None
+      and np.array_equal(_te_b.spare, ~(_te_pts[:, 0] > 0.0)),
+      None if _te_b.spare is None else int((~_te_b.spare).sum()))
+_te_srv.take_edit({"keep": [], "drop": [_te_box], "lassos": []})
+check("...and a frameless cut is tested where the cloud stands NOW, so the "
+      "moved cloud is untouched by a box it no longer sits in",
+      _te_b.spare is None)
+_te_kept = {"lo": [-1.0, -2.0, -2.0], "hi": [0.0, 2.0, 2.0],
+            "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "scan": 0}
+_te_srv.take_edit({"keep": [_te_kept], "drop": [], "lassos": []})
+check("a KEEP cut means to the solver what it means to the file: only what "
+      "is inside survives",
+      _te_a.spare is not None
+      and np.array_equal(_te_a.spare, _te_pts[:, 0] <= 0.0)
+      and _te_b.spare is None,
+      None if _te_a.spare is None else int(_te_a.spare.sum()))
+_te_srv.take_edit(None)
+check("NOTHING IS KEPT ACROSS PRESSES: a press with no cuts clears every mask",
+      _te_a.spare is None and _te_b.spare is None)
+_te_srv.take_edit({"keep": [_te_kept], "drop": [], "lassos": []})
+_te_srv.take_edit({"keep": [], "drop": [{"lo": 1}], "lassos": []})
+check("an unreadable cut list is logged and treated as no cuts, never as a "
+      "crash in the middle of an attach", _te_a.spare is None)
+# The level, in the exporter's order: a frameless cut drawn on the LEVELLED
+# room is tested against the levelled points.
+_te_lvl = registration.Level(normal=(0.35, 0.0, 1.0), pivot=(0.0, 0.0, 0.0))
+_te_tall = {"lo": [-2.0, -2.0, 0.5], "hi": [2.0, 2.0, 2.0],
+            "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0, "scan": 0}
+_te_srv.take_edit({"keep": [], "drop": [_te_tall], "lassos": []},
+                  _te_lvl.as_dict())
+_te_want = ~pipeline.Box.parse(_te_tall).inside(_te_lvl.apply(_te_pts))
+_te_flat = ~pipeline.Box.parse(_te_tall).inside(_te_pts)
+check("a frameless cut is tested under the level it was drawn on",
+      _te_a.spare is not None and np.array_equal(_te_a.spare, _te_want)
+      and not np.array_equal(_te_want, _te_flat),
+      None if _te_a.spare is None else int((~_te_a.spare).sum()))
+_te_hook = _ALIGN_SRC.find('srv.take_edit(body.get("edit"), body.get("level"))')
+check("EVERY PHOTOGRAPH ROUTE HEARS THE CUT LIST FIRST, from one line ahead "
+      "of the first of them",
+      0 < _te_hook and all(
+          _te_hook < _ALIGN_SRC.find('if path == "/photo/%s"' % _r) for _r in
+          ("shoot", "refine", "deep", "deepall", "add", "heading", "find",
+           "resolve", "camera", "tilt")), _te_hook)
+_post_js = _js_func("post")
+check("...and the page attaches it in ITS one place, for every photograph "
+      "door, with the level it was drawn under",
+      "editPlan()" in _post_js and "'photo/'" in _post_js
+      and "level:V.level" in _post_js, _post_js)
+check("...which the attach button now goes through, rather than a bare "
+      "fetch of its own",
+      "fetch('photo/add'" not in _PAGE and "post('photo/add'" in _PAGE)
+check("the alignment and the level still read the full cloud -- the "
+      "narrowing is the photograph's alone",
+      "solve_sample(" not in inspect.getsource(align.AlignServer.solve_survey)
+      and "solve_sample(" not in inspect.getsource(
+          align.AlignServer.level_from_floor)
+      and "spare" not in inspect.getsource(align.AlignServer.solve_survey))
 
 # --- the deep press asks the content, and the rig's own stack can win -------
 #

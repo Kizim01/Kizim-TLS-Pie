@@ -6814,6 +6814,86 @@ Ctrl-Z and "Put every point back" free. What follows from it, for the operator:
 solvers honouring the cut list the way the preview and exporter do. Buildable; it is a real
 change to what every fit measures, so it wants the operator's word first, and the honest
 version has to answer what a KEEP-cut means to a solver as well as a delete.
+→ **TAKEN on 2026-09-06 for the PHOTOGRAPH doors only** — see the thirty-eighth pass below.
+The alignment and the level still read the full cloud, by design and by test.
+
+### 2026-09-06, thirty-eighth pass — the photographs move with the shoot, the history folds, and the photo solve reads only what is left
+
+Three operator asks in one sitting. Nothing on disk was touched (the T7 was not mounted; the
+ministry job was not read this pass).
+
+**First — *"when I move a shoot from a saved HDD to another the images lose match in the
+project; I would like an automatic way for the images to match the scan based on the current
+project save location file structure."*** Read from the code, and it was exactly that:
+`project_paths` has given every CAPTURE a relative-first ladder since projects existed, but a
+photograph's pose stored **only the absolute path of the old drive** and `open_project` tested
+that string verbatim — so the clouds relocated and the colour on them did not. Worse, **the
+page never read `lost_photos`**: the answer had named every missing photograph on every open
+since poses were saved, and `openProject` said "N scans back where you left them" over a job of
+grey clouds. ⭐ *The diagnostic fired and was not READ* — the trading-bot lesson, in Studio.
+
+Built `photo_paths(pose, entry, project_path, scan_path)`, `project_paths`'s sibling, four rungs
+best-first: (1) `rel`, relative to the project folder, **written by every save from now on**;
+(2) the absolute path as saved; (3) ⭐ **the file structure re-rooted** — where the photograph
+sat relative to the capture's folder AS SAVED, taken from where the capture was actually FOUND
+(this is the rung that rescues every project saved before `rel` existed, i.e. the operator's
+own, because a shoot moves as a tree); (4) the same file name beside the found capture. ⛔
+**NOT a rung: the stem sibling** (`find_photo`'s guess) — a different file is not a relocated
+one, and pairing a cloud with a photograph the operator never attached is the failure that
+paints plausibly. A photograph none of the four finds is still named lost. The found path is
+the one the scan wears from then on, so the next save writes where the photograph IS plus its
+`rel`. The page now says both halves: "N photographs were found again under the new folder" and
+"⚠ N photographs are not where the project left them: … — those scans are grey until attached
+again from This scan's photograph" (warn).
+
+**Second — *"in the Delete points tab, the history of deleted points in a drop-down tab I can
+expand or shrink so it doesn't take up tons of space."*** `showEdits` now renders a
+`<details id="editfold">` closed by default, summary "History · N entries" (ENTRIES, never
+"cuts" — the 20th-pass rule: three entries can be one cut through the job and two through one
+cloud). ⛔ The fold is REMEMBERED (`V.histOpen`, persisted under `tlspie.cuthist.v1`) because
+the list re-renders on every cut, and a fold living in the element alone would snap back on the
+very action it sits under. Run under node with a stub `$` that keeps its elements between calls
+— a stub that forgot them would have passed a fold that reset itself.
+
+**Third — *"when adding a new photo it colourises the deleted points; only colourise visible
+points, so I can edit the cloud and the image only matches points that are visible."*** The
+third-sitting finding from the 37th pass, arriving as a report: the photograph's pose was
+solved against the full sample, so the person who walked through the sweep went on voting on
+where the picture sat after being deleted for exactly that. (`afterColour` already re-applies
+the cuts on screen, so the deleted points do not come BACK; the fault was the match.) The
+queued spare-aware solve is now TAKEN, **for the photograph doors only**:
+
+- `solve_sample(scan)` — the one place a solver gets the decimated points and their
+  reflectivity, narrowed by `scan.spare` (a mask over the sample). Used by `colour_scan`,
+  `find_photo_for`, `refine`, `deep` — the four consumers of `scan.sample` on the photo path.
+  ⭐ **The PAINT still covers every point**: a deleted point keeps a colour (hidden, not gone;
+  Ctrl-Z brings it back coloured); it just has no say in where the photograph goes.
+- `AlignServer.take_edit(edit, level)` builds the mask from the page's own cut list through
+  `pipeline.Edit.for_scan(i).mask(xyz, local)` — **tested where the exporter tests it**: the
+  scan's own coordinates through the cut's remembered frame (every cut made since frames
+  existed), and lean → setup → level, `convert`'s own order, for a frameless one. So **a KEEP
+  cut means to the solver precisely what it means to the file** — the question the queue
+  entry said had to be answered, answered by construction. ⛔ **Nothing is kept across
+  presses**: a press with no cuts clears every mask, so a cut just undone stops counting the
+  moment it is undone. An unreadable list is logged and treated as no cuts.
+- Wiring is one line each side: `do_POST` calls `take_edit` ahead of every `/photo/` route
+  (the picker excepted — it solves nothing); the page's `post()` attaches `{edit: editPlan(),
+  level: V.level}` to every `photo/` post, and `addPhoto`'s bare fetch now goes through it.
+- A cloud cut away entirely is refused by name (`NOTHING_SPARED`), never solved on nothing.
+- ⛔ **`solve_survey`, `level_from_floor`, `level_from_walls` still read the full cloud** —
+  pinned by a check that `solve_sample` and `spare` appear in none of them. The 37th-pass
+  guarantee (aligning after cutting measures as aligning before) stands for the alignment.
+
+Suites **1679 → 1722** (+43: 17 photo-move, 9 history-fold, 17 spare-aware). Reversion audit,
+all three broken at once in one run (old verbatim `os.path.exists` check reinstated in
+`open_project`; the rows-only `showEdits` reinstated; `spare = None` in `solve_sample`): **22
+named checks fired and nothing else — 8 photo-move, 8 history-fold, 6 spare-aware (1700/22)**;
+the ladder unit checks and `take_edit` checks correctly stayed green under their neighbours'
+breaks. ⛔ **The first broken run ABORTED the suite**: my "solver sees only the points left"
+check did `np.allclose` on unlike shapes (88,462 vs 49,998), which RAISES rather than
+reporting — the standing `.group()`/`.index()` trap in a numpy costume; guarded with a length
+check first and the run repeated. Restored byte-for-byte (MD5
+`7A59D4235357929B5B28D15903E47DA8`), final green **1722**.
 
 ### ▶ NEXT SESSION STARTS HERE
 
