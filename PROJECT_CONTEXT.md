@@ -6787,6 +6787,34 @@ obey-and-abandon behavior reinserted wholesale fired exactly **7 named checks** 
 caught the old "Thrown away." message returning verbatim — restored byte-for-byte
 (MD5-verified). Exes **13:55–13:56, selftest rc=0** — both sittings ship in them.
 
+**Third sitting — a question, answered from the code and verified before recording.** Operator:
+*"does align entire shoot / close loop use the trimmed pointclouds, or does it look at the full
+cloud?"* ⭐⭐ **THE FULL CLOUD, EVERY TIME.** Verified on four points rather than asserted from
+memory: `Scan.sample` is assigned **exactly once**, in the constructor (`align.py` ~209 — no
+edit, clean or undo path ever rewrites it); `solve_survey` builds its capped views from that
+sample (~1796); `body.get("edits")` appears **once in the whole file** and it is in `save`, not
+in any solve route (`/solve`, `/solve/multi`, `/solve/survey` read setups and leans only); and
+`Scan.clean` is a stored **spec**, `None` until set, never applied to the loaded points. Both
+`level_from_floor` and `level_from_walls` read the same raw sample.
+
+This is a consequence of the program's own central rule — **a cut is an OPERATION, not removed
+data** (20th/29th passes) — replayed for the preview and again at export, which is what makes
+Ctrl-Z and "Put every point back" free. What follows from it, for the operator:
+
+- ⚠ **Deleting junk does NOT clean the alignment's evidence.** A person who walked through, a
+  reflection, scaffolding present in one sweep and not the next — the solvers still measure
+  against all of it after it has been cut away. GICP is robust and paired captures usually
+  carry the same junk, so this rarely decides a fit; a LARGE moving object is the case where
+  it could. Same for **Remove strays**: a rule, not a filter on what the solver reads.
+- ⭐ The flip side is a real guarantee: **aligning after cutting measures exactly the same as
+  aligning before cutting**, so an edit can never starve a fit and a badly-drawn cut can never
+  corrupt one.
+
+⛔ **QUEUED, OFFERED AND NOT TAKEN (no work started)**: a spare-aware solve sample — the
+solvers honouring the cut list the way the preview and exporter do. Buildable; it is a real
+change to what every fit measures, so it wants the operator's word first, and the honest
+version has to answer what a KEEP-cut means to a solver as well as a delete.
+
 ### ▶ NEXT SESSION STARTS HERE
 
 **⭐⭐ THE OUTLINE TOOL IS THREADED (30th pass, 1.8×, DXF byte-identical) AND NOW THE SURVEY
