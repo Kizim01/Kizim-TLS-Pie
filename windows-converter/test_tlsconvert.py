@@ -2139,9 +2139,14 @@ try:
     # which cloud the point under it came off; routed as a drag it would eat
     # the orbit, and left out of both tables the press would fall through to
     # the camera and the tool would be a lit button that does nothing.
+    # ⭐ `pin` joined on 2026-09-06 and it PICKS TWICE: a feature's colour,
+    # then the place in the room that colour belongs on. Two clicks, each one
+    # taken on release like every other pick -- routed as a drag it would eat
+    # the orbit, and in neither table it would silently become a lasso, which
+    # is the failure this pair of checks exists for.
     check("and the point-picking tools are the ones that pick",
           _picks == {"pair", "level", "plumb", "north", "setorg", "poly",
-                     "whose"}
+                     "whose", "pin"}
           and _draws == {"lasso", "rect", "circle"},
           "picks=%s draws=%s" % (sorted(_picks), sorted(_draws)))
     # ⛔ The nearest point ON SCREEN is not the point you clicked: screen
@@ -2757,7 +2762,8 @@ else:
 const BLOCK = 1 << 19;
 const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
       _wz=new Float64Array(BLOCK);
-const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
+const V={scans:[],edits:[],pairs:[],pins:[],pinWho:-1,pinHalf:null,
+         pinErr:null,only:-1,editWho:-1,half:null,perr:null,
          hidden:{},
          boxSet:false,box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
          ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:0,alive:0,total:0};
@@ -3306,9 +3312,13 @@ check("...and narrowing the cut list touches the scopes and nothing else",
 # server only hears a placement when asked to act on it -- goes straight back
 # on each scan as it re-arrives. Without this line the restore WOULD move
 # clouds, back to the alignment as of the last Auto-align.
+# ⛔ AND IT GOES BACK ON THE CLOUD IT CAME OFF, not on the position it used to
+# occupy. The positional version of this line shuffled a whole job's alignment
+# on 2026-09-06 -- see "a placement follows its cloud".
 check("...and the rebuild the clean round-trip triggers puts the page's own "
       "placement back on every cloud",
-      "if(setups[i]) s.setup=setups[i];" in _js_func("rebuildFrom"))
+      "const was=held.get(scanKey(meta[i]));" in _js_func("rebuildNow")
+      and "if(was) s.setup=was;" in _js_func("rebuildNow"))
 check("a cleaning rule is put back WHOLE, threshold and all -- the one home "
       "both undos use",
       "min_refl:(spec.min_refl==null ? null : spec.min_refl)"
@@ -3623,6 +3633,241 @@ check("and the lean nudges use the same typed step",
 # click would let one try become the default for every later scan.
 check("trying one of the other fits does not save a baseline",
       "setHeading(index, yaw, false)" in _ALIGN_SRC)
+
+
+# --- the pose the operator names, from pins ---------------------------------
+#
+# ⭐⭐ Asked for on 2026-09-06: "i would like a tool to finetune image
+# aligment, i pick a point in the cloud and a point where the image should
+# line up to, possibly several so the image is aligned more correctly". Two
+# picks in the CLOUD, not a pixel in a viewer: the colour on a point IS the
+# photograph resampled, so clicking the colour names its pixel exactly with
+# the depth already known, and no image is ever loaded to fit a pin.
+print("\nthe pose the operator names, from pins")
+
+# ⛔ FIRST, THE INVERSE OF `camera_matrix`, BECAUSE THE COMPOSITION ORDER IS
+# PART OF THE STORED FORMAT. Read out with any other convention the triple
+# composes into a DIFFERENT rotation and every later measurement is taken
+# against the wrong reading, with no residual able to complain.
+for _y, _p, _r in ((0.0, 0.0, 0.0), (92.314, 2.44, 0.61),
+                   (-170.0, -12.0, 7.5), (45.0, 0.0, -3.0), (179.9, 14.0, -14.0)):
+    _m = colour.camera_matrix(_y, _p, _r)
+    _got = colour.angles_from_matrix(_m)
+    check("a camera matrix reads back as the angles that built it (%g/%g/%g)"
+          % (_y, _p, _r),
+          _got is not None
+          and float(np.abs(colour.camera_matrix(*_got) - _m).max()) < 1e-12,
+          _got)
+check("...and a bank at a right angle is refused rather than guessed at",
+      colour.angles_from_matrix(colour.camera_matrix(20.0, 5.0, 90.0)) is None)
+
+# ⭐ THE FIT ITSELF, AGAINST A POSE CHOSEN IN ADVANCE. Each pin is built the
+# way the program derives one: under the pose held now, the pixel that belongs
+# on `spot` is lying along `Md^T . M0 . dir(spot)`, so a point on that ray is
+# what the operator would be clicking as the colour.
+_pin_cam = (0.01, -0.02, 0.06)
+_pin_true = (104.0, 2.4, -0.9)
+_pin_now = (101.2, 0.0, 0.0)
+_Mt = colour.camera_matrix(*_pin_true)
+_Mn = colour.camera_matrix(*_pin_now)
+_pin_spot = np.array([[4.0, 3.0, 0.4], [-5.0, 2.0, -0.8],
+                      [1.0, -6.0, 1.9], [-2.0, -3.0, 0.2]])
+_pin_d, _pin_r = colour.directions(_pin_spot, _pin_cam)
+_pin_seen = (np.asarray(_pin_cam)
+             + (_pin_d @ (_Mn.T @ _Mt).T) * _pin_r[:, None])
+_fit = colour.pose_from_pins(_pin_seen, _pin_spot, camera=_pin_cam,
+                             yaw_deg=_pin_now[0], pitch_deg=_pin_now[1],
+                             roll_deg=_pin_now[2])
+check("PINS RECOVER THE POSE THAT MADE THEM, to a hundredth of a degree",
+      max(abs(_fit.yaw_deg - _pin_true[0]), abs(_fit.pitch_deg - _pin_true[1]),
+          abs(_fit.roll_deg - _pin_true[2])) < 0.01,
+      (_fit.yaw_deg, _fit.pitch_deg, _fit.roll_deg))
+check("...and say how far every pin still is, in degrees and in metres",
+      _fit.count == 4 and _fit.rms_deg < 0.01 and _fit.ok
+      and len(_fit.errors_m) == 4
+      and abs(_fit.errors_m[0]
+               - math.radians(_fit.errors_deg[0]) * _pin_r[0]) < 1e-9,
+      _fit.describe())
+check("...and how far the pose had to turn to get there",
+      abs(_fit.moved_deg - 3.779) < 0.01, _fit.moved_deg)
+
+# ⭐⭐ ONE PIN IS A LEGAL ANSWER AND IT IS THE MINIMAL TURN. A bare SVD on a
+# rank-one matrix picks from the free circle arbitrarily, which would land the
+# feature perfectly and bank the horizon over by whatever the algebra felt
+# like. PIN_HOLD breaks that tie toward the pose already on screen.
+_one = colour.pose_from_pins(_pin_seen[:1], _pin_spot[:1], camera=_pin_cam,
+                             yaw_deg=_pin_now[0], pitch_deg=_pin_now[1],
+                             roll_deg=_pin_now[2])
+_M1 = colour.camera_matrix(_one.yaw_deg, _one.pitch_deg, _one.roll_deg)
+_turned = math.degrees(math.acos(
+    max(-1.0, min(1.0, (float(np.trace(_M1 @ _Mn.T)) - 1.0) / 2.0))))
+_sd, _ = colour.directions(_pin_seen[:1], _pin_cam)
+_asked = math.degrees(math.acos(float(np.clip(
+    np.dot((_pin_d[:1] @ _Mn.T)[0], (_sd @ _Mn.T)[0]), -1.0, 1.0))))
+check("ONE PIN TURNS THE POSE BY EXACTLY WHAT THAT PIN ASKS AND NO MORE",
+      abs(_turned - _asked) < 1e-5 and _one.errors_deg[0] < 1e-4,
+      (_turned, _asked))
+check("...and says so, rather than reporting a fit that checked anything",
+      "smallest turn" in _one.describe()
+      and "twist about that line" in _one.describe(), _one.describe())
+
+# ⛔ THE HOLD MUST ONLY BREAK TIES. Pulling toward the pose you STARTED at
+# biases every direction, and the pull grows with how far the pins are asking
+# the pose to move -- measured at 0.502 degrees over this sweep with one pass,
+# the whole of PIN_TOLERANCE_DEG spent on the regulariser. Re-centring it on
+# its own answer is what makes it vanish where the pins actually speak.
+_worst_bias = 0.0
+for _off in (0.5, 3.0, 20.0, 90.0, 179.0):
+    for _sep in (30.0, 90.0, 170.0):
+        _now = (_pin_true[0] - _off, 0.0, 0.0)
+        _Mn2 = colour.camera_matrix(*_now)
+        _a = math.radians(_sep)
+        _sp = np.array([[4.0, 3.0, 0.4],
+                        [4 * math.cos(_a) - 3 * math.sin(_a),
+                         4 * math.sin(_a) + 3 * math.cos(_a), -0.6]])
+        _dd, _rr = colour.directions(_sp, (0.0, 0.0, 0.0))
+        _sn = (_dd @ (_Mn2.T @ _Mt).T) * _rr[:, None]
+        _f2 = colour.pose_from_pins(_sn, _sp, camera=(0.0, 0.0, 0.0),
+                                    yaw_deg=_now[0], pitch_deg=_now[1],
+                                    roll_deg=_now[2])
+        _worst_bias = max(_worst_bias,
+                          abs(_f2.yaw_deg - _pin_true[0]),
+                          abs(_f2.pitch_deg - _pin_true[1]),
+                          abs(_f2.roll_deg - _pin_true[2]))
+check("THE HOLD BREAKS TIES WITHOUT BIASING WHAT THE PINS DO SAY "
+      "(0.006 deg, against 0.502 with a single pass)",
+      _worst_bias < 0.02, _worst_bias)
+
+# ⛔ AND IT IS SAID OUT LOUD WHEN THE PINS COULD NOT PIN THE TWIST.
+_bunched = colour.pose_from_pins(_pin_seen[:2] * 0 + _pin_seen[0],
+                                 _pin_spot[:2] * 0 + _pin_spot[0],
+                                 camera=_pin_cam, yaw_deg=_pin_now[0])
+check("pins on top of each other say the twist is still the one you had",
+      "other side of the room" in _bunched.describe(), _bunched.describe())
+
+for _bad, _why in (
+        ((_pin_seen[:2], _pin_spot[:3]), "both halves"),
+        ((np.zeros((0, 3)), np.zeros((0, 3))), "belongs on"),
+        ((np.array([list(_pin_cam)]), _pin_spot[:1]), "no direction")):
+    try:
+        colour.pose_from_pins(_bad[0], _bad[1], camera=_pin_cam)
+        check("a pin set that cannot mean anything is refused (%s)" % _why,
+              False, "it returned a fit")
+    except ValueError as _exc:
+        check("a pin set that cannot mean anything is refused (%s)" % _why,
+              _why in str(_exc), str(_exc))
+
+# --- and the door in front of it --------------------------------------------
+_pdir = tempfile.mkdtemp(prefix="tlspin")
+_pphoto = os.path.join(_pdir, "pano.jpg")
+_Image.fromarray(_himg).save(_pphoto)
+_psrv2 = align.AlignServer([], out_path=None)
+_pscan = align.Scan(os.path.join(_pdir, "p.pcap"), _sphere, None, _sphere)
+_psrv2.scans = [_pscan]
+check("pinning a scan with no photograph is refused",
+      _psrv2.align_photo_pins(0, [])["ok"] is False)
+align.colour_scan(_pscan, _pphoto, yaw=30.0, pitch=1.0, roll=-0.5)
+_p0 = dict(_pscan.colour_info)
+check("pinning with no pins is refused, and says what a pin is",
+      "belongs" in (_psrv2.align_photo_pins(0, [])["error"] or ""))
+check("a pin missing a half is refused",
+      _psrv2.align_photo_pins(0, [{"seen": [1, 2, 3]}])["ok"] is False)
+
+# The real thing: knock the pose out, pin it back, and check the PAINT.
+_want = (30.0, 1.0, -0.5)
+_pscan.colour_info = dict(_p0)
+_rgb_want = _pscan.rgb.copy()
+align.colour_scan(_pscan, _pphoto, yaw=33.1, pitch=-0.8, roll=1.3)
+_Mw, _Mb = colour.camera_matrix(*_want), colour.camera_matrix(33.1, -0.8, 1.3)
+_ps = _sphere[np.linspace(0, len(_sphere) - 1, 5).astype(int)]
+_pd, _pr = colour.directions(_ps, (0.0, 0.0, 0.0))
+_pseen = (_pd @ (_Mb.T @ _Mw).T) * _pr[:, None]
+_pout = _psrv2.align_photo_pins(
+    0, [{"seen": list(map(float, a)), "spot": list(map(float, b))}
+        for a, b in zip(_pseen, _ps)])
+check("PINS PUT A KNOCKED-OUT PHOTOGRAPH BACK WHERE IT WAS",
+      _pout["ok"] is True
+      and max(abs(_pout["yaw_deg"] - _want[0]),
+              abs(_pout["pitch_deg"] - _want[1]),
+              abs(_pout["roll_deg"] - _want[2])) < 0.01,
+      _pout.get("error") or (_pout.get("yaw_deg"), _pout.get("pitch_deg"),
+                             _pout.get("roll_deg")))
+check("...and the colour on every point lands back where it was",
+      bool((_pscan.rgb == _rgb_want).all()),
+      float((_pscan.rgb == _rgb_want).all(axis=1).mean()))
+check("...reporting a residual per pin, the worst one, and the fit in words",
+      len(_pout["errors_deg"]) == 5 and len(_pout["errors_m"]) == 5
+      and _pout["trustworthy"] is True and _pout["pins"] == 5
+      and "heading" in _pout["text"], _pout.get("text"))
+# ⛔ A PIN MOVES A POSE, IT DOES NOT RE-JUDGE THE PAIRING -- so the grade the
+# global sweep wrote stands, exactly as it does through `set_tilt`.
+check("...without promoting the photograph's grade, which a solve earned",
+      _pout["info"]["grade"] == _p0["grade"]
+      and bool(_pout["info"]["given"]) == bool(_p0.get("given")),
+      (_pout["info"]["grade"], _p0["grade"]))
+check("...and drops the refinement back down the ladder, like every hand move",
+      _pout["info"]["rung"] <= 1, _pout["info"]["rung"])
+
+# ⛔ REFUSED, NOT CLAMPED -- THE OPPOSITE OF `set_tilt`, DELIBERATELY. A drag
+# that runs off a ring should stop at the ring; a FIT that lands out there is
+# evidence that a pin is on the wrong feature, and clamping it would paint a
+# pose nobody's pins asked for and report it as done.
+_Mo = colour.camera_matrix(30.0, 40.0, 0.0)
+_pover = (_pd @ (_Mb.T @ _Mo).T) * _pr[:, None]
+_pbad = _psrv2.align_photo_pins(
+    0, [{"seen": list(map(float, a)), "spot": list(map(float, b))}
+        for a, b in zip(_pover, _ps)])
+check("a fit that wants an impossible lean is REFUSED, not quietly clamped",
+      _pbad["ok"] is False and "wrong feature" in (_pbad["error"] or ""),
+      _pbad.get("error"))
+check("...while a tilt DRAG is still clamped, which is the other rule",
+      _psrv2.set_tilt(0, pitch=80.0)["at_limit"] is True)
+
+# ⛔⛔ AND THE WHOLE SEAT TRAVELS THROUGH `set_tilt`, WHICH IT DID NOT. It
+# passed `camera_z` alone and `_repaint` reads a missing key as 0.0, so every
+# nudge of a ring quietly moved the camera back to the lidar's own centre --
+# in a control whose entire purpose is to make the picture sit still.
+_pscan.colour_info = dict(_p0, camera_x=0.011, camera_y=-0.008,
+                          camera_z=0.065)
+_ptilt = _psrv2.set_tilt(0, pitch=2.0, roll=0.5)
+check("A TILT NUDGE CARRIES THE CAMERA'S SEAT, not just its height",
+      _ptilt["ok"] is True
+      and abs(_ptilt["info"]["camera_x"] - 0.011) < 1e-9
+      and abs(_ptilt["info"]["camera_y"] + 0.008) < 1e-9
+      and abs(_ptilt["info"]["camera_z"] - 0.065) < 1e-9,
+      {k: _ptilt["info"].get(k) for k in ("camera_x", "camera_y", "camera_z")})
+
+check("the pin door is on the route table",
+      '"/photo/pins"' in _ALIGN_SRC
+      and "srv.align_photo_pins(" in _ALIGN_SRC)
+# ⛔ AND BEHIND THE ONE LINE THAT HEARS THE CUTS, like every other photo door.
+check("...after the line that takes the cut list, not before it",
+      _ALIGN_SRC.index('path.startswith("/photo/")')
+      < _ALIGN_SRC.index('if path == "/photo/pins"'))
+
+# --- and the two clicks that feed it ----------------------------------------
+check("the page has a pin tool, in the photograph tray",
+      "['pin','Pin the picture']" in _page and "pin:'photo'" in _page
+      and "if(V.tool==='pin') return pinPick(hit);" in _page)
+check("...armed from the canvas as well as the button",
+      "setTool(V.tool==='pin'?'':'pin')" in _page
+      and "k==='i'||k==='I'" in _page)
+# ⛔ THE ORDER IS THE ONLY GUARD THERE IS. Swapped halves fit perfectly and
+# turn the picture the wrong way by twice the error, and no residual can
+# notice -- so every message says the colour first, then where it belongs.
+check("...and every message names the colour first, then the place",
+      "click the place in the room that colour belongs on" in _page
+      and "click a feature’s COLOUR" in _page)
+check("a pin off another cloud is refused, because a photograph paints "
+      "only its own",
+      "these pins belong to " in _page and "both halves of a pin" in _page)
+check("the pins ride to the server through `post`, so the cut list goes too",
+      "post('photo/pins'" in _page)
+check("a pin is not a saved change, so picking one does not dirty the project",
+      "NO `dirty()` HERE" in _page)
+check("and the pins are session state, cleared with the rest on open",
+      "V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1;" in _page
+      and "if(V.pinWho===gone){ V.pins=[]" in _page)
 
 
 # --- a second, independent opinion on the heading --------------------------
@@ -7007,7 +7252,8 @@ if not _node:
 else:
     _pick = """
 %s
-const V={scans:[],edits:[],pairs:[],only:-1,editWho:-1,half:null,perr:null,
+const V={scans:[],edits:[],pairs:[],pins:[],pinWho:-1,pinHalf:null,
+         pinErr:null,only:-1,editWho:-1,half:null,perr:null,
          hidden:{},boxSet:false,
          box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0},
          ext:{lo:[0,0,0],hi:[1,1,1]},reach:0,active:1,picked:0,chose:false};
@@ -8075,6 +8321,107 @@ console.log(JSON.stringify({empty,folded,opened,remembered,one,store}));
           _hj.get("one"))
     check("and no cuts is no fold at all", _hj.get("empty") == "",
           _hj.get("empty"))
+
+
+# --- a placement follows its cloud, not its position -------------------------
+# ⛔⛔⛔ THE 2026-09-06 SHUFFLE. Reported as "something broke point cloud
+# alignment of this entire project, i was using the move image and then the
+# lidars got mismatched". Found on disk: all 18 placements in the saved
+# project were VERBATIM values from the previous save, each on a DIFFERENT
+# scan -- scan 1 held scan 16's placement, scan 2 held scan 1's, scan 3 held
+# scan 17's. Not one new number, so nothing had been solved; the placements
+# had been dealt out to the wrong clouds, and the interleaved pattern is the
+# signature of two loops running at once.
+#
+# `rebuildFrom` was that loop: it emptied `V.scans` and pushed into it ACROSS
+# AWAITS while mapping placements ON TO POSITION, and no photograph control
+# refuses a second press while the first is in flight.
+#
+# ⛔ RUN, NOT READ, AND WITH THE TWO REBUILDS ACTUALLY OVERLAPPING. A probe
+# that called them one after another would pass against the broken version --
+# the whole fault is what happens when they do not.
+print("\na placement follows its cloud, not its position in the list")
+check("the page keys placements on the cloud itself",
+      "function scanKey(" in _page and "held.get(scanKey(" in _page)
+check("...and no longer hand-maps them positionally after a removal",
+      "V.scans.forEach((s,i)=>{ if(kept[i]) s.setup=kept[i]; });" not in _page)
+check("opening a project waits for a rebuild still in flight",
+      "await REBUILDING;" in _page)
+if _node:
+    _rp = os.path.join(tempfile.mkdtemp(prefix="tlsrace"), "race.js")
+    with io.open(_rp, "w", encoding="utf-8") as _fh:
+        _fh.write(_js_func("scanKey") + "\n"
+                  + _js_func("rebuildFrom") + "\nasync "
+                  + _js_func("rebuildNow") + r"""
+let REBUILDING = Promise.resolve();
+function dropChunks(){}
+/* The one thing that matters: it resolves out of order, the way a fetch does */
+async function loadScan(m){
+  await new Promise(r=>setTimeout(r, m.delay));
+  return {index:m.index, name:m.name, folder:m.folder, setup:{x_m:-1}};
+}
+const NAMES=['a','b','c','d','e','f'];
+function meta(names, delay){
+  return names.map((n,i)=>({index:i, name:n, folder:'/job/'+n, delay:delay}));
+}
+function held(names, xs){
+  return names.map((n,i)=>({index:i, name:n, folder:'/job/'+n,
+                            setup:{x_m:xs[i]}}));
+}
+const V={scans:[]};
+(async ()=>{
+  /* 1. TWO REBUILDS AT ONCE -- the incident. The second resolves faster. */
+  V.scans=held(NAMES,[10,11,12,13,14,15]);
+  const slow=rebuildFrom(meta(NAMES,12)), fast=rebuildFrom(meta(NAMES,1));
+  await Promise.all([slow,fast]);
+  const raced={order:V.scans.map(s=>s.name),
+               x:V.scans.map(s=>s.setup.x_m)};
+
+  /* 2. A REMOVAL FROM THE MIDDLE, which is where position lies loudest. */
+  V.scans=held(NAMES,[10,11,12,13,14,15]);
+  const short=['a','b','d','e','f'];
+  await rebuildFrom(meta(short,1));
+  const removed={order:V.scans.map(s=>s.name),
+                 x:V.scans.map(s=>s.setup.x_m)};
+  /* what a positional map would have handed out for that same list */
+  const positional=short.map((n,i)=>[10,11,12,13,14,15][i]);
+
+  /* 3. AND A LIST THE SERVER HANDS BACK IN ANOTHER ORDER. */
+  V.scans=held(NAMES,[10,11,12,13,14,15]);
+  await rebuildFrom(meta(['f','a','e','b','d','c'],1));
+  const reordered={order:V.scans.map(s=>s.name),
+                   x:V.scans.map(s=>s.setup.x_m)};
+  console.log(JSON.stringify({raced,removed,positional,reordered}));
+})();
+""")
+    _rr = subprocess.run([_node, _rp], capture_output=True, text=True)
+    check("the rebuild race runs", _rr.returncode == 0, (_rr.stderr or "")[:400])
+    _rj = (json.loads(_rr.stdout.strip().splitlines()[-1])
+           if _rr.returncode == 0 else {})
+    _raced = _rj.get("raced") or {}
+    check("TWO REBUILDS AT ONCE LEAVE EVERY CLOUD ITS OWN PLACEMENT",
+          _raced.get("x") == [10, 11, 12, 13, 14, 15], _raced.get("x"))
+    check("...and leave the list in the server's order, so V.scans[0] is "
+          "still the reference every pair pick assumes",
+          _raced.get("order") == ["a", "b", "c", "d", "e", "f"],
+          _raced.get("order"))
+    _rm = _rj.get("removed") or {}
+    check("a cloud taken out of the MIDDLE does not shift the others' "
+          "placements onto their neighbours",
+          _rm.get("x") == [10, 11, 13, 14, 15], _rm.get("x"))
+    # ⛔ The counterfactual, so the check above is not merely true by
+    # construction: mapping that same list by POSITION really would have
+    # handed three of the five clouds a stranger's placement.
+    check("...where a positional map would have got three of five wrong",
+          _rj.get("positional") == [10, 11, 12, 13, 14]
+          and sum(1 for a, b in zip(_rm.get("x") or [],
+                                    _rj.get("positional") or [])
+                  if a != b) == 3, _rj.get("positional"))
+    _ro = _rj.get("reordered") or {}
+    check("and a list handed back in another order still pairs each cloud "
+          "with its own placement",
+          _ro.get("order") == ["f", "a", "e", "b", "d", "c"]
+          and _ro.get("x") == [15, 10, 14, 11, 13, 12], _ro.get("x"))
 
 
 # --- the guard that held for every step and not for the journey --------------
@@ -12178,8 +12525,13 @@ check("tearing scans down frees the twin too, and empties the refine queue",
       and "s.coarse ? s.coarse.chunks : []" in _page
       and "fillQ=[]; fillAt=0;" in re.search(
           r"function dropChunks\(list\)\{.*?\n\}", _page, re.S).group(0))
+# ⛔ TWO SITES, NOT THREE, SINCE 2026-09-06: `removeScan` used to tear down and
+# reload the list itself so it could hand-map the placements round
+# `rebuildFrom`'s positional bug. Keyed on the cloud's own path there is
+# nothing to hand-map, so it goes through the one rebuild like everything else
+# -- and one fewer place that empties `V.scans` across an await.
 check("...and every teardown site goes through it",
-      _page.count("dropChunks(V.scans);") == 3
+      _page.count("dropChunks(V.scans);") == 2
       and _page.count("gl.deleteBuffer(c.pos)") == 1)
 
 # ---------------------------------------------------------------------------

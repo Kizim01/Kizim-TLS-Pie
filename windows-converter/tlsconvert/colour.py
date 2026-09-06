@@ -299,6 +299,38 @@ def camera_matrix(yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
     return rx @ ry @ rz
 
 
+def angles_from_matrix(m):
+    """
+    A camera matrix back to (yaw, pitch, roll) -- the exact inverse of
+    `camera_matrix`, and it lives against it for the reason that one gives.
+
+    ⛔⛔ THE COMPOSITION ORDER IS PART OF THE STORED FORMAT, SO THE WAY BACK
+    HAS TO BE WRITTEN AGAINST THE WAY THERE. Three angles do not name an
+    orientation without an order; read out with any other convention this
+    returns a triple that composes into a DIFFERENT rotation -- and that
+    triple would then be stored, exported, repainted and refined with no
+    residual anywhere able to complain, because every one of them would be
+    measured against the same wrong reading. The pair is round-tripped by
+    test, which is the only thing that keeps them from drifting apart.
+
+    Returns (yaw_deg, pitch_deg, roll_deg), or None when the bank stands at a
+    right angle and the three stop naming one orientation -- gimbal lock, at
+    which point the heading and the tip are the same axis. A camera on a
+    tripod cannot reach it (see MAX_TILT_DEG), so it is refused rather than
+    guessed at.
+    """
+    m = np.asarray(m, dtype=np.float64).reshape(3, 3)
+    # camera_matrix composes rx(pitch) @ ry(-roll) @ rz(-yaw), which puts
+    # sin(-roll) alone in the top-right corner and leaves the rest of the
+    # first row and last column to name the other two.
+    sy = float(np.clip(m[0, 2], -1.0, 1.0))
+    if math.sqrt(max(0.0, 1.0 - sy * sy)) < 1e-9:
+        return None
+    return (-math.degrees(math.atan2(-m[0, 1], m[0, 0])),
+            math.degrees(math.atan2(-m[1, 2], m[2, 2])),
+            -math.degrees(math.asin(sy)))
+
+
 def is_upright(pitch_deg=0.0, roll_deg=0.0):
     """True when the camera needs no tilt, so the cheap path can be taken."""
     return abs(float(pitch_deg or 0.0)) < 1e-12 and \
@@ -1683,6 +1715,266 @@ def refine_pose(xyz, lum, camera=(0.0, 0.0, 0.0), yaw_deg=0.0, pitch_deg=0.0,
                 # evidence about the pair rather than a tidy answer.
                 railed=list(railed),
                 exhausted=bool(spent() - base >= budget))
+
+
+# --- the pose the operator names, from pins ---------------------------------
+#
+# ⭐⭐ EVERY OTHER FIT IN THIS FILE SEARCHES. This one is TOLD. The operator
+# points at a feature in the picture and at the same feature in the room, and
+# the pose that carries one onto the other is a closed-form answer -- Wahba's
+# problem, solved by the SVD below in a few microseconds, with no objective, no
+# threshold, no confidence and nothing to converge. Asked for in exactly those
+# terms on 2026-09-06: "i pick a point in the cloud and a point where the image
+# should line up to, possibly several so the image is aligned more correctly".
+#
+# ⭐ WHY THIS IS NOT A LAST RESORT BUT THE ONLY MEASURE WITH NO BLIND SPOT.
+# Every automatic judge here scores the WHOLE sphere at once and can therefore
+# be beaten by a room that looks much like another room -- that is the entire
+# subject of the confidence notes above. A person naming two points is making a
+# statement no global statistic can make: *this* speaker grille is *that*
+# speaker grille. Where the search argues from resemblance, a pin asserts an
+# identity, and the fit that follows is arithmetic.
+#
+# ⛔ NO PIXELS ARE READ, AND THAT IS THE WHOLE REASON IT NEEDS NO IMAGE VIEWER.
+# The colour on a point IS the photograph, resampled -- a point painted from
+# pixel p is the statement "p lies along this ray". So clicking the colour
+# recovers a pixel exactly, with its depth already known, and the fit runs
+# entirely on DIRECTIONS. The image is never loaded, never searched, and the
+# stitch lift rides through untouched: both sides of every pin are measured in
+# the same frame, so whatever the lift does to one it does to the other.
+
+#: How close a pin has to land for the fit to be called good, IN DEGREES.
+#:
+#: ⛔ ANGLES, NOT METRES, AND THE UNIT IS THE POINT. A pose error is angular:
+#: the same half-degree is 9 mm on a pin picked at one metre and 17 cm on one
+#: picked at twenty. Judged in metres, a fit would be called bad for the crime
+#: of having a distant pin in it, and the operator would be sent to re-pick the
+#: one pin carrying the most information about the heading.
+#:
+#: The number is what a PICK is worth, not what a pose is worth: at the 2 cm
+#: preview spacing a click lands within about a point of the feature, which is
+#: 0.4 degrees at three metres. Under that, the residual is measuring the
+#: operator's hand and the preview density, not the pose.
+#:
+#: ⭐ MEASURED ON THE OPERATOR'S OWN RESTAURANT JOB (TLS_26_08_20_16_03_15,
+#: 2.1 M points at the 2 cm preview, pose knocked 1.9 degrees out, pins snapped
+#: to real points 1.5-8 m off, six trials each): one pin recovered it to 0.54
+#: degrees median, two to 0.70, THREE to 0.25, and eight to 0.23. So three is
+#: the knee and more buys almost nothing -- what is left is the click, not the
+#: fit. With exact rays instead of snapped points the same fit recovers the
+#: pose to three decimal places and repaints all 591,096 points of the coarse
+#: preview IDENTICALLY to the saved pose, which is what says the arithmetic
+#: itself is exact and the rest is the hand.
+PIN_TOLERANCE_DEG = 0.5
+
+#: How far apart two pins must look, in degrees, before the bank between them
+#: is worth believing. Two pins a few degrees apart pin the heading and the tip
+#: and say almost nothing about the twist about the line joining them -- which
+#: is not an error, and is not refused: PIN_HOLD keeps the old bank there. It
+#: is worth SAYING, because the operator can fix it by pinning something on the
+#: other side of the room.
+PIN_SPREAD_DEG = 10.0
+
+#: The weight of "and where the pins say nothing, keep the pose you had".
+#:
+#: ⭐⭐ THIS IS WHAT MAKES ONE PIN A LEGAL ANSWER. One pin fixes two of the
+#: three angles and leaves the twist about that one ray completely free; a bare
+#: SVD on a rank-one matrix picks from that free circle ARBITRARILY, so a
+#: single pin would land the feature perfectly and bank the horizon over by
+#: whatever the linear algebra felt like. Adding a little of the CURRENT pose
+#: to the matrix breaks the tie toward the pose already on screen -- so the
+#: unnamed freedom stays where the operator left it, which is the only
+#: defensible thing to do with it. Measured: the correction one pin makes is
+#: then exactly the minimal turn that pin asks for, to 1e-5 degrees.
+#:
+#: ⛔ AND IT IS THE CURRENT POSE, NOT THE IDENTITY. Biasing toward identity
+#: would mean "when in doubt, face north and sit level", which is a strong
+#: claim about a camera nobody made.
+PIN_HOLD = 1e-3
+
+#: How many times the hold is re-centred on its own answer. See PIN_HOLD.
+#:
+#: ⛔⛔ A TIE-BREAK THAT ONLY BREAKS TIES, AND ONE PASS DID NOT MANAGE IT. A
+#: prior pulling toward the pose you STARTED at biases every direction, not
+#: only the free one, and the pull grows with how far the pins are asking the
+#: pose to move -- so the fit was dragged back toward a pose the operator had
+#: just told it was wrong. MEASURED over starting offsets of 0.5 to 179 degrees
+#: with two pins 30 to 170 degrees apart: worst error 0.502 degrees at one
+#: pass, which is the whole of PIN_TOLERANCE_DEG spent on the regulariser.
+#:
+#: Re-centring the hold on the answer it just produced fixes it, because the
+#: pull is then toward the fit itself and vanishes at the fixed point, while a
+#: direction NO pin constrains has nothing to move it and stays exactly where
+#: it started. Same sweep: 0.057 degrees at two passes, 0.006 at three. Three
+#: costs two extra SVDs of a 3x3 -- microseconds -- so there is no reason to
+#: buy the cheaper answer.
+PIN_HOLD_PASSES = 3
+
+
+class PinFit(object):
+    """A camera pose fitted to named pins, and how far each one is still out."""
+
+    def __init__(self, yaw_deg, pitch_deg, roll_deg, errors_deg, ranges_m,
+                 spread_deg, moved_deg):
+        self.yaw_deg = float(yaw_deg)
+        self.pitch_deg = float(pitch_deg)
+        self.roll_deg = float(roll_deg)
+        self.errors_deg = np.asarray(errors_deg, dtype=np.float64)
+        self.ranges_m = np.asarray(ranges_m, dtype=np.float64)
+        self.spread_deg = float(spread_deg)
+        self.moved_deg = float(moved_deg)
+
+    @property
+    def count(self):
+        return int(self.errors_deg.size)
+
+    @property
+    def errors_m(self):
+        """Each residual as a distance AT ITS OWN PIN'S RANGE.
+
+        The judgement is angular (see PIN_TOLERANCE_DEG) but the operator is
+        looking at a room, so the report carries both: "0.21 degrees" says
+        what the pose is doing and "11 mm at 3.1 m" says what they will see.
+        """
+        return np.radians(self.errors_deg) * self.ranges_m
+
+    @property
+    def rms_deg(self):
+        if not self.errors_deg.size:
+            return float("nan")
+        return float(np.sqrt(np.mean(self.errors_deg ** 2)))
+
+    @property
+    def worst(self):
+        """(which pin, how far out in degrees) -- the one to re-pick, named."""
+        if not self.errors_deg.size:
+            return (-1, float("nan"))
+        i = int(np.argmax(self.errors_deg))
+        return (i, float(self.errors_deg[i]))
+
+    @property
+    def tolerance(self):
+        return PIN_TOLERANCE_DEG
+
+    @property
+    def ok(self):
+        return self.rms_deg == self.rms_deg and self.rms_deg <= self.tolerance
+
+    def describe(self):
+        # ASCII only -- this reaches a cp1252 console, where a decorative
+        # character raises UnicodeEncodeError and has already killed a script.
+        i, d = self.worst
+        text = ("heading %.2f, tip %.2f, bank %.2f (moved %.2f deg) | %d pin%s,"
+                " %.3f deg RMS (%.0f mm at their own ranges)"
+                % (self.yaw_deg, self.pitch_deg, self.roll_deg, self.moved_deg,
+                   self.count, "" if self.count == 1 else "s", self.rms_deg,
+                   1000.0 * float(np.sqrt(np.mean(self.errors_m ** 2)))
+                   if self.count else 0.0))
+        if self.count == 1:
+            # ⚠ One pin and three unknowns. It lands that one feature exactly
+            # -- the residual above is arithmetic, not evidence -- by the
+            # SMALLEST turn that does so, verified: the correction's angle
+            # equals the angle the pin itself asked for, to 1e-5 degrees. So
+            # the twist about that one line is the freedom nothing named, and
+            # PIN_HOLD leaves it alone. Genuinely useful ("the picture needs to
+            # go up and a bit left") and it must not read as a fit that
+            # checked anything.
+            text += ("  One pin puts that feature under its own colour exactly,"
+                     " by the smallest turn that does it, and leaves the twist"
+                     " about that line where it was. A second pin well away"
+                     " from the first is what pins the twist.")
+            return text
+        text += ", worst is pin %d at %.3f deg" % (i + 1, d)
+        if self.spread_deg < PIN_SPREAD_DEG:
+            text += ("  (the pins are within %.0f deg of each other, so the"
+                     " bank is still the one you started with -- pin something"
+                     " on the other side of the room to fix it.)"
+                     % self.spread_deg)
+        if not self.ok:
+            text += ("  The pins disagree with each other by more than %.2f"
+                     " deg. Re-pick pin %d, or drop it -- and if the near pins"
+                     " are out while the far ones are not, that is the"
+                     " camera's SEAT rather than its heading: set the camera"
+                     " height, or press Refine." % (self.tolerance, i + 1))
+        return text
+
+
+def pose_from_pins(seen, spot, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
+                   pitch_deg=0.0, roll_deg=0.0):
+    """
+    The camera pose that carries each `seen` colour onto its `spot` in the room.
+
+    `seen` is where a feature's COLOUR currently lies and `spot` is where that
+    feature actually is -- both as points in the same frame the photograph is
+    painted in (lean applied, camera at `camera`). Returns a `PinFit`.
+
+    ⭐⭐ WHAT A PIN MEANS, DERIVED RATHER THAN ASSERTED. Under the pose held
+    now, the point at `seen` is painted by the pixel lying along
+    `M0 . dir(seen)` in the camera's own frame. The operator's statement is
+    that this pixel belongs on `spot` instead -- so the wanted pose M1 is the
+    one with `M1 . dir(spot) == M0 . dir(seen)`, for every pin at once. That is
+    Wahba's problem: the rotation best carrying one set of unit vectors onto
+    another, whose maximiser is the SVD below.
+
+    ⛔ THE TARGETS ARE FROZEN IN THE CAMERA'S FRAME BEFORE ANYTHING IS FITTED.
+    `M0 . dir(seen)` is computed once, against the pose the operator was
+    LOOKING AT when they clicked. Recomputing it against the answer would make
+    the fit chase its own tail -- the picture would move, the pixel under the
+    pin would change, and the thing being solved for would no longer be the
+    thing the operator pointed at.
+
+    Raises ValueError, with the sentence to show, when the pins cannot mean
+    what they would have to mean.
+    """
+    seen = np.asarray(seen, dtype=np.float64).reshape(-1, 3)
+    spot = np.asarray(spot, dtype=np.float64).reshape(-1, 3)
+    if seen.shape[0] != spot.shape[0]:
+        raise ValueError("every pin needs both halves: %d colours against %d "
+                         "places in the room"
+                         % (seen.shape[0], spot.shape[0]))
+    if not seen.shape[0]:
+        raise ValueError("no pins: click a feature's colour, then the place in "
+                         "the room it belongs on")
+
+    d_seen, r_seen = directions(seen, camera)
+    d_spot, r_spot = directions(spot, camera)
+    # ⛔ A PIN ON THE CAMERA ITSELF HAS NO DIRECTION. `directions` leaves such a
+    # row as zeros rather than dividing by nothing, and a zero row would sail
+    # through the SVD and come back as a rotation fitted to one fewer pin than
+    # the operator thinks they gave it.
+    if min(float(r_seen.min()), float(r_spot.min())) < 1e-3:
+        raise ValueError("a pin was picked on the camera's own position, which "
+                         "has no direction to line anything up along")
+
+    m0 = camera_matrix(yaw_deg, pitch_deg, roll_deg)
+    want = d_seen @ m0.T                 # where each pin's pixel is, frozen
+    data = want.T @ d_spot               # Wahba's matrix, sum of v_i u_i^T
+    m1 = m0
+    for _ in range(PIN_HOLD_PASSES):
+        u, _s, vt = np.linalg.svd(data + PIN_HOLD * m1)
+        # ⛔ THE REFLECTION IS TAKEN OUT. An unconstrained SVD can return a
+        # matrix of determinant -1, which is a MIRROR: it would satisfy the
+        # pins beautifully and paint the room back to front.
+        m1 = u @ np.diag([1.0, 1.0, float(np.linalg.det(u @ vt))]) @ vt
+
+    got = angles_from_matrix(m1)
+    if got is None:
+        raise ValueError("these pins ask for the camera to be banked over on "
+                         "its side, which is not a pose a camera on a tripod "
+                         "was ever in -- one of them is on the wrong feature")
+    yaw, pitch, roll = got
+
+    landed = d_spot @ m1.T
+    errors = np.degrees(np.arccos(np.clip(np.sum(landed * want, axis=1),
+                                          -1.0, 1.0)))
+    moved = math.degrees(math.acos(
+        max(-1.0, min(1.0, (float(np.trace(m1 @ m0.T)) - 1.0) / 2.0))))
+    if len(d_spot) > 1:
+        spread = float(np.degrees(np.arccos(
+            np.clip(float((d_spot @ d_spot.T).min()), -1.0, 1.0))))
+    else:
+        spread = 0.0
+    return PinFit(yaw, pitch, roll, errors, r_spot, spread, moved)
 
 
 # --- the deep alignment ----------------------------------------------------

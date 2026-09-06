@@ -6558,33 +6558,52 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-06, thirty-eighth pass) — the current one
+### ⚠ LIVE STATE (2026-09-06, thirty-ninth pass) — the current one
 
-**Tree**: `main` = **`9e96a42`** (photographs move with the shoot + history fold + spare-aware
-photo solve) on `7eb44f0` (the 37th pass's record), plus this block's own pin commit, in sync
-with origin, clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete
-scratch from the repo). Suites **1722, 0 failed** (1679 + 43). Exes **2026-09-06 11:58:42 /
-11:59:16 / 11:59:43, Studio selftest rc=0**, built with Studio verified closed (0 processes) —
-**these carry all three 38th-pass features AND everything the 09-04 13:55 build carried (walls
-button, polygon camera park, cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the
-`9c7d922` drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2
-there is CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass.
-⚠ The T7 (`D:`) was NOT mounted this pass — nothing under `D:\ministry of sound` was read or
-touched; the operator's existing `.tlspie` files there carry no `rel` on their poses and will
-relocate through `photo_paths`' third rung (structure re-rooted) on their next open, then write
-`rel` on their next save.
+**Tree**: `main` = the 39th pass's commit (the placement/rebuild fix + Pin the picture) on
+**`9e96a42`** (photographs move with the shoot + history fold + spare-aware photo solve) on
+`7eb44f0`, plus this block's own pin commit, in sync with origin, clean but for the standing
+untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
+**1767, 0 failed** (1722 + 45). Exes **2026-09-06 13:47:13 / 13:47:36 / 13:47:55, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the placement
+fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass features AND everything the
+09-04 13:55 build carried** (walls button, polygon camera park, cut-scope decoupling,
+`REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move reversal). ⚠
+`tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the
+gate. No parallel session landed during this pass.
 
-**What the operator does next, on the 11:58 build**: open a fresh Studio; open the ministry
-project from wherever the shoot now lives — the status line will say how many photographs were
-found again and name any still lost; in Delete points the history is now a closed "History · N
-entries" line (click to expand, remembered); and any photograph attached/re-solved/refined/deep-
-aligned from now on matches only the points not cut away (a cut just undone stops counting at
-once). The standing eyeball list is unchanged: scans 7/11/12 (+1/2), scan 24 grey by design;
-their two scan-19-scoped cuts still want redrawing if meant for the whole job. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
-sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
-scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
-`ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
-also sits there).
+⛔⛔ **THE 11:58 BUILD SHUFFLES PLACEMENTS AND MUST NOT BE USED.** Everything up to and including
+it maps placements by POSITION on rebuild, and two overlapping photograph presses interleave the
+list — see the thirty-ninth pass. **13:47 or newer only.**
+
+**⭐ WHERE THE OPERATOR'S JOBS NOW LIVE — both moved off the T7 on 2026-09-06**:
+`C:\Users\sunun\Desktop\ministry of sound` and `C:\Users\sunun\Desktop\RESTAURANT SCAN`. The
+`D:` T7 is not mounted. **The relocation ladder was proven on this move**: all 21 ministry
+photographs were found again from dead `D:\` paths carrying no `rel`, through the third
+(structure-re-rooted) rung; they will write `rel` on their next save. The restaurant job is the
+one to test photograph work on — the operator's own instruction, "the colors are better and its
+clearer for this update tool".
+
+**⚠ THE RESTAURANT JOB'S ALIGNMENT WAS DAMAGED AND A REPAIRED COPY IS WAITING.** Open
+**`06.09.26 placements restored.tlspie`**, not `06.09.26.tlspie` — the latter is the shuffled
+save and has been left exactly as the operator wrote it. The repair keeps everything from 12:57
+(18 photo poses, 82 edits, the clip box) and restores every `setup` by NAME from
+`Scan project 2.0.tlspie` (10:58), whose placements are identical to 09-04's `trimmed project`.
+Verified: 18/18 placements, 18/18 poses, 18/18 captures and photographs resolve on disk.
+
+**What the operator does next, on the 13:47 build**: open a fresh Studio; open the repaired
+restaurant project and confirm the clouds sit where they did this morning. Then try **Pin the
+picture** in the photograph tray (or `I`): click a feature's COLOUR, click the place in the room
+it belongs on, repeat — **three pins is the sweet spot** — and press *Line the picture up*.
+Ctrl-Z puts the pose back. On the ministry side, the status line names photographs found again
+and any still lost; the Delete-points history is a remembered fold; and any photograph
+attached/re-solved/refined/deep-aligned matches only the points not cut away. The standing
+eyeball list is unchanged: scans 7/11/12 (+1/2), scan 24 grey by design; the two scan-19-scoped
+cuts still want redrawing if meant for the whole job. ⛔ **Disk state of the ministry job**: 56
+numbered folders = sweep order; folders 1/2/3/7 hold their capture one level down (the
+operator's hand attaches); scan 24 has NO image by design; all 60 camera originals intact in
+`Insta images`; `ministry of sound.tlspie` saved 09-03 02:58 (56 scans; the operator's own small
+`scan project.tlspie` also sits there).
 
 #### What is owed to the operator, in order
 
@@ -6904,6 +6923,111 @@ check did `np.allclose` on unlike shapes (88,462 vs 49,998), which RAISES rather
 reporting — the standing `.group()`/`.index()` trap in a numpy costume; guarded with a length
 check first and the run repeated. Restored byte-for-byte (MD5
 `7A59D4235357929B5B28D15903E47DA8`), final green **1722**.
+
+### 2026-09-06, thirty-ninth pass — a placement follows its cloud, and the operator can pin the picture
+
+Two things, and the second one interrupted the first.
+
+#### ⛔⛔⛔ THE INCIDENT: a whole job's alignment shuffled onto the wrong clouds
+
+Reported mid-pass: *"something broke point cloud alignment of this entire project, i was using
+the move image and then the lidars got mismatched"*. The job had already been SAVED over.
+
+**Diagnosed from disk, not from guessing.** `06.09.26.tlspie` (12:57) against
+`Scan project 2.0.tlspie` (10:58): all 18 placements had changed — by metres and by up to 179°.
+The decisive test was not "did they move" but **"are these NEW numbers"**: every one of the 18
+was a VERBATIM 10:58 value sitting on a DIFFERENT scan (scan 1 held scan 16's, scan 2 held
+scan 1's, scan 3 held scan 17's). A solve makes new numbers; there was not one new number in the
+file. **Nothing had been re-solved — the placements had been dealt out to the wrong clouds**,
+and the interleaved pattern is the signature of two loops running at once. (The 10:58 file was
+in turn identical in placement to 09-04's `trimmed project.tlspie`, so that lineage is clean and
+the damage is bounded to one window.)
+
+**The mechanism.** `rebuildFrom` emptied `V.scans` and then pushed into it ACROSS AWAITS while
+mapping the placements it had snapshotted **ON TO POSITION**. Every photograph control — tilt
+rings, camera arms, a heading nudge — ends in `afterColour`, which calls it, and **not one of
+them refuses a second press while the first is in flight**. Two overlapping presses therefore
+both cleared the list and filled it alternately as their fetches returned. One press, every cloud
+in the job holding a stranger's placement, nothing thrown, nothing to see but a room in pieces.
+
+⭐⭐ **THE POSITIONAL MAP WAS ALREADY KNOWN TO BE THE FRAGILE PART — AND THAT KNOWLEDGE WENT INTO
+A WORKAROUND INSTEAD OF A FIX.** `removeScan` carried a comment saying in so many words that
+`rebuildFrom` maps positionally and that position *i* is a different scan after a removal, and it
+hand-maintained its own mapping to get round it. That fixed the one caller that had met the
+problem and left the mechanism standing for the next one. **The retry-scope mistake, in the
+page.** The fix is at the mechanism: `scanKey` keys placements on the cloud's own path, so a list
+reordered, shortened or added to still hands every scan its own placement; `removeScan`'s
+hand-maintained copy is deleted and it goes through the one rebuild like everything else.
+Separately, rebuilds are **serialised** (`REBUILDING`), because identity keying gets the
+placements right but does not stop two rebuilds freeing each other's GPU buffers or leaving
+`V.scans[0]` as something other than the reference every pair pick assumes; `openProject` awaits
+the same chain, being a second place that empties `V.scans` across awaits.
+
+**Recovered, verified, and the operator's own file left untouched.** Wrote
+`06.09.26 placements restored.tlspie` beside it: the 12:57 job (which carries a whole morning's
+photograph work — all 18 poses, where 10:58 had none) with each `setup` restored **by name** from
+10:58. Verified 18/18 placements match the good lineage, 18/18 photo poses kept, 18/18 captures
+and photographs resolve on disk, 82 edits and the clip box carried. ⭐ The photo poses are
+unharmed by the shuffle **by construction**: a photograph is solved in its scan's OWN
+sensor-centred frame and a placement never enters it.
+
+#### ⭐⭐ Pin the picture — the one alignment control that cannot be fooled by a similar room
+
+Asked for: *"i would like a tool to finetune image aligment, i pick a point in the cloud and a
+point where the image should line up to, possibly several so the image is aligned more
+correctly"*. **Both picks are in the CLOUD and no picture is shown.** The tempting reading is a
+photo viewer with a pixel pick in it, and it would be strictly worse: the colour on a point IS
+the photograph resampled, so clicking a painted feature names its pixel exactly with the depth
+already known, while finding that same feature again in a raw 8000-px equirectangular panorama is
+the hardest way there is to say the same thing. So the fit runs entirely on DIRECTIONS and
+**never loads an image**.
+
+- `colour.pose_from_pins` — Wahba's problem, closed form by SVD. Every other fit in that file
+  searches; this one is TOLD, so there is no objective, no budget, no local maxima and nothing to
+  be confident about. `colour.angles_from_matrix` is the exact inverse of `camera_matrix`, beside
+  it because **the composition order is part of the stored format**, round-tripped by test.
+- ⛔ **The order is the only guard there is**: swapped halves fit perfectly and turn the picture
+  the wrong way by twice the error, with no residual able to notice. Every message therefore says
+  the same thing — **the colour first, then the place it belongs** — and the two ends are drawn in
+  two colours for the same reason.
+- ⭐ `PIN_HOLD` makes ONE pin legal: it breaks the tie in the direction no pin constrains, toward
+  the pose already on screen. **Measured, and the first version was wrong**: a hold pulling from
+  the pose you STARTED at biases every direction and the pull grows with how far the pins ask the
+  pose to move — **0.502° over a sweep of starting offsets, the whole of `PIN_TOLERANCE_DEG` spent
+  on the regulariser**. Re-centring it on its own answer (`PIN_HOLD_PASSES = 3`, two extra 3×3
+  SVDs) drops that to **0.006°** while leaving the free direction untouched, and one pin then
+  turns the pose by **exactly** the angle that pin asks for, to 1e-5°.
+- ⛔ **Refused, not clamped — the opposite of `set_tilt`, deliberately.** A drag off the end of a
+  ring should stop at the ring; a FIT that lands past `MAX_TILT_DEG` is evidence that a pin is on
+  the wrong feature, and clamping would paint a pose nobody's pins asked for and call it done.
+
+**Measured on the operator's own restaurant job** (`TLS_26_08_20_16_03_15`): with exact rays the
+fit recovers the saved pose to three decimals and repaints **all 591,096 points identically** —
+the arithmetic is exact. With pins snapped to real points (a proxy for a click), from 1.9° out:
+one pin → 0.54° median, two → 0.70°, **three → 0.25°**, eight → 0.23°. **Three is the knee; past
+it what remains is where you clicked, not the fit**, and that is what the tray now says.
+
+#### And one bug found on the way, in the control being asked about
+
+`set_tilt` passed `camera_z` alone to `_repaint`, which reads a missing key as 0.0 — so **every
+nudge of the tip or bank ring quietly moved the camera's seat sideways back to the lidar's own
+centre**, undoing what the climb had found (10.9 mm / −8.0 mm on the operator's ministry scan 1).
+A seat is the one part of a pose no rotation can stand in for, and this was in a control whose
+whole purpose is to make the picture sit still.
+
+#### Audit
+
+Suites **1722 → 1767** (+45). Five breaks in ONE run — no serialiser, `scanKey` collapsed to a
+constant, the hold un-recentred, the impossible lean clamped, the seat dropped from `set_tilt` —
+fired **9 named checks and nothing else** (1758/9). ⭐ The no-serialiser break **reproduced the
+operator's incident exactly**: two rebuilds interleaved into one list,
+`['a','b','c','a','d','e','b','f','c','d','e','f']`. Restored byte-for-byte (`align.py`
+`9EF68E454EB732CB1DAFD2E6505B91C4`, `colour.py` `E51BFE0E52DA98D40574D1AAA03A4F08`), final green
+**1767**.
+
+Also confirmed on real data this pass: **the 38th pass's photograph relocation ladder works** —
+the operator moved both jobs from `D:` to the Desktop, and all 21 ministry photographs were found
+again from dead `D:\` paths carrying no `rel`, through the structure-re-rooted third rung.
 
 ### ▶ NEXT SESSION STARTS HERE
 

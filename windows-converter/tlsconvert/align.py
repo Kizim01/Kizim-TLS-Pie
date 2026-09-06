@@ -1034,6 +1034,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                            body.get("seconds")))
             if path == "/photo/deepall":
                 return self._json(srv.deep_all(body.get("seconds")))
+            if path == "/photo/pins":
+                return self._json(srv.align_photo_pins(body.get("index"),
+                                                       body.get("pins") or []))
             if path == "/photo/tilt":
                 return self._json(srv.set_tilt(body.get("index"),
                                                body.get("pitch"),
@@ -4277,9 +4280,20 @@ class AlignServer(object):
         self._progress = {"stage": "leaning the photo on %s" % scan.name,
                           "n": 0, "total": 1, "busy": True}
         try:
+            # ⛔⛔ THE WHOLE SEAT TRAVELS, NOT JUST THE HEIGHT. This passed
+            # `camera_z` alone and `_repaint` reads a missing key as 0.0 -- so
+            # every nudge of the tip or bank ring quietly moved the camera
+            # sideways back to the lidar's own centre, undoing what the climb
+            # had found (measured on the operator's ministry job: x 10.9 mm,
+            # y -8.0 mm on scan 1, and a seat is the one part of the pose no
+            # rotation can stand in for). The picture shifted by a millimetre
+            # or two of parallax on every press, in a control whose entire
+            # purpose is to make the picture sit still.
             fresh = self._repaint(scan, photo,
                                   {"yaw_deg": info["yaw_deg"], "pitch_deg": p,
                                    "roll_deg": r,
+                                   "camera_x": info.get("camera_x"),
+                                   "camera_y": info.get("camera_y"),
                                    "camera_z": info.get("camera_z")}, info)
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
@@ -4297,6 +4311,126 @@ class AlignServer(object):
         scan.colour_info = fresh
         return {"ok": True, "info": fresh, "pitch_deg": p, "roll_deg": r,
                 "at_limit": abs(p) >= lim - 1e-9 or abs(r) >= lim - 1e-9,
+                "scans": self._rebuild()}
+
+    def align_photo_pins(self, index, pins):
+        """
+        Line the photograph up on features the operator has NAMED.
+
+        Each pin is two points in the scan's OWN coordinates: `seen`, where a
+        feature's colour is lying now, and `spot`, where that feature actually
+        is. The pose that carries every `seen` onto its `spot` is closed-form
+        -- see `colour.pose_from_pins`, which is where the geometry lives.
+
+        ⭐⭐ THE ONE CONTROL HERE THAT CANNOT BE FOOLED BY A ROOM THAT LOOKS
+        LIKE ANOTHER ROOM. Every automatic measure in this program scores the
+        whole sphere and argues from resemblance, which is the subject of every
+        confidence note in `colour`. A person putting two points together is
+        asserting an identity instead, and the answer that follows is
+        arithmetic rather than a search: no rungs, no budget, no local maxima,
+        nothing to converge and nothing to be confident about.
+
+        ⛔ THE LEAN IS THE SERVER'S, NOT THE PAGE'S, AND THAT IS ON PURPOSE.
+        The photograph is painted in the levelled frame this object holds, so
+        the pins are put through the same `scan.lean` that `colour_scan` paints
+        through -- one frame, taken from one place. A lean the page has moved
+        and not yet sent is a pose that is stale anyway, which is
+        `_follow_lean`'s business and not this door's.
+
+        ⛔ AND THE PIXELS ARE NEVER READ. The colour on a point IS the
+        photograph resampled, so clicking the colour recovers its pixel exactly
+        with the depth already known. Nothing here loads an image.
+        """
+        from . import colour as colour_mod
+        scan, photo = self._photo_of(index)
+        if scan is None:
+            return {"ok": False, "error": photo}
+        info = dict(scan.colour_info or {})
+        if info.get("yaw_deg") is None:
+            return {"ok": False,
+                    "error": "align this photograph first — a pin MOVES a "
+                             "pose, it does not find one"}
+        pins = list(pins or [])
+        seen = [p.get("seen") for p in pins]
+        spot = [p.get("spot") for p in pins]
+        # ⛔ NOTHING PINNED IS NOT A MALFORMED PIN. Both used to come back as
+        # "a pin is missing one of its halves", which describes a fault the
+        # operator has not made and does not say what to do -- and pressing
+        # the button before picking anything is the likeliest way in.
+        if not pins:
+            return {"ok": False,
+                    "error": "no pins yet: click a feature's COLOUR in the "
+                             "cloud, then click the place in the room that "
+                             "feature really belongs on"}
+        if any(a is None or b is None for a, b in zip(seen, spot)):
+            return {"ok": False, "error": "a pin is missing one of its halves"}
+
+        # ⛔ THE CAMERA COMES FROM THE POSE THAT PAINTED THE CLOUD, not from
+        # `scan.camera_*`. The pins were picked against colours cast from one
+        # particular seat, and reading the seat from anywhere that could have
+        # moved since would measure the pins' directions from a point the
+        # operator was not looking from.
+        camera = (float(info.get("camera_x") or 0.0),
+                  float(info.get("camera_y") or 0.0),
+                  float(info.get("camera_z") or 0.0))
+        seen = np.asarray(seen, dtype=np.float64).reshape(-1, 3)
+        spot = np.asarray(spot, dtype=np.float64).reshape(-1, 3)
+        lean = getattr(scan, "lean", None)
+        if lean is not None and not lean.is_identity():
+            seen, spot = lean.apply(seen), lean.apply(spot)
+        try:
+            fit = colour_mod.pose_from_pins(
+                seen, spot, camera=camera, yaw_deg=info["yaw_deg"],
+                pitch_deg=info.get("pitch_deg") or 0.0,
+                roll_deg=info.get("roll_deg") or 0.0)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        # ⛔ REFUSED, NOT CLAMPED -- THE OPPOSITE OF `set_tilt`, DELIBERATELY.
+        # A drag that runs off the end of a ring should stop at the end of the
+        # ring rather than throw the gesture away. A FIT that lands out there
+        # is not a gesture, it is evidence: the camera was bolted to a tripod,
+        # so a pose that far over says a pin is on the wrong feature. Clamping
+        # would paint a pose nobody's pins asked for and report it as done.
+        lim = colour_mod.MAX_TILT_DEG
+        if abs(fit.pitch_deg) > lim or abs(fit.roll_deg) > lim:
+            return {"ok": False, "error": (
+                "these pins ask for the camera to sit %.1f° tipped and %.1f° "
+                "banked, well past the %.0f° a camera screwed to a tripod is "
+                "ever in — so one of the pins is on the wrong feature. Check "
+                "that each colour really is the thing you pinned it to."
+                % (fit.pitch_deg, fit.roll_deg, lim))}
+
+        self._progress = {"stage": "lining the photograph up on %d pin%s (%s)"
+                                   % (fit.count, "" if fit.count == 1 else "s",
+                                      scan.name),
+                          "n": 0, "total": 1, "busy": True}
+        try:
+            fresh = self._repaint(scan, photo,
+                                  {"yaw_deg": fit.yaw_deg,
+                                   "pitch_deg": fit.pitch_deg,
+                                   "roll_deg": fit.roll_deg,
+                                   "camera_x": camera[0],
+                                   "camera_y": camera[1],
+                                   "camera_z": camera[2]}, info)
+        finally:
+            self._progress = {"stage": "done", "n": 1, "total": 1,
+                              "busy": False}
+        if not fresh.get("ok"):
+            return {"ok": False,
+                    "error": fresh.get("reason") or "could not repaint"}
+        # A hand-moved pose drops back down the ladder, for the reason
+        # `set_tilt` gives: there is a new optimum near it now.
+        fresh["rung"] = min(int(info.get("rung") or 0), 1)
+        scan.colour_info = fresh
+        return {"ok": True, "info": fresh, "pins": fit.count,
+                "yaw_deg": fit.yaw_deg, "pitch_deg": fit.pitch_deg,
+                "roll_deg": fit.roll_deg, "moved_deg": fit.moved_deg,
+                "errors_deg": [float(e) for e in fit.errors_deg],
+                "errors_m": [float(e) for e in fit.errors_m],
+                "rms_deg": fit.rms_deg, "tolerance": fit.tolerance,
+                "spread_deg": fit.spread_deg, "worst": fit.worst[0],
+                "trustworthy": fit.ok, "text": fit.describe(),
                 "scans": self._rebuild()}
 
     def resolve(self, index, camera_z=None):
@@ -5775,6 +5909,30 @@ PAGE = r"""<!doctype html>
     few centimetres off the lidar&#39;s cannot be traded out by any heading —
     turning can only choose <i>which distance</i> is wrong.</div>
   </div>
+  <div class="grp">
+  <div class="ghead"><b>Pin it by hand</b><span class="why">say where the
+    picture belongs</span></div>
+  <div class="row"><button id="pin" title="Click a feature&#39;s COLOUR in the
+    cloud, then click the place in the room that feature really is. Repeat for
+    as many features as you like, then press Line the picture up.">Pin the
+    picture</button>
+    <button id="pingo" class="go" title="Fit the camera pose that carries every
+      pinned colour onto the place you said it belongs.">Line the picture
+      up</button></div>
+  <div class="row"><button id="pinundo">Undo pin</button>
+    <button id="pinclear">Clear pins</button></div>
+  <div class="blurb">Every other control here <i>searches</i> — and a search
+    can be fooled by a room that resembles another room. A pin is you saying
+    <b>this is that</b>, and the pose that follows is arithmetic. Order
+    matters: the <b style="color:#ff72d5">colour first</b>, then the
+    <b style="color:#5ad8ff">place it belongs</b>. One pin slides the picture
+    onto that feature; a second, well away from the first, pins the twist as
+    well. <b>Three is the sweet spot</b> — measured on this job, three pins
+    take a picture 1.9° out down to 0.25°, and eight only reach 0.23°: past
+    three, what is left is where you clicked, not the fit. Pin features you
+    can see sharply, well spread around the room.</div>
+  <div id="pinlist" style="font-size:10.5px;color:var(--faint)"></div>
+  </div>
   <div id="photopane"></div>
   </div></div>
 <div class="tray" id="ty_shoot"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'shoot')"><span class="fold">▾</span><b class="grow">Solve the whole shoot</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('shoot')">✕</button></div><div class="traybody">
@@ -6005,6 +6163,16 @@ const V = {cam:{yaw:0.7,pitch:0.45,dist:30,t:[0,0,0]}, free:false, psize:0.2,
            nav:false, project:null, dirty:false, pairs:[], half:null,
            turnRing:false, moveGiz:false, moveAxis:null, moveHot:null,
            perr:null, ptol:0, level:null, lvl:[], lerr:null,
+           /* ⭐ THE PINS THAT LINE A PHOTOGRAPH UP BY HAND: each one a place
+              where a feature's COLOUR is lying and the place in the room that
+              feature actually occupies, both in the photographed scan's own
+              coordinates -- held that way for the same reason a pair half is,
+              so a nudge or a re-level cannot silently move what was pointed at.
+              ⛔ `pinWho` is which scan they belong to, and it is NOT `V.picked`:
+              the pick can move while pins are on screen, and a set of pins
+              applied to a photograph they were not made against would fit a
+              perfectly plausible pose on the wrong cloud. */
+           pins:[], pinHalf:null, pinWho:-1, pinErr:null, pinTol:0,
            ref:false, plumb:{a:null,b:null}, nth:[], trays:{}, order:[],
            /* The ground plane at world Z = 0, and the point waiting to become
               zero. ⛔ The pick is held in its own SCAN's coordinates, like
@@ -7441,7 +7609,7 @@ function drawDraft(){
     ov.width=Math.floor(innerWidth*dpr); ov.height=Math.floor(innerHeight*dpr);
   }
   if(!path && !V.gizmo && !V.pairs.length && !V.lvl.length && !V.nth.length
-     && !ringOf()){
+     && !V.pins.length && !ringOf()){
     ov.style.display='none'; return; }
   ov.style.display='block';
   oc.setTransform(dpr,0,0,dpr,0,0);
@@ -9743,7 +9911,7 @@ function setTool(t){
   [['lasso','Lasso'],['rect','Rectangle'],['circle','Circle'],
    ['poly','Polygon'],['pair','Pick pairs'],['whose','Pick a cloud'],
    ['level','Pick level points'],['plumb','Place / measure'],
-   ['setorg','Pick a point']]
+   ['setorg','Pick a point'],['pin','Pin the picture']]
     .forEach(([id,label])=>{
       const b=$(id); if(!b) return;
       b.classList.toggle('on', t===id);
@@ -10157,6 +10325,7 @@ function runPick(mx,my){
                'is selected in Scans in this job. Light to see it among the '+
                'others; K puts this tool away.');
   }
+  if(V.tool==='pin') return pinPick(hit);
   if(V.tool==='level') return levelPick(hit);
   if(V.tool==='plumb') return plumbPick(hit);
   if(V.tool==='north') return northPick(hit);
@@ -10212,13 +10381,25 @@ function halfAt(){
   return s ? put(affine(s),V.half.rp[0],V.half.rp[1],V.half.rp[2]) : null;
 }
 function drawPairs(vp){
-  if(!V.pairs.length && !V.half && !V.lvl.length) return;
+  if(!V.pairs.length && !V.half && !V.lvl.length && !V.pins.length
+     && !V.pinHalf) return;
   const pts=[], lines=[], green=[];
+  /* ⭐ A PIN IS DRAWN AS AN ARROW WITHOUT A HEAD: the end that is WRONG and
+     the end it has to reach, in two colours, joined. One colour for both ends
+     would show where a pin is and hide which way round it goes -- and which
+     way round it goes is the whole of what a pin says. */
+  const pinFrom=[], pinTo=[], pinLines=[];
   for(const p of V.pairs){
     const e=pairEnds(p); if(!e) continue;
     pts.push(e[0], e[1]);
     lines.push(e[0], e[1]);
   }
+  for(const p of V.pins){
+    const e=pinEnds(p); if(!e) continue;
+    pinFrom.push(e[0]); pinTo.push(e[1]);
+    pinLines.push(e[0], e[1]);
+  }
+  const ph=pinHalfAt(); if(ph) pinFrom.push(ph);
   const h=halfAt(); if(h) pts.push(h);
   for(const q of V.lvl){
     const s=scanAt(q.si); if(!s) continue;
@@ -10255,6 +10436,26 @@ function drawPairs(vp){
     gl.uniform4f(lloc.uCol, 0.42,0.92,0.52,1.0);
     gl.drawArrays(gl.POINTS,0,green.length);
   }
+  if(pinLines.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pinLines), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize,1.0);
+    gl.uniform4f(lloc.uCol, 0.55,0.80,1.0,1.0);
+    gl.drawArrays(gl.LINES,0,pinLines.length);
+  }
+  /* where the colour is now: the end that is wrong */
+  if(pinFrom.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pinFrom), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize, 12*dpr);
+    gl.uniform4f(lloc.uCol, 1.0,0.45,0.85,1.0);
+    gl.drawArrays(gl.POINTS,0,pinFrom.length);
+  }
+  /* and where it belongs: the end it has to reach */
+  if(pinTo.length){
+    gl.bufferData(gl.ARRAY_BUFFER, flat(pinTo), gl.DYNAMIC_DRAW);
+    gl.uniform1f(lloc.uSize, 12*dpr);
+    gl.uniform4f(lloc.uCol, 0.35,0.85,1.0,1.0);
+    gl.drawArrays(gl.POINTS,0,pinTo.length);
+  }
   gl.enable(gl.DEPTH_TEST);
   gl.enableVertexAttribArray(loc.aCol);
   gl.enableVertexAttribArray(loc.aLive);
@@ -10262,9 +10463,21 @@ function drawPairs(vp){
 /* The numbers, on the 2D overlay. A marker with no number cannot be matched to
    the line in the panel that says which pair is 40 cm out. */
 function labelPairs(){
-  if((!V.pairs.length && !V.lvl.length) || !V.vp) return;
+  if((!V.pairs.length && !V.lvl.length && !V.pins.length) || !V.vp) return;
   oc.font='600 11px ui-sans-serif,system-ui,sans-serif';
   oc.textAlign='center';
+  /* ⛔ THE NUMBER GOES ON THE END THAT HAS TO MOVE, not on both. Two labels a
+     few pixels apart reading the same number is how a legible marker turns
+     back into clutter -- and the residual named in the panel is a property of
+     the pin, which the operator finds by the colour end they clicked. */
+  V.pins.forEach((p,i)=>{
+    const e=pinEnds(p); if(!e) return;
+    const off = V.pinErr && V.pinErr.length===V.pins.length &&
+                V.pinErr[i] > (V.pinTol||0);
+    oc.fillStyle = off ? 'rgba(255,110,110,.95)' : 'rgba(255,150,225,.95)';
+    const w=project(e[0], V.vp);
+    if(w) oc.fillText('P'+(i+1), w[0], w[1]-11);
+  });
   V.lvl.forEach((q,i)=>{
     const s=scanAt(q.si); if(!s) return;
     const off = V.lerr && V.lerr.length===V.lvl.length &&
@@ -10328,6 +10541,128 @@ async function alignPairs(){
   V.perr=j.errors; V.ptol=j.tolerance;
   syncSliders(); invalidate(); editsFollow(); showPairs(); dirty();
   say(j.text, j.trustworthy ? null : 'warn');
+}
+
+/* ---- pinning a photograph onto the room ----
+
+   ⭐⭐ TWO CLICKS IN THE CLOUD, AND NO PICTURE ON SCREEN TO CLICK. Asked for
+   on 2026-09-06: "i pick a point in the cloud and a point where the image
+   should line up to, possibly several so the image is aligned more correctly".
+   The tempting reading is a photo viewer beside the window and a pixel pick in
+   it -- and it would be strictly worse. The colour on a point IS the
+   photograph, resampled: clicking a painted feature names its pixel exactly,
+   with the depth already known, while finding that same feature again in a
+   raw 8000-pixel equirectangular panorama is the hardest way there is to say
+   the same thing. So both halves of a pin are picks in the cloud, taken by
+   the picker that was already here.
+
+   ⛔ THE ORDER IS THE COLOUR FIRST, THEN THE ROOM, AND EVERY MESSAGE SAYS SO.
+   The two halves are not interchangeable -- swapped, the fit turns the picture
+   the wrong way by exactly twice the error -- and no residual can notice,
+   because a consistently reversed set of pins fits perfectly. The wording is
+   the only guard, so it is worded the same way everywhere: the colour, then
+   the place it belongs.
+
+   ⛔ AND THE PINS ARE NOT SAVED WITH THE PROJECT. What they produce -- the
+   pose -- is saved, and the pins are the scaffolding that made it. Writing
+   them would put a second, staler account of the same alignment in the file,
+   which is the trap `projectState`'s own note describes about the points. */
+function pinScan(){
+  /* Once a pin exists the set belongs to the scan it was started on, not to
+     whichever scan the pick has since moved to. */
+  const want = (V.pins.length || V.pinHalf) ? V.pinWho : V.picked;
+  return V.scans.find(x=>x.index===want) || null;
+}
+function pinPick(hit){
+  const s=pinScan();
+  if(!s) return say('Choose the scan whose photograph you are lining up '+
+                    'first — double-click it in Scans in this job.', 'warn');
+  if(!s.photo) return say(s.name.slice(0,16)+' has no photograph on it yet, '+
+                          'so there is nothing to line up. Add one from '+
+                          'This scan’s photograph.', 'warn');
+  if(s.yaw==null) return say('That photograph has not been aligned at all '+
+                             'yet. A pin MOVES a pose, it does not find one '+
+                             '— solve or set a heading first.', 'warn');
+  if(hit.scan!==s) return say(
+    'That point is on '+hit.scan.name.slice(0,16)+', and these pins belong to '+
+    s.name.slice(0,16)+'’s photograph. A photograph only paints its own '+
+    'cloud, so both halves of a pin have to come off that one.', 'warn');
+  if(!V.pinHalf){
+    V.pinHalf={p:hit.local.slice()};
+    V.pinWho=s.index;
+    say('Now click the place in the room that colour belongs on — the same '+
+        'feature, where it really is.');
+  } else {
+    V.pins.push({seen:V.pinHalf.p, spot:hit.local.slice()});
+    V.pinHalf=null; V.pinErr=null;
+    /* ⛔ NO `dirty()` HERE. A pin changes nothing that is written; the pose it
+       later produces does, and that is where the flag belongs. Marking the
+       project unsaved for a pick would teach the operator that the warning
+       means nothing. */
+    say(V.pins.length===1
+        ? '1 pin. That alone will slide the picture onto that feature; a '+
+          'second pin the other side of the room pins the twist as well. '+
+          'Press Line the picture up.'
+        : V.pins.length+' pins. Press Line the picture up.');
+  }
+  showPins(); invalidate();
+}
+/* Both halves through the scan's CURRENT placement, so the markers move with
+   the cloud -- and the line between them is the error, drawn to scale. */
+function pinEnds(p){
+  const s=scanAt(V.pinWho); if(!s) return null;
+  const A=affine(s);
+  return [put(A,p.seen[0],p.seen[1],p.seen[2]),
+          put(A,p.spot[0],p.spot[1],p.spot[2])];
+}
+function pinHalfAt(){
+  const s=V.pinHalf && scanAt(V.pinWho);
+  return s ? put(affine(s),V.pinHalf.p[0],V.pinHalf.p[1],V.pinHalf.p[2]) : null;
+}
+function showPins(){
+  const box=$('pinlist'); if(!box) return;
+  if(!V.pins.length && !V.pinHalf){ box.textContent=''; return; }
+  const s=scanAt(V.pinWho);
+  const rows=V.pins.map((p,i)=>{
+    const e = V.pinErr && V.pinErr.length===V.pins.length
+      ? ' — <b style="color:'+(V.pinErr[i]>(V.pinTol||0)?'#ff7070':'#8fd694')+
+        '">'+V.pinErr[i].toFixed(2)+'°</b>' : '';
+    return 'pin '+(i+1)+e;
+  });
+  if(V.pinHalf) rows.push('<i>waiting for where it belongs…</i>');
+  box.innerHTML=(s?'on '+s.name.slice(0,16)+'<br>':'')+rows.join('<br>');
+}
+function undoPin(){
+  if(V.pinHalf){ V.pinHalf=null; say('Dropped the half-made pin.'); }
+  else if(V.pins.length){ V.pins.pop(); say('Dropped the last pin.'); }
+  else return;
+  V.pinErr=null; showPins(); invalidate();
+}
+function clearPins(){
+  V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1;
+  showPins(); invalidate(); say('Pins cleared.');
+}
+async function alignPins(btn){
+  if(!V.pins.length) return say(
+    'No pins yet. Press Pin the picture, click a feature’s COLOUR, then '+
+    'click the place in the room that feature really is.', 'warn');
+  const s=scanAt(V.pinWho);
+  if(!s) return say('The scan those pins were made on is no longer open. '+
+                    'Clear them and pin again.', 'warn');
+  /* ⛔ REMEMBERED BEFORE IT RUNS, like every other door that moves a pose.
+     This one can move the picture a long way on a mis-pinned feature, which
+     is exactly when Ctrl-Z has to be there. */
+  remember('lining '+s.name+'’s photograph up on pins', undoPose(s.index));
+  say('lining the picture up…'); watch(true); busy(btn, true);
+  try{
+    const j=await post('photo/pins', {index:s.index, pins:V.pins});
+    if(!j.ok) throw new Error(j.error||'that fit could not be made');
+    await afterColour(j);
+    V.pinErr=j.errors_deg; V.pinTol=j.tolerance;
+    showPins(); dirty();
+    say(j.text, j.trustworthy ? null : 'warn');
+  }catch(e){ watch(false); say('Could not line it up: '+e.message, 'bad'); }
+  finally{ busy(btn, false); }
 }
 
 /* ---- levelling against gravity ----
@@ -10818,9 +11153,20 @@ async function openProject(path){
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not open it');
+    /* ⛔ AND NOT WHILE A REBUILD IS STILL IN FLIGHT. This loads the list
+       itself rather than going through `rebuildFrom`, because the placements
+       come from the FILE -- but it empties `V.scans` across awaits exactly as
+       that one does, so a photograph press still landing would interleave its
+       clouds into the job being opened. Same window as the 2026-09-06 shuffle,
+       reached by a different door. */
+    await REBUILDING;
     dropChunks(V.scans);
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
     V.pairs=[]; V.half=null; V.perr=null;
+    /* ⛔ AND THE PINS ARE SESSION STATE FOR THE SAME REASON THE PAIRS ARE:
+       both halves of every one are a point in a scan that is about to be
+       closed, held against a photograph that is about to be replaced. */
+    V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1;
     /* ⛔ THE PICK IS SESSION STATE AND GOES WITH THE REST OF IT. A project
        opened over another job would otherwise keep the last one's choice --
        an index into a set of clouds that is no longer there. */
@@ -10913,8 +11259,8 @@ async function openProject(path){
     $('wire').textContent=V.wire?'Box shown':'Box hidden';
     $('wire').classList.toggle('on',V.wire);
     refreshLists(); syncSliders(); syncClipSliders(); showTurn();
-    clipLabels(); showEdits(); showPairs(); showLevel(); showNorth();
-    showPlumb();
+    clipLabels(); showEdits(); showPairs(); showPins(); showLevel();
+    showNorth(); showPlumb();
     recomputeLive(); recentre();
     V.project=j.path; V.dirty=false; showProject();
     watch(false);
@@ -11307,7 +11653,7 @@ const MENUWHY = {
 /* Which tray owns which pick-tool, so a keyboard shortcut opens the controls
    that go with it instead of arming a tool whose panel is shut. */
 const TOOLTRAY = {rect:'cut', lasso:'cut', circle:'cut', poly:'cut',
-                  pair:'pairs', level:'level',
+                  pair:'pairs', level:'level', pin:'photo',
                   north:'north', plumb:'plumb', setorg:'level',
                   /* ⛔ THE SCAN LIST, NOT THE TRAY THE BUTTON SITS IN. What
                      this tool DOES is change which row is selected, so the
@@ -11869,7 +12215,8 @@ function askRemove(index){
    loud rather than discovered later. */
 function forgetScan(gone){
   const shift = i => (i>gone ? i-1 : i);
-  const hadEdits=V.edits.length, hadPairs=V.pairs.length;
+  const hadEdits=V.edits.length, hadPairs=V.pairs.length,
+        hadPins=V.pins.length;
   /* ⛔ A SCOPE CAN NAME SEVERAL CLOUDS, AND THIS ONLY EVER HANDLED ONE.
      `cutScope` returns a LIST whenever anything is hidden -- a cut made with
      one cloud off screen belongs to the visible ones -- and an array is never
@@ -11904,6 +12251,14 @@ function forgetScan(gone){
   V.pairs = V.pairs.filter(p => p.ri!==gone && p.si!==gone)
                    .map(p => Object.assign({}, p,
                                            {ri:shift(p.ri), si:shift(p.si)}));
+  /* ⛔ THE PINS BELONG TO ONE PHOTOGRAPH AND GO WITH IT, and `pinWho` is an
+     index exactly like the rest. Left alone, pins made on the removed cloud
+     would be handed to whichever cloud inherited its number and fit a
+     perfectly plausible pose from features that are not in that room -- the
+     same failure the cut-scope note above describes, one tray along. */
+  if(V.pinWho===gone){ V.pins=[]; V.pinHalf=null; V.pinWho=-1; }
+  else if(V.pinWho>gone) V.pinWho--;
+  V.pinErr=null;
   /* ⛔⛔ AND THE UNDO STACK IS EMPTIED, WHICH IS BLUNT AND IS THE SAFE ANSWER.
      Every placement entry on it is a closure over a scan INDEX -- `undoSetup`
      looks the scan up by number when it runs, not when it was made -- and this
@@ -11948,7 +12303,8 @@ function forgetScan(gone){
       moved[at>gone ? at-1 : at]=1;
     }
     V.hidden=moved; showHidden(); }
-  return {edits:hadEdits-V.edits.length, pairs:hadPairs-V.pairs.length};
+  return {edits:hadEdits-V.edits.length, pairs:hadPairs-V.pairs.length,
+          pins:hadPins-V.pins.length};
 }
 
 async function removeScan(index){
@@ -11963,20 +12319,18 @@ async function removeScan(index){
       body:JSON.stringify({index})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not remove it');
-    /* ⛔ THE PLACEMENTS ARE CARRIED ACROSS BY THE OLD ORDER MINUS THE GAP,
-       not by position. `rebuildFrom` maps them positionally, which is right
-       while the set only ever grew -- after a removal position i is a
-       different scan, and every cloud past the gap would inherit its
-       neighbour's placement: a room shifted by a metre or two, which reads as
-       a bad alignment rather than as the bookkeeping it is. */
-    const kept=V.scans.filter(s=>s.index!==index).map(s=>s.setup);
-    dropChunks(V.scans);
-    V.scans=[];
-    for(const m of j.scans) V.scans.push(await loadScan(m));
-    V.scans.forEach((s,i)=>{ if(kept[i]) s.setup=kept[i]; });
+    /* ⭐ THE PLACEMENTS ARE CARRIED ACROSS BY `rebuildFrom` LIKE EVERYWHERE
+       ELSE, and this is where the hand-maintained copy used to live. It
+       existed because `rebuildFrom` mapped by POSITION, which is wrong the
+       moment a cloud is taken out of the middle -- so this one caller worked
+       round the mechanism instead of fixing it, and the mechanism went on to
+       shuffle a whole job's alignment on 2026-09-06. Keyed on the cloud's own
+       path there is nothing here left to carry: a removal is just a shorter
+       list, and every survivor still answers to its own name. */
+    await rebuildFrom(j.scans);
     const lost=forgetScan(index);
     measure(); refreshLists(); syncSliders(); syncClipSliders();
-    showTurn(); clipLabels(); showEdits(); showPairs();
+    showTurn(); clipLabels(); showEdits(); showPairs(); showPins();
     recomputeLive(); invalidate(); watch(false); dirty();
     let note='Removed '+name+' from the session — the capture on disk is '+
              'untouched.';
@@ -11984,12 +12338,14 @@ async function removeScan(index){
                          ' aimed only at it went with it.';
     if(lost.pairs) note+=' '+lost.pairs+' pair'+(lost.pairs===1?'':'s')+
                          ' naming it were dropped.';
+    if(lost.pins) note+=' '+lost.pins+' pin'+(lost.pins===1?'':'s')+
+                        ' on its photograph went with it.';
     if(j.first_gone) note+=' It was the reference every other cloud was '+
       'aligned TO. The others keep exactly the placement they had — the frame '+
       'has not moved — but the cloud that defines it is now '+
       V.scans[0].name+', which cannot itself be moved.';
     if(!V.scans.length) note+=' Nothing is open now.';
-    say(note, lost.edits||lost.pairs||j.first_gone ? 'warn' : null);
+    say(note, lost.edits||lost.pairs||lost.pins||j.first_gone ? 'warn' : null);
   }catch(e){ watch(false); say('Could not remove that cloud: '+e.message,
                                'bad'); }
 }
@@ -12001,8 +12357,54 @@ async function removeScan(index){
    re-encodes them all and the buffers already on the card no longer match what
    it will send. Recolouring one scan re-encodes it for the same reason: its
    colour bytes changed, and only the server knows the new ones. */
-async function rebuildFrom(meta){
-  const setups=V.scans.map(s=>s.setup);
+/* ⛔⛔⛔ A PLACEMENT FOLLOWS ITS CLOUD, NEVER ITS POSITION IN THE LIST -- AND
+   NO TWO REBUILDS MAY OVERLAP. Both halves of this are written against one
+   incident, 2026-09-06, reported as "something broke point cloud alignment of
+   this entire project, i was using the move image and then the lidars got
+   mismatched".
+
+   What was found on disk: all 18 placements in the saved project were
+   VERBATIM values from the previous save, each sitting on a DIFFERENT scan.
+   Nothing had been re-solved -- a solve makes new numbers, and there was not
+   one new number in the file. The placements had been dealt out to the wrong
+   clouds, and the pattern was an interleave of two orderings: scan 1 had
+   scan 16's placement, scan 2 had scan 1's, scan 3 had scan 17's, and so on.
+   An interleave is the signature of two loops running at once.
+
+   And this function was the loop. Every photograph control -- the tilt rings,
+   the camera arms, a heading nudge -- ends in `afterColour`, which calls this;
+   none of them refuses a second press while the first is in flight; and this
+   emptied `V.scans` and then pushed into it ACROSS AWAITS. Two overlapping
+   presses therefore both cleared the list and then filled it alternately as
+   their fetches came back, while each mapped its own `setups` snapshot ON TO
+   POSITION. Every cloud in the job took a stranger's placement, in one press,
+   with nothing thrown and nothing to see but a room in pieces.
+
+   ⛔ THE POSITIONAL MAP WAS ALREADY KNOWN TO BE THE FRAGILE PART. `removeScan`
+   carries a comment saying so and hand-maintains its own mapping to work
+   round it -- which fixed the one caller that had met the problem and left
+   the mechanism in place for the next one. Keyed on the cloud's own path
+   there is nothing left to get wrong: a list that is reordered, shortened or
+   added to still hands every scan its own placement.
+
+   ⛔ AND THE SERIALISING IS NOT REDUNDANT WITH THAT. Keying by identity gets
+   the placements right; it does not stop two rebuilds from freeing each
+   other's GPU buffers, nor from leaving `V.scans` in an order where
+   `V.scans[0]` is not the reference every pair pick assumes it is. */
+/* ⛔ SEPARATED BY A CHARACTER NO PATH CAN HOLD, so a folder whose name
+   ends in the separator cannot collide with the next one along. */
+function scanKey(s){ return (s.folder||'') + '\u0000' + (s.name||''); }
+let REBUILDING = Promise.resolve();
+function rebuildFrom(meta){
+  /* Chained whether the one before it succeeded or threw: a failed rebuild
+     must not wedge every later one behind it for the life of the window. */
+  const run = REBUILDING.then(()=>rebuildNow(meta), ()=>rebuildNow(meta));
+  REBUILDING = run.catch(()=>{});
+  return run;
+}
+async function rebuildNow(meta){
+  const held=new Map();
+  for(const s of V.scans) held.set(scanKey(s), s.setup);
   dropChunks(V.scans);
   V.scans=[];
   /* ⛔ THE PLACEMENT GOES BACK ON EACH SCAN AS IT ARRIVES, not after the
@@ -12011,7 +12413,8 @@ async function rebuildFrom(meta){
      loaded came back standing at identity. */
   for(let i=0;i<meta.length;i++){
     const s=await loadScan(meta[i]);
-    if(setups[i]) s.setup=setups[i];
+    const was=held.get(scanKey(meta[i]));
+    if(was) s.setup=was;
     V.scans.push(s);
   }
 }
@@ -13176,7 +13579,7 @@ function syncClipSliders(){
    be a lit button that does nothing, which is the failure this file keeps
    naming. */
 const PICK_TOOLS = {pair:1, level:1, plumb:1, north:1, setorg:1, poly:1,
-                    whose:1};
+                    whose:1, pin:1};
 
 /* Is this cloud on screen? One home for the question, because the draw, the
    picker and every new cut all have to agree about it. */
@@ -13597,6 +14000,10 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     else if(k==='n'||k==='N') setTool(V.tool==='poly'?'':'poly');
     else if(k==='p'||k==='P') setTool(V.tool==='pair'?'':'pair');
     else if(k==='k'||k==='K') setTool(V.tool==='whose'?'':'whose');
+    /* I for image, because P is pick pairs -- the same collision the note
+       above describes, and settled the same way: the older habit keeps the
+       letter. */
+    else if(k==='i'||k==='I') setTool(V.tool==='pin'?'':'pin');
     else if(k==='g'||k==='G') setTool(V.tool==='level'?'':'level');
     else if(k==='t'||k==='T'){ V.ref=!V.ref;
       $('ref').classList.toggle('on',V.ref); showPlumb(); invalidate(); }
@@ -13859,6 +14266,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('pairgo').onclick=alignPairs;
   $('pairundo').onclick=undoPair;
   $('pairclear').onclick=clearPairs;
+  $('pin').onclick=()=>setTool(V.tool==='pin'?'':'pin');
+  $('pingo').onclick=e=>alignPins(e.target);
+  $('pinundo').onclick=undoPin;
+  $('pinclear').onclick=clearPins;
   $('ref').onclick=e=>{ V.ref=!V.ref; e.target.classList.toggle('on',V.ref);
     showPlumb(); invalidate(); };
   $('plumb').onclick=()=>setTool(V.tool==='plumb'?'':'plumb');
