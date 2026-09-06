@@ -104,6 +104,32 @@ MODELS = (("disk", "disk_lightglue_k2048_512x1024.onnx"),
 #: surfaces, not laser rings.
 FILL_PASSES = 16
 
+#: The heights above the lidar the camera's seat is SEARCHED at, by rendering
+#: the cloud from each and counting the features one rotation carries onto
+#: the photograph. The ladder's own list, for the ladder's own reason: the
+#: rig mounts the camera above the lidar.
+#:
+#: ⛔⛔ THE SIX-PARAMETER FIT CANNOT FIND THE SEAT ON ITS OWN, AND IT LOOKED
+#: AS THOUGH IT COULD. Measured on the operator's scan 4 (2026-09-06): seeded
+#: at the sensor it settled 4.5 cm up; seeded at the ladder's 0.39 m it
+#: settled at 0.28; seeded at 0.10 it stayed. Every one of those was a
+#: "belongs" with 0.45 degrees rms -- because the fit only ever sees the
+#: pairs RANSAC kept, and RANSAC kept the pairs that agreed under a rotation
+#: FROM THE SEED'S SEAT, so the seat it fits is the seat it was handed. What
+#: does tell them apart is the count: from the right seat the rendered
+#: picture has the photograph's own parallax and one rotation carries most
+#: of the matches (551 of 738 at 0.10 m); from the sensor a third agree
+#: (210), from 0.39 m a seventh (109). Both backends peak at the same
+#: height, and on the architrave the 0.10 m pose is the one that sits.
+#: Re-projecting one render's matches from other seats is NOT a substitute
+#: (peaked 5 cm low): features live on edges, where a cell's mean range is
+#: the one range it is not.
+SEAT_HEIGHTS = tuple(colour.SEED_HEIGHTS)
+
+#: A seat within this of a swept height is that height; the caller's own
+#: seat joins the sweep otherwise, so "where you are" is always a candidate.
+SEAT_SAME_M = 0.02
+
 
 # --- where the models live ---------------------------------------------------
 
@@ -413,8 +439,18 @@ def apart_deg(r1, r2):
 
 # --- the door --------------------------------------------------------------------
 
+def _agreeing(pa, pb, seed=0):
+    """How many matched pairs one rotation carries onto each other."""
+    if len(pa) < 3:
+        return 0
+    wd = bearings(pa[:, 0], pa[:, 1])
+    cd = bearings(pb[:, 0], pb[:, 1])
+    r, inl = ransac_rotation(wd, cd, seed=seed)
+    return int(inl.sum()) if r is not None else 0
+
+
 def match_pose(xyz, refl, lum, camera=(0.0, 0.0, 0.0), backend=None, seed=0,
-               pictures=None):
+               pictures=None, seats=None):
     """
     The photograph's pose on this cloud, from matched features. Never raises.
 
@@ -429,16 +465,24 @@ def match_pose(xyz, refl, lum, camera=(0.0, 0.0, 0.0), backend=None, seed=0,
     ABSOLUTE (camera + the fitted offset), so a caller paints with them
     exactly as it paints with the ladder's.
 
+    ⭐⭐ THE SEAT'S HEIGHT IS SEARCHED, NOT INHERITED. `camera` names where
+    the caller sits, and its x and y are kept; its height is one candidate
+    among `seats` (default SEAT_HEIGHTS -- see the note there), the cloud is
+    rendered from each, and the height from which one rotation carries the
+    most matches is where the pose is then fitted, by the same matcher that
+    swept. `seats` in the result is what the sweep tried, as (height,
+    agreeing) pairs, so the panel can show the peak it chose.
+
     `pictures` lets a caller that has already rendered (a ranking over many
     photographs) hand in (cloud picture, range, filled) and skip the walk of
-    the cloud.
+    the cloud -- and with it the seat sweep, which a ranking has no use for.
     """
     began = time.time()
     out = {"ok": False, "belongs": False, "backend": None, "matches": 0,
            "inliers": 0, "rms_deg": None, "spread_deg": None,
            "yaw_deg": None, "pitch_deg": None, "roll_deg": None,
            "camera_x": None, "camera_y": None, "camera_z": None,
-           "seat_moved_m": None, "points": [], "reason": None,
+           "seat_moved_m": None, "seats": [], "points": [], "reason": None,
            "seconds": 0.0}
     have = available()
     if not have:
@@ -455,7 +499,41 @@ def match_pose(xyz, refl, lum, camera=(0.0, 0.0, 0.0), backend=None, seed=0,
         out["reason"] = ("this cloud carries no reflectivity, and the "
                          "matcher reads the reflectivity picture")
         return out
+    camera = tuple(float(c) for c in camera)
     try:
+        pic_b = photo_picture(lum)
+        pairs = None
+        if pictures is None:
+            heights = [float(z) for z in
+                       (SEAT_HEIGHTS if seats is None else seats)]
+            if heights and all(abs(camera[2] - z) > SEAT_SAME_M
+                               for z in heights):
+                heights.append(camera[2])
+            if heights:
+                # ⛔ THE MATCHER THAT FITS IS THE ONE THAT SWEEPS. The cheap
+                # one was tried as a proxy and peaked one step below disk on
+                # both scans measured (xfeat 99 at 0.06 where disk had 407,
+                # against 82 at 0.12 where disk had 536) -- so the seat it
+                # chose was the seat disk then fitted from, which is the
+                # fault this sweep exists to remove. A strided cloud was
+                # tried for the renders and saved nothing: the cost is the
+                # hole-filling on the grid, not the points. Measured on the
+                # operator's scan 4: ~1.1 s a render, ~4 s a disk match,
+                # ~0.3 s an xfeat one.
+                best = None
+                for z in heights:
+                    at = (camera[0], camera[1], z)
+                    pics = cloud_picture(xyz, refl, at)
+                    if pics[0] is None or float(np.mean(pics[2])) < 0.1:
+                        out["seats"].append([z, 0])
+                        continue
+                    sa, sb, _s = MATCHERS[name](pics[0], pic_b)
+                    n = _agreeing(sa, sb, seed=seed)
+                    out["seats"].append([z, n])
+                    if best is None or n > best[0]:
+                        best = (n, at, pics, (sa, sb))
+                if best is not None:
+                    _n, camera, pictures, pairs = best
         if pictures is None:
             pic_a, rng_a, filled = cloud_picture(xyz, refl, camera)
         else:
@@ -467,8 +545,10 @@ def match_pose(xyz, refl, lum, camera=(0.0, 0.0, 0.0), backend=None, seed=0,
             out["reason"] = ("the cloud fills under a tenth of the picture "
                              "-- too sparse for features")
             return out
-        pic_b = photo_picture(lum)
-        pa, pb, _score = MATCHERS[name](pic_a, pic_b)
+        if pairs is None:
+            pa, pb, _score = MATCHERS[name](pic_a, pic_b)
+        else:
+            pa, pb = pairs
     except Exception as exc:                              # noqa: BLE001
         out["reason"] = "the matcher failed (%s)" % exc
         return out
@@ -546,7 +626,8 @@ def match_pose(xyz, refl, lum, camera=(0.0, 0.0, 0.0), backend=None, seed=0,
 #: be written to every project file for a marker that is session state.
 RECORD_KEYS = ("ok", "belongs", "backend", "matches", "inliers", "rms_deg",
                "spread_deg", "yaw_deg", "pitch_deg", "roll_deg", "camera_x",
-               "camera_y", "camera_z", "seat_moved_m", "reason", "seconds")
+               "camera_y", "camera_z", "seat_moved_m", "seats", "reason",
+               "seconds")
 
 
 def record(got):
@@ -585,8 +666,10 @@ def describe(got):
                                                      or "unknown")
     if got.get("belongs"):
         return ("%d features of the room found in both pictures agree on "
-                "the pose to %.2f° rms (%s, %.1f s)"
-                % (got["inliers"], got["rms_deg"], got["backend"],
+                "the pose to %.2f° rms, the camera %.2f m above the lidar "
+                "(%s, %.1f s)"
+                % (got["inliers"], got["rms_deg"],
+                   float(got.get("camera_z") or 0.0), got["backend"],
                    got["seconds"]))
     return "the pictures do not match: %s" % got.get("reason")
 

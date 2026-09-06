@@ -13550,6 +13550,39 @@ else:
               _got["backend"] in _have and _got["inliers"] >= _mt.MATCH_MIN
               and len(_got["points"]) == min(200, _got["inliers"]),
               (_got["backend"], _got["inliers"], len(_got["points"])))
+    # ⛔⛔ THE SEAT IS SEARCHED, NOT INHERITED. The same room photographed
+    # from 12 cm above the sensor, matched from a seed AT the sensor: the
+    # six-parameter fit alone settles a few centimetres from wherever it was
+    # seeded (measured on the operator's scan 4: 0.045 from the sensor, 0.28
+    # from the ladder's 0.39, both "belongs"), so only a sweep of rendered
+    # seats finds it. The parallax at this room's 3-4 m walls is 2 degrees
+    # -- twice MATCH_TOL_DEG -- so the count has to peak there.
+    _hit2, _ = _cast(np.array([0.0, 0.0, 0.12]), _world_dirs)
+    _lum2 = (_paper(_hit2) * 255).reshape(_H, _Wd)
+    _up = _mt.match_pose(_pts, _refl, _lum2, camera=(0.0, 0.0, 0.0))
+    check("a camera seated 12 cm above the lidar is FOUND there, not where "
+          "the seed sat",
+          _up["belongs"] and abs(_up["camera_z"] - 0.12) < 0.03,
+          (_up["camera_z"], _up["reason"]))
+    _peak = max(_up["seats"], key=lambda s: s[1]) if _up["seats"] else None
+    check("...because the seat was swept over the ladder's heights and the "
+          "count peaks at that one",
+          _peak is not None and abs(_peak[0] - 0.12) < 1e-9
+          and [round(z, 2) for z, _n in _up["seats"]][:len(_mt.SEAT_HEIGHTS)]
+          == [round(z, 2) for z in _mt.SEAT_HEIGHTS]
+          and _peak[1] > 1.5 * dict((round(z, 2), n)
+                                    for z, n in _up["seats"])[0.0],
+          _up["seats"])
+    check("...and the sweep is in the record the panel keeps, so the peak "
+          "can be shown",
+          _mt.record(_up).get("seats") == _up["seats"]
+          and "%.2f m above" % _up["camera_z"] in _mt.describe(_up),
+          _mt.describe(_up))
+    _pre = _mt.cloud_picture(_pts, _refl, (0.0, 0.0, 0.0))
+    _rk1 = _mt.match_pose(_pts, _refl, _lum2, camera=(0.0, 0.0, 0.0),
+                          pictures=_pre)
+    check("...while a ranking, which hands the render in, does not sweep",
+          _rk1["ok"] and _rk1["seats"] == [], _rk1["seats"])
     _wrong = (_paper(_cast(_seat, _unit(_rng.normal(
         size=(_H * _Wd, 3))))[0]) * 255).reshape(_H, _Wd)
     _bad = _mt.match_pose(_pts, _refl, _wrong, camera=(0.0, 0.0, 0.0))
