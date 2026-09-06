@@ -7338,15 +7338,38 @@ no duplicates. Times do not settle it either -- the filed photograph runs from a
   recognises nothing in it. Every other weak row still scores 13-26 against a runner-up of
   4-8. *A correlation confidence can only say "I am unsure"; the feature count says "no
   photograph in this set is of this room", which is a different sentence.*
-- The drift **begins immediately after folder 24, the first dark scan**, and resets at two
-  islands (38/39 and 47/48) rather than accumulating -- so it is not one clean shift and no
-  mechanism for the resets is claimed here.
-- **13 rows are NOT decisive and must not be acted on**, folder 56 above all: `_128` and
-  `_129` score **80 and 79**, a real tie between two photographs of nearly the same place.
+- **13 rows are NOT decisive and were left alone**, folder 56 above all: `_128` and `_129`
+  scored **80 and 79**, a real tie between two photographs of nearly the same place.
 
-**⛔ NOTHING ON THE OPERATOR'S DISK WAS CHANGED.** The corrective list is in `mos_rank.json`
-and was reported, not applied; refiling 26 captures is a chain rename over their data and is
-theirs to authorise.
+**✅ APPLIED, AND THE ARITHMETIC CLOSES.** The operator authorised it; the 26 decisive
+refiles went in (**43 decisive folders verified holding the matcher's choice, 0 mismatches**,
+the 13 uncertain untouched), then the two duplicates that refiling exposed were resolved.
+Final state, re-hashed: **54 folders with a photograph, 54 distinct photographs, ZERO
+duplicates, and exactly folders 24 and 37 carrying none** — the two the operator said were
+too dark. `scratchpad/feat/mos_refile.py`, `--undo` restores from `mos_refile_backup.json`;
+nothing was ever destroyed because every filed photograph is a copy of an untouched original.
+
+⭐⭐ **AND THE MECHANISM CLOSED, BY BEING APPLIED.** The earlier draft of this section said
+the drift "resets at two islands (38/39 and 47/48) and no mechanism is claimed". The refile
+supplied it: **the photograph set has SEVEN more images than there are lit stations, and the
+original filing consumed them in order without skipping any.** Each surplus image absorbed
+one step of drift, which is why the offset reset instead of accumulating. Six originals are
+now filed nowhere — `_071`, `_095`, `_098`, `_111`, `_121`, `_130` — and `_095`, `_111`
+and `_121` are *exactly* the reset points. 56 captures − 2 dark = 54 stations; 60 originals
+− 6 surplus = 54 used. The two sides were derived independently and meet on the nose.
+*A count that closes to zero is worth more than any one margin: it says nothing is left over
+to be wrong about.*
+
+⭐ **A TIE BROKEN BY EXCLUSION, NOT BY TUNING.** Folder 56 was the one genuinely undecidable
+row — 80 against 79. It was NOT resolved by lowering a threshold. Folder 55 took `_128`
+decisively (56 vs 6), and a photograph belongs to one capture, so 56 took `_129` by
+elimination. **The refusal to act on a weak margin is what made the row solvable later**;
+had the matcher been allowed to guess at 80-vs-79 it would have taken `_128` and blocked 55.
+
+**Folder 37 is the second dark scan and now carries no photograph**, its borrowed `_108`
+moved to `<job>/no photos/` (moved, not deleted) and returned to folder 36, which claimed it
+150 vs 13. That one was put to the operator rather than decided: *stripping a picture off a
+scan is a different act from correcting one.*
 
 **Earlier the same evening, the restaurant job:** the operator copied the right `16_15_16`
 original into folder 5, and a sweep of the whole set found the anomaly is narrower than first
