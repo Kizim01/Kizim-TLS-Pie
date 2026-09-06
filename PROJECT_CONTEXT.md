@@ -6558,19 +6558,29 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-04, thirty-seventh pass) — the current one
+### ⚠ LIVE STATE (2026-09-06, thirty-eighth pass) — the current one
 
-**Tree**: `main` = **`bc293ef`** (the polygon camera park) on **`db7e554`** (Straighten from
-the walls) on `672e809`, plus this block's own pin commit, in sync with origin,
-clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from
-the repo). Suites **1679, 0 failed** (1651 + 19 wall checks + 10 polygon-park checks − 1
-replaced pin; ⚠ one run exited 255 with no summary and no FAIL, unreproducible — identical
-bytes green on unfiltered rerun; if a second 255 appears, treat it as real). Exes **2026-09-04
-13:55:49 / 13:56:11 / 13:56:31, Studio selftest rc=0**, built with Studio verified closed —
-**these carry the walls button AND the polygon camera park AND everything the 01:19 build
-carried (cut-scope decoupling, `REFINE_POINTS` refine slice, `pair_in_order`, the `9c7d922`
-drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is
-CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
+**Tree**: `main` = **`9e96a42`** (photographs move with the shoot + history fold + spare-aware
+photo solve) on `7eb44f0` (the 37th pass's record), plus this block's own pin commit, in sync
+with origin, clean but for the standing untracked `windows-converter/cutjs_tmp.js` (never delete
+scratch from the repo). Suites **1722, 0 failed** (1679 + 43). Exes **2026-09-06 11:58:42 /
+11:59:16 / 11:59:43, Studio selftest rc=0**, built with Studio verified closed (0 processes) —
+**these carry all three 38th-pass features AND everything the 09-04 13:55 build carried (walls
+button, polygon camera park, cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the
+`9c7d922` drag-to-move reversal)**. ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2
+there is CORRECT and Studio's rc=0 is the gate. No parallel session landed during this pass.
+⚠ The T7 (`D:`) was NOT mounted this pass — nothing under `D:\ministry of sound` was read or
+touched; the operator's existing `.tlspie` files there carry no `rel` on their poses and will
+relocate through `photo_paths`' third rung (structure re-rooted) on their next open, then write
+`rel` on their next save.
+
+**What the operator does next, on the 11:58 build**: open a fresh Studio; open the ministry
+project from wherever the shoot now lives — the status line will say how many photographs were
+found again and name any still lost; in Delete points the history is now a closed "History · N
+entries" line (click to expand, remembered); and any photograph attached/re-solved/refined/deep-
+aligned from now on matches only the points not cut away (a cut just undone stops counting at
+once). The standing eyeball list is unchanged: scans 7/11/12 (+1/2), scan 24 grey by design;
+their two scan-19-scoped cuts still want redrawing if meant for the whole job. ⛔ **Disk state of `D:\ministry of sound`**: 56 numbered folders =
 sweep order; folders 1/2/3/7 hold their capture one level down (the operator's hand attaches);
 scan 24 has NO image by design; all 60 camera originals intact in `Insta images`; fresh
 `ministry of sound.tlspie` saved 02:58 (56 scans; the operator's own small `scan project.tlspie`
