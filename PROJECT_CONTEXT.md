@@ -6560,12 +6560,12 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-06, fortieth pass) — the current one
 
-**Tree**: `main` = the 40th pass's commit (the markings judge, measured to weight 0; the
+**Tree**: `main` = **`12cdc24`** (40th: the markings judge, measured to weight 0; the
 pictures check the clock's sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture)
 on `9e96a42` (38th), plus this block's own pin commit, in sync with origin, clean but for the
 standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1796, 0 failed** (1767 + 29). Exes **see the 40th-pass build line below, Studio selftest
-rc=0**, built with Studio verified closed — **these carry the sort's picture check, the reported
+**1796, 0 failed** (1767 + 29). Exes **2026-09-06 15:03:56 / 15:04:18 / 15:04:37, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the sort's picture check, the reported
 `mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
 features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
 cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
