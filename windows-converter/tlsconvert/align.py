@@ -3767,7 +3767,16 @@ class AlignServer(object):
             row = {"number": r["number"], "name": r["name"],
                    "clock": r["assigned"]["name"], "candidates": scored,
                    "by_features": bool(by_feat)}
-            if by_feat:
+            # ⛔ AND WHEN THE FEATURES ARE MUTE THE CORRELATIONS STILL SPEAK.
+            # A capture on which no candidate reaches MATCH_MIN agreeing
+            # features (a dark room, a bare corridor, the suite's own
+            # fabricated stripes) is not thereby "mute" -- it is a capture
+            # the feature judge cannot read, and the judges that could read
+            # it before this pass are handed the row exactly as before.
+            # Only a feature verdict with the numbers to back it decides.
+            feat_top = (max((s["inliers"] for s in good), default=0)
+                        if by_feat else 0)
+            if by_feat and feat_top >= match_mod.MATCH_MIN:
                 good.sort(key=lambda s: (s["inliers"], s["corroborated"],
                                          s["score"]), reverse=True)
                 mine = next((s for s in good if s["path"] == clock), None)
@@ -3776,9 +3785,6 @@ class AlignServer(object):
                 if top is None or mine is None:
                     row.update(verdict="unchecked",
                                why="no candidate photograph could be read")
-                elif top["inliers"] < match_mod.MATCH_MIN:
-                    row.update(verdict="mute", best=top["name"],
-                               score=top["inliers"])
                 elif top["path"] == clock:
                     row.update(verdict="agrees", score=mine["inliers"],
                                corroborated=bool(

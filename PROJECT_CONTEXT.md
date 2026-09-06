@@ -6558,22 +6558,25 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-06, fortieth pass) — the current one
+### ⚠ LIVE STATE (2026-09-06, forty-first pass) — the current one
 
-**⚠⚠ A FORTY-FIRST PASS IS IN PROGRESS IN THE WORKING TREE (≈17:00, WIP commit on top of
-`ca64a0c`): the photograph matched to the cloud by learned features — `tlsconvert/match.py`,
-ONNX models under `tlsconvert/models/`, arrival/`photo/match`/sort/ranking wiring, and the
-blob-fingerprint page rebuild. The suite currently ABORTS on it (a regex in one cross-check),
-unaudited, unbuilt. Read the "forty-first pass — IN PROGRESS" section below the fortieth
-pass's and finish its to-do list before anything else. Everything else in this block still
-describes the SHIPPED state.**
+**⭐⭐ THE PHOTOGRAPH IS NOW MATCHED TO THE CLOUD BY ITS OWN FEATURES, AND IT SHIPS.**
+`tlsconvert/match.py` with DISK+LightGlue and XFeat under ONNX Runtime, models bundled
+into all three exes (**verified by reading the archive, not assumed**); the pictures are
+asked BEFORE the correlation sweep on every arrival, `photo/match` gives the operator a
+one-press **Match the picture** in place of hand pins, the sort ranks photographs by
+inliers, and the page keeps clouds whose blob fingerprint is unchanged. Suite **1833, 0
+failed**; **reversion audit 8 breaks, all 8 caught, all files restored byte for byte**.
+⚠ The selftest still does NOT check that the models packed — named and queued, not fixed.
 
-**Tree**: `main` = **`12cdc24`** (40th: the markings judge, measured to weight 0; the
-pictures check the clock's sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture)
-on `9e96a42` (38th), plus this block's own pin commit, in sync with origin, clean but for the
+**Tree**: `main` = **`@@COMMIT@@`** (41st: the photograph matched by its features) on
+**`12cdc24`** (40th: the markings judge, measured to weight 0; the pictures check the clock's
+sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture) on `9e96a42` (38th),
+plus this block's own pin commit, in sync with origin, clean but for the
 standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1796, 0 failed** (1767 + 29). Exes **2026-09-06 15:03:56 / 15:04:18 / 15:04:37, Studio
-selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the sort's picture check, the reported
+**1833, 0 failed** (1796 + 37). Exes **2026-09-06 22:04 / 22:05 / 22:05, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these are the first
+build carrying the feature matcher and its two ONNX models** — **these carry the sort's picture check, the reported
 `mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
 features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
 cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
@@ -7113,9 +7116,10 @@ and assert the baseline hash before breaking*. Restored byte-for-byte (`align.py
 
 ### 2026-09-06, forty-first pass — ⚠ IN PROGRESS: the photograph matched to the cloud by its features
 
-**Status when this was written (≈17:00): the code is in the working tree, imports cleanly, a
-WIP commit follows; the existing suite ABORTS on it (see traps), no reversion audit has been
-done, no exe has been built from it, and the tests for the new module are NOT yet written.** The
+**Status**: first committed as WIP `cc32859` on `ca64a0c` (pushed while the tests were being
+written); the module's own tests then went in and the suite is **green at 1833** (1796 + 37).
+The reversion audit and the exe build are the last two steps and their results are at the end
+of this section. The
 15:03 exes and everything the fortieth-pass live-state block says remain the shipped state. Read
 this section, then finish the list at the end.
 
@@ -7236,29 +7240,124 @@ clean at the ~1° level (Aghayari 2017) — a floor no pose can go under.
    `loadScan`), reloads only the rest, and returns the count; `afterColour` re-derives the cut
    mask only when something was reloaded.
 
+⭐⭐ **AND THE SUITE CAUGHT A REAL FAULT IN IT, WHICH IS THE WHOLE POINT OF RUNNING IT.** The
+first run with the new code failed **7** checks, and four of them were the sort's own fabricated
+shoot: the feature judge had been given the row **unconditionally**, so on a capture where the
+features are mute (the suite's stripes; a dark or bare room in the field) it reported "mute" and
+threw away the correlation verdict that had solved that very case in the fortieth pass. Fixed at
+the mechanism — *a judge that cannot read this capture hands the row to the judges that can*:
+the feature branch is entered only when some candidate reaches `MATCH_MIN`, else the
+correlations decide exactly as before. **This is the fortieth pass's own lesson arriving from
+the other side**: there, a term that could not overrule was measured out of the vote; here, a
+judge that cannot see must not silence the others.
+
 ⛔ **Traps hit this pass**: the Edit tool wrote a literal NUL where the JS said `' '` between
 `scanKey` and the blob (the 39th-pass trap again, in a new place) — patched at byte level
 (`+'\x00'+` → `+' '+`); `grep` says "Binary file matches" and `ast.parse` says "null bytes"
 when it is there. Edit-inserted lines are LF inside the CRLF file — the `openProject` reset
 had to be patched by line number. Never `grep -v "%"` a matcher log (it eats every "(24%)"
-line). **The existing suite ABORTS at `test_tlsconvert.py` line ~1718**: the loadScan
-cross-check lifts `return {index:m.index…};` by regex, and that return is now
-`return Object.assign({…}, describeScan(m));` — the abort trap in a new costume; the fix is to
-lift `describeScan`'s body (and the small Object.assign head) for that check.
+line). **The suite ABORTED at `test_tlsconvert.py` ~1718** — the loadScan cross-check lifts
+`return {index:m.index…};` by regex and that return is now `Object.assign({…},
+describeScan(m))`; the abort trap in a new costume, fixed by lifting `describeScan`'s body too.
+Two more probes were pinned to the old text and were re-pinned, not relaxed:
+`dropChunks(V.scans);` is now `dropChunks(V.scans.filter(…))` (counted by prefix, and the
+"buffers freed in one place" half is untouched), and `held.get(scanKey(meta[i]))` is now
+`scanKey(m)` — the identity-not-position guarantee the 39th pass earned is still asserted.
+⛔ And the new node probe failed on `_js_func` **dropping the leading `async`** — the same trap
+the two-press probe hit in the fortieth pass; prepend it. Two bars in the new block were
+loosened for arithmetic, not for behaviour: `acos` near 1 has a micro-degree floor (Kabsch
+1e-4, not 1e-9), and the half-percent stretch means an equalised ramp floors near zero rather
+than at it.
 
-**⛔ STILL TO DO, in order**: (a) fix the test at ~1718 and get the suite past it; (b) tests for
-the module (synthetic bearings → `ransac_rotation`/`refine_six` exact recovery; `equalise`;
-`bearings` against `grid_directions`; `match_pose` refusals without refl/model; a real-model
-smoke test on a fabricated textured panorama turned by a known yaw when `available()`; the
-`photo/match` route; `matchPicture`/`matchedAt`/`describeScan`/`rebuildNow` lifted with
-`_js_func` and probed — rebuildNow must NOT fetch a scan whose blob is unchanged and MUST fetch
-one whose blob changed; the meta↔`describeScan` field cross-check must see `blob` and
-`matched`); (c) reversion audit (break: `MATCH_MIN` to 0, the un-lean in `match_photo`, the
-blob keep in `rebuildNow`, the arrival adoption); (d) suite green; (e) exes with Studio closed,
-selftest 0; (f) retitle the live-state block to the forty-first pass, update memory; (g) commit
-+ push with the credential scans. Then the operator: copy the INSTA original for `16_15_16`
-into folder 5, reopen the restored restaurant project on the new build, press **Match the
-picture** on scan 4.
+**The tests written for it (suite 1796 → 1833, all green).** A new block, *the photograph
+matched by its features*: a pixel's bearing is asserted IDENTICAL to `colour.grid_directions`'
+own ray for that cell (the two conventions cannot drift apart silently); `equalise` on a ramp;
+Kabsch exact on clean pairs; two-point RANSAC through **40% outliers** naming exactly the 36
+that agree, refusing under two pairs, and **deterministic press to press**; the six-parameter
+fit recovering a 37°/1.5°/−0.8° rotation AND a 2/1/3 cm seat from ranges to 0.02° and 3 mm;
+the refusals (no reflectivity, unknown backend) in words; `record` never carrying the points.
+Then, when a model is on disk, **a fabricated room actually matched**: a box 8 m × 6 m papered
+with a texture that has corners and four dark "pictures", 400k laser points with reflectivity,
+and a photograph RAY-CAST onto the same box from a camera turned 52°/1.8°/−1.1° and seated
+2 cm off — the module recovers that pose to under half a degree and the seat to under 2 cm,
+**refuses the same paper hung at random**, and ranks the right photograph first decisively.
+The wiring is pinned where it cannot be run: arrival asks the pictures *before* the sweep in
+both attach paths, the door writes the grade and un-leans its points, the mute-fallback and
+`by_features` flags exist, and `rebuildNow` is RUN in node over one unchanged and one changed
+blob — keeping the first object, its live mask and its own placement while fetching only the
+second.
+
+**✅ FINISHED, all four.** (a) **The reversion audit passed: 8 breaks, every one caught by
+the check that names it**, and the three files restored byte for byte (`match.py`
+`4c7beef0`, `align.py` `c3dd2175`, `pipeline.py` `bc4450d4`, all re-verified after).
+Fired counts: a fit nobody's features agree on **6**; the seat not fitted **1**; matched
+points left in the levelled frame **1**; the pictures asked after the sweep **1**; **a mute
+feature judge silencing the correlations 7**; the page told nothing about which clouds changed
+**1**; a kept scan keeping its old description **1**; a changed cloud kept anyway **2**.
+The two biggest counts are the two that matter -- asserting an unsupported fit, and the
+mute-judge fault the suite caught while this was being written.
+(b) **Exes rebuilt 22:04/22:05 with Studio closed (0 processes), Studio `--selftest` rc 0.**
+They grew 35 MB -> ~100 MB, which is the models and ONNX Runtime travelling with them.
+⭐⭐ **AND THE BUNDLE WAS READ, NOT ASSUMED**: `CArchiveReader` shows
+`tlsconvert\models\disk_lightglue_k2048_512x1024.onnx` (46.6 MB) and
+`xfeat_2048_512x1024.onnx` (2.5 MB) inside **all three** exes, at exactly the path
+`model_dirs()` searches first. (c) live-state block retitled; (d) committed and pushed
+after both case-sensitive credential scans.
+
+**⚠ THE SELFTEST DOES NOT CHECK THE MODELS -- NAMED, NOT FIXED.** `tlspie_studio.py`'s
+`--selftest` asserts the native window backend and *reports* the GPU; it says nothing about
+whether the matcher can start. Its own comment names silently-missing bundled files as the
+failure to fear, and this pass added exactly that kind of dependency: a build whose models
+did not pack would start, solve every photograph by correlation, and look like it worked.
+The packing is correct **today, verified by reading the archive** -- but the diagnostic that
+would notice it breaking does not exist. Queued for the forty-second pass: one line in the
+selftest reporting `match.available()`, reported and not required (a matcher-less build is a
+legitimate build -- the disk model is gitignored, so a fresh clone builds xfeat-only).
+
+### ⭐⭐ THE MATCHER'S FIRST INDEPENDENT TEST: MINISTRY OF SOUND, AND IT FOUND A REAL FAULT
+
+Run at the operator's request on `C:\Users\sunun\Desktop\ministry of sound` -- **56 captures
+shot 02 September, scored against all 60 photographs**, a job the thresholds were never tuned
+on and which has never been through Studio. `scratchpad/feat/mos_rank.py` -> `mos_rank.json`.
+Each cloud rendered once, the photographs streamed past it, ~25 s per capture.
+
+Nothing here was decidable from names: 60 originals, all distinct, one filed per capture,
+no duplicates. Times do not settle it either -- the filed photograph runs from a minute
+*before* its capture to two and a half minutes *after*.
+
+- **43 of 56 rankings decisive. 17 confirm the filing; 26 contradict it.**
+- ⭐ **Every single decisive disagreement is a step of exactly +1 in the photograph
+  sequence** -- 25 of them +1, and folder 27 is +2 **because `_098` is one of the five
+  originals nobody filed**, so the step across it is two. A matcher inventing answers does not
+  produce a constant offset; this is a filing error, and the geometry reads it cleanly.
+  Margins are not marginal: 66 vs 7, 144 vs 8, 217 vs 6.
+- ⭐⭐ **THE TWO DARK SCANS WERE FOUND BY GEOMETRY, WITHOUT BEING TOLD.** The operator
+  said two captures were too dark to photograph. Exactly two come back at noise:
+  **folder 24 (`13_34_13`) 7 inliers vs 6** -- and it is the one with no photograph filed at
+  all -- and **folder 37 (`14_24_32`) 8 vs 7**, which *does* have one filed and whose cloud
+  recognises nothing in it. Every other weak row still scores 13-26 against a runner-up of
+  4-8. *A correlation confidence can only say "I am unsure"; the feature count says "no
+  photograph in this set is of this room", which is a different sentence.*
+- The drift **begins immediately after folder 24, the first dark scan**, and resets at two
+  islands (38/39 and 47/48) rather than accumulating -- so it is not one clean shift and no
+  mechanism for the resets is claimed here.
+- **13 rows are NOT decisive and must not be acted on**, folder 56 above all: `_128` and
+  `_129` score **80 and 79**, a real tie between two photographs of nearly the same place.
+
+**⛔ NOTHING ON THE OPERATOR'S DISK WAS CHANGED.** The corrective list is in `mos_rank.json`
+and was reported, not applied; refiling 26 captures is a chain rename over their data and is
+theirs to authorise.
+
+**Earlier the same evening, the restaurant job:** the operator copied the right `16_15_16`
+original into folder 5, and a sweep of the whole set found the anomaly is narrower than first
+reported -- `INSTA IMAGES` holds 61 files, 51 renamed `TLS_*` and **10 still named `IMG_*`**,
+and a first pass that globbed only `TLS_*` wrongly flagged five sound scans. What survives:
+project indices **13, 14 and 15 hold the photograph named for an earlier capture** (13->16_41_12,
+14->16_46_12, 15->16_49_37-or-16_51_45, those last two being byte-identical originals), and all
+three are graded doubtful. Not yet run through the matcher.
+
+Then the operator: reopen the restored restaurant project on the new build and press
+**Match the picture** on scan 4.
 
 ### ▶ NEXT SESSION STARTS HERE
 

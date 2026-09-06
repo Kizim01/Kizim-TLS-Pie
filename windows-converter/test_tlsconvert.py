@@ -3323,7 +3323,10 @@ check("...and narrowing the cut list touches the scopes and nothing else",
 # on 2026-09-06 -- see "a placement follows its cloud".
 check("...and the rebuild the clean round-trip triggers puts the page's own "
       "placement back on every cloud",
-      "const was=held.get(scanKey(meta[i]));" in _js_func("rebuildNow")
+      # `m` is `meta[i]` since the forty-first pass -- the key is still the
+      # cloud's own identity, never its position in the list.
+      "const m=meta[i];" in _js_func("rebuildNow")
+      and "const was=held.get(scanKey(m));" in _js_func("rebuildNow")
       and "if(was) s.setup=was;" in _js_func("rebuildNow"))
 check("a cleaning rule is put back WHOLE, threshold and all -- the one home "
       "both undos use",
@@ -12782,7 +12785,10 @@ check("tearing scans down frees the twin too, and empties the refine queue",
 # nothing to hand-map, so it goes through the one rebuild like everything else
 # -- and one fewer place that empties `V.scans` across an await.
 check("...and every teardown site goes through it",
-      _page.count("dropChunks(V.scans);") == 2
+      # Since the forty-first pass the rebuild tears down only the scans it
+      # is NOT keeping -- `dropChunks(V.scans.filter(...))` -- so the site is
+      # counted by its prefix; the buffers are still freed in one place.
+      _page.count("dropChunks(V.scans") == 2
       and _page.count("gl.deleteBuffer(c.pos)") == 1)
 
 # ---------------------------------------------------------------------------
@@ -13367,6 +13373,293 @@ const out={};
           _w.get("failedImportStops") is True, _w)
     check("and the plain Sort press still MOVES photographs, as it always did",
           _w.get("sortStillMoves") is True, _w)
+
+# --- the photograph matched by its features ---------------------------------
+#
+# ⭐⭐ THE FORTY-FIRST PASS'S SOLVER, PROVED ON GEOMETRY IT CANNOT ARGUE WITH.
+# A rotation recovered from directions, a seat recovered from ranges, both to
+# the noise floor; and, when a model is on disk, a fabricated room whose
+# photograph was turned by a known pose is matched back to that pose by the
+# real matcher. The numbers here are the module's own bars (MATCH_MIN,
+# MATCH_TOL_DEG), not looser ones.
+print("\nthe photograph matched by its features")
+from tlsconvert import match as _mt                                # noqa: E402
+_rng = np.random.default_rng(41)
+
+_bg = _mt.bearings(
+    np.arange(_mt.MATCH_LON_BINS)[None, :].repeat(_mt.MATCH_LAT_BINS, 0),
+    np.arange(_mt.MATCH_LAT_BINS)[:, None].repeat(_mt.MATCH_LON_BINS, 1))
+_gd = colour.grid_directions(_mt.MATCH_LON_BINS, _mt.MATCH_LAT_BINS)
+check("a pixel's bearing is the cloud grid's own ray for that cell",
+      float(np.abs(_bg - _gd).max()) < 1e-12, float(np.abs(_bg - _gd).max()))
+
+_eq = _mt.equalise(np.linspace(0, 1, 4096).reshape(64, 64))
+check("equalising a ramp spans the byte and stays monotone",
+      # the half-percent stretch clips the very ends, so the floor is near
+      # zero rather than at it
+      _eq.dtype == np.uint8 and _eq.min() <= 3 and _eq.max() >= 250
+      and bool((np.diff(_eq.ravel()) >= 0).all()), (_eq.min(), _eq.max()))
+check("...and a field with nothing filled comes back all zero, not an error",
+      not _mt.equalise(np.ones((4, 4)), np.zeros((4, 4), bool)).any())
+
+
+def _rot(yaw, pitch, roll):
+    return colour.camera_matrix(yaw, pitch, roll)
+
+
+def _unit(v):
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+_R = _rot(37.0, 1.5, -0.8)
+_W = _unit(_rng.normal(size=(60, 3)))
+_C = _W @ _R.T
+_Rk = _mt.kabsch(_W, _C)
+check("Kabsch recovers a rotation from clean direction pairs",
+      # acos near 1 has a floor of a few micro-degrees; that IS the noise
+      _mt.apart_deg(_Rk, _R) < 1e-4, _mt.apart_deg(_Rk, _R))
+_Cn = _C.copy()
+_bad = _rng.choice(60, 24, replace=False)
+_Cn[_bad] = _unit(_rng.normal(size=(24, 3)))
+_Rr, _inl = _mt.ransac_rotation(_W, _Cn)
+check("two-point RANSAC finds the rotation through 40% outliers",
+      _Rr is not None and _mt.apart_deg(_Rr, _R) < 0.05,
+      None if _Rr is None else _mt.apart_deg(_Rr, _R))
+check("...and names exactly the pairs that agree with it",
+      _Rr is not None and int(_inl.sum()) == 36 and not _inl[_bad].any(),
+      int(_inl.sum()))
+check("...and refuses with fewer than two pairs",
+      _mt.ransac_rotation(_W[:1], _Cn[:1])[0] is None)
+check("...and is deterministic press to press",
+      np.array_equal(_mt.ransac_rotation(_W, _Cn)[1], _inl))
+
+_X = _unit(_rng.normal(size=(80, 3))) * _rng.uniform(1.0, 8.0, size=(80, 1))
+_t = np.array([0.02, -0.01, 0.03])
+_B = _unit((_X - _t) @ _R.T)
+_R0 = _rot(37.4, 1.2, -0.5)
+_R6, _t6, _res = _mt.refine_six(_X, _B, _R0)
+check("the six-parameter fit recovers rotation AND seat from ranges",
+      _mt.apart_deg(_R6, _R) < 0.02
+      and float(np.linalg.norm(_t6 - _t)) < 0.003
+      and float(np.sqrt((_res ** 2).mean())) < 0.01,
+      (_mt.apart_deg(_R6, _R), _t6, float(np.sqrt((_res ** 2).mean()))))
+check("the tool's own angles come back from the fitted matrix",
+      all(abs(a - b) < 0.02 for a, b in
+          zip(colour.angles_from_matrix(_R6), (37.0, 1.5, -0.8))),
+      colour.angles_from_matrix(_R6))
+
+_have = _mt.available()
+check("the small model is committed, so a fresh clone can match",
+      _mt.model_path("xfeat") is not None
+      and os.path.getsize(_mt.model_path("xfeat")) > 1_000_000)
+check("available() lists backends best first, from what is on disk",
+      isinstance(_have, list) and all(k in dict(_mt.MODELS) for k in _have)
+      and (_have == [k for k, _f in _mt.MODELS if k in _have]), _have)
+_xyz0 = _unit(_rng.normal(size=(5000, 3))) * 3.0
+_r0 = _mt.match_pose(_xyz0, None, np.zeros((64, 128)))
+check("a cloud with no reflectivity is refused in words, never raises",
+      _r0["ok"] is False and _r0["belongs"] is False
+      and ("reflectivity" in (_r0["reason"] or "")
+           or "matcher" in (_r0["reason"] or "")), _r0["reason"])
+_r1 = _mt.match_pose(_xyz0, np.ones(5000), np.zeros((64, 128)),
+                     backend="nothing-of-the-kind")
+check("an unknown backend is named in the refusal",
+      (_r1["ok"] is False and "nothing-of-the-kind" in (_r1["reason"] or ""))
+      or not _have, _r1["reason"])
+check("a match record keeps the pose and the verdict but never the points",
+      "points" not in _mt.record(_r1) and "belongs" in _mt.record(_r1)
+      and "yaw_deg" in _mt.record(_r1))
+
+# ⛔ THE REAL MATCHER ON A FABRICATED ROOM, when a model is here. A box room
+# 8 m by 6 m, walls to 1.5 m above the sensor and 1.5 m below, papered with a
+# texture that has corners (blotches at three scales and a few dark "frames"),
+# seen by the laser as reflectivity; the "photograph" is that same paper seen
+# from a camera turned by a known pose and seated 2 cm off. No projection
+# short-cut is shared with the module: the photo is ray-cast onto the box.
+if not _have:
+    print("  skip no matcher model is on disk here, so the real-matcher room "
+          "was NOT run")
+else:
+    def _paper(p):
+        """A texture over the room's surfaces, by position, with corners."""
+        x, y, z = p[:, 0], p[:, 1], p[:, 2]
+        v = np.zeros(len(p))
+        for s, w in ((0.9, 1.0), (0.45, 0.7), (0.22, 0.5)):
+            v += w * (np.floor(x / s + 0.37 * np.floor(y / s)) % 3
+                      + np.floor(z / s + 0.61 * np.floor(x / s)) % 2)
+        v = (v - v.min()) / (v.max() - v.min() + 1e-9)
+        # dark rectangles, like pictures on the walls
+        for cx, cy, cz, hw, hh in ((4.0, 0.5, 0.3, 0.6, 0.4),
+                                   (-4.0, -1.2, 0.2, 0.5, 0.5),
+                                   (1.0, 3.0, 0.4, 0.8, 0.3),
+                                   (-2.0, -3.0, -0.2, 0.4, 0.6)):
+            on = ((np.abs(x - cx) < hw + 0.05) & (np.abs(y - cy) < hw + 0.05)
+                  & (np.abs(z - cz) < hh))
+            v = np.where(on, 0.08, v)
+        return v
+
+    _LIM = {0: 4.0, 1: 3.0, 2: 1.5}
+
+    def _cast(origin, dirs):
+        """Where rays from `origin` meet the box |x|<=4, |y|<=3, |z|<=1.5."""
+        best = np.full(len(dirs), np.inf)
+        for axis in (0, 1, 2):
+            for sign in (1.0, -1.0):
+                lim = sign * _LIM[axis]
+                d = dirs[:, axis]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    s = (lim - origin[axis]) / d
+                ok = (s > 1e-6) & np.isfinite(s)
+                hit = origin[None, :] + dirs * s[:, None]
+                for a in range(3):
+                    if a != axis:
+                        ok &= np.abs(hit[:, a]) <= _LIM[a] + 1e-9
+                best = np.where(ok & (s < best), s, best)
+        return origin[None, :] + dirs * best[:, None], best
+
+    _dirs = _unit(_rng.normal(size=(400_000, 3)))
+    _pts, _ = _cast(np.zeros(3), _dirs)
+    _refl = (_paper(_pts) * 200 + 20).astype(np.float64)
+    _Rt = _rot(52.0, 1.8, -1.1)
+    _seat = np.array([0.01, -0.015, 0.02])
+    _H, _Wd = 720, 1440
+    _cam_dirs = _mt.bearings(np.arange(_Wd)[None, :].repeat(_H, 0),
+                             np.arange(_H)[:, None].repeat(_Wd, 1),
+                             _Wd, _H).reshape(-1, 3)
+    _world_dirs = _cam_dirs @ _Rt          # camera c = R w  ->  w = R^T c
+    _hit, _ = _cast(_seat, _world_dirs)
+    _lum = (_paper(_hit) * 255).reshape(_H, _Wd)
+    _t0 = time.time()
+    _got = _mt.match_pose(_pts, _refl, _lum, camera=(0.0, 0.0, 0.0))
+    _dt = time.time() - _t0
+    check("the real matcher lines a fabricated room's photograph up on it",
+          _got["ok"] and _got["belongs"],
+          (_got["reason"], _got["matches"], _got["inliers"], round(_dt, 1)))
+    if _got["belongs"]:
+        _dy = abs((_got["yaw_deg"] - 52.0 + 180) % 360 - 180)
+        check("...to within the grid's cell in heading and tilt",
+              _dy < 0.5 and abs(_got["pitch_deg"] - 1.8) < 0.5
+              and abs(_got["roll_deg"] + 1.1) < 0.5,
+              (_got["yaw_deg"], _got["pitch_deg"], _got["roll_deg"]))
+        check("...and puts the camera's seat within two centimetres",
+              float(np.linalg.norm(np.array(
+                  [_got["camera_x"], _got["camera_y"], _got["camera_z"]])
+                  - _seat)) < 0.02,
+              (_got["camera_x"], _got["camera_y"], _got["camera_z"]))
+        check("...naming the backend and the count that earned it",
+              _got["backend"] in _have and _got["inliers"] >= _mt.MATCH_MIN
+              and len(_got["points"]) == min(200, _got["inliers"]),
+              (_got["backend"], _got["inliers"], len(_got["points"])))
+    _wrong = (_paper(_cast(_seat, _unit(_rng.normal(
+        size=(_H * _Wd, 3))))[0]) * 255).reshape(_H, _Wd)
+    _bad = _mt.match_pose(_pts, _refl, _wrong, camera=(0.0, 0.0, 0.0))
+    check("...and a photograph of the same paper hung at random is NOT matched",
+          _bad["ok"] and not _bad["belongs"], (_bad["inliers"], _bad["reason"]))
+    _rk = _mt.rank_photos(_pts, _refl, ["right.png", "wrong.png"],
+                          loader=lambda p: _lum if p == "right.png"
+                          else _wrong)
+    check("ranking two photographs puts the right one first, decisively",
+          _rk["decisive"] and _rk["best"]["name"] == "right.png"
+          and _rk["rows"][0]["inliers"]
+          >= _mt.MATCH_MARGIN * max(_rk["rows"][1]["inliers"], 1),
+          [(r["name"], r["inliers"]) for r in _rk["rows"]])
+
+# ⛔ AND THE PARTS THAT CANNOT BE RUN ARE PINNED WHERE THEY ARE WIRED.
+_cs = _ALIGN_SRC[_ALIGN_SRC.index("def colour_scan("):]
+_cs = _cs[:_cs.index("\ndef ", 10)]
+check("the pictures are asked BEFORE the correlation sweep, on arrival",
+      "match_mod.arrival(" in _cs
+      and _cs.index("match_mod.arrival(")
+      < _cs.index("colour_mod.solve_yaw(sample, lum,"),
+      _cs.index("match_mod.arrival(") if "match_mod.arrival(" in _cs else -1)
+check("...and a matched pose is adopted seat and all, graded by its count",
+      'info["grade"] = "matched"' in _cs
+      and 'info["judged"] = ["features"]' in _cs
+      and "scan.camera_x, scan.camera_y, scan.camera_z = camera" in _cs)
+check("...through the same door in the CLI's attach",
+      "match_mod.arrival(" in open(pipeline.__file__, encoding="utf-8").read())
+check("the full cloud makes the picture unless a cut is in force",
+      "def match_picture_points(scan, world, sample, refl):" in _ALIGN_SRC
+      and "return world, view_refl" in _ALIGN_SRC
+      and "return sample, refl" in _ALIGN_SRC)
+check("the match door is routed, and the button on the page is wired to it",
+      'if path == "/photo/match":' in _ALIGN_SRC
+      and "srv.match_photo(" in _ALIGN_SRC
+      and 'id="pinmatch"' in _ALIGN_SRC
+      and "$('pinmatch').onclick=e=>matchPicture(e.target);" in _ALIGN_SRC)
+_mp = _js_func("matchPicture")
+check("...and the press is remembered BEFORE it runs, like every pose door",
+      _mp.index("remember(") < _mp.index("post('photo/match'"), _mp[:200])
+check("...and the agreeing points are marked on the cloud, where they belong",
+      "for(const q of matchedAt()) pinTo.push(q);" in _js_func("drawPairs")
+      and _ALIGN_SRC.count("V.matched=null") >= 3)
+_md = _ALIGN_SRC[_ALIGN_SRC.index("    def match_photo(self, index):"):]
+_md = _md[:_md.index("\n    def ", 10)]
+check("the door writes the grade a match earns, and un-leans its points",
+      'fresh["grade"] = "matched"' in _md
+      and "@ lean.matrix()" in _md and "self._repaint(" in _md)
+check("a mute feature judge hands the sort's row back to the correlations",
+      "feat_top >= match_mod.MATCH_MIN" in _ALIGN_SRC
+      and '"by_features": bool(by_feat)' in _ALIGN_SRC)
+check("the ranking of a folder is by agreeing features first when it can be",
+      "match_mod.rank_photos(" in _ALIGN_SRC
+      and '"by_features": bool(by_match)' in _ALIGN_SRC)
+
+# ⭐⭐ THE PAGE KEEPS WHAT DID NOT CHANGE: the fingerprint is written by the
+# server, read by describeScan, and honoured by rebuildNow -- which is RUN
+# here, with a loadScan that counts, over one scan whose blob is unchanged
+# and one whose blob is new.
+check("every blob goes out with its fingerprint",
+      '"blob": hashlib.md5(blob).hexdigest(),' in _ALIGN_SRC
+      and "import hashlib" in _ALIGN_SRC)
+_ds = _js_func("describeScan")
+check("...which the page carries beside the match record",
+      "blob:m.blob||null" in _ds and "matched:m.matched||null" in _ds)
+check("...and afterColour re-derives the cut mask only for a reload",
+      "if(V.edits.length && reloaded) recomputeLive();"
+      in _js_func("afterColour"))
+if not _node:
+    print("  skip node is not installed, so rebuildNow's keep was NOT run")
+else:
+    import tempfile as _tf
+    _rbd = _tf.mkdtemp(prefix="tlsrebuild")
+    _rbh = """
+%s
+%s
+%s
+let fetched=[], dropped=[];
+async function loadScan(m){ fetched.push(m.name);
+  return Object.assign({index:m.index, name:m.name, chunks:[], live:new Uint8Array(1)}, describeScan(m)); }
+function dropChunks(list){ for(const s of list) dropped.push(s.name); }
+const A={index:0, name:'A', folder:'F', blob:'aaa', setup:{x_m:1}, chunks:[], live:new Uint8Array([1]), grade:'sure'};
+const B={index:1, name:'B', folder:'F', blob:'bbb', setup:{x_m:2}, chunks:[], live:new Uint8Array([1])};
+const V={scans:[A,B]};
+const meta=[{index:0,name:'A',folder:'F',blob:'aaa',tint:[1,2,3],setup:{x_m:9},grade:'matched'},
+            {index:1,name:'B',folder:'F',blob:'ccc',tint:[1,2,3],setup:{x_m:8}}];
+rebuildNow(meta).then(n=>{
+  console.log(JSON.stringify({reloaded:n, fetched, dropped,
+    keptSame:V.scans[0]===A, keptSetup:V.scans[0].setup.x_m, keptGrade:V.scans[0].grade,
+    newSetup:V.scans[1].setup.x_m, liveKept:V.scans[0].live===A.live}));
+});
+""" % (_js_func("scanKey"), _js_func("describeScan"),
+       # ⛔ `_js_func` DROPS A LEADING `async`, and node then refuses the
+       # `await` inside -- the same trap the two-press probe hit.
+       "async " + _js_func("rebuildNow"))
+    _rbp = os.path.join(_rbd, "rebuild.js")
+    with io.open(_rbp, "w", encoding="utf-8") as _fh:
+        _fh.write(_rbh)
+    _rbr = subprocess.run([_node, _rbp], capture_output=True, text=True)
+    check("rebuildNow runs", _rbr.returncode == 0, (_rbr.stderr or "")[:400])
+    _rbo = json.loads(_rbr.stdout.strip().splitlines()[-1]) if _rbr.returncode == 0 else {}
+    check("a scan whose blob is unchanged is KEPT: not fetched, not torn down, "
+          "same object, same live mask",
+          _rbo.get("fetched") == ["B"] and _rbo.get("dropped") == ["B"]
+          and _rbo.get("keptSame") is True and _rbo.get("liveKept") is True,
+          _rbo)
+    check("...its description refreshed and its own placement kept",
+          _rbo.get("keptGrade") == "matched" and _rbo.get("keptSetup") == 1
+          and _rbo.get("newSetup") == 2 and _rbo.get("reloaded") == 1, _rbo)
+
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)
