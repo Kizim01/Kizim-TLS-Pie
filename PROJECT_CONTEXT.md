@@ -7114,7 +7114,7 @@ and assert the baseline hash before breaking*. Restored byte-for-byte (`align.py
 `F15A5320B06D49097966D90DBB4E004A`, `colour.py` `C81ED81D7D74362D6EFE0C9E0BF5DEA9`, `shoot.py`
 `F66F3DDD9BAADF297432FE7DECA29557`), final green **1796**.
 
-### 2026-09-06, forty-first pass — ⚠ IN PROGRESS: the photograph matched to the cloud by its features
+### 2026-09-06, forty-first pass — ✅ FINISHED: the photograph matched to the cloud by its features
 
 **Status**: first committed as WIP `cc32859` on `ca64a0c` (pushed while the tests were being
 written); the module's own tests then went in and the suite is **green at 1833** (1796 + 37).
