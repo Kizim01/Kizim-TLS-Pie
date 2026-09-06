@@ -6569,7 +6569,7 @@ inliers, and the page keeps clouds whose blob fingerprint is unchanged. Suite **
 failed**; **reversion audit 8 breaks, all 8 caught, all files restored byte for byte**.
 ⚠ The selftest still does NOT check that the models packed — named and queued, not fixed.
 
-**Tree**: `main` = **`@@COMMIT@@`** (41st: the photograph matched by its features) on
+**Tree**: `main` = **`909010c`** (41st: the photograph matched by its features) on
 **`12cdc24`** (40th: the markings judge, measured to weight 0; the pictures check the clock's
 sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture) on `9e96a42` (38th),
 plus this block's own pin commit, in sync with origin, clean but for the
