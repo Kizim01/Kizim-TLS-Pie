@@ -3635,6 +3635,190 @@ check("trying one of the other fits does not save a baseline",
       "setHeading(index, yaw, false)" in _ALIGN_SRC)
 
 
+# --- the pictures check the clock's pairing ---------------------------------
+#
+# ⭐⭐ Asked for on 2026-09-06: "in the job sorting, as well as using time for
+# pairing, add a step that takes the intensity 360 image and the photograph
+# 360 image and compares them before pairing is confirmed and are put into
+# folders". The clock walk cannot cross two pairs but it can SLIDE the whole
+# day by one frame with every clock check passing (the 2026-09-03 third
+# sitting); only the pictures can see that.
+print("\nthe pictures check the clock's pairing")
+from tlsconvert import shoot as _shoot_mod                    # noqa: E402
+
+
+def _render_field(xyz, yaw_deg, values, h=colour.SOLVE_LAT_BINS,
+                  w=colour.SOLVE_LON_BINS):
+    """The panorama of `values` a camera at the origin, turned by yaw, sees."""
+    d, _r = colour.directions(xyz)
+    lon, lat = colour.to_lonlat(d, yaw_deg)
+    iu = np.clip(((lon / (2 * math.pi)) + 0.5) * w, 0, w - 1).astype(int)
+    iv = np.clip((0.5 - lat / math.pi) * h, 0, h - 1).astype(int)
+    flat = iv * w + iu
+    tot = np.bincount(flat, weights=np.asarray(values, np.float64),
+                      minlength=h * w)
+    cnt = np.bincount(flat, minlength=h * w)
+    img = np.zeros(h * w)
+    hit = cnt > 0
+    img[hit] = tot[hit] / cnt[hit]
+    img = colour.fill_holes(img.reshape(h, w), hit.reshape(h, w))
+    span = img.max() - img.min()
+    return ((img - img.min()) / (span if span else 1) * 255.0).astype(np.float32)
+
+
+# Two rooms of the same SHAPE with different MARKINGS: each capture's walls
+# carry vertical stripes at their own irregular azimuths. Depth edges cannot
+# tell the two apart -- which is the whole point -- and the laser's return can.
+# ⛔ IRREGULAR ON PURPOSE. A first version used stripes every 60 degrees, and
+# the judge found the heading to three ten-thousandths of a degree at a
+# confidence of 4.4 -- a periodic marking has six equally good answers, and
+# peak-above-shoulder is exactly the measure that says so. That was the fixture
+# being ambiguous, not the judge being weak.
+_az = np.degrees(np.arctan2(room[:, 0], room[:, 1])) % 360.0
+
+
+def _stripes(edges):
+    """200 between every other pair of the given azimuth edges, else 60."""
+    band = np.searchsorted(np.asarray(edges, np.float64), _az) % 2
+    return np.where(band == 1, 200.0, 60.0).astype(np.float32)
+
+
+_refl_A = _stripes([0, 25, 70, 90, 140, 200, 230, 300, 330])
+_refl_B = _stripes([10, 50, 60, 120, 170, 210, 260, 280, 350])
+
+
+def _photo_of(yaw, refl):
+    """What the camera saw: the room's depth AND its markings, at one heading."""
+    return 0.5 * render_lum(room, yaw) + 0.5 * _render_field(room, yaw, refl)
+
+
+def _write_photo(path, lum):
+    big = np.repeat(np.repeat(lum, 2, 0), 2, 1).astype(np.uint8)
+    _Image.fromarray(np.stack([big] * 3, -1)).save(path)
+
+
+_ckdir = tempfile.mkdtemp(prefix="tlscheck")
+_ckscans = os.path.join(_ckdir, "caps")
+_ckpix = os.path.join(_ckdir, "pix")
+os.makedirs(_ckscans)
+os.makedirs(_ckpix)
+_ck0 = _shoot_mod._stamp_seconds(2026, 8, 20, 10, 0, 0)
+
+
+def _ck_capture(stem, started):
+    with open(os.path.join(_ckscans, stem + ".pcap"), "wb") as fh:
+        fh.write(b"not a capture, but a file")
+    with open(os.path.join(_ckscans, stem + ".json"), "w") as fh:
+        json.dump({"capture": {"started_epoch": started},
+                   "sweep": {"track": [[0, 0], [95.0, 190.8]]}}, fh)
+
+
+def _ck_shot(when, lum):
+    name = "IMG_%s_00.png" % time.strftime("%Y%m%d_%H%M%S", time.gmtime(when))
+    _write_photo(os.path.join(_ckpix, name), lum)
+    return name
+
+
+# Three captures two minutes apart. The photographs are NAMED so the clock
+# pairs A->1, B->2, C->3 -- and RENDERED crossed: frame 1 shows B's markings
+# and frame 2 shows A's. Frame 3 is noise, so the room C is paired with is one
+# the pictures cannot judge.
+_ck_capture("TLS_26_08_20_10_00_00_A", _ck0)
+_ck_capture("TLS_26_08_20_10_02_00_B", _ck0 + 120.0)
+_ck_capture("TLS_26_08_20_10_04_00_C", _ck0 + 240.0)
+_ck_p1 = _ck_shot(_ck0 + 95.0 + 30.0, _photo_of(20.0, _refl_B))
+_ck_p2 = _ck_shot(_ck0 + 120.0 + 95.0 + 30.0, _photo_of(-50.0, _refl_A))
+_ck_p3 = _ck_shot(_ck0 + 240.0 + 95.0 + 30.0,
+                  np.random.RandomState(3).uniform(0, 255, (90, 360))
+                  .astype(np.float32))
+
+
+def _ck_loader(path):
+    tag = os.path.basename(path).rsplit("_", 1)[1][:1]
+    return room, {"A": _refl_A, "B": _refl_B,
+                  "C": _refl_A * 0 + 128.0}[tag]
+
+
+_cksrv = align.AlignServer([], out_path=None)
+_ckplan = _shoot_mod.plan(_ckscans, _ckpix, offset=0.0)
+check("the clock pairs the fixture straight, A-1 B-2 C-3",
+      [r["assigned"]["name"] for r in _ckplan["scans"]]
+      == [_ck_p1, _ck_p2, _ck_p3],
+      [r["assigned"]["name"] for r in _ckplan["scans"]])
+check("...and every capture has more than one candidate to be asked about",
+      all(len(r["photos"]) >= 2 for r in _ckplan["scans"]),
+      [len(r["photos"]) for r in _ckplan["scans"]])
+_ck = _cksrv.shoot_check(_ckscans, _ckpix, offset=0.0, loader=_ck_loader)
+check("the check runs over every paired capture", _ck.get("ok") is True
+      and _ck["checked"] == 3, _ck.get("error") or _ck.get("checked"))
+_ckv = {r["name"]: r for r in _ck["results"]}
+check("THE PICTURES SEE THE CROSSED PAIR THE CLOCK COULD NOT: A wants frame 2",
+      _ckv["TLS_26_08_20_10_00_00_A.pcap"]["verdict"] == "prefers"
+      and _ckv["TLS_26_08_20_10_00_00_A.pcap"]["picture"] == _ck_p2,
+      _ckv["TLS_26_08_20_10_00_00_A.pcap"])
+check("...and B wants frame 1",
+      _ckv["TLS_26_08_20_10_02_00_B.pcap"]["verdict"] == "prefers"
+      and _ckv["TLS_26_08_20_10_02_00_B.pcap"]["picture"] == _ck_p1,
+      _ckv["TLS_26_08_20_10_02_00_B.pcap"])
+# ⛔ THE WRONG FRAME IS NOT MERELY OUTSCORED, IT FAILS CORROBORATION: the depth
+# edges match it perfectly (same room), and only the reflectivity says no.
+_ckA = {c["name"]: c
+        for c in _ckv["TLS_26_08_20_10_00_00_A.pcap"]["candidates"]}
+check("...because the clock's frame convinced one measure and not both",
+      _ckA[_ck_p2]["corroborated"] is True
+      and _ckA[_ck_p1]["corroborated"] is False
+      and _ckA[_ck_p1]["confidence"] >= colour.MIN_CONFIDENCE,
+      {k: (v["corroborated"], round(v["confidence"], 1),
+           round(v["mi_confidence"], 1)) for k, v in _ckA.items()})
+check("...and the reflectivity EDGES were asked as well as its values",
+      _ckA[_ck_p2]["mark_confidence"] is not None
+      and _ckA[_ck_p2]["mark_confidence"] > _ckA[_ck_p1]["mark_confidence"],
+      (_ckA[_ck_p2]["mark_confidence"], _ckA[_ck_p1]["mark_confidence"]))
+check("a room the pictures cannot judge is called MUTE, and the clock stands",
+      _ckv["TLS_26_08_20_10_04_00_C.pcap"]["verdict"] == "mute"
+      and "TLS_26_08_20_10_04_00_C.pcap" not in _ck["overrides"],
+      _ckv["TLS_26_08_20_10_04_00_C.pcap"])
+check("the overrides name the swap and nothing else",
+      set(_ck["overrides"]) == {"TLS_26_08_20_10_00_00_A.pcap",
+                                "TLS_26_08_20_10_02_00_B.pcap"}
+      and os.path.basename(_ck["overrides"]["TLS_26_08_20_10_00_00_A.pcap"])
+      == _ck_p2, _ck["overrides"])
+check("...and the sentence says what was found, in the operator's terms",
+      "on 2 the picture says a DIFFERENT frame" in _ck["text"]
+      and "too dark or too plain" in _ck["text"]
+      and _ck["counts"] == {"prefers": 2, "mute": 1}, _ck["text"])
+
+# ⭐ AND THE PLAN HONOURS THEM AHEAD OF THE CLOCK, without crossing anything.
+_ckplan2 = _shoot_mod.plan(_ckscans, _ckpix, offset=0.0,
+                           overrides=_ck["overrides"])
+check("THE PLAN FILES THE PICTURES' PAIRING: A-2, B-1, and C still by clock",
+      [r["assigned"]["name"] for r in _ckplan2["scans"]]
+      == [_ck_p2, _ck_p1, _ck_p3],
+      [r["assigned"]["name"] for r in _ckplan2["scans"]])
+check("...naming the captures the pictures decided",
+      _ckplan2["by_picture"] == [1, 2] and _ckplan2["ignored_overrides"] == []
+      and not any(r.get("shared") for r in _ckplan2["scans"]),
+      (_ckplan2["by_picture"], _ckplan2["ignored_overrides"]))
+_ckplan3 = _shoot_mod.plan(_ckscans, _ckpix, offset=0.0,
+                           overrides={"TLS_26_08_20_10_00_00_A.pcap":
+                                      os.path.join(_ckpix, "nowhere.png"),
+                                      "TLS_26_08_20_99_00_00_Z.pcap":
+                                      os.path.join(_ckpix, _ck_p1)})
+check("an override from outside the clock's window is NAMED, not obeyed",
+      sorted(_ckplan3["ignored_overrides"]) == ["TLS_26_08_20_10_00_00_A.pcap",
+                                                "TLS_26_08_20_99_00_00_Z.pcap"]
+      and _ckplan3["scans"][0]["assigned"]["name"] == _ck_p1,
+      _ckplan3["ignored_overrides"])
+check("the check is on the route table, and apply carries the overrides",
+      '"/shoot/check"' in _ALIGN_SRC and "srv.shoot_check(" in _ALIGN_SRC
+      and 'body.get("overrides")))' in _ALIGN_SRC
+      and "overrides=overrides)" in _ALIGN_SRC)
+check("the page runs it from BOTH presses, through one function",
+      _page.count("const byPic=await checkShoot(plan, scans, images);") == 2
+      and _page.count("overrides:byPic.overrides") == 2
+      and 'id="sortcheck" checked' in _page)
+
+
 # --- the pose the operator names, from pins ---------------------------------
 #
 # ⭐⭐ Asked for on 2026-09-06: "i would like a tool to finetune image
@@ -3975,6 +4159,58 @@ check("no answer at all is not corroboration",
 # It arrived with no grade and no second opinion, so the SAME photograph was
 # described two different ways depending on how it got there -- caught by
 # running the real loader over real scans and seeing `grade None`.
+# --- the markings, as a judge -----------------------------------------------
+#
+# ⭐ The operator's idea of 2026-09-06: match the laser's return-strength
+# panorama against the photograph as SHAPES. Two thirds already existed (the
+# panorama, and MI over its values); the missing third is its EDGES, which see
+# a painted line on a flat wall that no depth silhouette can.
+print("\nthe markings, as a judge")
+for _truth in (0.0, 37.0, -114.0):
+    _lum = _render_field(room, _truth, _refl_A)
+    _y, _c, _p = colour.solve_yaw_mark(room, _refl_A, _lum)
+    _err = abs(((_y - _truth) + 180) % 360 - 180)
+    check("the markings recover a %+.0f deg heading (got %+.2f, confidence "
+          "%.1f)" % (_truth, _y, _c), _err < 2.0 and _c >= 5.0, (_y, _c))
+# ⛔ THE MECHANISM, NOT JUST THE ANSWER: on a picture that shows ONLY the
+# markings, the depth judge has nothing to hold and the markings judge does.
+_lum_marks = _render_field(room, 37.0, _refl_A)
+_dy, _dc, _dp = colour.solve_yaw(room, _lum_marks)
+_my, _mc, _mp = colour.solve_yaw_mark(room, _refl_A, _lum_marks)
+check("...where the depth judge is blind to the same picture",
+      _mc > _dc + 2.0, (round(_mc, 2), round(_dc, 2)))
+check("with no reflectivity there are no markings to judge by",
+      colour.solve_yaw_mark(room, None, _lum_marks)[1] == 0.0
+      and colour.solve_yaw_mark(room, _refl_A[:10], _lum_marks)[1] == 0.0)
+
+_msc = colour.PoseScorer(room, _photo_of(37.0, _refl_A), refl=_refl_A,
+                         lon_bins=colour.DEEP_LON_BINS,
+                         lat_bins=colour.DEEP_LAT_BINS)
+_mobj = colour.DeepObjective(_msc)
+_yy, _tot, _per = _mobj.sweep(bins=180)
+_mpk = colour._profile_peaks(_per["mark"], 1)[0]
+check("at any pose, the deep judge's markings term peaks on the heading",
+      abs(((_mpk["yaw_deg"] - 37.0) + 180) % 360 - 180) < 3.0
+      and _mobj.have["mark"], _mpk)
+check("...is reported beside the other three",
+      set(_mobj.raw(37.0)) == {"edge", "mi", "beacon", "mark"}
+      and _mobj.raw(37.0)["mark"] is not None)
+# ⛔⛔ AND DOES NOT VOTE, WHICH IS A MEASUREMENT: over 72 of the operator's
+# real captures the combined answer gained nothing and lost one at any weight
+# above zero. Computed for the panel, absent from the sum, and `used()` says so.
+check("...but carries no weight in the sum, as measured on 72 real captures",
+      colour.DEEP_WEIGHTS["mark"] == 0.0 and "mark" not in _mobj.used()
+      and "mark" in _mobj.stats)
+_before = _msc.evaluations
+_mobj(37.0)
+check("...and a term with no vote is not evaluated in the search",
+      _msc.evaluations - _before == 3, _msc.evaluations - _before)
+_nosc = colour.PoseScorer(room, _photo_of(37.0, _refl_A), refl=None,
+                          lon_bins=colour.DEEP_LON_BINS,
+                          lat_bins=colour.DEEP_LAT_BINS)
+check("a cloud with no reflectivity has the term stand down, not score zero",
+      _nosc.mark(37.0) is None)
+
 print("\nthe grade a solve is given")
 
 
@@ -5398,6 +5634,15 @@ class _Deep(object):
             return None
         return 0.5 if self.mi_flat else self._bump(yaw, pitch, roll, z, 18.0)
 
+    def mark(self, yaw=0.0, pitch=0.0, roll=0.0, z=None, *seat):
+        # The markings need the reflectivity exactly as MI does, so the two
+        # stand down together. ⛔ Added 2026-09-06 when `DeepObjective.raw`
+        # grew a fourth term and this stub, lacking it, ABORTED the suite
+        # before its summary line -- the abort trap in a stub's costume.
+        if not self.want_mi:
+            return None
+        return self._bump(yaw, pitch, roll, z, 20.0)
+
     def beacon(self, yaw=0.0, pitch=0.0, roll=0.0, z=None, *seat):
         if not self.want_beacon:
             return None
@@ -5414,7 +5659,7 @@ _yy, _cc, _raw = _obj.sweep(0.0, 0.0, 0.0, bins=colour.SOLVE_LON_BINS)
 check("the sweep evaluates every heading", _cc.size == colour.SOLVE_LON_BINS)
 check("and it standardises each measure before adding them, so a term with a "
       "bigger natural range cannot outvote one with a smaller",
-      set(_obj.stats) == {"edge", "mi", "beacon"}, sorted(_obj.stats))
+      set(_obj.stats) == {"edge", "mi", "beacon", "mark"}, sorted(_obj.stats))
 # ⛔ A TERM THAT NEVER MOVES CARRIES NO INFORMATION AND MUST NOT BE DIVIDED BY
 # ITS OWN ZERO SPREAD.
 _flat = colour.DeepObjective(_Deep(mi_flat=True))
@@ -12975,8 +13220,8 @@ check("the whole-shoot button is on the page and wired",
 # ⛔ ONE PITCH FOR TWO PRESSES: if the sort and the chain each built their own
 # confirm, the two would describe the same move differently within a month.
 check("both presses read the operator the SAME sort pitch",
-      "sortPitch(plan, ''" in _js_func("sortShoot")
-      and "sortPitch(plan," in _js_func("wholeShoot"))
+      "sortPitch(plan, byPic.extra)" in _js_func("sortShoot")
+      and "sortPitch(plan, byPic.extra+" in _js_func("wholeShoot"))
 check("ingest reads the Add-tray boxes only when nothing is handed in",
       "opts||importOpts()" in _js_func("ingest"))
 
@@ -12997,12 +13242,28 @@ async function askFolder(w){
   if(w.indexOf('numbered')>=0) return DEST;
   return w.indexOf('captures')>=0 ? 'D:/raw/Scans' : 'D:/raw/pix';
 }
-function confirm(text){ CALLS.push(['confirm']); return CONFIRM; }
+const PITCHES=[];
+function confirm(text){ CALLS.push(['confirm']); PITCHES.push(text);
+                        return CONFIRM; }
+/* the Sort tray's one checkbox: the picture check, on unless said otherwise */
+let CHECKBOX=true;
+const $=id=>({checked: id==='sortcheck' ? CHECKBOX : false});
+/* the second capture has TWO candidates, so the picture check has a
+   question to ask; the first has one and is passed over */
+const CHECK={ok:true, checked:1, counts:{prefers:1},
+             results:[{number:2, name:'b', verdict:'prefers', clock:'x.jpg',
+                       picture:'y.jpg', score:6.1, clock_score:2.2}],
+             overrides:{'b':'D:/raw/pix/y.jpg'},
+             text:'Checked 1 capture by picture: on 1 the picture says a '+
+                  'DIFFERENT frame and it is sure.'};
 async function post(path, body){
   CALLS.push(['post', path, body]);
   if(path==='shoot/plan')
-    return {ok:true, note:'n', scans:[{number:1, name:'a', photos:[]}],
+    return {ok:true, note:'n',
+            scans:[{number:1, name:'a', photos:[]},
+                   {number:2, name:'b', photos:[{name:'x.jpg'},{name:'y.jpg'}]}],
             deletable:[], kept_aborted:[]};
+  if(path==='shoot/check') return CHECK;
   if(path==='shoot/apply')
     return {ok:true, text:'2 captures filed.', dest:DEST, folders:FOLDERS,
             failed:[]};
@@ -13037,13 +13298,29 @@ const out={};
   await sortShoot();
   const sap = CALLS.find(c=>c[0]==='post'&&c[1]==='shoot/apply');
   out.sortStillMoves = !!sap && !('copy_photos' in sap[2]);
+  /* the picture check: asked between the plan and the confirm, its verdict
+     read to the operator, and its answer carried into the sort -- from BOTH
+     presses */
+  out.sortOrder = CALLS.map(c=>c[0]==='post'?c[1]:c[0]).join('>');
+  out.sortOverrides = !!sap && JSON.stringify(sap[2].overrides)
+                      === JSON.stringify(CHECK.overrides);
+  out.pitched = PITCHES.every(t=>t.indexOf('BY PICTURE')>=0
+                                 && t.indexOf('filed the picture')>=0);
+  /* and with the box unticked: no check, no overrides, the clock alone */
+  CALLS.length=0; CHECKBOX=false;
+  await sortShoot();
+  const bare = CALLS.find(c=>c[0]==='post'&&c[1]==='shoot/apply');
+  out.untickedSkips = !CALLS.some(c=>c[0]==='post'&&c[1]==='shoot/check')
+                      && !!bare && bare[2].overrides===null;
   console.log(JSON.stringify(out));
 })().catch(e=>{ console.error(e && e.stack || String(e)); process.exit(1); });
 """ % ("\n".join(
         # ⛔ `_js_func` lifts from the word `function`, which DROPS a leading
         # `async` -- and a lifted body full of `await` then refuses to parse.
-        ("async " if f in ("sortShoot", "wholeShoot") else "") + _js_func(f)
-        for f in ("sortPitch", "sortLeftovers", "sortShoot", "wholeShoot")),)
+        ("async " if f in ("sortShoot", "wholeShoot", "checkShoot") else "")
+        + _js_func(f)
+        for f in ("sortPitch", "sortLeftovers", "checkShoot", "sortShoot",
+                  "wholeShoot")),)
     _wjs_path = os.path.join(_rdir, "wholeshoot.js")
     with io.open(_wjs_path, "w", encoding="utf-8") as _fh:
         _fh.write(_wjs)
@@ -13052,10 +13329,22 @@ const out={};
           (_wr.stderr or "")[:400])
     _w = (json.loads(_wr.stdout.strip().splitlines()[-1])
           if _wr.returncode == 0 else {})
-    check("THE CHAIN RUNS ITS FOUR STEPS IN ORDER: plan, confirm, sort, "
+    # ⭐ FIVE STEPS SINCE 2026-09-06: the picture check sits between the plan
+    # and the confirm, so what the operator is asked to approve already says
+    # what the pictures found.
+    check("THE CHAIN RUNS ITS STEPS IN ORDER: plan, check, confirm, sort, "
           "open, solve",
-          _w.get("order") == "ask>ask>shoot/plan>confirm>ask>shoot/apply"
-                             ">ingest>solve", _w)
+          _w.get("order") == "ask>ask>shoot/plan>shoot/check>confirm>ask"
+                             ">shoot/apply>ingest>solve", _w)
+    check("the plain Sort press asks the pictures too, at the same point",
+          _w.get("sortOrder") == "ask>ask>shoot/plan>shoot/check>confirm>ask"
+                                 ">shoot/apply", _w.get("sortOrder"))
+    check("...and hands the pictures' pairing to the sort",
+          _w.get("sortOverrides") is True, _w)
+    check("...having read it to the operator in the confirm, from both presses",
+          _w.get("pitched") is True, _w)
+    check("unticked, no capture is decoded and the clock alone files",
+          _w.get("untickedSkips") is True, _w)
     check("...the sort is asked to COPY the photographs and MOVE the captures",
           _w.get("copies") is True, _w)
     check("...the import colours REGARDLESS of the Add-tray checkbox, or the "

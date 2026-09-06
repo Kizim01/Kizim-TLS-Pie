@@ -875,6 +875,41 @@ def solve_yaw(xyz, lum, camera=(0.0, 0.0, 0.0), refl=None):
     return _yaw_from_bin(profile, best), confidence, profile
 
 
+def solve_yaw_mark(xyz, refl, lum, camera=(0.0, 0.0, 0.0)):
+    """
+    Recover the heading from the room's MARKINGS -- reflectivity edges.
+
+    The same circular correlation `solve_yaw` runs, with the laser's return
+    strength in place of its range: returns (yaw_deg, confidence, profile) in
+    the same shape and scored the same way, so the three are comparable.
+    Zeros when the cloud carries no reflectivity, as `solve_yaw_mi` does.
+
+    ⭐ THE OPERATOR'S IDEA OF 2026-09-06 -- "take the lidar return intensity
+    ... create a 360 black and white image then use that to align the colour
+    image because all shapes would be similar or the same" -- in its cheapest
+    form. `PoseScorer.mark` is this at any pose; this is the one-axis FFT
+    version, a few milliseconds, which is what a sorter asking "this
+    photograph or its neighbour's?" over sixty captures can afford. See that
+    method for why EDGES of reflectivity work where its VALUES needed mutual
+    information: `_edges` takes a gradient magnitude, and a material boundary
+    is a boundary in both pictures whichever way round the contrast runs.
+    """
+    if refl is None or len(refl) != len(xyz):
+        return 0.0, 0.0, np.zeros(SOLVE_LON_BINS)
+    field, filled = field_panorama(xyz, refl, camera=camera)
+    if filled.mean() < MIN_FILLED_FRACTION:
+        return 0.0, 0.0, np.zeros(SOLVE_LON_BINS)
+    a = _edges(fill_holes(field, filled))
+    b = _edges(image_panorama(lum))
+    fa = np.fft.rfft(a, axis=1)
+    fb = np.fft.rfft(b, axis=1)
+    profile = np.fft.irfft(fa * np.conj(fb), n=SOLVE_LON_BINS, axis=1).sum(0)
+    best = int(np.argmax(profile))
+    mean, spread = _shoulder(profile, best)
+    confidence = float((profile[best] - mean) / spread) if spread else 0.0
+    return _yaw_from_bin(profile, best), confidence, profile
+
+
 # --- the whole shoot at once -----------------------------------------------
 #
 # ⭐⭐ THE STRONGEST IDEA IN THE LITERATURE, AND IT FITS THIS RIG EXACTLY.
@@ -1199,6 +1234,15 @@ class PoseScorer(object):
                 retro_min=(None if self.refl is None else DEEP_RETRO_MIN))
             got = {"edges": _edges(fill_holes(depth, filled)),
                    "filled": filled,
+                   # ⭐⭐ THE SAME TREATMENT, ON WHAT THE LASER MEASURED
+                   # RATHER THAN HOW FAR AWAY IT WAS -- see `PoseScorer.mark`.
+                   # It costs one more gradient over 8,100 cells and rides in
+                   # the entry the depth edges already sit in, because it is
+                   # built from the SAME walk of the cloud that `_panoramas`
+                   # just did: the reflectivity field was already coming back
+                   # for the MI term and was being used for nothing else.
+                   "mark": (None if field is None
+                            else _edges(fill_holes(field, filled))),
                    "cell": self._cells(field, retro, filled)}
             self._cache[key] = got
             self._order.append(key)
@@ -1232,6 +1276,60 @@ class PoseScorer(object):
         self.evaluations += 1
         a = self.cloud_edges(camera_z, camera_x, camera_y)[0]
         got = self._at_pose(yaw_deg, pitch_deg, roll_deg)
+        if got["edges"] is None:
+            got["edges"] = _edges(got["img"])
+        return float((a * got["edges"]).sum())
+
+    def mark(self, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
+             camera_x=None, camera_y=None):
+        """
+        How well the MARKINGS on the room line up with the photograph.
+
+        The same cosine `score` computes, on the reflectivity panorama's edges
+        instead of the depth panorama's. Returns None for a cloud with no
+        reflectivity, so the term stands down rather than scoring zero.
+
+        ⭐⭐ THE OPERATOR'S OWN IDEA, 2026-09-06: "deep align should take the
+        lidar return intensity as coloured by the studio, create a 360 black
+        and white image then use that to align the colour image because all
+        shapes would be similar or the same". Two thirds of that was already
+        here -- `field_panorama` builds exactly that greyscale panorama and
+        `mutual` already matches it against the photograph. But it matched
+        VALUES, by mutual information, and nothing in this file had ever
+        compared the two as SHAPES. The edge measure looked only at depth.
+
+        ⛔ AND WHY EDGES OF REFLECTIVITY WORK WHERE ITS VALUES NEEDED MI.
+        `cloud_panorama` says it outright: reflectivity does not track
+        brightness, a matt white wall and a dark retroreflector can swap
+        places -- so correlating the two fields directly finds nothing and MI
+        is the right tool for the values. That objection is about SIGN, and
+        `_edges` takes a gradient MAGNITUDE, which has no sign. A boundary
+        between two materials is a boundary in both pictures whichever way
+        round the contrast runs.
+        ⭐ Which makes this sharp exactly where the depth term is blind: a
+        painted line, a sign, a dark carpet against a light floor, a mural on
+        a flat wall are all invisible to a silhouette, all visible to the
+        laser's return, and all obvious in the photograph. The 2026-08-20
+        scan that stood hard against a panelled wall -- one side near, one
+        side open, a correlation peak 180 degrees wide -- is that failure
+        exactly, and it is a property of the DEPTH panorama, which this one
+        does not share.
+
+        ⛔ IT IS STILL NOT A CONFIDENCE AND IT MUST NEVER WRITE THE GRADE. A
+        photograph of a similar room with similar markings will score
+        respectably here too. Like the other three, its job is choosing
+        between poses of the same pair -- and like the other three, it earns
+        its vote or stands down; see DEEP_TERM_MIN_CONFIDENCE.
+        """
+        a = self._at(camera_z, camera_x, camera_y)["mark"]
+        if a is None:
+            return None
+        self.evaluations += 1
+        got = self._at_pose(yaw_deg, pitch_deg, roll_deg)
+        # ⛔ THE SAME CACHED IMAGE EDGE FIELD THE DEPTH TERM USES. Both ask
+        # the identical question of the photograph -- where are its edges at
+        # this pose -- so a second field would be a second resample per pose
+        # for a bit-identical answer.
         if got["edges"] is None:
             got["edges"] = _edges(got["img"])
         return float((a * got["edges"]).sum())
@@ -2092,7 +2190,26 @@ DEEP_BEACON_LAT_DEG = 60.0
 
 #: How much each term is worth WHEN IT IS VOTING. Whether it votes at all is
 #: not set here -- see DEEP_TERM_MIN_CONFIDENCE.
-DEEP_WEIGHTS = {"edge": 1.0, "mi": 1.0, "beacon": 0.5}
+#: ⛔⛔ `mark` IS REPORTED AND DOES NOT VOTE, AND THAT IS A MEASUREMENT, NOT A
+#: HEDGE. The reflectivity-edge judge (`PoseScorer.mark`, the operator's own
+#: idea of 2026-09-06) was swept over every heading on 72 of the operator's
+#: real captures against poses the program had already confirmed -- 18 in the
+#: restaurant, 54 in the club -- and the combined answer re-scored at weights
+#: 0, 0.25, 0.5, 0.75, 1.0 and 1.5, with the same stand-down the search
+#: applies. ALONE it is the second-best judge here: right on 10/18 restaurant
+#: scans against edge 14, MI 8, beacon 6, and on one scan (6_20_36) it was the
+#: only judge on the answer (0.1 deg off; edge 12.6, MI 169). IN THE SUM it
+#: bought nothing: restaurant 15/18 at weight 0 and 14/18 at every weight
+#: above 0.25, the club 8/54 at every weight -- zero gained, one lost. Where
+#: edge is right it agrees and adds no information; where edge is wrong it is
+#: not strong enough to overrule. So it is computed and printed beside the
+#: other three in the deep panel, where a stood-down term's value already
+#: goes, and it carries no weight until a measurement says it should.
+#: ⭐ Its real home turned out to be the shoot SORTER -- see
+#: `align.AlignServer.shoot_check` -- where the question is not "which of
+#: 360 headings" but "this photograph or its neighbour's", which is the
+#: narrow comparison the 2026-08-20 notes found the judges CAN answer.
+DEEP_WEIGHTS = {"edge": 1.0, "mi": 1.0, "beacon": 0.5, "mark": 0.0}
 
 #: ⭐⭐ A TERM JOINS THE VOTE ONLY IF IT SHOWS, ON THIS CLOUD, THAT IT KNOWS
 #: SOMETHING. The sweep already scores each measure alone across all 360
@@ -2200,7 +2317,7 @@ class DeepObjective(object):
     never be allowed to write it.
     """
 
-    TERMS = ("edge", "mi", "beacon")
+    TERMS = ("edge", "mi", "beacon", "mark")
 
     def __init__(self, scorer, weights=None):
         self.sc = scorer
@@ -2219,7 +2336,9 @@ class DeepObjective(object):
                 "mi": self.sc.mutual(yaw_deg, pitch_deg, roll_deg, camera_z,
                                      camera_x, camera_y),
                 "beacon": self.sc.beacon(yaw_deg, pitch_deg, roll_deg,
-                                         camera_z, camera_x, camera_y)}
+                                         camera_z, camera_x, camera_y),
+                "mark": self.sc.mark(yaw_deg, pitch_deg, roll_deg,
+                                     camera_z, camera_x, camera_y)}
 
     def sweep(self, pitch_deg=0.0, roll_deg=0.0, camera_z=None,
               bins=SOLVE_LON_BINS, deadline=None):
@@ -2284,7 +2403,7 @@ class DeepObjective(object):
         # work goes. `raw` stays complete on purpose: it is the REPORTING
         # face, and a stood-down term's actual value is still worth printing.
         fns = {"edge": self.sc.score, "mi": self.sc.mutual,
-               "beacon": self.sc.beacon}
+               "beacon": self.sc.beacon, "mark": self.sc.mark}
         total = 0.0
         for t in self.TERMS:
             if t not in self.stats or not self.weights.get(t, 0.0):

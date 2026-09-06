@@ -415,12 +415,21 @@ def pair_in_order(rows, timed, offset, window_s=WINDOW_S):
 
 
 def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
-         progress=None):
+         progress=None, overrides=None):
     """
     Which photographs belong to which capture, and what the folders would be.
 
     Returns a dict. NOTHING IS MOVED OR COPIED -- that is `apply`, and the two
     are separate so the operator reads the plan before a shoot is rearranged.
+
+    `overrides` is {capture file name: photograph path} -- pairings the
+    PICTURES have decided, from `align.AlignServer.shoot_check`, honoured
+    ahead of the clock exactly as a photograph already sitting beside its
+    capture is. ⛔ Only a photograph the clock already allowed for that
+    capture is accepted; one from outside the window is a different mistake
+    from a crossed pair and is named in `ignored_overrides` rather than
+    filed. The clock walk then runs over the captures the pictures did not
+    settle, and cannot cross any of the ones they did.
 
     ⛔ A CAPTURE WITH NO SIDECAR IS NOT NUMBERED. Those are aborted sweeps:
     the sidecar is written when the sweep finishes, so its absence means the
@@ -539,6 +548,33 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
             r["shared"] = False
             r["beside"] = True
 
+    # ⭐⭐ AND A PAIRING THE PICTURES DECIDED IS SETTLED THE SAME WAY, for the
+    # same reason: it is a decision already made, by comparing what the laser
+    # saw with what the camera saw (`shoot_check`), and it is stronger
+    # evidence than a clock that was never synchronised. Settled here, ahead
+    # of the walk, so `pair_in_order` leaves the row out and cannot spend that
+    # photograph -- or cross a neighbour over it -- on the strength of a gap.
+    ignored = []
+    for name, want in (overrides or {}).items():
+        row = next((r for r in rows if r["name"] == name), None)
+        if row is None or row.get("beside"):
+            ignored.append(name)
+            continue
+        pick = next((q for q in row["photos"]
+                     if os.path.normcase(os.path.abspath(q["path"]))
+                     == os.path.normcase(os.path.abspath(want or ""))), None)
+        # ⛔ ONLY FROM AMONG THE PHOTOGRAPHS THE CLOCK ALLOWED. A picture from
+        # outside the window is not a crossed pair, it is a different claim
+        # about the day, and filing it on a hunch would be the sort's own
+        # 2026-09-02 fault -- seven captures wearing the wrong room -- by
+        # another door. Named, not obeyed.
+        if pick is None:
+            ignored.append(name)
+            continue
+        row["assigned"] = dict(pick)
+        row["shared"] = False
+        row["by_picture"] = True
+
     # ⭐⭐ ONE PHOTOGRAPH, ONE HOME, AND THE DAY'S OWN ORDER KEPT. Filing every
     # photograph inside the window into every capture inside it duplicated most
     # of the shoot: a tripod position produces TWO captures (the rig sweeps
@@ -581,6 +617,8 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
             "kept_aborted": [a["name"] for a in aborted
                              if not a["deletable"]],
             "shared": [r["number"] for r in rows if r.get("shared")],
+            "by_picture": [r["number"] for r in rows if r.get("by_picture")],
+            "ignored_overrides": ignored,
             "duplicates": [os.path.basename(d["path"]) for d in duplicates],
             "images": os.path.abspath(image_folder or scan_folder),
             "offset_s": offset, "offset_confidence": conf,

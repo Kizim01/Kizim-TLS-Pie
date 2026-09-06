@@ -6558,19 +6558,21 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-06, thirty-ninth pass) — the current one
+### ⚠ LIVE STATE (2026-09-06, fortieth pass) — the current one
 
-**Tree**: `main` = the 39th pass's commit (the placement/rebuild fix + Pin the picture) on
-**`9e96a42`** (photographs move with the shoot + history fold + spare-aware photo solve) on
-`7eb44f0`, plus this block's own pin commit, in sync with origin, clean but for the standing
-untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1767, 0 failed** (1722 + 45). Exes **2026-09-06 13:47:13 / 13:47:36 / 13:47:55, Studio
-selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the placement
-fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass features AND everything the
-09-04 13:55 build carried** (walls button, polygon camera park, cut-scope decoupling,
-`REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move reversal). ⚠
-`tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is CORRECT and Studio's rc=0 is the
-gate. No parallel session landed during this pass.
+**Tree**: `main` = the 40th pass's commit (the markings judge, measured to weight 0; the
+pictures check the clock's sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture)
+on `9e96a42` (38th), plus this block's own pin commit, in sync with origin, clean but for the
+standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
+**1796, 0 failed** (1767 + 29). Exes **see the 40th-pass build line below, Studio selftest
+rc=0**, built with Studio verified closed — **these carry the sort's picture check, the reported
+`mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
+features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
+cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
+reversal). ⚠ `tlsconvert.exe` has **no `--selftest` flag**; rc=2 there is CORRECT and Studio's
+rc=0 is the gate. No parallel session landed during this pass. ⚠ Scratch left in the session
+scratchpad only: `realcaps\` (ten copied restaurant captures, ~1 GB) — nothing in the repo or
+the operator's folders.
 
 ⛔⛔ **THE 11:58 BUILD SHUFFLES PLACEMENTS AND MUST NOT BE USED.** Everything up to and including
 it maps placements by POSITION on rebuild, and two overlapping photograph presses interleave the
@@ -7028,6 +7030,78 @@ operator's incident exactly**: two rebuilds interleaved into one list,
 Also confirmed on real data this pass: **the 38th pass's photograph relocation ladder works** —
 the operator moved both jobs from `D:` to the Desktop, and all 21 ministry photographs were found
 again from dead `D:\` paths carrying no `rel`, through the structure-re-rooted third rung.
+
+### 2026-09-06, fortieth pass — the markings as a judge, measured; and the pictures check the clock's sort
+
+Two operator ideas, one afternoon, and the first was **measured out of the vote and into a better
+home**.
+
+#### The idea: "deep align should take the lidar return intensity … create a 360 black and white image then use that to align the colour image because all shapes would be similar"
+
+Two thirds of it already existed — `field_panorama` builds exactly that greyscale panorama and
+`solve_yaw_mi` matches it against the photograph — but as VALUES by mutual information. Nothing
+had ever compared the two as SHAPES: the edge judge looked only at depth. ⭐ **Why edges of
+reflectivity work where its values needed MI**: the "matt white wall and dark retroreflector can
+swap places" objection is about SIGN, and `_edges` takes a gradient magnitude. A material boundary
+is a boundary in both pictures whichever way round the contrast runs — sharp exactly where a depth
+silhouette is blind (a painted line, a sign, a mural on a flat wall).
+
+Built as `PoseScorer.mark` (the fourth term of `DeepObjective`, riding on the cached image-edge
+field and the reflectivity panorama `_panoramas` was already returning) and `colour.solve_yaw_mark`
+(the one-axis FFT form). **Then swept over every heading on 72 of the operator's real captures
+against poses already confirmed — 18 restaurant, 54 club — and the combined answer re-scored at
+six weights with the search's own stand-down applied.** ALONE it is the second-best judge
+(restaurant: right on 10/18 against edge 14, MI 8, beacon 6; on `6_20_36` it was the ONLY judge
+on the answer, 0.1° off where edge was 12.6° and MI 169°). **IN THE SUM it bought nothing**:
+restaurant 15/18 at weight 0 and 14/18 at every weight above 0.25; club 8/54 at every weight —
+zero gained, one lost. Where edge is right it agrees and adds nothing; where edge is wrong it
+cannot overrule. ⛔ So **`DEEP_WEIGHTS["mark"] = 0.0`, with the measurement in the comment**: it
+is computed, reported beside the other three in the deep panel, and does not vote. Not a hedge —
+the number.
+
+#### Its real home: "as well as using time for pairing, add a step that takes the intensity 360 image and the photograph 360 image and compares them before pairing is confirmed"
+
+The 2026-09-03 third sitting is the standing proof the clock needs this: `pair_in_order` cannot
+cross two pairs, but it slid the whole diagonal one frame with every internal check passing,
+because a global shift IS monotonic. Only the pictures can see that. `AlignServer.shoot_check`
+decodes every clock-paired capture at 5 cm and scores its nearest `CHECK_REACH = 5` candidates
+exactly as *Which photograph belongs to this scan* does — depth edges, reflectivity MI, and now
+the reflectivity edges — ranked on the weaker of the two opinions with corroboration first. ⛔
+**The clock is overruled only by evidence measured to be enough**: a different frame replaces the
+clock's when it is CORROBORATED (the discriminator that put the known-right photograph first of
+57 on 08-20) **and** beats the clock's by `CHECK_MARGIN = 1.0` — non-zero because a tripod
+position yields two captures and two frames of the SAME room, and a margin of nothing would let
+noise re-file a correct pair. A capture nothing convinces is reported **mute**, in words. It
+checks, it does not file: `shoot.plan(overrides=…)` honours the pictures' pairings ahead of the
+walk with the same standing as a photograph beside its capture (⛔ only from among the clock's own
+candidates; anything else is `ignored_overrides`, named not obeyed), `shoot_apply` carries them,
+and the page runs the check between the plan and the confirm **from both presses through one
+`checkShoot`**, with a Sort-tray checkbox (on by default, ≈8 s a capture — measured).
+
+**Measured on the operator's own restaurant shoot** — ten captures re-sorted from the 61 camera
+originals against the pairing they had settled by hand (recovered by MD5): **the clock, with a good
+offset, matched them on 5 of 10 — it had slid one frame on the other five, in a lit room.** The
+pictures repaired one of those (capture 9, corroborated 5.8 against the clock's 2.6), agreed on
+two, **changed nothing that was right**, and called seven mute — MI the weak leg at 2–3.5. 74 s.
+So: it cannot make the sort worse, fixes what it can prove, and says which pairs it could not
+judge — which the clock never did. ⚠ The mute majority is the lever if ever pulled: let the
+reflectivity EDGES stand in as the second witness where MI is quiet; re-measure on the same ten.
+
+#### Audit
+
+Suites **1767 → 1796** (+29). ⛔ The first run **ABORTED** — a `_Deep` scorer stub in the suite
+lacked `mark` and `DeepObjective.raw` now asks for it: the abort trap in a stub's costume, no
+summary line, every later check invisible. And the first fixture used stripes every 60°: the judge
+found the heading to 3e-4° at confidence 4.4 — **a periodic marking has six equally good answers
+and peak-above-shoulder is exactly the measure that says so**; the fixture was ambiguous, not the
+judge weak; irregular azimuths fixed it. Six breaks in ONE run (the markings judge returned the
+depth answer; `mark` stood down always; weight 1.0; overrides ignored; margin 100; the page's
+check short-circuited) → **19 named checks, nothing else** (1777/19). The first break script
+matched NOTHING and `&&` short-circuited — the edited blocks are LF inside a CRLF file — and the
+"fired" list it printed was the previous audit's stale file: ⭐ *delete the output before the run,
+and assert the baseline hash before breaking*. Restored byte-for-byte (`align.py`
+`F15A5320B06D49097966D90DBB4E004A`, `colour.py` `C81ED81D7D74362D6EFE0C9E0BF5DEA9`, `shoot.py`
+`F66F3DDD9BAADF297432FE7DECA29557`), final green **1796**.
 
 ### ▶ NEXT SESSION STARTS HERE
 

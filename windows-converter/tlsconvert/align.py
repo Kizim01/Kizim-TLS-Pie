@@ -1002,13 +1002,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/shoot/plan":
                 return self._json(srv.shoot_plan(body.get("scans"),
                                                  body.get("images"),
-                                                 body.get("offset")))
+                                                 body.get("offset"),
+                                                 body.get("overrides")))
+            if path == "/shoot/check":
+                return self._json(srv.shoot_check(body.get("scans"),
+                                                  body.get("images"),
+                                                  body.get("offset")))
             if path == "/shoot/apply":
                 return self._json(srv.shoot_apply(
                     body.get("scans"), body.get("images"), body.get("dest"),
                     body.get("move", True), body.get("offset"),
                     body.get("delete_aborted", True),
-                    body.get("copy_photos", False)))
+                    body.get("copy_photos", False),
+                    body.get("overrides")))
             if path == "/clean":
                 return self._json(srv.clean_scan(
                     body.get("index"), body.get("stray"),
@@ -3440,7 +3446,7 @@ class AlignServer(object):
                     "error": "no native window, so no system file dialog"}
         return {"ok": True, "path": desktop.pick_folder()}
 
-    def shoot_plan(self, scans, images=None, offset=None):
+    def shoot_plan(self, scans, images=None, offset=None, overrides=None):
         """
         Which photograph belongs to which capture, across a whole day.
 
@@ -3457,7 +3463,7 @@ class AlignServer(object):
                           "busy": True}
         try:
             return shoot.plan(scans, images or None, offset=offset,
-                              progress=self._note)
+                              progress=self._note, overrides=overrides)
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not read that shoot (%s)"
                                           % exc}
@@ -3465,8 +3471,218 @@ class AlignServer(object):
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
 
+    #: The preview density a capture is decoded at to be checked against its
+    #: photographs. Measured on the operator's restaurant job: 4-6 s a capture
+    #: at 5 cm, and the heading solves want nothing finer.
+    CHECK_VOXEL = 0.05
+    #: How many of the clock's candidates the pictures are asked about, per
+    #: capture, nearest by gap first. The crossings the sorter has actually
+    #: made were all with a NEIGHBOUR (2026-09-02: folders 3/4, 12/13, 30/31,
+    #: 35/36), so two either side is the question and five is generous.
+    CHECK_REACH = 5
+    #: How far the pictures' choice must beat the clock's, in confidence, to
+    #: overrule it. ⛔ NOT ZERO, AND THE SHOOT'S OWN RHYTHM IS WHY: a tripod
+    #: position produces TWO captures and TWO photographs of the SAME room, so
+    #: the neighbouring frame scores about as well as the right one -- and a
+    #: margin of nothing would let run-to-run noise re-file a correct pair.
+    #: The known-right photograph beat its impostor 6.57 to 3.86 (2026-08-20)
+    #: and a same-position twin lands well inside one unit. A picture that
+    #: cannot clear this keeps the clock's answer, and says so.
+    CHECK_MARGIN = 1.0
+
+    def shoot_check(self, scans, images=None, offset=None, loader=None):
+        """
+        Ask the PICTURES whether the clock paired the shoot right.
+
+        ⭐⭐ ASKED FOR ON 2026-09-06: "in the job sorting, as well as using
+        time for pairing, add a step that takes the intensity 360 image and
+        the photograph 360 image and compares them before pairing is
+        confirmed and are put into folders". The clock walk (`pair_in_order`)
+        cannot cross two pairs over, but it can still slide -- the 2026-09-03
+        third sitting shifted a whole diagonal by one position and every
+        internal check passed, because a global shift IS monotonic. Only the
+        pictures can see that, and this is the step that looks.
+
+        For every capture the clock paired, its nearest candidates by gap are
+        each scored against the capture's own panoramas -- depth edges,
+        reflectivity by mutual information, and the reflectivity EDGES --
+        exactly as "Which photograph belongs to this scan" does, ranked on
+        the weaker of the two opinions with corroboration first.
+
+        ⛔ THE CLOCK IS OVERRULED ONLY BY EVIDENCE THAT WAS MEASURED TO BE
+        ENOUGH. A different photograph replaces the clock's choice when it is
+        CORROBORATED (both methods confident and on the same angle -- the one
+        discriminator that put the known-right photograph first out of 57)
+        AND beats the clock's choice by CHECK_MARGIN. A capture where nothing
+        convinces both methods is reported MUTE, in words: the club scored
+        2.7-3.8 on every frame and the pictures there cannot tell, which the
+        operator must be told rather than have a re-sort done on noise.
+
+        ⛔ AND IT CHECKS, IT DOES NOT FILE. What comes back is `overrides` for
+        `shoot_apply`, which rebuilds the plan from disk and honours them the
+        way it honours a photograph already beside its capture.
+
+        ⭐ MEASURED ON THE OPERATOR'S OWN RESTAURANT SHOOT, 2026-09-06 -- ten
+        captures re-sorted from the camera originals against the pairing
+        the operator had settled by hand (recovered by MD5 of the filed
+        photographs). The CLOCK, given a good offset, matched them on 5 of
+        10: on the other five it had slid one frame -- exactly the failure
+        the 2026-09-03 third sitting described, in a lit room with the
+        offset right. The pictures repaired one of those five (capture 9,
+        corroborated 5.8 against the clock's 2.6), agreed with the clock on
+        two, changed NOTHING that was right, and called the remaining seven
+        mute -- no candidate convinced both measures, MI being the weak leg
+        at 2-3.5 on most of them. 74 s in all, 7.4 s a capture. So the honest
+        description is: it cannot make the sort worse, it fixes what it can
+        prove, and it says which pairs it could not judge -- which the clock
+        never did. ⚠ The mute majority is the lever if it is ever pulled:
+        the weaker-of-two is min(edge, MI), and letting the reflectivity
+        EDGES stand in as the second witness where MI is quiet would have
+        spoken on several of the seven. Not taken here; a re-measurement
+        against the same ten captures is the way to take it.
+
+        `loader(path) -> (sample, refl)` is for the suite, which has no
+        decodable capture; the real one decodes at CHECK_VOXEL.
+        """
+        from . import shoot, colour as colour_mod
+        made = self.shoot_plan(scans, images, offset=offset)
+        if not made.get("ok"):
+            return made
+        rows = made["scans"]
+        todo = [r for r in rows
+                if r.get("assigned") and not r.get("beside")
+                and len(r.get("photos") or []) >= 2]
+
+        # ⛔ ONE PANORAMA IN MEMORY PER PHOTOGRAPH, A FEW AT A TIME. The
+        # candidates slide along the day with the captures, so a small
+        # most-recent cache is every load this needs; sixty full panoramas
+        # at once would be a gigabyte of luminance for no speed.
+        lums = {}
+        order = []
+
+        def lum_of(path):
+            key = os.path.normcase(os.path.abspath(path))
+            if key not in lums:
+                lums[key] = colour_mod.load_panorama(path)[1]
+                order.append(key)
+                while len(order) > 2 * self.CHECK_REACH:
+                    lums.pop(order.pop(0), None)
+            return lums[key]
+
+        def read(path):
+            if loader is not None:
+                return loader(path)
+            sc = load([path], voxel_m=self.CHECK_VOXEL, colour=False,
+                      level=True)[0]
+            return solve_sample(sc)
+
+        results, overrides = [], {}
+        for at, r in enumerate(todo):
+            self._progress = {"stage": "checking %s against its photographs"
+                                       % r["name"],
+                              "n": at, "total": len(todo), "busy": True}
+            try:
+                sample, refl = read(r["path"])
+            except Exception as exc:                      # noqa: BLE001
+                results.append({"number": r["number"], "name": r["name"],
+                                "verdict": "unchecked", "why": str(exc),
+                                "clock": r["assigned"]["name"]})
+                continue
+            cands = sorted(r["photos"],
+                           key=lambda q: abs(q["gap_s"]))[:self.CHECK_REACH]
+            scored = []
+            for q in cands:
+                try:
+                    lum = lum_of(q["path"])
+                    yaw, conf, _p = colour_mod.solve_yaw(sample, lum)
+                    if refl is None:
+                        mi_conf, mark_conf, agreed = None, None, False
+                    else:
+                        mi_yaw, mi_conf, _q = colour_mod.solve_yaw_mi(
+                            sample, refl, lum)
+                        agreed, _apart = colour_mod.corroborates(
+                            yaw, conf, mi_yaw, mi_conf)
+                        _my, mark_conf, _r = colour_mod.solve_yaw_mark(
+                            sample, refl, lum)
+                except Exception as exc:                  # noqa: BLE001
+                    scored.append({"name": q["name"], "path": q["path"],
+                                   "error": str(exc)})
+                    continue
+                scored.append({"name": q["name"], "path": q["path"],
+                               "gap_s": q["gap_s"], "confidence": conf,
+                               "mi_confidence": mi_conf,
+                               "mark_confidence": mark_conf,
+                               "corroborated": bool(agreed),
+                               "score": (min(conf, mi_conf)
+                                         if mi_conf is not None else conf)})
+            good = [s for s in scored if "error" not in s]
+            good.sort(key=lambda s: (s["corroborated"], s["score"]),
+                      reverse=True)
+            clock = r["assigned"]["path"]
+            mine = next((s for s in good if s["path"] == clock), None)
+            top = good[0] if good else None
+            row = {"number": r["number"], "name": r["name"],
+                   "clock": r["assigned"]["name"], "candidates": scored}
+            if top is None or mine is None:
+                row.update(verdict="unchecked",
+                           why="no candidate photograph could be read")
+            elif top["score"] < colour_mod.MIN_CONFIDENCE:
+                # ⛔ MUTE IS A VERDICT ABOUT THE ROOM, NOT ABOUT THE PAIR.
+                row.update(verdict="mute", best=top["name"],
+                           score=top["score"])
+            elif top["path"] == clock:
+                row.update(verdict="agrees", score=mine["score"],
+                           corroborated=mine["corroborated"])
+            elif (top["corroborated"]
+                  and top["score"] >= mine["score"] + self.CHECK_MARGIN):
+                row.update(verdict="prefers", picture=top["name"],
+                           score=top["score"], clock_score=mine["score"])
+                overrides[r["name"]] = top["path"]
+            else:
+                # Another frame scored higher but not by enough, or without
+                # both methods behind it: the clock stands and it is said.
+                row.update(verdict="unsure", picture=top["name"],
+                           score=top["score"], clock_score=mine["score"])
+            results.append(row)
+        self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
+
+        counts = {}
+        for row in results:
+            counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
+        skipped = len(rows) - len(todo)
+        bits = []
+        if counts.get("agrees"):
+            bits.append("the pictures agree with the clock on %d"
+                        % counts["agrees"])
+        if counts.get("prefers"):
+            bits.append("on %d the picture says a DIFFERENT frame and it is "
+                        "sure -- those will be filed the picture's way (%s)"
+                        % (counts["prefers"],
+                           ", ".join("%d: %s" % (w["number"], w["picture"])
+                                     for w in results
+                                     if w["verdict"] == "prefers")))
+        if counts.get("unsure"):
+            bits.append("on %d another frame scored higher but not by "
+                        "enough to overrule the clock, which stands"
+                        % counts["unsure"])
+        if counts.get("mute"):
+            bits.append("%d are too dark or too plain for the pictures to "
+                        "tell either way, so the clock stands there too"
+                        % counts["mute"])
+        if counts.get("unchecked"):
+            bits.append("%d could not be checked" % counts["unchecked"])
+        if skipped:
+            bits.append("%d had only one candidate or a photograph already "
+                        "beside them and were not asked" % skipped)
+        return {"ok": True, "checked": len(todo), "results": results,
+                "overrides": overrides, "counts": counts,
+                "text": ("Checked %d capture%s by picture: %s."
+                         % (len(todo), "" if len(todo) == 1 else "s",
+                            "; ".join(bits) or "nothing to check"))}
+
     def shoot_apply(self, scans, images=None, dest=None, move=True,
-                    offset=None, delete_aborted=True, copy_photos=False):
+                    offset=None, delete_aborted=True, copy_photos=False,
+                    overrides=None):
         """
         Carry out a plan: move the shoot into numbered folders.
 
@@ -3478,7 +3694,12 @@ class AlignServer(object):
         is on the disk at the moment it is carried out.
         """
         from . import shoot
-        made = self.shoot_plan(scans, images, offset=offset)
+        # ⭐ WITH WHAT THE PICTURES DECIDED, if `shoot_check` was run: the plan
+        # is rebuilt from disk as ever, and the overrides ride in as pairings
+        # already made -- the same standing a photograph beside its capture
+        # has -- so what is filed is what the operator was shown.
+        made = self.shoot_plan(scans, images, offset=offset,
+                               overrides=overrides)
         if not made.get("ok"):
             return made
         if not dest:
@@ -5644,6 +5865,19 @@ PAGE = r"""<!doctype html>
     so the offset between them is <b>measured from the shoot itself</b> and
     reported with a confidence — if the gaps do not cluster it says so
     rather than sorting around a guess.</div>
+  <label title="Before anything is filed, every capture the clock paired is
+    decoded and its own panoramas — depth, and the laser&#39;s return
+    strength — are compared against the photograph the clock chose AND its
+    nearest neighbours. A neighbour that convinces both measures and beats
+    the clock&#39;s choice clearly is filed instead; a room too dark or too
+    plain to tell is said so and the clock stands. About eight seconds a
+    capture, measured on the restaurant job."><input type="checkbox"
+    id="sortcheck" checked> Check each pairing against its picture before
+    filing <span style="color:var(--faint)">(≈8 s a capture)</span></label>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    The clock cannot cross two pairs over, but it can slide the whole day by
+    one frame and every clock check still passes — only the pictures can see
+    that. Both jobs the clock has paired that way are named in the plan.</div>
   </div></div>
 <div class="tray" id="ty_add"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'add')"><span class="fold">▾</span><b class="grow">Add a scan</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('add')">✕</button></div><div class="traybody">
   <label>Add another scan</label>
@@ -12805,6 +13039,37 @@ function sortPitch(plan, extra){
     (extra||'')+
     '\n\nGo ahead?';
 }
+/* ⭐⭐ THE PICTURES' OWN VERDICT ON THE CLOCK'S PAIRING, run between the plan
+   and the confirm from both presses -- asked for by the operator on
+   2026-09-06 as a step "before pairing is confirmed and are put into
+   folders". Returns {extra, overrides}: the sentence for the confirm and the
+   pairings to hand `shoot/apply`. ⛔ It is one place, not two, because a
+   check wired into one press and forgotten by the other would file the same
+   shoot two different ways depending on which button was pressed. */
+async function checkShoot(plan, scans, images){
+  if(!$('sortcheck').checked) return {extra:'', overrides:null};
+  const n=(plan.scans||[]).filter(r=>r.photos && r.photos.length>=2).length;
+  if(!n) return {extra:'', overrides:null};
+  /* ⚠ MEASURED, NOT DERIVED: 74 s for ten restaurant captures with five
+     candidates each, decode and photograph loads included. */
+  say('checking '+n+' pairing'+(n===1?'':'s')+' against the pictures — '+
+      'about '+Math.max(1, Math.round(n*8/60))+' minute'+
+      (Math.round(n*8/60)===1?'':'s')+'…');
+  watch(true);
+  const chk=await post('shoot/check', {scans, images});
+  watch(false);
+  if(!chk.ok) return {extra:'\n\n⚠ The picture check could not run ('+
+                            (chk.error||'unknown')+'), so the clock’s '+
+                            'pairing stands.', overrides:null};
+  const pref=(chk.results||[]).filter(r=>r.verdict==='prefers');
+  const lines=pref.slice(0,8).map(r=>
+    '  '+r.number+'. '+r.name+': the clock chose '+r.clock+' ('+
+    r.clock_score.toFixed(1)+'), the picture says '+r.picture+' ('+
+    r.score.toFixed(1)+') — filed the picture’s way').join('\n');
+  return {extra:'\n\nBY PICTURE: '+chk.text+(lines?'\n'+lines:''),
+          overrides: Object.keys(chk.overrides||{}).length ? chk.overrides
+                                                            : null};
+}
 /* What could not be tidied away, said the same way from either press. */
 function sortLeftovers(done){
   return (done.failed||[]).length
@@ -12820,14 +13085,15 @@ async function sortShoot(){
     const plan=await post('shoot/plan', {scans, images});
     watch(false);
     if(!plan.ok) return say(plan.error||'could not read that shoot', 'bad');
-    const ok=confirm(sortPitch(plan, ''));
+    const byPic=await checkShoot(plan, scans, images);
+    const ok=confirm(sortPitch(plan, byPic.extra));
     if(!ok) return say('Nothing was sorted, moved or deleted.');
     const dest=await askFolder('where the numbered folders should go');
     if(!dest) return;
     say('sorting\u2026'); watch(true);
     const done=await post('shoot/apply',
                           {scans, images, dest, move:true,
-                           delete_aborted:true});
+                           delete_aborted:true, overrides:byPic.overrides});
     watch(false);
     if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
     say(done.text+' Under '+done.dest+'.'+sortLeftovers(done),
@@ -12859,7 +13125,8 @@ async function wholeShoot(){
     const plan=await post('shoot/plan', {scans, images});
     watch(false);
     if(!plan.ok) return say(plan.error||'could not read that shoot', 'bad');
-    const ok=confirm(sortPitch(plan,
+    const byPic=await checkShoot(plan, scans, images);
+    const ok=confirm(sortPitch(plan, byPic.extra+
       '\n\nThe PHOTOGRAPHS are COPIED in beside their captures \u2014 the '+
       'camera\u2019s own files stay where they are.'+
       '\n\nThen every capture is opened, coloured from its photograph, and '+
@@ -12877,7 +13144,8 @@ async function wholeShoot(){
     say('sorting\u2026'); watch(true);
     const done=await post('shoot/apply',
                           {scans, images, dest, move:true,
-                           delete_aborted:true, copy_photos:true});
+                           delete_aborted:true, copy_photos:true,
+                           overrides:byPic.overrides});
     watch(false);
     if(!done.ok) return say(done.error||'could not sort that shoot', 'bad');
     say(done.text+' Under '+done.dest+'.'+sortLeftovers(done)+
