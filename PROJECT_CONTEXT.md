@@ -6558,7 +6558,16 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-07, forty-third pass) — the current one
+### ⚠ LIVE STATE (2026-09-07, forty-fourth pass) — the current one
+
+**⛔⛔ STUDIO CRASHED INSIDE OPENBLAS AND NOW RUNS IT ON ONE THREAD (44th pass).** 01:53:10,
+access violation in `libscipy_openblas64_`; the minidump put it in OpenBLAS's Windows worker loop
+calling a work node whose memory was dead (a finished request thread's stack; numpy's static data
+through a stale `next`). The nodes live on the calling thread's stack and Studio's callers are
+per-request threads that end. `tlspie_studio.py` now sets `OPENBLAS_NUM_THREADS=1` before numpy
+loads: no pool, no queue, nothing to race; Studio's own thread pools unaffected; cost on the real
+shapes ≤ 5 ms per 2M points. The suite asks OpenBLAS itself in a fresh process. Suite **1869**;
+audit 2 breaks, both caught (the removed pin fired both checks; the line kept but numpy loaded first fired only the probe). ⚠ The 01:34 exes DO crash this way; the 2026-09-07 02:34:10 / 02:34:49 / 02:35:26 build is the one to run.
 
 **⭐⭐ EVERY EXPORTED CLOUD NOW HAS A CAMERA MANIFEST BESIDE IT (43rd pass)** —
 `<stem>.camera_manifest.json` / `.camera_positions.csv` / `.export_report.md` / `.camera_preview.png`,
@@ -6589,15 +6598,17 @@ inliers, and the page keeps clouds whose blob fingerprint is unchanged. Suite **
 failed**; **reversion audit 8 breaks, all 8 caught, all files restored byte for byte**.
 ⚠ The selftest still does NOT check that the models packed — named and queued, not fixed.
 
-**Tree**: `main` = **`f357a74`** (43rd: the camera manifest) on **`f9e8943`** (42nd: the seat
-searched by the count) on **`909010c`** (41st: the photograph matched by its features) on
+**Tree**: `main` = **`dcac583`** (44th: OpenBLAS on one thread) on **`f357a74`** (43rd: the
+camera manifest) on **`f9e8943`** (42nd: the seat searched by the count) on **`909010c`** (41st:
+the photograph matched by its features) on
 **`12cdc24`** (40th: the markings judge, measured to weight 0; the pictures check the clock's
 sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture) on `9e96a42` (38th),
 plus this block's own pin commit, in sync with origin, clean but for the
 standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1867, 0 failed** (1837 + 30). Exes **2026-09-07 01:34:07 / 01:34:42 / 01:35:17, Studio
-selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the 42nd pass's seat
-sweep, the 43rd's camera manifest, and the feature matcher with its two ONNX models** — **these carry the sort's picture check, the reported
+**1869, 0 failed** (1867 + 2). Exes **2026-09-07 02:34:10 / 02:34:49 / 02:35:26, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the 44th pass's
+OpenBLAS pin (the 01:34 exes crash without it), the 42nd pass's seat sweep, the 43rd's camera
+manifest, and the feature matcher with its two ONNX models** — **these carry the sort's picture check, the reported
 `mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
 features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
 cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
@@ -7553,6 +7564,63 @@ Tests **1837 → 1867**. **Reversion audit 6 breaks, all 6 caught by the checks 
 ±10 cm, see the 42nd pass); no CRS — a compass heading gives north, nothing gives latitude;
 the CLI writes no manifest; residuals are null for ladder-set poses and for projects saved before
 the record was persisted; the preview is plan-only from a ≤1.5M-point read-back.
+
+### 2026-09-07, forty-fourth pass — ✅ FINISHED: Studio crashed inside OpenBLAS, and OpenBLAS now has one thread
+
+**The report**: "studio is crashing." Windows had it: **APPCRASH, exception 0xC0000005 in
+`libscipy_openblas64_` at 01:53:10**, nine minutes into a session opened at 01:44 on the 01:34
+build; `studio.log` held four interleaved `Windows fatal exception: access violation` lines
+(several threads hit the fault handler at once) and nothing else. Studio had restarted at 01:53:43.
+
+**Read from the minidump, not guessed** (`%LOCALAPPDATA%\CrashDumps\TLS-Pie-Studio.exe.12324.dmp`,
+32 MB; no debugger on the machine, so the streams were parsed by hand and the DLL's export table and
+capstone gave the symbols): the faulting thread was **OpenBLAS's own Windows worker loop,
+`blas_thread_server`, at the `call r15` that invokes `queue->routine`**, with r15 =
+`0x00050000c0000000` — a non-canonical address, and exactly the bytes numpy keeps in its `.data`
+at the address the "queue node" pointed to. A second worker had made the same call through a node
+lying on a stack **that belonged to no thread in the dump** (a request thread that had already
+exited) and was executing stack memory. A Python thread sat inside OpenBLAS's caller side waiting
+on a kernel handle; fifteen workers were parked. No `small_gicp`, no `onnxruntime`, no `laspy` was
+loaded — **the survey press, the matcher and the export were not running**; numpy, PIL and CuPy
+were, on three request threads at once.
+
+**The mechanism, from OpenBLAS 0.3.34's `blas_server_win32.c`**: every threaded BLAS call builds
+its `blas_queue_t` nodes ON THE CALLING THREAD'S STACK and appends them to ONE process-wide list
+(`pool.queue`); workers pop from it and `call` the node's routine. Studio's callers are the HTTP
+server's per-request threads (a `ThreadingTCPServer`, no lock on the doors by design), which end
+with the request — so a node reachable after its owner returned is a pointer into freed stack. A
+placement is a `(N,3)@(3,3)` product that OpenBLAS splits across its pool above ~260k elements, so
+every door that moves a big cloud fed that list, and two doors at once raced it. Which race exactly
+is OpenBLAS's to fix; **the class is "a shared worker pool driven from threads that die", and it
+needs the pool to exist.**
+
+**The fix (`tlspie_studio.py`)**: `os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")` before
+anything imports numpy. With one thread OpenBLAS creates no workers, no queue, and every BLAS call
+runs inline on the thread that made it; Studio's own pools (the survey press, the wall fitter) are
+Python threads and keep their parallelism. **Cost measured on the real shapes** (2M points,
+16 threads → 1): placement f64 14.4 → 15.4 ms, f32 5.6 → 10.0 ms, tall SVD and batched
+3×3 eigh unchanged (never threaded); only a 1500×1500 square product — not a shape Studio
+uses — goes 24 → 115 ms. The CLI is single-threaded and untouched.
+
+**What did NOT reproduce it, recorded so nobody re-runs them**: 8 threads hammering small solves,
+eigh and 300×300 products for 45 s (88k rounds, survived, with and without the pin); 18
+long-lived threads applying rotations to million-point clouds for 60 s (survived). Long-lived
+threads keep their stacks mapped; the dead-stack shape needs threads that END, which is what the
+request server makes.
+
+**The check asks OpenBLAS, not the source**: a fresh process imports the wrapper (main is behind
+its guard), imports numpy, and reads `scipy_openblas_get_num_threads64_()` through ctypes —
+must be 1. A second, textual check holds the pin ahead of the `align` import. Suite **1869**.
+**Reversion audit 2 of 2 caught**: the pin removed fired both checks; and the break the pin
+cannot see — the line present and ahead of `align`, but `import numpy` placed just before it —
+fired only the probe. Exes
+**2026-09-07 02:34:10 / 02:34:49 / 02:35:26**, Studio selftest rc=0, built with Studio verified closed. Commit `dcac583`.
+
+**Open**: the operator's session between 01:44 and 01:53 left no press marks in the log (only
+faults and door errors are logged), so which two doors overlapped is not known — the fix does not
+depend on it. numpy 2.5.2 / OpenBLAS 0.3.34 stays; a newer wheel may carry a server fix, unverified.
+The `take_edit: could not read the cut list ('hi')` line that recurs every few minutes in
+`studio.log` is unrelated to the crash and still unexplained.
 
 ### ▶ NEXT SESSION STARTS HERE
 
