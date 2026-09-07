@@ -6558,7 +6558,17 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-07, forty-second pass) — the current one
+### ⚠ LIVE STATE (2026-09-07, forty-third pass) — the current one
+
+**⭐⭐ EVERY EXPORTED CLOUD NOW HAS A CAMERA MANIFEST BESIDE IT (43rd pass)** —
+`<stem>.camera_manifest.json` / `.camera_positions.csv` / `.export_report.md` / `.camera_preview.png`,
+every camera in the FILE's frame and metres through the exporter's own Level(Setup(Lean(p))) as
+one matrix (checked against the pipeline to 1e-9), orientation as a camera-to-file rotation with
+the equirectangular pixel→ray equations written out, missing = null (never zero, never identity),
+duplicates flagged never merged, GPS zeros reported absent, residuals carried and now persisted
+in the project. `CAMERA_MANIFEST.md` is the schema. Suite **1867**; audit 6 breaks, all 6 caught.
+⛔ Lesson: the suite was green with the door calling a name that did not exist — a source pin
+passed; only a CALL proves a door runs.
 
 **⭐⭐ THE MATCHER NOW SEARCHES THE CAMERA'S SEAT INSTEAD OF INHERITING IT (42nd pass).** The
 six-parameter fit only ever moved a few centimetres from whatever seat it was seeded with —
@@ -6579,15 +6589,15 @@ inliers, and the page keeps clouds whose blob fingerprint is unchanged. Suite **
 failed**; **reversion audit 8 breaks, all 8 caught, all files restored byte for byte**.
 ⚠ The selftest still does NOT check that the models packed — named and queued, not fixed.
 
-**Tree**: `main` = **`f9e8943`** (42nd: the seat searched by the count) on **`909010c`**
-(41st: the photograph matched by its features) on
+**Tree**: `main` = **`f357a74`** (43rd: the camera manifest) on **`f9e8943`** (42nd: the seat
+searched by the count) on **`909010c`** (41st: the photograph matched by its features) on
 **`12cdc24`** (40th: the markings judge, measured to weight 0; the pictures check the clock's
 sort) on **`987559e`** (39th: placement-shuffle fix + Pin the picture) on `9e96a42` (38th),
 plus this block's own pin commit, in sync with origin, clean but for the
 standing untracked `windows-converter/cutjs_tmp.js` (never delete scratch from the repo). Suites
-**1837, 0 failed** (1833 + 4). Exes **2026-09-06 22:04 / 22:05 / 22:05, Studio
-selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the feature matcher
-and its two ONNX models but NOT YET the 42nd pass's seat sweep (rebuilt at the close of the 43rd)** — **these carry the sort's picture check, the reported
+**1867, 0 failed** (1837 + 30). Exes **2026-09-07 01:34:07 / 01:34:42 / 01:35:17, Studio
+selftest rc=0**, built with Studio verified closed (0 processes) — **these carry the 42nd pass's seat
+sweep, the 43rd's camera manifest, and the feature matcher with its two ONNX models** — **these carry the sort's picture check, the reported
 `mark` judge, the placement fix, Pin the picture, the `set_tilt` seat fix, all three 38th-pass
 features AND everything the 09-04 13:55 build carried** (walls button, polygon camera park,
 cut-scope decoupling, `REFINE_POINTS` slice, `pair_in_order`, the `9c7d922` drag-to-move
@@ -7482,6 +7492,67 @@ puts its own first, 53 inliers against 9 — decisive, so the pairing was never 
 matcher (41st); the per-scan seat scatter above; and the ladder's `SEED_HEIGHTS` climb still
 seeds the correlation solve at whichever height its own score prefers — the matcher's count is
 the better judge of that too, when a matcher is present, and could hand the ladder its seat.
+
+### 2026-09-07, forty-third pass — ✅ FINISHED: the camera manifest beside every exported cloud
+
+**The ask**: extend the point-cloud export so it also produces a camera manifest for rebuilding the
+surveyed restaurant in SketchUp — every panorama's camera in the SAME final frame and units as the
+exported cloud, with orientation, the pixel-to-ray mapping written out, a CSV, a report, and tests.
+
+**Built (`tlsconvert/manifest.py`, `CAMERA_MANIFEST.md`, the door in `AlignServer.save`).** Beside
+the cloud, under its stem: `.camera_manifest.json` (authoritative), `.camera_positions.csv`,
+`.export_report.md`, `.camera_preview.png`. A `.dxf` gets none and says so.
+
+- **The frame, once, as one matrix.** A point leaves as `Level(Setup(Lean(p_raw)))` — the order
+  `pipeline.convert`'s emit applies. `scan_to_export` / `capture_to_export` write that as a 4×4 and
+  **the suite checks it against the pipeline's own `apply`s over random points to 1e-9.** The
+  camera seat lives in the lean-applied scan frame (`colour_scan` solves there), so the centre is
+  `scan_to_export` applied to the seat; the camera-to-file rotation is `M_level Rz(setup_yaw) C^T`
+  with `C = colour.camera_matrix`. The lean does not appear in the rotation because the pose
+  already lives on its far side — stated in the module's docstring and in the JSON.
+- **Orientation proved, not described.** A point painted by `colour.sample` names a pixel; that
+  pixel, sent back out through the manifest's own longitude/latitude equations and its matrix,
+  points from the camera at the point in the FILE frame within a pixel — after lean, placement
+  and level have all moved it. The stitch lift's sign is checked against `lift_image` itself:
+  `v_file = v + image_up_px`.
+- **Missing is null, never zero, never identity.** A filed photograph with no accepted pose gets
+  `xyz: null`, `status: "unavailable"`, `orientation: null`; the station (lidar centre) is still
+  placed. The Insta360's all-zero EXIF GPS block is read, reported absent, never used. Two
+  byte-identical images under different names are flagged on BOTH records and neither is merged
+  or dropped. Ids are `camera_<capture stem>` — hiding a cloud and exporting again does not
+  renumber the rest.
+- **Station vs optical centre, both written.** `station.xyz` is the lidar's centre;
+  `position.xyz` the panorama's solved optical centre; `camera_offset_from_station_m` the seat
+  between them (on this rig ≈ 0.10 m up, solved, never taped). No position is `measured`.
+- **Residuals travel.** `alignment_quality` carries the feature match's inlier rms in degrees
+  with the counts and the seat sweep, or the correlation confidence, or null. The match record is
+  now SAVED with the pose (`colour_pose`) and RESTORED (`_carry_colour`), because a reopened
+  project used to export "no residual on record" for a number the screen had shown.
+- **Validation on every export**, in the report and in the JSON: unique ids, finite positions,
+  proper rotations, images hashed/sized/resolvable, duplicates flagged, GPS zeros, cloud hashed,
+  CSV = JSON to 1e-6 m, and a **re-import check**: the cloud is read back and every camera must
+  lie inside its extent and above its floor, with each camera's height above the floor and
+  distance to the nearest point listed. The preview is labelled a picture, not proof.
+
+**⛔⛔ THE SUITE WAS GREEN WITH THE DOOR BROKEN.** The first wiring called `_placement_of(scan)`
+— a name that does not exist (`_placement` does) — and the door check pinned that name in the
+SOURCE and passed. The real export then wrote its 9.05M-point cloud correctly and reported
+*"name '_placement_of' is not defined"* for the manifest (the guard that keeps a manifest failure
+from losing the cloud did its job). **A pin proves a line is there; only a call proves it runs.**
+The check now builds a fake scan and CALLS `_stations`, then builds a record from what came back.
+Two hours after the 41st pass's "a green suite is not production evidence", the same lesson in a
+new place.
+
+**The sample, from the operator's own job**: `06.09.26 scan 4 matched.tlspie` exported through
+the Studio door (thinned 2 cm, no cuts) to `scratchpad/s4/man/sample/restaurant_registered.laz`
+— 9,050,585 points in 238 s (a 4-minute open first), **18 of 18 cameras placed, every validation OK, every camera inside the re-read cloud and above its floor**; scan 4 carries its real residual (580 of 756 features, 0.56° rms, seat 0.106 m above its station); the seventeen ladder-set poses carry `null` residuals and their ladder seats as they are (0.01–0.50 m — the 42nd pass's scatter, recorded, not hidden); all 18 EXIF GPS blocks all-zero, reported absent; no duplicate image in this project (the two byte-identical originals in `INSTA IMAGES` are not both filed). The four files were sent to the operator.
+
+Tests **1837 → 1867**. **Reversion audit 6 breaks, all 6 caught by the checks written for them**: positions skipping the level → the pipeline-agreement and pixel-ray checks (6 fired); orientation ignoring placement and level → the pixel-ray, sampler and rotation checks (3); zeros for a missing position → the null, CSV and validation checks (3); duplicates unflagged → 2; the CSV rounding → 2; the merge path unwired → the door pin (1). `manifest.py` restored to `cf7dc680`, `align.py` to `24614808`, final suite 1867 green. Exes **2026-09-07 01:34:07 / 01:34:42 / 01:35:17, Studio selftest rc=0**, built with Studio verified closed (0 processes), and **`tlsconvert.manifest` and `tlsconvert.match` read out of all three bundles' PYZ, the two ONNX models beside them** — the first build carrying the 42nd pass's seat sweep and this pass's manifest. Commit `f357a74`.
+
+**Limitations, stated**: positions are estimates (no station surveyed; per-scan seat scatter
+±10 cm, see the 42nd pass); no CRS — a compass heading gives north, nothing gives latitude;
+the CLI writes no manifest; residuals are null for ladder-set poses and for projects saved before
+the record was persisted; the preview is plan-only from a ≤1.5M-point read-back.
 
 ### ▶ NEXT SESSION STARTS HERE
 
