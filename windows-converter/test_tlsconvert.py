@@ -13694,5 +13694,322 @@ rebuildNow(meta).then(n=>{
           and _rbo.get("newSetup") == 2 and _rbo.get("reloaded") == 1, _rbo)
 
 
+# --- the camera manifest ------------------------------------------------------------
+# ⛔⛔ EVERY CAMERA IN THE FILE'S OWN FRAME. The manifest writes its transform
+# as one matrix; the exporter applies Lean, Setup and Level one after another
+# in `pipeline.convert`. The two are checked against each other over random
+# points, because a camera exported in an earlier frame beside a cloud in a
+# later one is the failure the whole module exists to prevent.
+print("\ncamera manifest")
+from tlsconvert import manifest as _mf, registration as _reg  # noqa: E402
+from tlsconvert import colour as _mcol                          # noqa: E402
+from PIL import Image as _PImage                                # noqa: E402
+
+_mrng = np.random.default_rng(11)
+_mlean = _reg.Lean(1.7, -0.9)
+_msetup = _reg.Setup(4.98, -2.81, 1.43, 98.19)
+_mlevel = _reg.Level(normal=(0.0177, 0.0024, 0.9998),
+                     pivot=(0.44, -6.88, 1.38), heading_deg=12.5,
+                     origin=(1.0, 2.0, 0.3))
+_mP = _mrng.normal(size=(400, 3)) * 4.0
+_mpipe = _mlevel.apply(_msetup.apply(_mlean.apply(_mP)))
+_mT = _mf.capture_to_export(_mlean, _msetup, _mlevel)
+_mmine = (np.c_[_mP, np.ones(len(_mP))] @ _mT.T)[:, :3]
+check("capture_to_export IS Level(Setup(Lean(p))) -- the exporter's own "
+      "order, one matrix", float(np.abs(_mmine - _mpipe).max()) < 1e-9,
+      float(np.abs(_mmine - _mpipe).max()))
+_mTl = _mf.scan_to_export(_msetup, _mlevel)
+_mmine2 = (np.c_[_mlean.apply(_mP), np.ones(len(_mP))] @ _mTl.T)[:, :3]
+check("...and scan_to_export takes the lean-applied frame the pose lives in",
+      float(np.abs(_mmine2 - _mpipe).max()) < 1e-9)
+_mT0 = _mf.scan_to_export(_reg.Setup(), None)
+check("an unplaced, unlevelled scan exports through the identity",
+      np.allclose(_mT0, np.eye(4)))
+
+# orientation: the pixel the exporter paints a point FROM, sent back out as a
+# ray through the manifest's own equations and rotation, must point from the
+# camera at that point in the FILE's frame -- after the lean, the placement
+# and the level have all moved it.
+_myaw, _mpitch, _mroll = 86.74, 1.19, -0.34
+_mcam = np.array([0.004, -0.008, 0.106])
+_mW, _mH = 1440, 720
+_mPl = _mlean.apply(_mP)
+_mimg = np.arange(_mH * _mW, dtype=np.int64).reshape(_mH, _mW)[..., None]
+_mpick = _mcol.sample(_mPl, _mimg, _myaw, _mcam, _mpitch, _mroll)[:, 0]
+_mR = _mf.camera_to_export(_myaw, _mpitch, _mroll, _msetup, _mlevel)
+_mcamf = (_mTl @ np.r_[_mcam, 1.0])[:3]
+_mworst, _mpx = 0.0, 0
+for _i in range(len(_mP)):
+    _v, _u = divmod(int(_mpick[_i]), _mW)
+    _d = _mR @ _mf.pixel_to_camera_ray(_u, _v, _mW, _mH)
+    _want = _mpipe[_i] - _mcamf
+    _want /= np.linalg.norm(_want)
+    _mworst = max(_mworst, math.degrees(math.acos(
+        min(1.0, float(_d @ _want)))))
+    _uu, _vv = _mf.camera_ray_to_pixel(_mR.T @ _want, _mW, _mH, 0)
+    _mpx = max(_mpx, abs(_uu - _u), abs(_vv - _v))
+check("a painted pixel, sent back through the manifest's ray equations and "
+      "matrix, points from the camera at its point in the FILE frame "
+      "(within a pixel)", _mworst < 1.5 * 180.0 / _mH, _mworst)
+check("...and the manifest's ray->pixel is the exporter's own sampler, to "
+      "the pixel", _mpx == 0, _mpx)
+check("the camera-to-export matrix is a proper rotation, and the level's "
+      "turn is in it", _mf.is_rotation(_mR)
+      and np.allclose(_mR, np.asarray(_mlevel.matrix())
+                      @ _mf.camera_to_export(_myaw, _mpitch, _mroll,
+                                             _msetup, None)))
+_mlum = np.arange(_mH * _mW, dtype=np.float64).reshape(_mH, _mW)
+_mlift = _mcol.lift_image(None, _mlum, -8)[1]
+check("the documented stitch lift is lift_image's: v_file = v + image_up_px",
+      _mlift[300, 5] == _mlum[292, 5]
+      and _mf.camera_ray_to_pixel(_mf.pixel_to_camera_ray(100, 300, _mW, _mH),
+                                  _mW, _mH, -8)[1] == 292)
+
+# an export: a room with one bright MARKER, written by the real writer in
+# metres after the pipeline's transforms, and cameras beside it
+_mdir = tempfile.mkdtemp(prefix="tlsmanifest")
+_mpix = os.path.join(_mdir, "panoramas")
+os.makedirs(_mpix)
+
+
+def _mjpg(name, seed, gps_zero=True):
+    arr = (np.random.default_rng(seed).random((32, 64, 3)) * 255
+           ).astype(np.uint8)
+    ex = _PImage.Exif()
+    if gps_zero:
+        # ⛔ THE INSTA360'S OWN HABIT: a GPS block full of zeros. Not a
+        # position, and the manifest must say so rather than plot it.
+        g = ex.get_ifd(0x8825)
+        g[1] = "N"; g[2] = (0.0, 0.0, 0.0); g[3] = "E"; g[4] = (0.0, 0.0, 0.0)
+        ex[0x8825] = g
+    ex[306] = "2026:08:20 16:12:43"
+    p = os.path.join(_mpix, name)
+    _PImage.fromarray(arr).save(p, exif=ex.tobytes(), quality=90)
+    return p
+
+
+_mA = _mjpg("TLS_A.jpg", 1)
+_mB = _mjpg("TLS_B.jpg", 2, gps_zero=False)
+_mC = os.path.join(_mpix, "TLS_C_copy.jpg")
+shutil.copyfile(_mA, _mC)                      # same bytes, another name
+_mroom = _mrng.uniform(-1, 1, size=(30000, 3)) * [5.0, 4.0, 1.5]
+_mmark_raw = np.array([2.0, 1.5, 0.4])
+_mroom[:200] = _mmark_raw + _mrng.normal(size=(200, 3)) * 0.002
+_mcloud = os.path.join(_mdir, "room.laz")
+_mw = export.LasWriter(_mcloud)
+_mw.write(_mlevel.apply(_msetup.apply(_mlean.apply(_mroom))),
+          np.full((len(_mroom), 3), 128, np.uint8),
+          np.full(len(_mroom), 42, np.uint8))
+_mw.close()
+_mplace = dict(_msetup.as_dict(), **_mlean.as_dict())
+_mst = [
+    {"name": "TLS_A.pcap", "capture": os.path.join(_mdir, "TLS_A.pcap"),
+     "photo": _mA, "setup": _mplace,
+     "pose": {"photo": _mA, "yaw_deg": _myaw, "pitch_deg": _mpitch,
+              "roll_deg": _mroll, "camera": tuple(_mcam), "image_up_px": -8,
+              "grade": "matched", "given": False,
+              "matched": {"belongs": True, "rms_deg": 0.55, "inliers": 541,
+                          "matches": 752, "backend": "disk"}},
+     "meta": {"capture": {"started_epoch": 1787238794.29}}},
+    # filed but never solved: everything about its place must be NULL
+    {"name": "TLS_B.pcap", "capture": os.path.join(_mdir, "TLS_B.pcap"),
+     "photo": _mB, "setup": {}, "pose": None, "meta": None},
+    # a byte-copy of A's photograph under another name, on another station
+    {"name": "TLS_C.pcap", "capture": os.path.join(_mdir, "TLS_C.pcap"),
+     "photo": _mC, "setup": {"x_m": 1.0, "y_m": 2.0, "z_m": 0.0,
+                             "yaw_deg": 30.0},
+     "pose": {"photo": _mC, "yaw_deg": 10.0, "camera": (0.0, 0.0, 0.1),
+              "grade": "sure", "confidence": 5.5}},
+    {"name": "TLS_D.pcap", "capture": os.path.join(_mdir, "TLS_D.pcap"),
+     "photo": None, "setup": {}, "pose": None},
+]
+_mgot = _mf.write_beside(_mcloud, _mst, level=_mlevel, project="p.tlspie",
+                         points_written=len(_mroom))
+check("the manifest, CSV, report and preview are written beside the cloud",
+      _mgot["ok"] and all(os.path.isfile(v) for v in _mgot["files"].values()
+                          if v)
+      and _mgot["files"]["manifest"].endswith(".camera_manifest.json")
+      and _mgot["files"]["csv"].endswith(".camera_positions.csv"),
+      _mgot)
+_mm = json.load(open(_mgot["files"]["manifest"], encoding="utf-8"))
+_mcams = {c["id"]: c for c in _mm["cameras"]}
+check("one record per PHOTOGRAPH, ids stable from the capture stem, the "
+      "capture with no photograph named instead",
+      sorted(_mcams) == ["camera_TLS_A", "camera_TLS_B", "camera_TLS_C"]
+      and _mm["captures_without_photograph"] == ["TLS_D"], sorted(_mcams))
+check("the cloud is hashed and its LAS header read back",
+      _mm["point_cloud"]["sha256"] == _mf.sha256_file(_mcloud)
+      and _mm["point_cloud"]["header"]["point_count"] == len(_mroom)
+      and _mm["point_cloud"]["header"]["scales"] == [0.001] * 3)
+_mA_rec = _mcams["camera_TLS_A"]
+check("A's centre is the seat carried through the SAME transform as the "
+      "points, and its station is the sensor's place",
+      np.allclose(_mA_rec["position"]["xyz"], _mcamf, atol=1e-9)
+      and np.allclose(_mA_rec["station"]["xyz"], (_mTl @ [0, 0, 0, 1])[:3])
+      and _mA_rec["position"]["status"] == "estimated"
+      and _mA_rec["position"]["source"] == "panorama_to_cloud_feature_match"
+      and _mA_rec["camera_offset_from_station_m"]["scan_frame_xyz"]
+      == [0.004, -0.008, 0.106], _mA_rec["position"])
+check("...with its orientation matrix, the axes and the pixel equations "
+      "written beside it",
+      np.allclose(_mA_rec["orientation"]["matrix_cam_to_export"], _mR)
+      and "d_export = R @ d_cam" in _mA_rec["orientation"]["layout"]
+      and _mA_rec["image_up_px"] == -8
+      and "v_file = v + image_up_px" in _mm["panorama_mapping"]
+      ["vertical_stitch_lift"]
+      and _mm["panorama_mapping"]["projection"] == "equirectangular")
+check("...its image hashed, sized, and timed from the sidecar in UTC",
+      _mA_rec["image_sha256"] == _mf.sha256_file(_mA)
+      and (_mA_rec["width_px"], _mA_rec["height_px"]) == (64, 32)
+      and _mA_rec["capture_timestamp"] == "2026-08-20T15:13:14Z"
+      and _mA_rec["image_path"] == "panoramas/TLS_A.jpg"
+      and _mA_rec["alignment_quality"]["units"] == "degrees"
+      and _mA_rec["alignment_quality"]["inliers"] == 541)
+check("the frame says metres, right-handed, +Z up, no CRS, and how to get "
+      "to SketchUp millimetres",
+      _mm["coordinate_frame"]["units"] == "metres"
+      and _mm["coordinate_frame"]["handedness"] == "right"
+      and _mm["coordinate_frame"]["up_axis"] == "+Z"
+      and _mm["coordinate_frame"]["crs"] is None
+      and "1000" in _mm["coordinate_frame"]["to_sketchup_mm"]
+      and _mm["coordinate_frame"]["source_to_export"]["level"]["heading_deg"]
+      == 12.5)
+# ⛔ MISSING IS NULL, NEVER ZERO AND NEVER IDENTITY
+_mB_rec = _mcams["camera_TLS_B"]
+check("an unsolved photograph's position and orientation are null and say "
+      "'unavailable' -- not (0,0,0), not the identity",
+      _mB_rec["position"]["xyz"] is None
+      and _mB_rec["position"]["status"] == "unavailable"
+      and _mB_rec["orientation"] is None
+      and _mB_rec["station"]["xyz"] is not None)
+check("the zero-valued EXIF GPS is reported absent, not used",
+      _mA_rec["gps"] is None and "all-zero" in (_mA_rec["gps_note"] or "")
+      and _mB_rec["gps"] is None and _mB_rec["gps_note"] is None
+      and _mA_rec["image_timestamp_exif"] == "2026:08:20 16:12:43")
+check("two byte-identical images under different names are FLAGGED on "
+      "both records and neither is merged or dropped",
+      _mcams["camera_TLS_A"]["duplicate_image_of"] == ["camera_TLS_C"]
+      and _mcams["camera_TLS_C"]["duplicate_image_of"] == ["camera_TLS_A"]
+      and len(_mm["duplicate_images"]) == 1
+      and len(_mm["cameras"]) == 3)
+_mrows = {r["camera_id"]: r for r in _mf.read_csv(_mgot["files"]["csv"])}
+check("the CSV has the named columns, invariant decimals, and agrees with "
+      "the JSON to a micron",
+      list(_mrows["camera_TLS_A"].keys()) == list(_mf.CSV_COLUMNS)
+      and all(abs(float(_mrows["camera_TLS_A"][k]) - v) < 1e-6
+              for k, v in zip("xyz", _mA_rec["position"]["xyz"]))
+      and _mrows["camera_TLS_B"]["x"] == ""
+      and _mrows["camera_TLS_B"]["position_status"] == "unavailable"
+      and "," not in _mrows["camera_TLS_A"]["x"]
+      and _mrows["camera_TLS_A"]["units"] == "metres")
+_mfind = dict((t, lv) for lv, t in _mgot["findings"])
+check("validation passes the good parts and WARNS on the null one and the "
+      "duplicate, never silently",
+      all(lv != "fail" for lv in _mfind.values())
+      and any(lv == "warn" and "UNAVAILABLE" in t for t, lv in _mfind.items())
+      and any(lv == "warn" and "byte-identical" in t
+              for t, lv in _mfind.items()), _mgot["findings"])
+# re-import: the marker in the file must sit where the manifest's transform
+# says, and the camera where the manifest says relative to it
+_mxyz, _mrgb, _mtotal = __import__("tlsconvert.library", fromlist=["x"]) \
+    .read_cloud(_mcloud, max_points=100000)
+_mmark_file = (_mT @ np.r_[_mmark_raw, 1.0])[:3]
+_mnear = np.asarray(_mxyz, dtype=float)[
+    np.argsort(np.linalg.norm(np.asarray(_mxyz, dtype=float) - _mmark_file,
+                              axis=1))[:50]].mean(axis=0)
+check("re-imported: the marker feature sits where capture_to_export puts "
+      "it (within the LAS millimetre)",
+      _mtotal == len(_mroom) and float(np.linalg.norm(_mnear - _mmark_file))
+      < 0.003, float(np.linalg.norm(_mnear - _mmark_file)))
+_mrel = np.array(_mA_rec["position"]["xyz"]) - _mnear
+_mrel_want = _mcamf - _mmark_file
+check("...and camera A stands at the SAME offset from that feature in the "
+      "file as the manifest states, so a SketchUp view from it looks at "
+      "the marker",
+      float(np.linalg.norm(_mrel - _mrel_want)) < 0.003
+      and all(r["level"] != "fail" for r in _mm["reimport_check"]["findings"]),
+      (float(np.linalg.norm(_mrel - _mrel_want)),
+       _mm["reimport_check"]["findings"]))
+check("...and SketchUp millimetres are that offset times a thousand, "
+      "axes untouched",
+      np.allclose(_mrel_want * 1000.0,
+                  (np.array(_mA_rec["position"]["xyz"]) - _mmark_file)
+                  * 1000.0))
+# the validator catches what it is for
+_mbad = json.loads(json.dumps(_mm))
+_mbad["cameras"][0]["position"]["xyz"][2] = float("nan")
+_mbad["cameras"][2]["orientation"] = {"matrix_cam_to_export":
+                                      [[1, 0, 0], [0, 2, 0], [0, 0, 1]]}
+_mbad["cameras"][1]["id"] = "camera_TLS_A"
+_mbadf = _mf.validate(_mbad)
+check("the validator FAILS a non-finite position, an improper rotation and "
+      "a repeated id",
+      any(lv == "fail" and "non-finite" in t for lv, t in _mbadf)
+      and any(lv == "fail" and "improper" in t for lv, t in _mbadf)
+      and any(lv == "fail" and "repeat" in t for lv, t in _mbadf), _mbadf)
+with io.open(_mgot["files"]["csv"], "a", encoding="utf-8") as _fh:
+    pass
+_mcsv2 = os.path.join(_mdir, "wrong.csv")
+with io.open(_mcsv2, "w", encoding="utf-8", newline="") as _fh:
+    _fh.write(open(_mgot["files"]["csv"], encoding="utf-8").read()
+              .replace(_mrows["camera_TLS_A"]["x"], "9.999999"))
+check("...and a CSV that disagrees with the JSON",
+      any(lv == "fail" and "CSV disagrees" in t
+          for lv, t in _mf.validate(_mm, csv_path=_mcsv2)))
+check("a drawing gets no manifest, and says so instead of failing",
+      _mf.write_beside(os.path.join(_mdir, "x.dxf"), _mst).get("skipped"))
+# ⛔ AND THE DOOR IS WIRED, pinned where it lives
+_msv = _ALIGN_SRC[_ALIGN_SRC.index("    def save(self, setups"):]
+_msv = _msv[:_msv.index("\n    @property", 10)]
+check("Export merged cloud writes the manifest from the SAME scans, level "
+      "and poses it merged, on both the one-cloud and the merge paths",
+      _msv.count("self._manifest_beside(") == 2
+      and _msv.count('"manifest": made') == 2
+      and "self._manifest_beside(info[\"out\"], scans, lvl, info[\"points\"])"
+      in _msv)
+# ⛔⛔ EXECUTED, NOT PINNED. The first version of this check looked for the
+# helper's NAME in the source and passed -- on a name that did not exist.
+# The real export then wrote its cloud and reported "name '_placement_of'
+# is not defined" for the manifest. A pin proves a line is there; only a
+# call proves it runs.
+import types as _mtypes                                          # noqa: E402
+_mfake = _mtypes.SimpleNamespace(
+    name="TLS_Z.pcap", path=os.path.join(_mdir, "TLS_Z.pcap"),
+    source="cloud", photo=_mA, setup=_msetup, lean=_mlean,
+    camera_x=0.004, camera_y=-0.008, camera_z=0.106,
+    colour_info={"ok": True, "photo": _mA, "yaw_deg": _myaw,
+                 "pitch_deg": _mpitch, "roll_deg": _mroll, "grade": "matched",
+                 "given": False, "rung": 4, "image_up_px": -8,
+                 "judged": ["features"],
+                 "matched": {"belongs": True, "inliers": 541, "matches": 752,
+                             "rms_deg": 0.55, "backend": "disk",
+                             "seats": [[0.12, 541]]}})
+_msrv = align.AlignServer([], out_path=None)
+_mstn = _msrv._stations([_mfake])
+check("the door's station reader RUNS, through colour_pose and _placement, "
+      "and carries the seat, the lean, the lift and the match record",
+      len(_mstn) == 1 and _mstn[0]["photo"] == _mA
+      and _mstn[0]["setup"]["yaw_deg"] == 98.19
+      and _mstn[0]["setup"]["pitch_deg"] == 1.7
+      and _mstn[0]["pose"]["camera"] == (0.004, -0.008, 0.106)
+      and _mstn[0]["pose"]["image_up_px"] == -8
+      and _mstn[0]["pose"]["matched"]["inliers"] == 541
+      and _mstn[0]["pose"]["judged"] == ["features"], _mstn)
+_mrec2 = _mf.camera_record(_mstn[0], level=_mlevel, manifest_dir=_mdir)
+check("...and a record built from it is A's record again, residual and all",
+      np.allclose(_mrec2["position"]["xyz"], _mcamf, atol=1e-9)
+      and _mrec2["alignment_quality"]["inliers"] == 541
+      and _mrec2["alignment_quality"]["seat_sweep"] == [[0.12, 541]])
+check("the match record is SAVED with the pose and RESTORED with it, so a "
+      "reopened project still exports its residuals",
+      _msrv.colour_pose(_mfake)["matched"]["rms_deg"] == 0.55
+      and 'scan.colour_info["matched"] = dict(pose["matched"])' in _ALIGN_SRC[
+          _ALIGN_SRC.index("    def _carry_colour(self, scan, pose):"):])
+check("...and the page says what was written, or why nothing was",
+      "camera manifest beside it: '" in _js_func("saveMerged")
+      and "camera manifest NOT written: '" in _js_func("saveMerged"))
+shutil.rmtree(_mdir, ignore_errors=True)
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

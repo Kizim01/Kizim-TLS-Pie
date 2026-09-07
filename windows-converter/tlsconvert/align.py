@@ -5306,6 +5306,10 @@ class AlignServer(object):
             # still restores the distinction rather than guessing at it.
             scan.colour_info["given"] = bool(pose.get("given")
                                              or saved_grade == "given")
+            # The match record comes back with the pose (see `colour_pose`);
+            # a file saved before it existed simply has none.
+            if isinstance(pose.get("matched"), dict):
+                scan.colour_info["matched"] = dict(pose["matched"])
         else:
             scan.colour_info = None
 
@@ -5600,6 +5604,12 @@ class AlignServer(object):
                 # under, or the exporter paints from an image 0.8 degrees
                 # below the one on screen.
                 "image_up_px": int(info.get("image_up_px") or 0),
+                # ⭐ THE MATCH RECORD TRAVELS WITH THE POSE IT EARNED. Without
+                # it a project reopened tomorrow exports every camera with
+                # "no alignment residual on record" -- the number existed,
+                # was shown, and was dropped at the door. Written only when
+                # there is one, so older files read back byte for byte.
+                "matched": info.get("matched") or None,
                 "camera": (cx, cy, cz)}
 
     def pick_out(self, suggest=None):
@@ -5631,6 +5641,57 @@ class AlignServer(object):
             got += ".laz"
         self.out_path = got
         return {"ok": True, "out": got}
+
+    def _stations(self, scans):
+        """
+        The per-scan facts the camera manifest is built from.
+
+        ⛔ ONE SHAPE, READ THROUGH THE SAME DOORS THE EXPORT ITSELF READS --
+        `colour_pose` for the photograph's pose and `_placement_of` for the
+        placement and lean -- so the manifest can never describe a pose the
+        cloud was not painted with. A second reading of the scan here would
+        be a second place for a seat or a lift to go missing.
+        """
+        out = []
+        for scan in scans:
+            pose = self.colour_pose(scan)
+            info = dict(getattr(scan, "colour_info", None) or {})
+            if pose:
+                pose = dict(pose, matched=info.get("matched"),
+                            confidence=info.get("confidence"),
+                            judged=info.get("judged"),
+                            corroborated=info.get("corroborated"))
+            meta = None
+            if getattr(scan, "source", "capture") == "capture":
+                try:
+                    meta = pipeline.load_meta(scan.path)[0]
+                except Exception:                         # noqa: BLE001
+                    meta = None
+            out.append({"name": scan.name, "capture": scan.path,
+                        "photo": ((pose or {}).get("photo")
+                                  or getattr(scan, "photo", None)
+                                  or info.get("photo")),
+                        "setup": _placement(scan), "pose": pose,
+                        "meta": meta})
+        return out
+
+    def _manifest_beside(self, target, scans, lvl, points):
+        """
+        The camera manifest, CSV, report and preview beside a written cloud.
+
+        ⛔ A MANIFEST FAILING IS NOT THE CLOUD FAILING. The cloud is already
+        on disk when this runs; whatever goes wrong here is returned in words
+        for the page to show beside the export's own sentence, never raised
+        over a file the operator may have waited minutes for.
+        """
+        from . import manifest as manifest_mod
+        try:
+            return manifest_mod.write_beside(
+                target, self._stations(scans),
+                level=None if lvl.is_identity() else lvl,
+                project=self.project_path, points_written=points)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
     def save(self, setups, voxel=None, edit=None, level=None, hidden=None,
              out=None, outline=False):
@@ -5748,6 +5809,10 @@ class AlignServer(object):
                              else float(voxel)))
                 written = info.get("points", info.get("written", 0))
                 draw = info.get("drawing") or {}
+                # ⭐ THE CAMERA MANIFEST GOES BESIDE THE CLOUD, in the frame
+                # the cloud was just written in -- one scan is still a
+                # camera. A drawing gets none; `write_beside` says so.
+                made = self._manifest_beside(target, [only], lvl, written)
                 return {"ok": True, "out": target, "points": written,
                         "levels": draw.get("levels"),
                         "outline_vertices": draw.get("outline_vertices"),
@@ -5755,7 +5820,8 @@ class AlignServer(object):
                         "edit": None if keep is None else keep.describe(),
                         "level": None if lvl.is_identity()
                         else lvl.describe(), "single": True,
-                        "written": 1, "hidden": left_out}
+                        "written": 1, "hidden": left_out,
+                        "manifest": made}
             info = pipeline.merge([s.path for s in scans], target,
                                   writer_kw=writer_kw,
                                   setups=[s.setup for s in scans],
@@ -5783,12 +5849,18 @@ class AlignServer(object):
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         draw = info.get("drawing") or {}
+        # ⭐⭐ THE CAMERA MANIFEST, WRITTEN FROM THE SAME SCANS, THE SAME
+        # LEVEL AND THE SAME POSES THE MERGE WAS JUST PAINTED FROM -- the
+        # hidden clouds left out of the file are left out of it too, so a
+        # camera never claims a cloud that is not there.
+        made = self._manifest_beside(info["out"], scans, lvl, info["points"])
         return {"ok": True, "out": info["out"], "points": info["points"],
                 "levels": draw.get("levels"),
                 "outline_vertices": draw.get("outline_vertices"),
                 "levels_skipped": draw.get("levels_skipped"),
                 "edit": info["edit"], "level": info["level"],
                 "thinned": info.get("thinned", 0),
+                "manifest": made,
                 # ⛔ WHAT WAS LEFT OUT IS PART OF THE RESULT, not a footnote.
                 # Hiding a cloud to see behind it and forgetting is the whole
                 # risk of leaving hidden clouds out, and the only thing that
@@ -14071,6 +14143,18 @@ async function saveMerged(clipOnly){
           ' overlapping points merged away)' : '')+
         (j.edit&&j.edit!=='no edit'?' — '+j.edit:'')+
         (j.level?' — '+j.level:'')+
+        /* ⭐ THE CAMERA MANIFEST BESIDE IT, OR WHY THERE IS NONE. A cloud
+           that exported and a manifest that quietly did not is a SketchUp
+           model with no cameras and nobody told. */
+        ((j.manifest&&j.manifest.ok)
+          ? ' — camera manifest beside it: '+j.manifest.positioned+' of '+
+            j.manifest.cameras+' camera'+(j.manifest.cameras===1?'':'s')+
+            ' placed'+(j.manifest.duplicates
+              ? ', '+j.manifest.duplicates+' duplicate image'+
+                (j.manifest.duplicates===1?'':'s')+' flagged' : '')+
+            (j.manifest.worst==='fail' ? ' ⚠ CHECK THE EXPORT REPORT' : '')
+          : ((j.manifest&&j.manifest.error&&!j.manifest.skipped)
+              ? ' — ⚠ camera manifest NOT written: '+j.manifest.error : ''))+
         /* ⛔ LEFT-OUT CLOUDS ARE THE HEADLINE OF THE RESULT. Hiding one to
            see behind it and forgetting is the whole risk of honouring Hide
            here, and the only thing that makes it safe is saying so at the
