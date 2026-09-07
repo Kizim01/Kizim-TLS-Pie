@@ -25,6 +25,27 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ⛔⛔ OPENBLAS GETS ONE THREAD, AND IT IS DECIDED HERE, BEFORE NUMPY LOADS.
+# 2026-09-07 01:53: Studio died with an access violation inside numpy's
+# OpenBLAS (libscipy_openblas64_, 0.3.34). The minidump placed it in
+# OpenBLAS's Windows worker loop (blas_thread_server) at the call through
+# `queue->routine`: the worker had popped a work node from OpenBLAS's ONE
+# shared queue whose memory was dead -- one node lay on the stack of a thread
+# that no longer existed, the other was numpy's own static data, read through
+# a stale `next` pointer. Those nodes live on the CALLING thread's stack, and
+# Studio's callers are the HTTP server's per-request threads, which end when
+# the request does. Every door that runs numpy on a big cloud -- a placement is
+# a (N,3)@(3,3) product, which OpenBLAS splits across its pool -- fed that
+# queue, and two doors at once (a repaint and a solve, the page and a press)
+# raced it. Without a pool there is no queue, no worker, and nothing to race:
+# every BLAS call runs inline on the thread that made it. Studio's own thread
+# pools (the survey press, the wall fitter) keep their parallelism, since they
+# are Python threads, not OpenBLAS's. Measured cost on the real shapes: see
+# PROJECT_CONTEXT, forty-fourth pass. `setdefault`, so an operator who sets the
+# variable themselves is obeyed. The suite asks OpenBLAS itself, in a fresh
+# process, how many threads it will use after this module is imported.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 # ⛔ THE ONE FAILURE THE LOG CANNOT LEARN ABOUT FROM `align` IS `align`
 # FAILING TO IMPORT -- the selftest comment below names a missing bundled
 # module as the specific silent death to fear in a windowed build. So the

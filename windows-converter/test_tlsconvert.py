@@ -12693,6 +12693,39 @@ check("...and the session-end line does not certify 'cleanly' for a "
       and "window session ended" in _STUDIO_SRC
       and 'pid %d exiting cleanly"' not in _STUDIO_SRC)
 
+# ⛔⛔ OPENBLAS GETS ONE THREAD IN STUDIO, AND OPENBLAS ITSELF IS ASKED.
+# 2026-09-07 01:53 the program died inside OpenBLAS's Windows worker loop: a
+# worker popped a work node from the ONE shared queue whose memory was dead
+# (a finished request thread's stack; numpy's static data through a stale
+# `next`). The nodes live on the calling thread's stack and Studio's callers
+# are per-request threads that end. No pool, no queue, nothing to race. The
+# pin must land before numpy loads, so the source order is checked -- and
+# then a fresh process imports the wrapper (main() is behind its guard),
+# imports numpy, and asks the loaded OpenBLAS how many threads it will use.
+# A pin proves a line is there; only the call proves it took.
+check("the wrapper pins OpenBLAS to one thread before numpy can load",
+      'os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")' in _STUDIO_SRC
+      and 0 < _STUDIO_SRC.find('"OPENBLAS_NUM_THREADS"')
+      < _STUDIO_SRC.find("from tlsconvert import align"))
+_blas_env = {k: v for k, v in os.environ.items()
+             if k != "OPENBLAS_NUM_THREADS"}
+_blas_probe = (
+    "import os, sys, ctypes, glob\n"
+    "import tlspie_studio\n"
+    "import numpy as np\n"
+    "libs = glob.glob(os.path.join(os.path.dirname(np.__file__), '..',\n"
+    "                              'numpy.libs', 'libscipy_openblas*.dll'))\n"
+    "print(ctypes.CDLL(libs[0]).scipy_openblas_get_num_threads64_()\n"
+    "      if libs else 'no openblas dll beside numpy')\n")
+_blas_got = subprocess.run(
+    [sys.executable, "-c", _blas_probe],
+    cwd=os.path.abspath(os.path.join(os.path.dirname(align.__file__), "..")),
+    env=_blas_env, capture_output=True, text=True, timeout=180)
+check("...and OpenBLAS, asked in a fresh process after the wrapper is "
+      "imported, answers ONE thread",
+      _blas_got.stdout.strip() == "1",
+      (_blas_got.stdout.strip(), _blas_got.stderr[-300:]))
+
 # ⛔ THE DIAGNOSTICS ARM BEFORE ANYTHING THAT CAN FAIL: armed after the GL
 # setup, a machine whose graphics were broken enough to fail boot -- the
 # 08-27 condition -- reported nothing and was exempt from the zombie guard.
