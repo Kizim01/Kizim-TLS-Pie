@@ -810,6 +810,101 @@ with tempfile.TemporaryDirectory() as td:
           s["cells"] < pts.shape[0], (s["cells"], pts.shape[0]))
 
 
+# --- 12a. keep=, the argument the pipeline actually closes a writer with ----
+#
+# ⛔⛔ THIS IS THE CHECK THAT WAS MISSING FOR ELEVEN DAYS. `pipeline.convert`
+# and `pipeline.merge` both finish a writer from a `finally` as
+# `writer.close(keep=finished)`. The two point writers took that argument from
+# 2026-08-28 and the two drawing writers did not, so EVERY outline export
+# raised TypeError -- and the suite stayed green, because the one test that
+# went through `merge` stubbed `writer_for` with a null writer whose `close`
+# DID take `keep=`. ⭐ A STUB MORE CAPABLE THAN THE CLASS IT STANDS IN FOR IS
+# A HOLE SHAPED LIKE A TEST, so every check here runs against the real writers
+# and the ones below run through the real `merge`.
+print("\nkeep=: closing a writer the way the pipeline closes it")
+
+with tempfile.TemporaryDirectory() as td:
+    pts = room()
+
+    p = os.path.join(td, "kept.dxf")
+    w = drawing.DrawingWriter(p, units="m")
+    w.write(pts)
+    s = w.close(keep=True)
+    check("the drawing writer takes keep= at all",
+          s is not None and os.path.exists(p), (s is None, os.listdir(td)))
+
+    p2 = os.path.join(td, "dropped.dxf")
+    w2 = drawing.DrawingWriter(p2, units="m")
+    w2.write(pts)
+    check("keep=False writes no drawing",
+          w2.close(keep=False) is None and not os.path.exists(p2))
+    check("...and leaves no summary, which is how merge reads 'no drawing'",
+          not w2.summary, w2.summary)
+
+    # ⛔ THE REFUSALS MUST NOT FIRE ON A FAILED EXPORT. A writer that saw no
+    # points is exactly the state an export that died early leaves behind, and
+    # "nothing was drawn" raised out of a `finally` REPLACES the real error --
+    # true, and useless to whoever has to read it.
+    p3 = os.path.join(td, "never.dxf")
+    w3 = drawing.DrawingWriter(p3, units="m")
+    check("the empty-drawing refusal is silent when the export already failed",
+          w3.close(keep=False) is None and not os.path.exists(p3))
+
+    p4 = os.path.join(td, "blank2.dxf")
+    d = drawing.DxfWriter(p4, units="m")
+    d.line("TLS-WALLS", 0.0, 0.0, 1.0, 0.0)
+    check("the DXF writer takes it too, and commits nothing on keep=False",
+          d.close(keep=False) is None and not os.path.exists(p4))
+
+
+# --- 12b. ...and the same, through the real merge --------------------------
+from tlsconvert import pipeline as _plk        # noqa: E402
+
+_real_convert = _plk.convert
+_ROOM = room()
+
+
+def _convert_ok(path, out_path, **kw):
+    """Stand in for the decoder: hand the merge's own sink a room."""
+    kw["writer"].write(_ROOM)
+    return {"points": int(_ROOM.shape[0])}
+
+
+def _convert_dies(path, out_path, **kw):
+    raise RuntimeError("the decoder gave up half way")
+
+
+try:
+    _plk.convert = _convert_ok
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "merged.dxf")
+        out = _plk.merge(["a.pcap", "b.pcap"], p,
+                         setups=[{"x_m": 3.0, "y_m": 2.0},
+                                 {"x_m": 3.2, "y_m": 2.2}])
+        check("a merge to .dxf reaches disk at all",
+              os.path.exists(p), sorted(os.listdir(td)))
+        check("...and merge comes back with the drawing it made",
+              bool(out.get("drawing")), out.get("drawing"))
+
+    _plk.convert = _convert_dies
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "died.dxf")
+        _got = None
+        try:
+            _plk.merge(["a.pcap", "b.pcap"], p, setups=[{}, {}])
+        except Exception as exc:                             # noqa: BLE001
+            _got = exc
+        # ⛔ THE POINT OF THIS ONE: close() runs in a `finally`, so anything it
+        # raises REPLACES the failure the operator needs to see.
+        check("a merge that dies raises the REAL error, not close()'s",
+              isinstance(_got, RuntimeError)
+              and "decoder gave up" in str(_got), repr(_got))
+        check("...and leaves no half-drawing behind",
+              os.listdir(td) == [], os.listdir(td))
+finally:
+    _plk.convert = _real_convert
+
+
 # --- 13. the levels a furnished room is built in ---------------------------
 print("\nhorizontal surfaces: platforms, tables, and what a wall is not")
 

@@ -2046,7 +2046,29 @@ class DxfWriter:
     def entities(self):
         return len(self._ents)
 
-    def close(self):
+    def close(self, keep=True):
+        # ⛔⛔ `keep=` IS NOT DECORATION, IT IS THE SIGNATURE THE PIPELINE
+        # CALLS. `pipeline.convert` and `pipeline.merge` both finish a writer
+        # from a `finally` as `writer.close(keep=finished)` -- see
+        # `export.PART_EXT` for what the flag means. The two point writers grew
+        # the argument on 2026-08-28 and the two drawing writers did not, so
+        # EVERY drawing export raised `TypeError: close() got an unexpected
+        # keyword argument 'keep'` from that `finally`, which also REPLACED
+        # whatever had really gone wrong. The suite missed it for eleven days
+        # because its stub writer accepted `keep=` while the real class did
+        # not: ⭐ A STUB MORE CAPABLE THAN THE CLASS IT STANDS IN FOR IS A HOLE
+        # SHAPED LIKE A TEST.
+        if not keep:
+            # The export failed upstream. Nothing has been written yet -- this
+            # writer builds the whole file in memory and commits it below -- so
+            # the destination still holds the previous drawing, the same
+            # promise `export._finish` makes for the point writers.
+            #
+            # ⛔ RETURN, NEVER RAISE. The empty-drawing refusal below is right
+            # for an export that ran to the end and wrong here: raising it
+            # would bury the real exception under "nothing was drawn", which is
+            # true and useless.
+            return
         if not self._ents:
             # ⛔ AN EMPTY DXF OPENS PERFECTLY AND SHOWS NOTHING, which is
             # indistinguishable from a viewer that failed to load it. Refuse.
@@ -2245,7 +2267,20 @@ class DrawingWriter:
             dxf.point(layer, float(x), float(y))
         return thinned, pts.shape[0]
 
-    def close(self):
+    def close(self, keep=True):
+        # ⛔⛔ SEE `DxfWriter.close` FOR WHY THIS ARGUMENT EXISTS -- the same
+        # `writer.close(keep=finished)` in `pipeline.convert` and
+        # `pipeline.merge` closes this class, and without it every outline
+        # export died in a `finally` with a TypeError that hid the real error.
+        if not keep:
+            # ⛔ RETURN BEFORE ANY OF THE ANALYSIS BELOW, not just before the
+            # write. A refused export must not raise -- and everything from
+            # here down is prepared to: no floor, an empty slice, nothing
+            # drawn. Each of those refusals is correct for a finished export
+            # and is a lie about what went wrong when the export never got
+            # there. `self.summary` stays empty, which is what
+            # `convert`/`merge` already read as "no drawing".
+            return None
         ijk, counts = self._cells.result()
         if ijk.shape[0] == 0:
             raise ValueError(
@@ -2317,11 +2352,15 @@ class DrawingWriter:
         ext = robust_extent(pts)
         if ext is not None:
             m = self.margin_m
-            keep = ((pts[:, 0] >= ext[0] - m) & (pts[:, 0] <= ext[2] + m)
-                    & (pts[:, 1] >= ext[1] - m) & (pts[:, 1] <= ext[3] + m))
-            outside = int((~keep).sum())
-            if keep.any():
-                pts = pts[keep]
+            # ⚠ NAMED `inside`, NOT `keep`: this method now takes a `keep`
+            # argument, and a mask assigned over it here would turn the
+            # caller's "throw this away" into a numpy array -- truthy, and an
+            # error to test. A shadowed parameter is invisible at the def line.
+            inside = ((pts[:, 0] >= ext[0] - m) & (pts[:, 0] <= ext[2] + m)
+                      & (pts[:, 1] >= ext[1] - m) & (pts[:, 1] <= ext[3] + m))
+            outside = int((~inside).sum())
+            if inside.any():
+                pts = pts[inside]
 
         dxf = DxfWriter(self.path, units=self.units)
         thinned, drawn = ((0, 0) if not self.slice_marks

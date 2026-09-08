@@ -6558,7 +6558,22 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-08, forty-fifth pass) — the current one
+### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
+
+**⭐⭐ THREE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
+refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
+"nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
+page's `levelRot` now applies the compass turn (`spin @ tilt`, the server's order) and `levelShift`
+honours `origin_axes`. Measured through the SHIPPED page functions under node against
+`registration.Level.apply`: they were **3.0 m apart at a 37° heading, 10.4 m on a leaning frame
+turned -122.5°, and 2.0 m on a height-only datum with no heading at all**; all eight cases now
+agree to 2e-7. (3) **`level` and `set_north` carry `origin_axes` through**, so a height-only datum
+stays height-only through either press. Suites **1869 → 1879** and **171 → 180**; audit 6
+breaks, all 6 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN REBUILT** —
+`dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still has all three.
+The other 27 findings stand unfixed; the paragraph below is still the list to work from.
+
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
 tree is still the 44th pass's; no code changed, no suite run, no exe built. The list is the
@@ -7815,6 +7830,65 @@ headroom, the pcap/packet layout and the VLP-16 angle order, `kabsch`/`ransac_ro
 internals, `Lean.matrix` and `_decompose` (verified symbolically), `close_loop`, the ONNX I/O
 shapes, the GPU fallback (no caller assumes a CuPy array), `save_project`'s atomicity, port
 selection, and `build_exe.py`'s hidden imports against what the modules actually import.
+
+### 2026-09-08, forty-sixth pass — ⭐ THE FIRST THREE SWEEP DEFECTS, FIXED AND AUDITED
+
+**This is a changelog, unlike the section above it.** The 45th pass produced a findings list and
+changed nothing; this one takes the top three off it. Each was fixed at the shape of the mistake
+rather than at the line that reported it, each got a named check that fails when the fix is
+reverted, and each reversion was run and confirmed before being restored.
+
+**1. `DrawingWriter.close()` and `DxfWriter.close()` now take `keep=`.** `pipeline.convert` and
+`pipeline.merge` finish every writer from a `finally` as `writer.close(keep=finished)`. The two
+point writers grew that argument on 2026-08-28; these two did not, so every DXF export raised
+`TypeError` — and from a `finally`, that TypeError REPLACED whatever had really gone wrong.
+`keep=False` now RETURNS before any of the analysis, which matters more than it looks: everything
+below that point is prepared to raise (no floor, an empty slice, nothing drawn), and each of those
+refusals is correct for an export that finished and a lie about one that died on the way.
+The local mask named `keep` inside `DrawingWriter.close` was renamed `inside` — left alone it
+would have shadowed the new parameter with a numpy array, which is truthy and an error to test.
+⛔ **WHY THE SUITE MISSED IT FOR ELEVEN DAYS**: the one test that went through `merge` stubbed
+`writer_for` with a null writer whose `close` DID take `keep=`, and its comment said the stub took
+the argument so that a caller which stopped passing it would be caught. It was built against the
+caller changing and was blind to the writer never having agreed. ⭐ **A STUB MORE CAPABLE THAN THE
+CLASS IT STANDS IN FOR IS A HOLE SHAPED LIKE A TEST.** `test_drawing.py` now closes the real
+writers with `keep=` both ways and runs a real `.dxf` through the real `merge` twice — once
+succeeding, once with a decoder that dies, asserting the RuntimeError survives the `finally`.
+
+**2. The page's level matrix, measured rather than read.** `levelRot` built the Rodrigues tilt and
+stopped; the heading was read by `axisWord`, by the readout, and by nothing that moved a point.
+`levelShift` had never read `origin_axes` at all — the key does not appear anywhere in the page.
+So the room on screen and the room in the file were two rooms, and both looked right.
+⭐ **THE NUMBERS COME FROM THE SHIPPED CODE, NOT FROM READING IT**: `levelRot`/`levelShift`/
+`levelMat`/`put` were lifted out of `align.PAGE` by the suite's own `_js_func` and run under node
+against `registration.Level.apply` on eight `Level.as_dict()` payloads. Six of the eight disagreed,
+by up to **11.9 m**. Both halves are now fixed and all eight agree to 2e-7.
+⛔ **THE TWO HALVES ARE INDEPENDENT AND THE AUDIT PROVED IT SEPARATELY.** Breaking the heading
+alone left the height-only case passing; breaking `origin_axes` alone left the north case passing.
+⭐ That matters because **the `origin_axes` half needs no heading at all to bite** — setting
+north and looking at the room would never have found it.
+
+**3. `origin_axes` survives `level` and `set_north`.** Both doors rebuild the `Level` from its
+parts and both dropped this one, so a height-only datum silently became a full XYZ one and the plan
+position jumped by the whole offset of the picked point (measured in the audit: 2.0 m and 1.5 m).
+`level_scan`, `level_from_floor` and `level_from_walls` all pass it; these two did not.
+⛔ Both doors carried a comment claiming the origin was carried through — `set_north`'s said
+"every one of the three parts survives the other two being set". It was written when a zero was a
+point and nothing else, and stayed unchanged when `origin_axes` arrived. **A completeness claim
+that is not re-derived when the thing it counts grows is worse than no comment at all.**
+⭐ And the danger is in the shape of the default: `"xyz"` reads like "no preference" and is in
+fact the most aggressive answer available.
+
+**⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
+build, so **none of this reaches the operator until Studio is closed and `build_exe.py` is run**.
+The remaining 27 findings are untouched. And the camera-seat finding was re-checked while waiting
+on a suite and **the 45th pass's mechanism for it was wrong**: `deep_align`'s sweep and screening
+DO score at the real seat (`PoseScorer._at` falls back to `self.camera[0]` when handed `None`), but
+`_live_axes(..., seat=True)` frees the seat for the polish and `setdefault("camera_x", 0.0)` then
+pins it explicitly at zero — so the seat does not start at zero, it **jumps** to zero at the
+polish, and the same pose scores differently either side of the jump. The defect is real; the
+sentence describing it was not. ⭐ **A finding recorded from a reviewer's summary is a hypothesis
+until it is re-derived from the source.**
 
 ### ▶ NEXT SESSION STARTS HERE
 

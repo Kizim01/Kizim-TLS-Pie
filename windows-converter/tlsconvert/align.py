@@ -2563,11 +2563,22 @@ class AlignServer(object):
         whose north and zero are already set must change the tilt and nothing
         else -- the same rule `set_north` follows in the other direction, and
         the reason the page sends what it currently holds.
+
+        ⛔⛔ AND `origin_axes` IS PART OF THE ORIGIN, NOT A SEPARATE SETTING.
+        It was dropped here for as long as it has existed: the point survived
+        and the WORD saying which of its components mean anything did not, so a
+        height-only datum came back as a full XYZ one and the plan position
+        jumped by the whole offset of the picked point the next time this
+        button was pressed. ⭐ A default that reads as "no preference" is the
+        dangerous kind -- `"xyz"` is not the absence of an answer, it is the
+        most aggressive one. `level_scan`, `level_from_floor` and
+        `level_from_walls` all pass it; these two doors did not.
         """
         fit = registration.level_from_points(points)
         had = registration.Level.from_dict(level)
         made = registration.Level(fit.level.normal, fit.level.pivot,
-                                  had.heading_deg, origin=had.origin)
+                                  had.heading_deg, origin=had.origin,
+                                  origin_axes=had.origin_axes)
         return {"ok": True, "level": made.as_dict(),
                 "tilt_deg": made.tilt_deg, "flatness": fit.flatness,
                 "errors": [float(e) for e in fit.errors],
@@ -3018,8 +3029,14 @@ class AlignServer(object):
         # tilt is: setting north on a frame whose zero has been placed must
         # not throw the zero away. Every one of the three parts survives the
         # other two being set.
+        # ⛔⛔ INCLUDING WHICH AXES THE ZERO SPEAKS FOR. The sentence above was
+        # written when a zero was a point and nothing else, and it stayed there
+        # unchanged after `origin_axes` arrived -- so it claimed a completeness
+        # it no longer had, which is worse than saying nothing. See `level`,
+        # which dropped it at the other door in the same way.
         made = registration.Level(base.normal, base.pivot, heading,
-                                  origin=base.origin)
+                                  origin=base.origin,
+                                  origin_axes=base.origin_axes)
         return {"ok": True, "level": made.as_dict(),
                 "heading_deg": heading, "direction": want,
                 "text": "turned %.2f° so that line runs %s"
@@ -7025,24 +7042,50 @@ function place(s){
     c*L[0][2]-sn*L[1][2], sn*L[0][2]+c*L[1][2], L[2][2], 0,
     s.setup.x_m, s.setup.y_m, s.setup.z_m, 1]);
 }
-/* The minimal rotation taking the measured up-vector back onto +Z -- Rodrigues,
-   and the same rule registration.Level uses. ⛔ MINIMAL matters: any rotation
-   that lands the normal on +Z would level the room, and all but this one also
-   SPIN it about Z. Yaw here is the heading the world widget reports and the
-   frame every placement is written in, so a level that quietly reassigned it
-   would move the alignment as a side effect of straightening the floor. */
+/* The minimal rotation taking the measured up-vector back onto +Z -- Rodrigues
+   -- and THEN the compass turn about the new vertical: `spin @ tilt`, the same
+   rule and the same order registration.Level.matrix uses. ⛔ MINIMAL matters:
+   any rotation that lands the normal on +Z would level the room, and all but
+   this one also SPIN it about Z. The one turn about Z that belongs here is the
+   one the operator asked for by sighting north; a level that reassigned yaw by
+   itself would move the alignment as a side effect of straightening the floor.
+
+   ⛔⛔ THE HEADING USED TO BE READ ONLY BY THE LABELS. `axisWord` called +Y
+   North on it and the readout printed it, and nothing that MOVED A POINT ever
+   looked at it -- so from the moment north was set, the room on screen and the
+   room in the file were different rooms, and both looked right. Measured
+   against the server's own arithmetic: 3.0 m out for a 37 degree turn on a
+   level frame, 10.4 m for a leaning frame turned -122.5.
+
+   ⛔ AND THE ORDER IS NOT A PREFERENCE. A turn about +Z only means "swing the
+   room round the vertical" once the vertical IS +Z; applied to a frame that
+   still leans it tips the room as well, by an amount that depends on how far
+   round the turn went. Levelling first is what makes the heading a pure
+   compass correction -- registration.Level.matrix says the same in Python. */
 function levelRot(){
   if(!V.level) return null;
   const n=V.level.normal, c=n[2];
   const v=[n[1],-n[0],0];                       /* n x z */
-  if(v[0]*v[0]+v[1]*v[1] < 1e-24) return null;  /* already vertical */
-  const K=[[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]];
-  const k=1/(1+c), R=[[1,0,0],[0,1,0],[0,0,1]];
-  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
-    let kk=0; for(let m=0;m<3;m++) kk+=K[i][m]*K[m][j];
-    R[i][j]+=K[i][j]+kk*k;
+  let R=null;
+  if(v[0]*v[0]+v[1]*v[1] >= 1e-24){             /* else: already vertical */
+    const K=[[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]];
+    const k=1/(1+c); R=[[1,0,0],[0,1,0],[0,0,1]];
+    for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+      let kk=0; for(let m=0;m<3;m++) kk+=K[i][m]*K[m][j];
+      R[i][j]+=K[i][j]+kk*k;
+    }
   }
-  return R;
+  const h=+(V.level.heading_deg||0);
+  if(!h) return R;                              /* the tilt alone, or nothing */
+  const a=h*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+  const S=[[ca,-sa,0],[sa,ca,0],[0,0,1]];
+  if(!R) return S;                              /* a compass on a level frame */
+  const M=[[0,0,0],[0,0,0],[0,0,0]];            /* S * R -- spin AFTER tilt */
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    let s=0; for(let m=0;m<3;m++) s+=S[i][m]*R[m][j];
+    M[i][j]=s;
+  }
+  return M;
 }
 /* ⛔ MIRRORS registration.Level.apply, AND IT HAS TO KEEP MIRRORING IT. What
    is on screen and what is written out are two implementations of one
@@ -7051,11 +7094,28 @@ function levelRot(){
 function levelShift(){
   if(!V.level || !V.level.origin) return null;
   const o=V.level.origin, R=levelRot(), p=V.level.pivot;
-  if(!R) return [o[0],o[1],o[2]];
-  const d=[o[0]-p[0],o[1]-p[1],o[2]-p[2]];
-  return [R[0][0]*d[0]+R[0][1]*d[1]+R[0][2]*d[2]+p[0],
-          R[1][0]*d[0]+R[1][1]*d[1]+R[1][2]*d[2]+p[1],
-          R[2][0]*d[0]+R[2][1]*d[1]+R[2][2]*d[2]+p[2]];
+  let s;
+  if(!R) s=[o[0],o[1],o[2]];
+  else {
+    const d=[o[0]-p[0],o[1]-p[1],o[2]-p[2]];
+    s=[R[0][0]*d[0]+R[0][1]*d[1]+R[0][2]*d[2]+p[0],
+       R[1][0]*d[0]+R[1][1]*d[1]+R[1][2]*d[2]+p[1],
+       R[2][0]*d[0]+R[2][1]*d[1]+R[2][2]*d[2]+p[2]];
+  }
+  /* ⛔⛔ AND ONLY THE AXES THE OPERATOR NAMED ARE MOVED. "z" means "this
+     point's HEIGHT becomes zero and its plan position is left alone", which is
+     the whole reason `origin_axes` exists -- see registration.Level.shift_xyz,
+     whose own comment says the axes are chosen AFTER the rotation, because an
+     axis dropped before it comes straight back through it.
+
+     ⛔ THE PAGE HAD NEVER READ THE KEY AT ALL. A height-only datum slid the
+     previewed room sideways by the entire plan offset of the picked point, and
+     ⭐ THAT ONE NEEDS NO HEADING TO BITE -- so "set north and look" would not
+     have found it, and neither would any amount of staring at a levelled room
+     with the zero at its origin. */
+  const ax=V.level.origin_axes||'xyz';
+  if(ax!=='xyz') s=['x','y','z'].map((c,i)=> ax.indexOf(c)>=0 ? s[i] : 0);
+  return s;
 }
 function levelMat(){
   const R=levelRot(), sh=levelShift();

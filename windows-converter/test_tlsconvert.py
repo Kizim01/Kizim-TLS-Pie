@@ -4672,6 +4672,122 @@ check("the world-axes widget only says North once north is set",
       "no compass set" in _ALIGN_SRC and "function axisWord" in _ALIGN_SRC)
 
 
+# --- and the PAGE's copy of the same arithmetic, RUN ------------------------
+#
+# ⛔⛔ THE PREVIEW AND THE FILE ARE TWO IMPLEMENTATIONS OF ONE SENTENCE, and
+# until this ran nothing had ever compared them. `levelMat` draws the room the
+# operator looks at; `registration.Level.apply` builds the room that reaches
+# the file. They had parted company in two independent ways, and each one
+# produced a picture that looked perfectly correct:
+#
+#   * `levelRot` applied the tilt and NOT the heading. The compass was read by
+#     `axisWord` and by the readout and by nothing that moved a point, so from
+#     the moment north was set the two were different rooms -- 3.0 m apart at
+#     37 degrees, 10.4 m for a leaning frame turned -122.5.
+#   * `levelShift` never read `origin_axes`, so a HEIGHT-ONLY datum moved the
+#     previewed room sideways by the whole plan offset of the picked point.
+#     ⭐ That one needs no heading at all to bite, which is why looking at a
+#     levelled room after setting north would not have found it.
+#
+# ⭐ THE CASES ARE `Level.as_dict()` PAYLOADS, not hand-written dicts -- the
+# page is handed exactly what the server sends it, so a key that stops being
+# written (heading and origin_axes are both written only when set) breaks this
+# test rather than quietly skipping the case it stands for.
+_LV_LEAN = (math.sin(math.radians(9.0)), 0.0, math.cos(math.radians(9.0)))
+_lv_levels = [
+    registration.Level(),
+    registration.Level(_LV_LEAN, (0.4, -1.1, 0.0)),
+    registration.Level((0, 0, 1), (0, 0, 0), 37.0),
+    registration.Level(_LV_LEAN, (0.4, -1.1, 0.0), 37.0),
+    registration.Level(_LV_LEAN, (0.4, -1.1, 0.0), -122.5,
+                       origin=(1.5, -2.0, 0.75)),
+    registration.Level(_LV_LEAN, (0.4, -1.1, 0.0), -122.5,
+                       origin=(1.5, -2.0, 0.75), origin_axes="z"),
+    registration.Level(_LV_LEAN, (0.4, -1.1, 0.0), 37.0,
+                       origin=(1.5, -2.0, 0.75), origin_axes="xy"),
+    registration.Level((0, 0, 1), (0, 0, 0), origin=(1.5, -2.0, 0.75),
+                       origin_axes="z"),
+]
+_lv_pts = [[3.0, 4.0, 1.0], [-2.5, 0.25, 2.2], [0.0, 0.0, 0.0]]
+_lv_want = [L.apply(np.array(_lv_pts, dtype=float)) for L in _lv_levels]
+
+# ⛔ AND THE FIXTURE IS NOT VACUOUS. Every case but the identity must actually
+# move a point, or "the two agree" would be a statement about two no-ops.
+check("the levelling fixture really does move the room",
+      all(float(np.max(np.abs(w - np.array(_lv_pts)))) > 0.4
+          for w in _lv_want[1:]),
+      [round(float(np.max(np.abs(w - np.array(_lv_pts)))), 2)
+       for w in _lv_want[1:]])
+
+if not _node:
+    print("  ---- node is not installed; the page's level maths was NOT run")
+else:
+    # Through the SHIPPED levelMat, applied the way `affine`/`put` apply it.
+    _lv_js = """const V={level:null};
+%s
+const CASES=%s, PTS=%s;
+console.log(JSON.stringify(CASES.map(c=>{
+  V.level=c;
+  const m=levelMat();
+  if(!m) return PTS.map(p=>p.slice());
+  const A=[m[0],m[4],m[8],m[12], m[1],m[5],m[9],m[13], m[2],m[6],m[10],m[14]];
+  return PTS.map(p=>put(A,p[0],p[1],p[2]));
+})));
+""" % ("\n".join(_js_func(f) for f in
+                 ("levelRot", "levelShift", "levelMat", "put")),
+       json.dumps([L.as_dict() for L in _lv_levels]), json.dumps(_lv_pts))
+    _lvp = os.path.join(_rdir, "level.js")
+    with io.open(_lvp, "w", encoding="utf-8") as _fh:
+        _fh.write(_lv_js)
+    _lvr = subprocess.run([_node, _lvp], capture_output=True, text=True)
+    check("the page's level maths runs at all", _lvr.returncode == 0,
+          (_lvr.stderr or "")[:400])
+    if _lvr.returncode == 0:
+        # Float32Array is single precision, so the slack is a tenth of a
+        # millimetre -- three orders below the sensor, and four below the
+        # metres the two used to disagree by.
+        _lvd = [float(np.max(np.abs(np.array(g) - w)))
+                for g, w in zip(json.loads(_lvr.stdout), _lv_want)]
+        check("⭐ THE PREVIEWED ROOM AND THE EXPORTED ROOM ARE ONE ROOM",
+              max(_lvd) < 2e-4, ["%.4f" % d for d in _lvd])
+        check("...with north set, which the page used to ignore outright",
+              max(_lvd[2], _lvd[3]) < 2e-4, (_lvd[2], _lvd[3]))
+        check("...and with a height-only datum, which bites with no north",
+              _lvd[7] < 2e-4, _lvd[7])
+        check("...and with a plan-only datum, the same rule the other way",
+              _lvd[6] < 2e-4, _lvd[6])
+
+# ⛔⛔ AND `origin_axes` SURVIVES BOTH SERVER DOORS. `level` and `set_north`
+# each rebuild the Level from its parts, and each dropped this one -- so
+# pressing either button turned a height-only datum into a full XYZ one and
+# slid the plan position by the offset of the picked point. Both doors are
+# driven here, because the two are separate code and fixing one is exactly the
+# shape of mistake that leaves the other.
+_axl0 = registration.Level((0, 0, 1), (0, 0, 0), 12.0,
+                           origin=(1.5, -2.0, 0.75), origin_axes="z")
+_axlev = _nsrv.level([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]],
+                     _axl0.as_dict())
+check("levelling keeps a height-only datum height-only",
+      registration.Level.from_dict(_axlev["level"]).origin_axes == "z",
+      _axlev["level"])
+_axnth = _nsrv.set_north([[0, 0, 0], [5, 0, 0]], "north", _axl0.as_dict())
+check("...and so does setting north",
+      registration.Level.from_dict(_axnth["level"]).origin_axes == "z",
+      _axnth["level"])
+# ⭐ AND THE CONSEQUENCE, not just the field: the zero the operator placed must
+# still leave the plan position where it was.
+check("...so the datum still moves the height alone, after either press",
+      abs(registration.Level.from_dict(_axnth["level"]).shift_xyz[0]) < 1e-12
+      and abs(registration.Level.from_dict(_axnth["level"]).shift_xyz[1])
+      < 1e-12,
+      registration.Level.from_dict(_axnth["level"]).shift_xyz)
+check("a full XYZ datum is still a full XYZ datum through the same doors",
+      registration.Level.from_dict(_nsrv.set_north(
+          [[0, 0, 0], [5, 0, 0]], "north",
+          registration.Level((0, 0, 1), (0, 0, 0), origin=(1.0, 2.0, 3.0)
+                             ).as_dict())["level"]).origin_axes == "xyz")
+
+
 # --- the alignment must survive the export ---------------------------------
 #
 # ⛔⛔ EVERYTHING STUDIO DOES TO A PHOTOGRAPH USED TO BE THROWN AWAY WHEN THE
