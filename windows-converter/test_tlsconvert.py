@@ -867,6 +867,24 @@ check("an unreadable photo degrades to grey with a reason",
 # --- registration: two setups into one frame -------------------------------
 from tlsconvert import align, registration              # noqa: E402
 
+# ⛔ THE SUITE DOES NOT WRITE INTO THE OPERATOR'S LOG. `align.log_event` files
+# into %LOCALAPPDATA%\TLS-Pie\studio.log whoever calls it, and this file calls
+# it on purpose -- the unreadable-cut-list check sends `{"lo": 1}` to prove an
+# attach survives one. Forty "take_edit: could not read the cut list ('hi')"
+# lines in the REAL studio.log across 2026-09-07/08 were read as forty
+# photograph solves running on deleted points and very nearly chased as a
+# production bug; they were nine-minute suite runs, one line each. The folder
+# keeps the real layout (<dir>\TLS-Pie\studio.log) so the check that pins the
+# path's shape still holds.
+align.LOG_DIR = os.path.join(tempfile.mkdtemp(prefix="tlssuite"), "TLS-Pie")
+align.LOG_FILE = os.path.join(align.LOG_DIR, "studio.log")
+_real_log = os.path.join(os.environ.get("LOCALAPPDATA")
+                         or os.path.expanduser("~"), "TLS-Pie", "studio.log")
+check("the suite's log is not the operator's",
+      os.path.normcase(align.LOG_FILE) != os.path.normcase(_real_log)
+      and align.LOG_FILE.endswith(os.path.join("TLS-Pie", "studio.log")),
+      align.LOG_FILE)
+
 print("\nregistration: Setup arithmetic")
 check("an identity Setup is recognised", registration.Setup().is_identity())
 check("and leaves points untouched",
@@ -3166,6 +3184,151 @@ check("and the edit list names a clip-limited cut",
 # load-bearing for cuts too, pin the picker's half of it as well.
 check("a pair or level pick still refuses a clipped-away point",
       "if(clipHides(q,wx,wy,wz)) continue;" in _js_func("pickPoint"))
+
+
+# --- a move re-tests only what a move can change ------------------------------
+#
+# ⭐⭐ "WHEN I ROTATE A POINT CLOUD, AFTER A COUPLE OF SECONDS THE PROGRAM
+# FREEZES" (operator, 2026-09-08) -- reported on the RTX, with the GPU
+# preference fix in place and proven by the log, so the card was never in
+# this path. The path was editsFollow(): 250 ms after the hand paused, and
+# again on release, it replayed EVERY cut against EVERY point on the main
+# thread. Measured under node the same night: 46 million points against four
+# framed boxes is 2.0-2.5 s per replay. A cut that remembers where a cloud
+# stood cannot read differently after that cloud moves, so the ordinary job
+# was paying seconds to confirm a mask that could not have changed.
+#
+# ⛔ RUN, NOT READ, like the rules above: the shipped followMoved is executed
+# over real point buffers with the shipped recomputeLive wrapped to COUNT how
+# often it runs -- a source pin on the word "frames" would pass while the
+# replay ran anyway.
+print("\na move re-tests only what a move can change")
+if not _node:
+    print("  ---- node is not installed; the move rules were NOT run")
+else:
+    _mv_js = """
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+const V={scans:[],edits:[],hidden:{},alive:0,total:0,
+         box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0}};
+const $=()=>({textContent:''});
+const invalidate=()=>{}, upload=()=>{};
+let followTimer=null;
+const TOLD=[]; const post=(w,b)=>{ TOLD.push(b); return {catch:()=>{}}; };
+/* the placement IS the setup: x_m carries the cloud along x */
+function affine(s){ return [1,0,0,+s.setup.x_m, 0,1,0,0, 0,0,1,0]; }
+function rotOf(){ return [[1,0,0],[0,1,0],[0,0,1]]; }
+/* nine points, five of them inside the unit box about the origin */
+const PTS=[[0.3,0.3,0.3],[0.5,0.5,0.5],[2,2,2],[0.2,0.1,0.3],[5,5,5],
+           [0.9,0.9,0.9],[3,0,0],[0,3,0],[0.1,0.1,0.1]];
+function cloud(i){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:i, name:'cloud '+i, points:PTS.length, raw:flat,
+          scale:[1,1,1], offset:[0,0,0], chunks:[],
+          live:new Uint8Array(PTS.length).fill(1),
+          setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}};
+}
+const BOX={lo:[-1,-1,-1],hi:[1,1,1],yaw_deg:0,pitch_deg:0,roll_deg:0};
+const kept=s=>{ let n=0; for(let i=0;i<s.points;i++) n+=s.live[i]; return n; };
+let replays=0; const realReplay=recomputeLive;
+recomputeLive=function(){ replays++; return realReplay(); };
+const out={};
+/* A: every cut remembers where both clouds stood -- the ordinary job */
+V.scans=[cloud(0),cloud(1)];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
+          frames:{0:affine(V.scans[0]),1:affine(V.scans[1])}}];
+realReplay();
+out.before=[kept(V.scans[0]),kept(V.scans[1])];
+V.scans[1].setup.x_m=10;
+out.framedWhy=replayNeeded(V.scans[1]);
+out.framedRan=followMoved(V.scans[1]);
+out.framedReplays=replays;
+out.framedAfter=[kept(V.scans[0]),kept(V.scans[1])];
+/* B: the cut has no frame for cloud 1 -- it arrived after the cut */
+replays=0;
+V.scans=[cloud(0),cloud(1)];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
+          frames:{0:affine(V.scans[0])}}];
+realReplay();
+V.scans[1].setup.x_m=10;
+out.legacyWhy=replayNeeded(V.scans[1]);
+out.legacyRan=followMoved(V.scans[1]);
+out.legacyReplays=replays;
+out.legacyAfter=[kept(V.scans[0]),kept(V.scans[1])];
+/* C: a cut on cloud 0 only never sends cloud 1 to the replay at all */
+replays=0;
+V.scans=[cloud(0),cloud(1)];
+V.edits=[{kind:'box',mode:'drop',scan:0,box:BOX,frames:{}}];
+realReplay();
+V.scans[1].setup.x_m=10;
+out.otherRan=followMoved(V.scans[1]);
+out.otherReplays=replays;
+/* D: no cuts at all costs nothing */
+V.edits=[]; replays=0;
+out.noneRan=followMoved(V.scans[1]);
+out.noneReplays=replays;
+console.log(JSON.stringify(out));
+""" % "\n".join(_js_func(f) for f in
+                ("recomputeLive", "editPlan", "planFor", "markBox", "inScope",
+                 "frameFor", "cutGroups", "world", "shown", "cutScope",
+                 "showHidden", "replayNeeded", "followMoved", "tellServer"))
+    _mvp = os.path.join(_rdir, "moverules.js")
+    with io.open(_mvp, "w", encoding="utf-8") as _fh:
+        _fh.write(_mv_js)
+    _mvr = subprocess.run([_node, _mvp], capture_output=True, text=True)
+    check("the move rules run at all", _mvr.returncode == 0,
+          (_mvr.stderr or "")[:400])
+    if _mvr.returncode == 0:
+        _mv = json.loads(_mvr.stdout.strip().splitlines()[-1])
+        check("the box takes five of nine points from each cloud",
+              _mv["before"] == [4, 4], _mv)
+        check("A MOVE OF A CLOUD WHOSE CUTS REMEMBER WHERE IT STOOD REPLAYS "
+              "NOTHING",
+              _mv["framedRan"] is False and _mv["framedReplays"] == 0
+              and _mv["framedWhy"] is None, _mv)
+        check("...and its mask is exactly what it was -- the cut named "
+              "points, and they went with it",
+              _mv["framedAfter"] == [4, 4], _mv)
+        check("a cut with no frame for the moved cloud still replays, once",
+              _mv["legacyRan"] is True and _mv["legacyReplays"] == 1
+              and _mv["legacyWhy"] == 0, _mv)
+        check("...and that cloud, carried out of the box, comes back whole "
+              "while the other keeps its cut",
+              _mv["legacyAfter"] == [4, 9], _mv)
+        check("a cut scoped to another cloud does not send this one to the "
+              "replay",
+              _mv["otherRan"] is False and _mv["otherReplays"] == 0, _mv)
+        check("and no cuts at all costs nothing",
+              _mv["noneRan"] is False and _mv["noneReplays"] == 0, _mv)
+    # ⛔ AND THE CALLERS, or the rule above is a function nobody reaches.
+    # Every door that moves ONE scan hands it over; the bare form is kept for
+    # the changes that move every cloud at once (level, origin), which owe
+    # the whole replay.
+    check("editsFollow re-tests one moved cloud, or the whole job when given "
+          "none",
+          "if(s) followMoved(s); else recomputeLive();"
+          in _js_func("editsFollow"))
+    check("the ring hands over the cloud it turns",
+          "editsFollow(r.s)" in _js_func("turnScan"))
+    check("...and so do the arrows, the lean, the sliders and an undone move",
+          "editsFollow(s)" in _js_func("nudge")
+          and "editsFollow(s)" in _js_func("leanScan")
+          and "editsFollow(t)" in _js_func("undoSetup")
+          and "invalidate(); editsFollow(s); dirty(); }; };" in _PAGE)
+    check("a drag, the gizmo and a tilt released re-test only what moved",
+          "if(moving) followMoved(active());" in _PAGE
+          and "if(axis!==null) followMoved(active());" in _PAGE
+          and "if(leaning!==null) followMoved(active());" in _PAGE
+          and "moving && V.edits.length) recomputeLive()" not in _PAGE
+          and "axis!==null && V.edits.length" not in _PAGE
+          and "leaning!==null && V.edits.length" not in _PAGE)
+    check("a replay that was still needed says so in the log, with its cost",
+          "tellServer('replay'" in _js_func("followMoved"))
+    check("...and a release does not owe a second replay to the timer",
+          "if(followTimer){ clearTimeout(followTimer); followTimer=null; }"
+          in _js_func("followMoved"))
 
 
 # --- putting the points back ------------------------------------------------

@@ -6560,7 +6560,15 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**✅ PRODUCTION-PROVEN THE SAME EVENING.** The freeze-on-rotate fix (item 11 below) is not
+**⛔⛔ READ ITEM 12 FIRST: THE FREEZE SURVIVED THE GPU FIX, BECAUSE IT WAS NEVER THE CARD.**
+Item 11 put the window on the RTX and the log proves it; the operator then turned a scan on that
+very boot and it hung again. The cause was the page re-testing every cut against every point on
+the main thread after each turn -- 2.0-2.5 s at 46 million points, measured -- and it is fixed in
+the Studio 2026-09-08 23:57, Converter 23:56, tlsconvert 23:57, selftest 0 exes (item 12). **NOT YET PROVEN ON THE MACHINE**: the operator has not turned a scan on
+the rebuilt Studio at the time of writing. What settles it is a turn with no freeze; what would
+explain one is a `page replay:` line in studio.log naming a cut with no frame for that cloud.
+
+**✅ THE GPU HALF IS PRODUCTION-PROVEN.** The GPU-preference fix (item 11 below) is not
 just green in the suite — the operator relaunched the rebuilt Studio and its own log settles it:
 
 ```
@@ -6650,6 +6658,55 @@ first written so a missing value would RAISE and kill the run rather than fail t
 before the break, same lesson as fix 10's audit.
 ⛔ What settles it is still only the `renderer:` line in studio.log after a restart — the
 registry write is the request, not the proof.
+
+**⭐⭐ 12. THE FREEZE WAS STILL THERE ON THE RTX — AND IT WAS NEVER THE CARD (2026-09-08,
+late).** Operator, after the 22:47 boot the log proves drew on the NVIDIA: *"im still having the
+same hanging issue with rotating a scan."* That session (22:47–23:09) logged no `gl-slow`, no
+fault, no context loss; Windows logged no driver reset and no hang. The freeze sat where no
+GPU-side witness could see it: on the page's main thread. `turnScan` (the ring), `nudge` (arrows,
+drag), `leanScan`, the six placement sliders and the gizmo arm all end in `editsFollow()`, a
+250 ms trailing timer that ran **`recomputeLive()` — every cut re-tested against every point** —
+whenever the job had cuts, and the release tail ran it again outright. The `take_edit` lines in
+studio.log prove this job has cuts. Its own comment said it cost "tens of milliseconds at preview
+density"; the operator loads at full density. **Measured under node on the SHIPPED functions:
+46 million points against four framed boxes = 2.0–2.5 s per replay; 4 million = 150 ms.** Turn a
+scan, let the hand pause a quarter second, the page stops for two and a half; let go, again.
+That is "after a couple of seconds the program freezes", on any card.
+⭐ **THE 08-27 DIAGNOSIS WAS RIGHT AND THE GPU FIX WAS REAL; THE SAME SENTENCE HAD A SECOND
+CAUSE UNDERNEATH IT.** The eleventh pass measured a 46M-point *frame*; this is a 46M-point
+*replay*, and the log tells them apart only by what it does NOT contain — no `gl-slow` line.
+A fix that is proven (item 11's `renderer:` line) and a symptom that persists is not a failed
+fix, it is a second cause, and the proof of the first is what licenses looking for it.
+The fix is the code's own doctrine applied: **a cut that remembers where a cloud stood cannot read
+differently after that cloud moves** (`frames`, since 2026-08-29), and moving one cloud can change
+one mask — its own. `followMoved(s)` asks whether ANY cut on the moved cloud lacks a frame for it;
+the ordinary job answers no and re-tests NOTHING. The legacy case (a cut older than frames, or a
+cloud that arrived after the cut) still replays — once, the release cancelling the timer — and
+logs `page replay: N ms re-testing every cut after moving X, because cut K has no frame for it`,
+so the next slow turn has its cause beside it. Every door that moves ONE scan hands it over (ring,
+arrows, lean, the six sliders, the gizmo arm, an undone move, Reset, a solve or fit result, a pair
+fit); the bare `editsFollow()` stays at the ten whole-job doors (level, north, origin, multi-solve,
+auto-align-all), which do move every cloud. Suite **1917 → 1932**: the shipped `followMoved` is RUN
+under node with `recomputeLive` wrapped to count — framed cut: 0 replays and the mask identical;
+unframed: exactly 1, and the moved cloud comes back whole while the other keeps its cut; a cut
+scoped to another cloud: 0. Reversion-audited: the fix undone (replayNeeded answering 'replay' for every list) fails exactly the two named checks — *A MOVE OF A CLOUD WHOSE CUTS REMEMBER WHERE IT STOOD REPLAYS NOTHING* and *a cut scoped to another cloud does not send this one to the replay* — with the discriminator in the extra (`framedReplays: 1`, `otherReplays: 1`), 1930/2; restored byte-for-byte (md5 match), final run **1932 passed, 0 failed**.
+⚠ **LEFT AS FOUND, NAMED SO IT IS NOT REDISCOVERED**: the level/north/origin doors call
+`recomputeLive()` and then `editsFollow()` — a second full replay 250 ms after the first, 2.5 s
+more at full density after every Level press. Whole-job, so correct; merely doubled.
+⛔ **AND THE 40 `take_edit: could not read the cut list ('hi')` LINES IN THE SAME LOG WERE THE
+TEST SUITE.** Read as production evidence first — forty presses a day solving photographs
+against deleted points — and nearly chased: `pipeline.Box.parse` was being handed a dict with
+`lo` and no `hi`, and no page-built box or clip stamp lacks one. The sender was
+`test_tlsconvert.py`, which sends `{"lo": 1}` ON PURPOSE to prove an unreadable list does not
+crash an attach, and `align.log_event` writes to the operator's real
+`%LOCALAPPDATA%\TLS-Pie\studio.log` whoever calls it; the timestamps are my nine-minute suite
+runs, all afternoon. ⭐ **A LOG SHARED BETWEEN THE PRODUCT AND ITS TESTS IS A LOG THAT LIES
+ABOUT PRODUCTION** — the suite now points `LOG_DIR` at scratch before the first check runs. The
+line itself is also better: it names the exception type, says the solve ran WITHOUT the cuts,
+and prints the head of the list, because the consequence of an unreadable list is that every
+mask is cleared and the photograph is solved on the points the operator deleted — the exact
+complaint the cut list was added to answer on 09-06. If that line ever appears at a time no
+suite was running, it is real.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -8113,7 +8170,7 @@ second-refusal check. The two that never fire are honest: the old code DID raise
 reported as done" holds either way, and the destination was always left unharmed — that is what
 the `.part` design already guaranteed and this fix did not change.
 
-**✅ THE EXES WERE REBUILT** at the end of the pass (Studio 2026-09-08 22:44, Converter 2026-09-08 22:43, tlsconvert 2026-09-08 22:45, selftest 0) with
+**✅ THE EXES WERE REBUILT AGAIN** for item 12 (Studio 2026-09-08 23:57, Converter 23:56, tlsconvert 23:57, selftest 0), and before that at the end of the pass (Studio 2026-09-08 22:44, Converter 2026-09-08 22:43, tlsconvert 2026-09-08 22:45, selftest 0) with
 fixes 1-10 and the GPU-preference fix (item 11 above) inside. **The Pi fix still needs
 `tls_scan.py` copied onto the box.** The remaining 20 findings are untouched.
 

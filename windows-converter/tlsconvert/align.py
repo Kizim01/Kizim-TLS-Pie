@@ -3238,7 +3238,20 @@ class AlignServer(object):
         try:
             plan = pipeline.Edit.from_dict(edit) if edit else None
         except Exception as exc:                          # noqa: BLE001
-            log_event("take_edit: could not read the cut list (%s)" % exc)
+            # ⛔ NAMED, AND WITH THE LIST THAT FAILED. This line read
+            # `(%s)` % exc, which for a KeyError is the bare key -- studio.log
+            # held forty lines of "could not read the cut list ('hi')" across
+            # 2026-09-07/08 and not one said which cut, what shape it had, or
+            # that the solve then ran on the points the operator had deleted.
+            # The consequence is the part that matters: an unreadable list
+            # is treated exactly as "no cuts", and every mask is cleared.
+            try:
+                head = json.dumps(edit)[:300]
+            except (TypeError, ValueError):
+                head = repr(edit)[:300]
+            log_event("take_edit: could not read the cut list (%s: %s), so "
+                      "the solve ran WITHOUT the cuts; the list began %s"
+                      % (type(exc).__name__, exc, head))
         lvl = registration.Level.from_dict(level) if level else None
         masked = 0
         for i, scan in enumerate(self.scans):
@@ -7694,7 +7707,7 @@ function moveDrag(mx, my, from){
   const along = g.R * ((mx-from[0])*sx + (my-from[1])*sy) / L;
   coalesce('move'+g.s.index, 'moving '+g.s.name, ()=>undoSetup(g.s.index));
   g.s.setup[V.moveAxis] = +(+g.s.setup[V.moveAxis] + along).toFixed(4);
-  syncSliders(); invalidate(); editsFollow(); dirty();
+  syncSliders(); invalidate(); editsFollow(g.s); dirty();
   say('moving ' + g.s.name.slice(0,18) + ' — ' + arm.lab + ' '
       + (+g.s.setup[V.moveAxis]).toFixed(2) + ' m');
   return [mx, my];
@@ -8307,7 +8320,7 @@ function turnScan(mx,my,fromAngle,snap){
   if(snap) deg=Math.round(deg/5)*5;      /* shift: five degrees at a time */
   deg=((deg+180)%360+360)%360-180;
   r.s.setup.yaw_deg=+deg.toFixed(2);
-  syncSliders(); invalidate(); editsFollow(); dirty();
+  syncSliders(); invalidate(); editsFollow(r.s); dirty();
   say('turning '+r.s.name.slice(0,18)+' \u2014 '+deg.toFixed(1)+
       '\u00b0'+(snap?' (snapped to 5\u00b0)':'')+
       '. Hold shift to snap; Auto-align refines from here.');
@@ -9401,7 +9414,7 @@ function undoSetup(i){
   const was=Object.assign({}, s.setup);
   return ()=>{ const t=V.scans.find(x=>x.index===i); if(!t) return;
                t.setup=Object.assign({}, was);
-               syncSliders(); invalidate(); editsFollow(); dirty(); };
+               syncSliders(); invalidate(); editsFollow(t); dirty(); };
 }
 function undoPose(i){
   const was=poseOf(i);
@@ -9505,7 +9518,7 @@ function nudge(dx,dy,dyaw,dz){
   s.setup.x_m=+s.setup.x_m+dx; s.setup.y_m=+s.setup.y_m+dy;
   s.setup.z_m=+s.setup.z_m+(dz||0);
   s.setup.yaw_deg=+s.setup.yaw_deg+dyaw;
-  syncSliders(); invalidate(); editsFollow(); dirty();
+  syncSliders(); invalidate(); editsFollow(s); dirty();
 }
 /* ⛔ CLAMPED ON THE PAGE AS WELL AS ON THE SERVER, AND IT SAYS WHEN IT BITES.
    `registration.Lean` refuses past 45 degrees, so a page that let the number
@@ -9527,25 +9540,70 @@ function leanScan(dp, dr){
   const bit = got[0]!==want[0] || got[1]!==want[1];
   s.setup.pitch_deg=+got[0].toFixed(4);
   s.setup.roll_deg=+got[1].toFixed(4);
-  syncSliders(); invalidate(); editsFollow(); dirty();
+  syncSliders(); invalidate(); editsFollow(s); dirty();
   if(bit) say('That is as far as a tripod tilts — '+LEAN_MAX+'°. A cloud '
               + 'that wants more than this is usually a turn typed into the '
               + 'wrong box, or a room that leans, which is Level\u2019s job '
               + 'and not this one\u2019s.', 'warn');
 }
 /* ⭐ A CUT THAT REMEMBERS ITS PLACEMENT DOES NOT MOVE WHEN THE SCAN DOES, and
-   that is the whole point of `frames` -- so for those this replay confirms the
-   mask rather than changing it. It still has work to do: a cut made before
-   frames existed, and a cloud that arrived after a cut was made, are both
+   that is the whole point of `frames` -- so for those a replay could only
+   confirm the mask. It still has work to do for a cut made before frames
+   existed, and for a cloud that arrived after a cut was made: both are
    tested in the merged frame and DO move through it.
-   Recomputed on a trailing timer rather than per frame: at preview density it
-   costs tens of milliseconds, nothing once, a stutter on every pixel of a
-   drag. */
+
+   ⛔⛔ AND THE REPLAY IS NOT RUN TO CONFIRM WHAT IT CANNOT CHANGE. This used
+   to call recomputeLive() outright, 250 ms after the hand last moved and
+   again on release, under a comment saying it cost tens of milliseconds at
+   preview density. The operator loads at full density now. Measured under
+   node on 2026-09-08: one replay of 46 million points against four framed
+   boxes is 2.0-2.5 s ON THE MAIN THREAD -- the page draws nothing and hears
+   nothing for that long, at every pause of a ring turn and once more on
+   release. That is "when I rotate a point cloud, after a couple of seconds
+   the program freezes" (operator, 2026-09-08) -- reported on the RTX, with
+   the GPU preference fix in place and proven by the log, because the card
+   was never in this path. So a move now asks first whether ANY cut on the
+   moved cloud could read differently -- one with no frame for it -- and the
+   ordinary job, every cut made since frames arrived on 2026-08-29, answers
+   no and costs nothing. The legacy case still replays, and says so in the
+   log with the time it took, so the next slow turn has its cause beside it.
+
+   ⭐ MOVING ONE CLOUD CAN CHANGE ONE MASK: ITS OWN. Every other cloud is
+   tested through its own placement or its own stamped frame, and the move
+   touched neither -- so the question is asked of the moved cloud alone. */
+function replayNeeded(s){
+  if(!s || !V.edits.length) return null;
+  const plan=planFor(editPlan(), s.index);
+  const ops=plan.keep.concat(plan.drop, plan.lassos);
+  for(let i=0;i<ops.length;i++)
+    if(!(ops[i].frames && ops[i].frames[s.index])) return i;
+  return null;
+}
+function followMoved(s){
+  /* the trailing timer below owes the same replay; one is enough */
+  if(followTimer){ clearTimeout(followTimer); followTimer=null; }
+  const why=replayNeeded(s);
+  if(why===null) return false;
+  const t0=performance.now();
+  recomputeLive();
+  const ms=Math.round(performance.now()-t0);
+  if(ms>250)
+    tellServer('replay', ms+' ms re-testing every cut after moving '+
+               (s.name||('cloud '+(s.index+1)))+', because cut '+(why+1)+
+               ' has no frame for it');
+  return true;
+}
+/* Recomputed on a trailing timer rather than per frame. Given the scan that
+   moved, only what its move can change is re-tested (followMoved); given
+   nothing, the whole job is -- which is what a level or an origin change
+   owes, because those move every cloud at once. */
 let followTimer=null;
-function editsFollow(){
+function editsFollow(s){
   if(!V.edits.length) return;
   if(followTimer) clearTimeout(followTimer);
-  followTimer=setTimeout(()=>{ followTimer=null; recomputeLive(); }, 250);
+  followTimer=setTimeout(()=>{ followTimer=null;
+                               if(s) followMoved(s); else recomputeLive(); },
+                         250);
 }
 /* Wide open, square to the world, pivoted at the middle of everything. The
    sliders read 0..1 across the scene, so this is the state they describe. */
@@ -9675,7 +9733,7 @@ async function autoAlign(){
                            leans:leansWire()})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'solve failed');
-    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
+    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(s); dirty();
     watch(false);
     if(j.warning) say(j.warning, 'warn');
     if(j.exhausted) say(j.text, 'warn');
@@ -9731,7 +9789,7 @@ async function multiAlign(){
       body:JSON.stringify({index:s.index, start:s.setup, leans:leansWire()})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'fit failed');
-    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(); dirty();
+    s.setup=j.setup; syncSliders(); invalidate(); editsFollow(s); dirty();
     watch(false);
     $('mused').innerHTML = (j.used||[]).map(u=>
       '<span class="fno">'+(u.folderNo ? '#'+u.folderNo : '?')+'</span> '+
@@ -11279,7 +11337,7 @@ async function alignPairs(){
   if(!j.ok) return say(j.error||'that fit could not be made', 'warn');
   s.setup=j.setup; s.rung=null;
   V.perr=j.errors; V.ptol=j.tolerance;
-  syncSliders(); invalidate(); editsFollow(); showPairs(); dirty();
+  syncSliders(); invalidate(); editsFollow(s); showPairs(); dirty();
   say(j.text, j.trustworthy ? null : 'warn');
 }
 
@@ -14721,8 +14779,9 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     if(midDown && drift<5 && V.pending){ midDown=false;
                                          commitLasso('cut', true); }
     if(lassoing) finishDraft();
-    if(moving && V.edits.length) recomputeLive();   /* the cut follows the
-                                                       scan it was made on */
+    /* the cut follows the scan it was made on -- and only a cut that does
+       not remember where that scan stood is re-tested (followMoved) */
+    if(moving) followMoved(active());
     /* ⛔ SENT ONCE, ON RELEASE. Each pose change re-colours the whole cloud on
        the server; one request per pointermove would queue dozens and land
        somewhere the hand never was. */
@@ -14733,10 +14792,10 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     if(camming!==null){ camming=null; V.camAxis=null; camRelease(); }
     /* ⛔ A CUT FOLLOWS THE SCAN IT WAS MADE ON, and the gizmo moves a scan
        exactly as the free drag does -- so it owes the same recompute. */
-    if(axis!==null && V.edits.length) recomputeLive();
+    if(axis!==null) followMoved(active());
     /* A cut is applied in the merged frame, so tilting a scan moves it through
        whatever was cut -- the same debt the arms and the sliders owe. */
-    if(leaning!==null && V.edits.length) recomputeLive();
+    if(leaning!==null) followMoved(active());
    } finally { endDrag(); } });
   addEventListener('wheel', e=>{
     if(e.target.id!=='cv') return;
@@ -14906,7 +14965,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     s.setup[key]=parseFloat(e.target.value);
     $(lbl).textContent=fmt(s.setup[key]);
     const box=$('ax_'+key); if(box) box.value=fmt(s.setup[key]);
-    invalidate(); editsFollow(); dirty(); }; };
+    invalidate(); editsFollow(s); dirty(); }; };
   bind('tx','x_m',v=>v.toFixed(2),'xv');
   bind('ty','y_m',v=>v.toFixed(2),'yv');
   bind('tz','z_m',v=>v.toFixed(2),'zv2');
@@ -15232,7 +15291,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
        wrote straight into the setup and left the name reading "saved". The
        flag's own comment says a false "unsaved" costs one press and a false
        "saved" costs the afternoon -- this was the second kind. */
-    syncSliders(); invalidate(); editsFollow(); dirty();
+    syncSliders(); invalidate(); editsFollow(s); dirty();
     say(s.name+' — '+what+' put back to what the capture recorded. '+
         'Ctrl-Z restores it.');
   }
