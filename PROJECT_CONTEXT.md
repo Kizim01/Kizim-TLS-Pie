@@ -6560,7 +6560,8 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ EIGHT OF THE SWEEP'S DEFECTS ARE NOW FIXED (46th pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
+**⭐⭐ EIGHT OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
 page's `levelRot` now applies the compass turn (`spin @ tilt`, the server's order) and `levelShift`
@@ -6583,9 +6584,8 @@ case. (8) **A heading of exactly 0.0 survives a save** — the save filter dropp
 value, so a typed zero came back re-solved while `given` (truthy, so it survived) still claimed the
 operator had typed it.
 Suites **1869 → 1898**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
-Pi. ⛔ **THE AUDIT IS COMPLETE FOR 1-7 ONLY: 18 breaks, all 18 caught. FIX 8'S REVERSION AUDIT
-HAS NOT BEEN RUN — that is the first thing the next session does.** ⛔ **THE EXES HAVE NOT BEEN
-REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
+Pi. Audit **20 breaks, all 20 caught**, each by the check that names it and by no other.
+⛔ **THE EXES HAVE NOT BEEN REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
 has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
 The other 22 findings stand unfixed; the paragraph below is still the list to work from.
 
@@ -7975,10 +7975,18 @@ and went on claiming the operator had typed it. ⭐ **TWO HALVES OF ONE FACT MUS
 BY DIFFERENT RULES.** Now `KEEP_EVEN_IF_ZERO = ("yaw_deg",)`; nothing already on disk changes,
 because a file differs only if its heading really was 0.0. Tested through the real `save_project`
 and the real `_carry_colour`, not by reading the filter.
-⛔⛔ **ITS REVERSION AUDIT HAS NOT BEEN RUN.** The suite is green at 1898 with the fix in,
-and that is all that is established. **Run it first**: restore the bare `if ... and v` filter and
-confirm "the ZERO HEADING IS IN THE FILE" and "keeps the typed zero instead of re-solving it" both
-fire, then restore and re-run. A green suite is not an audit.
+⭐ **AUDITED (the debt the last pass left is paid).** The bare `if ... and v` filter
+restored: **1896 passed, 2 failed** — exactly "the ZERO HEADING IS IN THE FILE" and "keeps the
+typed zero instead of re-solving it", nothing else in 1898; restored byte for byte (git saw no
+diff) and back to 1898 green.
+⛔ **AND THE SECOND CHECK'S DISCRIMINATOR IS THE INTERESTING ONE.** The reverted run printed
+`(None, {... 'yaw_deg': 0.0, 'given': True ...})`: the restore door was handed **`None`** — the
+instruction "solve it" — while the dict it handed back still read `yaw_deg: 0.0` and `given: True`.
+The OUTCOME looked right; only the value the door was asked with showed the scan had been re-solved.
+⭐ **A CHECK WRITTEN AGAINST THE RETURNED VALUE ALONE WOULD HAVE PASSED ON THE BUG** — when a
+door is asked to recompute something it was told, the recomputation can agree, and does agree
+whenever the solver is any good. **Assert on what the door was ASKED, not only on what it
+answered.**
 
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
 build, so **none of the Studio work reaches the operator until Studio is closed and
