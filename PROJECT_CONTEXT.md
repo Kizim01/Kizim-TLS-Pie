@@ -6563,8 +6563,8 @@ when the two names disagree.
 **⛔⛔ READ ITEM 12 FIRST: THE FREEZE SURVIVED THE GPU FIX, BECAUSE IT WAS NEVER THE CARD.**
 Item 11 put the window on the RTX and the log proves it; the operator then turned a scan on that
 very boot and it hung again. The cause was the page re-testing every cut against every point on
-the main thread after each turn -- 2.0-2.5 s at 46 million points, measured -- and it is fixed in
-the Studio 2026-09-08 23:57, Converter 23:56, tlsconvert 23:57, selftest 0 exes (item 12). **NOT YET PROVEN ON THE MACHINE**: the operator has not turned a scan on
+the main thread after each turn — 2.0–2.5 s at 46 million points, measured — and it is fixed in
+the **23:57 exes** (item 12). **NOT YET PROVEN ON THE MACHINE**: the operator has not turned a scan on
 the rebuilt Studio at the time of writing. What settles it is a turn with no freeze; what would
 explain one is a `page replay:` line in studio.log naming a cut with no frame for that cloud.
 
@@ -6619,13 +6619,27 @@ OPENS and the message says what to close and where the file went.
 Suites **1869 → 1910**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
 Pi. Audit **27 breaks, 26 caught** — the one that was NOT caught is a finding, not a gap: see
 item 9.
-⛔ **THE EXES HAVE NOT BEEN REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
-has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
-The other 20 findings stand unfixed; the paragraph below is still the list to work from.
+✅ **THE EXES WERE REBUILT TWICE THAT EVENING** — 22:44 for fixes 1-10 and item 11, then **23:57 for item 12**, which is what `dist\` holds.
+**The Pi fix still needs `tls_scan.py` copied onto the box.** The other 20 findings stand unfixed; the paragraph below is still the list to work from.
 **⭐ WHERE THIS STOPPED, AND WHAT IS NEXT.** Nothing is half-done: fixes 1-10 are each written,
 tested, reversion-audited, committed and pushed (`87282cc`, `dcb8072`, `8957b19`, `c01b304`,
-`6bc7aa2`, `7d52636`, `ee33f62`); the working tree is clean but for the standing untracked
-`windows-converter/cutjs_tmp.js`, and **no audit debt is outstanding**. The next one chosen is
+`6bc7aa2`, `7d52636`, `ee33f62`), and so are the two freeze fixes that followed them —
+**`7476e2b`** (item 11, the GPU preference re-asserted every start), **`2063f0c`** (its proof from
+the log) and **`03fcf88`** (item 12, a move re-tests only what it can change). The working tree is
+clean but for the standing untracked `windows-converter/cutjs_tmp.js`, and **no audit debt is
+outstanding**.
+
+⛔ **THE ONE THING NOT SETTLED, AND IT IS THE FIRST THING TO ASK ABOUT: item 12 is unproven on
+the machine.** The suite is green and the exes are built, but nobody has turned a scan on the
+23:57 Studio. Do not report the freeze as fixed on the strength of a green suite — the same
+sentence has now had two different causes, and the first fix was proven while the symptom stood.
+What settles it is the operator turning a cloud that has cuts. No freeze and no new line in
+`%LOCALAPPDATA%\TLS-Pie\studio.log` is the ordinary outcome. A `page replay: N ms ... because
+cut K has no frame for it` line is the legacy case working as designed, and the next lever is to
+time-slice that replay the way the draw was sliced. A freeze with NEITHER a `replay:` nor a
+`gl-slow:` line is a third cause and none of this session's reasoning applies to it.
+
+The next sweep item chosen is
 **`align.py:11817` — saved point pairs are never restored on open**: the server writes them into
 the project and returns them, and `openProject` clears `V.pairs` and never reads `j.pairs`, so
 every pin an operator places is silently lost the next time the job is opened. After it, the list
