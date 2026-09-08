@@ -6560,7 +6560,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ THREE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+**⭐⭐ FIVE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
 pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
@@ -6569,10 +6569,16 @@ honours `origin_axes`. Measured through the SHIPPED page functions under node ag
 `registration.Level.apply`: they were **3.0 m apart at a 37° heading, 10.4 m on a leaning frame
 turned -122.5°, and 2.0 m on a height-only datum with no heading at all**; all eight cases now
 agree to 2e-7. (3) **`level` and `set_north` carry `origin_axes` through**, so a height-only datum
-stays height-only through either press. Suites **1869 → 1879** and **171 → 180**; audit 6
-breaks, all 6 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN REBUILT** —
-`dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still has all three.
-The other 27 findings stand unfixed; the paragraph below is still the list to work from.
+stays height-only through either press. (4) **The deep search no longer runs in two frames at
+once** — it built its starting pose from `camera_z` alone, so every candidate was scored from the
+lidar's axis while the incumbent was scored at the camera's real seat. (5) **The matcher's "range"
+is metres again** rather than `log1p(r)`: on the suite's own room, walls at 1.50-5.22 m arrived as
+0.92-1.83, the fitted seat came out at **42% of the true one** (0.0134 m error inside a 0.02 m
+tolerance — passing, and wrong), and the agreeing points were drawn in a shell 1.10-1.81 m round
+the tripod. Now 6.8 mm and 2.01-5.13 m. Suites **1869 → 1888** and **171 → 180**; audit 12
+breaks, all 12 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN REBUILT** —
+`dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still has all five.
+The other 25 findings stand unfixed; the paragraph below is still the list to work from.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -7879,16 +7885,44 @@ that is not re-derived when the thing it counts grows is worse than no comment a
 ⭐ And the danger is in the shape of the default: `"xyz"` reads like "no preference" and is in
 fact the most aggressive answer available.
 
+**4. The deep search stopped running in two frames at once.** `deep_align` built its starting
+pose out of `camera_z` and nothing else. `_pattern` fills a missing seat in with
+`setdefault(..., 0.0)` and passes those zeros down, so every candidate was scored from the LIDAR'S
+OWN AXIS — while the incumbent's score is taken with the seat left as `None`, which
+`PoseScorer._at` reads as the camera's REAL seat. Two poses judged from two different eyes, and the
+bigger number wins. The answer came back in the wrong frame too: the `camera_x` returned was an
+offset from the origin and the caller stores it as the seat. `refine_pose` and `deep_refine` both
+build their start with all six numbers; this was the one of three siblings that did not — the
+same shape as the height bug this file already names, **a pose rebuilt with fewer numbers than it
+had**. ⛔ It went unexamined because **`deep_align` is stubbed in every other test in the file**;
+the new checks reach its early return with a scorer that reports an empty panorama, so the real
+function builds the real start.
+
+**⛔⛔ AND I CORRECTED THE 45TH PASS WRONGLY BEFORE MEASURING IT.** Mid-session I read the
+source, concluded the seat did not start at zero but "jumped" there at the polish, and wrote that
+into this file as a correction. Then I instrumented the search instead of reading it: every trial
+is scored at a seat measured **from the origin** (0.0 ± 0.04) and the incumbent at
+`(None, None)` — the real seat. **The 45th pass's sentence was right and my correction was
+wrong.** ⭐ The lesson survives its own inversion: *a finding is a hypothesis until it is
+re-derived* — and that applies to the re-derivation too, which is why the second one was an
+experiment and not a closer reading.
+
+**5. The matcher's range is metres, which is what its docstring always claimed.**
+`match.cloud_picture` handed back `colour._panoramas`' depth, whose bins hold `log1p(r)` — right
+for the SCORING panorama, which only ever compares one cell with another, and wrong for every
+caller here: `match_pose` multiplies the number by a unit bearing to lift a matched pixel into a
+POINT, hands those points to the six-parameter fit, and marks them on the operator's cloud.
+Measured on the suite's own fabricated room, before the fix: walls at **1.50-5.22 m** arrived as
+**0.92-1.83**, the fitted seat came out at **42% of the true one** — an error of 0.0134 m that
+sat inside the existing 0.02 m tolerance and **passed** — and the agreeing points were drawn in a
+shell **1.10-1.81 m** round the tripod. After: 6.8 mm, and 2.01-5.13 m. ⭐ **A SINGLE RADIUS
+CANNOT TELL "WRONG UNITS" FROM "WRONG BY A BIT", SO THE CHECK IS A RATIO**: two shells, at 2 m and
+8 m; a compressed scale reports the further one as twice the nearer instead of four times, and the
+reversion printed exactly 2.0.
+
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
 build, so **none of this reaches the operator until Studio is closed and `build_exe.py` is run**.
-The remaining 27 findings are untouched. And the camera-seat finding was re-checked while waiting
-on a suite and **the 45th pass's mechanism for it was wrong**: `deep_align`'s sweep and screening
-DO score at the real seat (`PoseScorer._at` falls back to `self.camera[0]` when handed `None`), but
-`_live_axes(..., seat=True)` frees the seat for the polish and `setdefault("camera_x", 0.0)` then
-pins it explicitly at zero — so the seat does not start at zero, it **jumps** to zero at the
-polish, and the same pose scores differently either side of the jump. The defect is real; the
-sentence describing it was not. ⭐ **A finding recorded from a reviewer's summary is a hypothesis
-until it is re-derived from the source.**
+The remaining 25 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 

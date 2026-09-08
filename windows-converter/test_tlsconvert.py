@@ -7519,6 +7519,84 @@ _g3 = colour.refine_pose(_shell, _img9, yaw_deg=10.0, rung=3, budget=40)
 check("...and rung three still does not touch it",
       _g3["ok"] and _g3["camera_x"] == 0.0 and _g3["camera_y"] == 0.0)
 
+# ⛔⛔ AND THE DEEP SEARCH SEARCHES FROM THE SEAT IT WAS GIVEN. It used to
+# build its starting pose out of `camera_z` and nothing else, and the damage is
+# not that the seat was ignored -- it is that the search RAN IN TWO FRAMES AT
+# ONCE. `_pattern` fills a missing seat in with `setdefault(..., 0.0)` and
+# passes those zeros down, so every candidate was scored from the LIDAR'S OWN
+# AXIS, while the incumbent's score is taken with the seat left as None, which
+# `PoseScorer._at` reads as the camera's REAL seat. Two poses judged from two
+# different eyes, and the bigger number wins. The answer came back in the wrong
+# frame too: the `camera_x` returned was an offset from the origin and the
+# caller stores it as the seat.
+# ⭐ `refine_pose` and `deep_refine` both build their start with all six
+# numbers. This was the one of three siblings that did not -- the same shape as
+# the height bug named at the bottom of this section: A POSE REBUILT WITH FEWER
+# NUMBERS THAN IT HAD.
+# ⛔ AND `deep_align` IS STUBBED IN EVERY OTHER TEST IN THIS FILE, which is how
+# it went unexamined; the early return is reached here with a scorer that
+# reports an empty panorama, so the real function builds the real start.
+
+
+class _SparseScorer(object):
+    """Just enough PoseScorer to reach the give-up return, and no more."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def filled(self, camera_z=None):
+        return 0.0                  # under MIN_FILLED_FRACTION
+
+
+_real_ps9 = colour.PoseScorer
+try:
+    colour.PoseScorer = _SparseScorer
+    _seat_d = colour.deep_align(_shell, _img9, camera=(0.09, -0.06, 1.42),
+                                yaw_deg=10.0)
+    _seat_r = colour.deep_refine(_shell, _img9, camera=(0.09, -0.06, 1.42),
+                                 yaw_deg=10.0)
+finally:
+    colour.PoseScorer = _real_ps9
+for _who, _got in (("the deep search", _seat_d), ("the fine polish", _seat_r)):
+    check("%s starts from the WHOLE seat, not just the height" % _who,
+          abs(_got.get("camera_x", 0.0) - 0.09) < 1e-12
+          and abs(_got.get("camera_y", 0.0) + 0.06) < 1e-12
+          and abs(_got["camera_z"] - 1.42) < 1e-12,
+          dict((k, _got.get(k)) for k in ("camera_x", "camera_y", "camera_z")))
+
+# ⭐ AND WHY THAT MATTERS, RECORDED RATHER THAN ASSERTED. The pattern search
+# scores at whatever seat the pose it was handed carries; a pose carrying none
+# is scored at the origin, and nothing anywhere says so.
+_seats9 = []
+
+
+class _SeatSpy(object):
+    """A scoring objective that writes down the seat it is asked for."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, yaw, pitch, roll, z, x=None, y=None):
+        self.calls += 1
+        _seats9.append((x, y))
+        return -abs(yaw - 12.0)     # a peak the seat cannot help it reach
+
+
+colour._pattern(_SeatSpy(), {"yaw_deg": 10.0, "pitch_deg": 0.0,
+                             "roll_deg": 0.0, "camera_z": 1.42,
+                             "camera_x": 0.09, "camera_y": -0.06},
+                colour._live_axes(True, True, True), 2.0, 0.5, 60, None)
+check("every trial is scored at the seat the pose carries",
+      _seats9 and all(x is not None and y is not None
+                      and abs(x - 0.09) < 0.06 and abs(y + 0.06) < 0.06
+                      for x, y in _seats9),
+      sorted(set(_seats9))[:3])
+# ⛔ THE ORIGIN IS THE WRONG ANSWER AND SO IS None. One says "the lidar's own
+# axis" and the other says "whatever seat the scorer was built with" -- two
+# different eyes, and a search that mixes them compares two rooms.
+check("...so a seatless pose, scored at the origin, is what the bug looked "
+      "like", (0.0, 0.0) not in _seats9, sorted(set(_seats9))[:3])
+
 # ⭐⭐ THE FINE POLISH IS THE ACCURATE END OF THE DEEP SEARCH: a grid with a
 # quarter of the solve grid's cell, all three gated measures, and the seat.
 check("there is a fine polish, and it judges on a finer grid than the solve",
@@ -13619,6 +13697,32 @@ check("a match record keeps the pose and the verdict but never the points",
       "points" not in _mt.record(_r1) and "belongs" in _mt.record(_r1)
       and "yaw_deg" in _mt.record(_r1))
 
+# ⛔⛔ THE RANGE PICTURE IS IN METRES, WHICH IS NOT WHAT IT HELD. `cloud_picture`
+# has always documented its second return as "the mean distance from the
+# camera", and it handed back `colour._panoramas`' depth, whose bins are filled
+# with `log1p(r)` -- deliberately, and rightly, for the SCORING panorama, which
+# only ever compares one cell against another. `match_pose` does arithmetic
+# with it: a matched pixel is lifted to a point as bearing * range, those
+# points are handed to the six-parameter fit, and they are marked on the
+# operator's cloud. ⭐ Two shells settle it in one line each, with no model and
+# no matcher: a compressed scale reads 1.10 and 2.20 where these read 2 and 8,
+# and no tolerance on a single radius can tell "wrong units" from "wrong by a
+# bit" -- the RATIO can.
+_shr = np.random.default_rng(5)
+_shell_r = {}
+for _rad in (2.0, 8.0):
+    _shp = _unit(_shr.normal(size=(120_000, 3))) * _rad
+    _shq = _mt.cloud_picture(_shp, _shr.uniform(20.0, 220.0, 120_000),
+                             (0.0, 0.0, 0.0))
+    _shell_r[_rad] = float(np.median(np.asarray(_shq[1])[_shq[2]]))
+    check("a shell of points %.0f m out reads as %.0f m of range"
+          % (_rad, _rad), abs(_shell_r[_rad] - _rad) < 0.05 * _rad,
+          _shell_r[_rad])
+check("...so four times the distance is four times the number, which a "
+      "compressed scale would report as twice",
+      abs(_shell_r[8.0] / max(_shell_r[2.0], 1e-9) - 4.0) < 0.2,
+      _shell_r[8.0] / max(_shell_r[2.0], 1e-9))
+
 # ⛔ THE REAL MATCHER ON A FABRICATED ROOM, when a model is here. A box room
 # 8 m by 6 m, walls to 1.5 m above the sensor and 1.5 m below, papered with a
 # texture that has corners (blotches at three scales and a few dark "frames"),
@@ -13695,6 +13799,23 @@ else:
                   [_got["camera_x"], _got["camera_y"], _got["camera_z"]])
                   - _seat)) < 0.02,
               (_got["camera_x"], _got["camera_y"], _got["camera_z"]))
+        # ⛔ AND THE RIGHT SIZE, NOT A FRACTION OF IT. A compressed range fits
+        # a translation short: measured at 42% of the true seat, an error of
+        # 0.0134 m that sat inside the 0.02 m tolerance above and passed.
+        _fseat = np.array([_got["camera_x"], _got["camera_y"],
+                           _got["camera_z"]])
+        check("...and the seat is the right SIZE, not a shrunken copy",
+              0.7 < (float(np.linalg.norm(_fseat))
+                     / float(np.linalg.norm(_seat))) < 1.4,
+              float(np.linalg.norm(_fseat)) / float(np.linalg.norm(_seat)))
+        # ⛔ AND THE POINTS THE OPERATOR IS SHOWN LAND ON THE WALLS. Lifted
+        # with a log range they were drawn in a shell 1.10-1.81 m round the
+        # tripod, for walls at 1.50-5.22 m -- a picture of the fit being
+        # wrong, on screen, that no check was looking at.
+        _mdist = np.linalg.norm(np.array(_got["points"]), axis=1)
+        check("...and the agreeing points are marked out at the walls",
+              float(_mdist.min()) > 1.2 and float(_mdist.max()) > 3.0,
+              (round(float(_mdist.min()), 2), round(float(_mdist.max()), 2)))
         check("...naming the backend and the count that earned it",
               _got["backend"] in _have and _got["inliers"] >= _mt.MATCH_MIN
               and len(_got["points"]) == min(200, _got["inliers"]),

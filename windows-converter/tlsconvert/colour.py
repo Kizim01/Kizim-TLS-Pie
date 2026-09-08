@@ -3031,9 +3031,24 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     """
     began = time.time()
     deadline = began + float(seconds)
+    # ⛔⛔ THE WHOLE SEAT, NOT JUST THE HEIGHT -- and `refine_pose` two
+    # functions up has always built its start this way. This one kept only
+    # `camera_z`, and the consequence is not that the seat was ignored: it is
+    # that the search RAN IN TWO FRAMES AT ONCE. `_pattern` fills a missing
+    # seat in with `setdefault(..., 0.0)` and then passes those zeros down, so
+    # every candidate was scored from the LIDAR'S OWN AXIS, while the
+    # incumbent's score (`was`, below) is taken with the seat left as None,
+    # which `PoseScorer._at` reads as the camera's REAL seat. Two poses judged
+    # from two different eyes, and the better number wins.
+    #
+    # ⚠ AND THE ANSWER CAME BACK IN THE WRONG FRAME TOO: the `camera_x` the
+    # search returned was an offset from the origin, and the caller stores it
+    # as the seat -- so a camera really seated 9 cm out came back seated at 2.
     start = {"yaw_deg": float(yaw_deg), "pitch_deg": float(pitch_deg or 0.0),
              "roll_deg": float(roll_deg or 0.0),
-             "camera_z": float(camera[2] if len(camera) > 2 else 0.0)}
+             "camera_z": float(camera[2] if len(camera) > 2 else 0.0),
+             "camera_x": float(camera[0] if len(camera) > 0 else 0.0),
+             "camera_y": float(camera[1] if len(camera) > 1 else 0.0)}
 
     def tell(stage, n=0, total=5):
         if progress:
@@ -3142,8 +3157,12 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     # a pose that the coarse grid ranked third could beat the incumbent there
     # and lose to it here. This is the line that turns "the best of what it
     # tried" into "never worse than what you had".
+    # ⛔ THE SEAT IS NAMED HERE RATHER THAN LEFT TO THE FALLBACK. Passing None
+    # happens to reach the same number now that `start` carries the seat, but
+    # it reaches it by a coincidence between two objects -- and the whole bug
+    # above was one side of a comparison quietly using a different eye.
     was = obj_f(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
-                start["camera_z"])
+                start["camera_z"], start["camera_x"], start["camera_y"])
     if best is None or was > best_score:
         best, best_score, railed = dict(start), float(was), []
 
@@ -3170,7 +3189,7 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
 
     moved = abs((best["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0 - 180.0)
     r0 = obj_f.raw(start["yaw_deg"], start["pitch_deg"], start["roll_deg"],
-                   start["camera_z"])
+                   start["camera_z"], start["camera_x"], start["camera_y"])
     r1 = obj_f.raw(best["yaw_deg"], best["pitch_deg"], best["roll_deg"],
                    best["camera_z"], best.get("camera_x"),
                    best.get("camera_y"))

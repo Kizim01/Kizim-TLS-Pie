@@ -226,7 +226,25 @@ def cloud_picture(xyz, refl, camera=(0.0, 0.0, 0.0)):
     if field is None:
         return None, None, filled
     fieldf = colour.fill_holes(field, filled, iterations=FILL_PASSES)
-    rangef = colour.fill_holes(depth, filled, iterations=FILL_PASSES)
+    # ⛔⛔ BACK INTO METRES, AND THE DOCSTRING ABOVE WAS ALWAYS THE PROMISE.
+    # `colour._panoramas` fills its depth bins with `log1p(r)` on purpose --
+    # so a doorway 25 m off cannot swamp the 2 m room around it in the SCORING
+    # panorama, which only ever compares cells with each other. Every caller
+    # here does arithmetic with the number instead: `match_pose` multiplies it
+    # by a unit bearing to lift a matched pixel into a POINT, hands those to
+    # the six-parameter fit, and marks them on the operator's cloud.
+    #
+    # ⚠ MEASURED ON THE SUITE'S OWN ROOM, before this line existed: walls at
+    # 1.50-5.22 m arrived as 0.92-1.83, the fitted seat came out at 42% of the
+    # true one (0.0134 m error against a 0.02 m tolerance -- passing, and
+    # wrong), and the agreeing points were drawn in a shell 1.10-1.81 m round
+    # the tripod instead of on the walls they had matched.
+    #
+    # `expm1` of the cell's mean log is a central range for that cell, in the
+    # units its callers were already assuming. ⭐ The scoring panorama is left
+    # exactly as it is: the log is right for what IT does.
+    rangef = np.expm1(colour.fill_holes(depth, filled,
+                                        iterations=FILL_PASSES))
     return equalise(fieldf), rangef, filled
 
 
