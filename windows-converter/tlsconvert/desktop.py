@@ -269,6 +269,81 @@ SAFE_EXTS = (".tlspie", ".las", ".laz", ".ply")
 CONTESTED_EXTS = (".pcap",)
 
 
+#: Where Windows keeps its per-application graphics choice (Settings > System
+#: > Display > Graphics): one string value per program, NAMED BY THE FULL PATH
+#: of its exe. `2` is High performance. It lives under the current user, so
+#: writing it needs no elevation.
+GPU_PREF_KEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
+GPU_PREF_FAST = "GpuPreference=2;"
+
+
+def webview2_exes():
+    """Every installed WebView2 runtime exe -- one per version folder."""
+    found = []
+    for base in (os.environ.get("ProgramFiles(x86)"),
+                 os.environ.get("ProgramFiles"),
+                 os.environ.get("LOCALAPPDATA")):
+        if not base:
+            continue
+        app = os.path.join(base, "Microsoft", "EdgeWebView", "Application")
+        try:
+            names = os.listdir(app)
+        except OSError:
+            continue
+        for name in sorted(names):
+            exe = os.path.join(app, name, "msedgewebview2.exe")
+            if os.path.isfile(exe) and exe not in found:
+                found.append(exe)
+    return found
+
+
+def prefer_fast_gpu(exes=None, subkey=GPU_PREF_KEY):
+    """
+    Ask Windows to draw Studio's window on the strong card, every start.
+
+    ⛔⛔ THE FIX THAT UNDID ITSELF. On a laptop with two GPUs Windows hands
+    WebView2 windows the power-saving chip, so a 46M-point view was drawn by
+    the integrated Radeon while the RTX sat idle and one turn of the cloud
+    hung the program (studio.log, 2026-08-27). The lever was the per-app
+    graphics setting on `msedgewebview2.exe`, set by hand -- and it is keyed
+    on the exe's FULL PATH, which carries the WebView2 VERSION. WebView2
+    updates itself in the background; on 2026-09-08 it had moved from
+    151.0.4129.107 to 152.0.4191.66, the old entry matched nothing, and the
+    freeze was back with no change to Studio at all. So Studio now writes the
+    entry itself for whichever versions are installed, before the window is
+    opened. ⭐ IT FILLS A GAP AND DOES NOT OVERRULE A CHOICE: a value that is
+    already there, whatever it says, is left alone and reported.
+
+    Returns [(exe, "set" | "kept" | "left <value>")], or None when the
+    registry could not be reached (and on anything that is not Windows).
+    """
+    if os.name != "nt":
+        return None
+    import winreg
+
+    if exes is None:
+        exes = webview2_exes()
+    out = []
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+            for exe in exes:
+                try:
+                    current = winreg.QueryValueEx(key, exe)[0]
+                except OSError:
+                    current = None
+                if current == GPU_PREF_FAST:
+                    out.append((exe, "kept"))
+                elif current:
+                    out.append((exe, "left %s" % current))
+                else:
+                    winreg.SetValueEx(key, exe, 0, winreg.REG_SZ,
+                                      GPU_PREF_FAST)
+                    out.append((exe, "set"))
+    except OSError:
+        return None
+    return out
+
+
 def associate(exe_path, extensions=SAFE_EXTS, remove=False):
     """Make `exe_path` the default opener for these extensions, for this user."""
     if os.name != "nt":

@@ -2360,6 +2360,57 @@ try:
     check("with a real console it changes nothing",
           not _dt.silence_missing_console())
 
+    # ⛔⛔ THE GPU FIX THAT UNDID ITSELF. The per-app graphics choice that put
+    # Studio's window on the RTX (2026-08-27) is keyed on msedgewebview2.exe's
+    # full path, version folder included; WebView2 updated itself on
+    # 2026-09-08 and the freeze-on-rotate came straight back. Studio now
+    # writes the entry for every installed version at start. Exercised on a
+    # scratch key so the machine's real setting is not touched by a test.
+    if os.name == "nt":
+        import winreg as _wr
+        _gkey = r"Software\TLS-Pie\test-gpu-pref"
+        _fake = [r"C:\fake\EdgeWebView\Application\1.0.0.1\msedgewebview2.exe",
+                 r"C:\fake\EdgeWebView\Application\1.0.0.2\msedgewebview2.exe"]
+        try:
+            with _wr.CreateKey(_wr.HKEY_CURRENT_USER, _gkey) as _k:
+                _wr.SetValueEx(_k, _fake[1], 0, _wr.REG_SZ, "GpuPreference=1;")
+            _r1 = _dt.prefer_fast_gpu(_fake, subkey=_gkey)
+            # ⛔ A missing value is a FAIL, not a crash that takes the run.
+            def _rv(_name):
+                try:
+                    with _wr.OpenKey(_wr.HKEY_CURRENT_USER, _gkey) as _k:
+                        return _wr.QueryValueEx(_k, _name)[0]
+                except OSError:
+                    return None
+            _v0, _v1 = _rv(_fake[0]), _rv(_fake[1])
+            _r2 = _dt.prefer_fast_gpu(_fake, subkey=_gkey)
+        finally:
+            try:
+                _wr.DeleteKey(_wr.HKEY_CURRENT_USER, _gkey)
+            except OSError:
+                pass
+        check("a WebView2 exe with no graphics choice is set to High performance",
+              _v0 == _dt.GPU_PREF_FAST and _r1 and _r1[0] == (_fake[0], "set"),
+              (_v0, _r1))
+        check("...and one the operator already chose is left alone, and said",
+              _v1 == "GpuPreference=1;" and _r1[1][1] == "left GpuPreference=1;",
+              (_v1, _r1))
+        check("...and a second start finds its own entry and keeps it",
+              _r2 and _r2[0] == (_fake[0], "kept"), _r2)
+        _w2 = _dt.webview2_exes()
+        check("the installed WebView2 runtimes are found by version folder",
+              all(os.path.isfile(p) and p.lower().endswith("msedgewebview2.exe")
+                  for p in _w2), _w2)
+    _stud = open(os.path.join(os.path.dirname(_dt.__file__), "..",
+                              "tlspie_studio.py"), encoding="utf-8").read()
+    check("Studio asks for the strong card BEFORE the window is opened",
+          0 < _stud.find("desktop.prefer_fast_gpu()") < _stud.find("desktop.show("))
+    check("...and logs what Windows was asked, so the renderer line has a cause",
+          '"gpu preference: %s"' in _stud)
+    check("...and the page's warning now says Studio tried, and what to do next",
+          "Studio asks Windows for the NVIDIA card at every" in align.PAGE
+          and "set it by hand" in align.PAGE)
+
     _br = _srv.browse()
     check("Browse refuses cleanly with no native window",
           not _br["ok"] and "no native window" in _br["error"], _br)

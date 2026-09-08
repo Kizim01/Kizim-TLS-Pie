@@ -8926,11 +8926,13 @@ async function boot(){
   else if(CUDA && V.glName!=='unknown' && !/nvidia|geforce|rtx/i.test(V.glName))
     say('The view is drawn by the LOW-POWER card ('+V.glName.slice(0,40)+
         '…) while the NVIDIA card sits idle — Windows picks this for '+
-        'WebView2 windows. To move the view onto the NVIDIA card: Windows '+
-        'Settings → System → Display → Graphics, Add an app → browse to '+
-        'msedgewebview2.exe (inside Program Files (x86) / Microsoft / '+
-        'EdgeWebView / Application), set it to High performance, and '+
-        'restart Studio.', 'warn');
+        'WebView2 windows. Studio asks Windows for the NVIDIA card at every '+
+        'start (see "gpu preference" in studio.log); if you still see this '+
+        'after restarting Studio, set it by hand: Windows Settings → System '+
+        '→ Display → Graphics, Add an app → browse to msedgewebview2.exe '+
+        '(inside Program Files (x86) / Microsoft / EdgeWebView / '+
+        'Application), set it to High performance, and restart Studio.',
+        'warn');
   try{ buildGL(); }catch(e){ return fail('Shader failed: '+e.message); }
   /* ⛔⛔ A LOST GRAPHICS CONTEXT IS AN EVENT, NOT AN ENDING. A driver reset
      mid-drag used to take the whole window down in silence (2026-08-27,

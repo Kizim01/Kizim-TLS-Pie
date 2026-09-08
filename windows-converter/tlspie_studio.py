@@ -306,6 +306,19 @@ def main(argv=None):
     _arm_crash_log()
     align.log_event("studio started, pid %d, opening %s"
                     % (os.getpid(), paths or "nothing"))
+    # ⭐ THE WINDOW IS PUT ON THE STRONG CARD BEFORE IT EXISTS. Windows reads
+    # the per-app graphics choice when the WebView2 process starts, and the
+    # choice is keyed on a path that changes with every WebView2 update -- so
+    # it is re-asserted here, every start, for whatever version is installed.
+    # See desktop.prefer_fast_gpu; the `renderer:` line the page logs a few
+    # seconds later is what says whether Windows agreed.
+    _gpu = desktop.prefer_fast_gpu()
+    align.log_event("gpu preference: %s"
+                    % (", ".join("%s %s" % (what, os.path.basename(
+                        os.path.dirname(exe))) for exe, what in _gpu)
+                       if _gpu else
+                       "no WebView2 runtime found" if _gpu == [] else
+                       "registry not reachable"))
     server = align.AlignServer([], out_path=out, pending=captures,
                                open_project=(projects[0] if projects else None))
     threading.Thread(target=_watch_page, args=(server,), daemon=True,

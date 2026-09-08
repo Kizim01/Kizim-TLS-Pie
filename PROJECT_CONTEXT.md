@@ -6606,9 +6606,34 @@ tested, reversion-audited, committed and pushed (`87282cc`, `dcb8072`, `8957b19`
 the project and returns them, and `openProject` clears `V.pairs` and never reads `j.pairs`, so
 every pin an operator places is silently lost the next time the job is opened. After it, the list
 below in the order it is written.
-⛔ **AND THE FIRST THING TO SAY OUT LOUD ON RESUMING**: none of these ten fixes are in anything
-the operator runs. `dist\` is still the 2026-09-07 02:34 build, and the Pi still has the old
-`tls_scan.py`. **Ten fixes in source is not ten fixes delivered.**
+✅ **THE EXES ARE REBUILT** (Studio 2026-09-08 22:44, Converter 2026-09-08 22:43, tlsconvert 2026-09-08 22:45, selftest 0), so fixes 1-10 and the
+eleventh below are in what the operator runs. **The Pi still has the old `tls_scan.py`** — fix 3
+is not delivered until it is copied onto the box.
+
+**⭐⭐ 11. THE FREEZE-ON-ROTATE CAME BACK, AND IT WAS THE FIX THAT UNDID ITSELF (2026-09-08,
+evening).** Operator: *"back to having the same issue... when I rotate a point cloud after a couple
+of seconds the program freezes."* Nothing in Studio had changed — studio.log said
+`renderer: ANGLE (AMD Radeon...)` on every boot since 09-06, the eleventh-pass symptom exactly.
+The lever from 08-27 was the per-app graphics choice on `msedgewebview2.exe`, and Windows keys
+that choice on the exe's FULL PATH, which carries the WebView2 VERSION: the registry held
+`...\151.0.4129.107\msedgewebview2.exe = GpuPreference=2;` while the runtime had updated itself
+to `152.0.4191.66`. The entry matched nothing, the window went back onto the Radeon, and one turn
+of a big cloud hung it again. ⭐ **A SETTING KEYED ON A PATH THAT AUTO-UPDATES IS A SETTING WITH
+AN EXPIRY DATE NOBODY CAN SEE** — "do not ask the operator to do it again" (thirteenth pass) was
+wrong for exactly this reason.
+Fixed twice: the entry for 152 was written by hand at once (HKCU, no elevation), and then
+**`desktop.prefer_fast_gpu()` — Studio writes `GpuPreference=2;` for every installed WebView2
+version at every start**, before the window opens, and logs `gpu preference: set 152.0.4191.66`
+/ `kept ...` so the `renderer:` line that follows has a cause beside it. It fills a gap and does
+not overrule a choice: an entry that already exists, whatever it says, is left alone and reported
+as `left GpuPreference=1;`. The page's low-power warning now says Studio tried and gives the manual
+route only as the fallback. Suite **1910 → 1917** on a scratch registry key. Reversion-audited:
+the write removed (still *reporting* `set`) fails exactly the two named checks, with the honest
+discriminator — the function said `set`, the registry read back `None`. ⛔ The readback was
+first written so a missing value would RAISE and kill the run rather than fail the check; caught
+before the break, same lesson as fix 10's audit.
+⛔ What settles it is still only the `renderer:` line in studio.log after a restart — the
+registry write is the request, not the proof.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -8072,10 +8097,9 @@ second-refusal check. The two that never fire are honest: the old code DID raise
 reported as done" holds either way, and the destination was always left unharmed — that is what
 the `.part` design already guaranteed and this fix did not change.
 
-**⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
-build, so **none of the Studio work reaches the operator until Studio is closed and
-`build_exe.py` is run**, and **the Pi fix needs `tls_scan.py` copied onto the box**. The remaining
-20 findings are untouched.
+**✅ THE EXES WERE REBUILT** at the end of the pass (Studio 2026-09-08 22:44, Converter 2026-09-08 22:43, tlsconvert 2026-09-08 22:45, selftest 0) with
+fixes 1-10 and the GPU-preference fix (item 11 above) inside. **The Pi fix still needs
+`tls_scan.py` copied onto the box.** The remaining 20 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 
@@ -8284,6 +8308,7 @@ PyInstaller dies on `[WinError 5]`.
 
 **✅ THE GPU ITEM IS DONE — do not ask the operator to do it again.** They set
 `msedgewebview2.exe` to High performance on 2026-08-27 and the log confirms the RTX is drawing.
+*(⛔ Superseded 2026-09-08: it UNDID ITSELF when WebView2 auto-updated — the setting is keyed on the versioned exe path. Studio now writes it at every start; see the 46th pass, item 11.)*
 *(If a future machine ever needs it: Settings → System → Display → Graphics → Add an app →
 `msedgewebview2.exe` in `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<version>\` —
 that folder holds seven other exes, this is the one. The `renderer:` line in studio.log is the
