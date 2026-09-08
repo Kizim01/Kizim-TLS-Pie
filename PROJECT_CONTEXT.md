@@ -6560,6 +6560,22 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
+**✅ PRODUCTION-PROVEN THE SAME EVENING.** The freeze-on-rotate fix (item 11 below) is not
+just green in the suite — the operator relaunched the rebuilt Studio and its own log settles it:
+
+```
+2026-09-08 22:47:05  gpu preference: kept 152.0.4191.66
+2026-09-08 22:47:07  page gl: renderer: ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 Ti Laptop GPU ...)
+```
+
+That is the first NVIDIA `renderer:` line since 2026-09-06, every boot in between having read
+`ANGLE (AMD Radeon...)`. `kept` (not `set`) because the 152 entry had been written by hand an hour
+earlier; the next WebView2 update is what the new code is actually for, and it will read `set`.
+⭐ **THE REGISTRY WRITE IS THE REQUEST; THE `renderer:` LINE IS THE PROOF** — the two are logged
+two seconds apart now, so the cause sits beside the outcome and neither has to be reconstructed.
+If a future boot ever reads AMD again, Windows declined the request and the question is why
+(a second WebView2 install under `%LOCALAPPDATA%`, a policy, or a key other than the one written).
+
 **⭐⭐ TEN OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
 pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
