@@ -6560,7 +6560,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ FIVE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+**⭐⭐ SIX OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
 pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
@@ -6575,10 +6575,14 @@ lidar's axis while the incumbent was scored at the camera's real seat. (5) **The
 is metres again** rather than `log1p(r)`: on the suite's own room, walls at 1.50-5.22 m arrived as
 0.92-1.83, the fitted seat came out at **42% of the true one** (0.0134 m error inside a 0.02 m
 tolerance — passing, and wrong), and the agreeing points were drawn in a shell 1.10-1.81 m round
-the tripod. Now 6.8 mm and 2.01-5.13 m. Suites **1869 → 1888** and **171 → 180**; audit 12
-breaks, all 12 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN REBUILT** —
-`dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still has all five.
-The other 25 findings stand unfixed; the paragraph below is still the list to work from.
+the tripod. Now 6.8 mm and 2.01-5.13 m. (6) **The Pi stops calling a dead capture "Scan
+complete"** — the recorder is now asked after during the sweep, and the empty-capture guard
+tested `getsize == 0` when tcpdump writes a 24-byte header the moment it opens the file.
+Suites **1869 → 1888**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
+Pi; audit 15 breaks, all 15 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN
+REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
+has the five that are its own; **the Pi fix needs the Pi's files copied over to take effect.**
+The other 24 findings stand unfixed; the paragraph below is still the list to work from.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -7920,9 +7924,32 @@ CANNOT TELL "WRONG UNITS" FROM "WRONG BY A BIT", SO THE CHECK IS A RATIO**: two 
 8 m; a compressed scale reports the further one as twice the nearer instead of four times, and the
 reversion printed exactly 2.0.
 
+**6. The field box stopped reporting a dead capture as a finished scan.** Two guards, neither
+of which could do the job its name claims. `start_capture` confirms tcpdump survived its first
+moment and **nothing looked again**, so a recorder that died a few degrees into a three-minute
+sweep let the motor run to the end, wrote a sidecar describing the whole track, and said "Scan
+complete" over a pcap holding a sliver of it. `should_abort` is the only question the sweep asks,
+so that is where the recorder is now asked after. And `stop_capture` refused a capture only on
+`getsize(...) == 0` — while tcpdump writes a **24-byte pcap header the moment it opens the file**,
+so the one state the check existed to catch was the one state it had excluded.
+⭐ **A GUARD WHOSE THRESHOLD LIES OUTSIDE THE RANGE ITS SUBJECT CAN TAKE IS NOT A LOOSE GUARD, IT
+IS AN ABSENT ONE** — and it reads in review exactly like a guard. The proof was already in the
+file: `start_capture`'s own comment records the vfat failure as *"exits code 1 having written only
+the 24-byte pcap header"*, two hundred lines above the check that could not see it.
+
+⛔ **AND THE ORDERING IS THE LOAD-BEARING PART, NOT THE DETECTION.** A dead recorder stops the
+sweep THROUGH `should_abort`, so `completed` comes back False either way — read in the obvious
+order, the operator is told **"Stop pressed during the sweep"**. The reversion audit swapped the
+two raises and that is exactly the message that came out, while the "did not report success" check
+went on passing: *the panel has only the abort code to go on, so it has to name the cause and not
+the symptom.* New file `Raspberry Pie4/TLS-Pie/test_capture_guards.py`, 18 checks, driving the real
+`run_scan` with a recorder that dies part way; the reverted run printed
+`(True, ['PREFLIGHT', 'RECORDING', 'RETURNING', 'COMPLETE'])`, which is the reported bug itself.
+
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
-build, so **none of this reaches the operator until Studio is closed and `build_exe.py` is run**.
-The remaining 25 findings are untouched.
+build, so **none of the Studio work reaches the operator until Studio is closed and
+`build_exe.py` is run**, and **the Pi fix needs `tls_scan.py` copied onto the box**. The remaining
+24 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 

@@ -443,12 +443,34 @@ def write_scan_meta(capture_file, profile_name, profile, stepper,
         return None
 
 
+#: A pcap savefile's own header, written by tcpdump the moment it opens the
+#: file and before a single packet has arrived.
+#:
+#: ⛔⛔ THIS NUMBER IS WHY THE EMPTY-CAPTURE GUARD COULD NEVER FIRE. It tested
+#: `getsize(...) == 0`, and a file tcpdump has so much as opened is 24 bytes --
+#: so the one condition the guard was written to catch was the one condition it
+#: had excluded. The proof was already in this file, two hundred lines up:
+#: `start_capture`'s own comment records the vfat failure as "exits code 1
+#: having written only the 24-byte pcap header".
+#: ⭐ A GUARD WHOSE THRESHOLD LIES OUTSIDE THE RANGE ITS SUBJECT CAN TAKE IS
+#: NOT A LOOSE GUARD, IT IS AN ABSENT ONE -- and it reads in review as a guard.
+PCAP_HEADER_BYTES = 24
+
+
 def stop_capture(proc, capture_file):
     _terminate(proc)
     # tcpdump exits non-zero when signalled; that is the normal path here, so
-    # only a missing or empty file counts as a failure.
-    if not os.path.exists(capture_file) or os.path.getsize(capture_file) == 0:
-        raise ScanAborted("EMPTY_PCAP", "Capture file was created but is empty")
+    # only a missing or packetless file counts as a failure.
+    if not os.path.exists(capture_file):
+        raise ScanAborted("EMPTY_PCAP", "Capture file was never created")
+    size = os.path.getsize(capture_file)
+    if size <= PCAP_HEADER_BYTES:
+        raise ScanAborted(
+            "EMPTY_PCAP",
+            "the capture holds nothing but its %d-byte pcap header (%d bytes "
+            "on disk), so no packet from the lidar ever reached it -- check "
+            "the sensor is powered and on %s"
+            % (PCAP_HEADER_BYTES, size, ETH_INTERFACE))
     return capture_file
 
 
@@ -540,12 +562,27 @@ def do_restart(pi, stepper):
 # --- Scan sequence --------------------------------------------------------
 def run_scan(pi, stepper, profile_name, record=True):
     profile = SCAN_PROFILES[profile_name]
+    # Why the recorder stopped, if it stopped by itself. A list rather than a
+    # name so the closure below can fill it in without `nonlocal`.
+    capture_died = []
 
     def should_abort():
         # One abort path. The phone panel's stop button and SIGTERM both land
         # here; the physical stop button that used to be a third source was
         # removed with the rest of the buttons on 2026-08-09.
-        return _shutdown or _state.stop_requested()
+        #
+        # ⛔⛔ AND A RECORDER THAT HAS DIED IS AN ABORT TOO. `start_capture`
+        # confirms tcpdump survived its first moment and NOTHING LOOKED AT IT
+        # AGAIN -- so a capture that died a few degrees into a three-minute
+        # sweep ran the motor to the end, wrote a sidecar describing the whole
+        # track, and reported "Scan complete". The pcap holds a sliver of it.
+        # ⭐ This is the only place the sweep asks anything, so it is the only
+        # place the question can be asked at all.
+        if record and proc is not None and not capture_died:
+            code = proc.poll()
+            if code is not None:
+                capture_died.append(code)
+        return bool(capture_died) or _shutdown or _state.stop_requested()
 
     _state.begin_scan(profile_name, estimate_duration(profile))
     if _state.cloud is not None:
@@ -585,6 +622,19 @@ def run_scan(pi, stepper, profile_name, record=True):
         )
         _state.set(position_known=stepper.position_known)
 
+        # ⛔ THE DEAD RECORDER IS READ BEFORE `completed`, AND THE ORDER IS THE
+        # POINT. A recorder that dies stops the sweep THROUGH `should_abort`,
+        # so `completed` is False either way -- and reported as INTERRUPTED it
+        # would tell the operator they had pressed Stop. The abort code is the
+        # only thing the panel has to go on, so it has to name the cause and
+        # not merely the symptom.
+        if capture_died:
+            raise ScanAborted(
+                "TCPDUMP_DIED",
+                "tcpdump stopped on its own part way through the sweep (exit "
+                "%s), so the capture covers only the beginning of the track -- "
+                "the scan was stopped rather than finished"
+                % capture_died[0])
         if not completed:
             raise ScanAborted("INTERRUPTED", "Stop pressed during the sweep")
 
