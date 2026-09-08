@@ -6558,7 +6558,18 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-07, forty-fourth pass) — the current one
+### ⚠ LIVE STATE (2026-09-08, forty-fifth pass) — the current one
+
+**⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
+tree is still the 44th pass's; no code changed, no suite run, no exe built. The list is the
+section below, each with `file:line`. **The one to fix first: `DrawingWriter.close()` takes no
+`keep=` while `pipeline.py` calls `close(keep=...)`, so EVERY DXF outline export raises
+`TypeError` and has done since 2026-08-28** — the outline button cannot have worked, and
+because the call sits in a `finally` the TypeError also replaces any real error. Next after it:
+the page's level matrix ignores the heading and the origin's axis restriction, so once north is
+set the preview and the exported file are different rooms; the camera seat is discarded on two
+paths; the matcher's "range" is `log1p(r)` rather than metres (which CORRECTS the 42nd pass's
+stated cause); and on the Pi a scan whose tcpdump dies mid-sweep still reports "Scan complete".
 
 **⛔⛔ STUDIO CRASHED INSIDE OPENBLAS AND NOW RUNS IT ON ONE THREAD (44th pass).** 01:53:10,
 access violation in `libscipy_openblas64_`; the minidump put it in OpenBLAS's Windows worker loop
@@ -7621,6 +7632,189 @@ faults and door errors are logged), so which two doors overlapped is not known �
 depend on it. numpy 2.5.2 / OpenBLAS 0.3.34 stays; a newer wheel may carry a server fix, unverified.
 The `take_edit: could not read the cut list ('hi')` line that recurs every few minutes in
 `studio.log` is unrelated to the crash and still unexplained.
+
+### 2026-09-08, forty-fifth pass — ⛔ A READ-ONLY BUG SWEEP: 30 defects found, NONE FIXED
+
+**⛔⛔ THIS SECTION IS A FINDINGS LIST, NOT A CHANGELOG. Not one line of code was
+changed by this pass.** The operator asked for a code sweep for bugs; eight reviewers read the
+whole tree in parallel (align.py in three ranges, registration/match/shoot, colour/gpu/decode,
+drawing/export/pipeline, manifest/library/studio/cli, and the Raspberry Pi stack), read-only, with
+throwaway repro scripts in the scratchpad and nothing written to the repository. Every finding
+below carries `file:line`, the failure it produces, and whether it was reproduced. The suite was
+NOT run and no exe was built — the tree is exactly the 44th pass's.
+
+**⛔ THE ONE THAT BREAKS A SHIPPED FEATURE OUTRIGHT.** `drawing.py:2248` —
+`DrawingWriter.close(self)` takes no `keep=`, and `pipeline.py:1212` and `:1395` both call
+`writer.close(keep=finished)`. **Every DXF outline export through the pipeline raises
+`TypeError`**, which is to say the Export tray's outline button — the 33rd pass's whole
+deliverable — cannot have worked since the two point writers grew `keep=` on 2026-08-28.
+Reproduced end to end on a synthetic room through both `convert` and `merge`: no `.dxf` written.
+And because the call is inside a `finally`, the TypeError REPLACES any genuine error from the
+stream, so the operator never saw the real one either. The suite misses it precisely: `test_drawing.py`
+drives `DrawingWriter.close()` directly and `test_tlsconvert.py:2573` stubs `writer_for` with a
+`_NullWriter.close(self, keep=True)` — whose own comment says a stub that cannot take `keep`
+would hide a caller that stopped passing it, and which has the exact inverse blind spot.
+**No suite sends a `.dxf` through `convert`/`merge`.** ⭐ The standing lesson lands again one turn
+on: a green suite is not production evidence, and a stub that is more capable than the real thing
+is a hole shaped like a test.
+
+**⛔ THE PREVIEW AND THE EXPORTED FILE ARE DIFFERENT ROOMS ONCE NORTH IS SET.** The page's
+`levelRot()` (`align.py:7034`) builds the Rodrigues tilt and nothing else, while
+`registration.Level.matrix()` is `spin(heading) @ tilt`. Reproduced: with `heading_deg=37` the page
+puts (3,4,1) at (-6.04,-4.98,2.18) and the server at (1.38,4.80,2.18). So after "Which way is
+north" the screen keeps drawing the room un-turned, the widget labels an un-turned +Y "North", and
+`save()` writes the room spun 37°. Same function, second defect: `levelShift()` (`:7051`)
+returns the full `R(o-p)+p` while the server zeroes the components `origin_axes` does not name, so
+"Floor level (Z)" slides the room 9 m sideways on screen and not in the file — while the tray
+text promises "the plan position stays where your drawing already has it". Both CONFIRMED by
+running the page's own function text under node against `Level.apply`. The suite pins the STRINGS
+`levelRot` and `t[i]-=sh[i]`; no probe executes `levelMat` with a heading.
+
+**⛔ THE SAME AXIS RESTRICTION IS DROPPED AT TWO OF THE FIVE LEVEL DOORS.** `level`
+(`align.py:2569`) and `set_north` (`:3021`) build `registration.Level(..., origin=had.origin)`
+with no `origin_axes=`, which defaults to `"xyz"`; `level_from_floor` (:2744), `level_from_walls`
+(:2886) and `set_origin` (:2969) all pass it. Reproduced: a `"z"` datum picked 4 m out in plan
+comes back after a Level-from-points press as `origin_axes xyz`, `shift_xyz [4.007, 4.0, 0.663]`
+— the whole plan position slides 4 m under a drawing being measured off it.
+
+**⛔ THE CAMERA SEAT IS THROWN AWAY ON TWO PATHS, ONE OF THEM THE ONE THE 44th-PASS COMMENT
+SAYS WAS FIXED.** (a) `colour.py:3034` — `deep_align` builds `start` from
+`yaw/pitch/roll/camera_z` only, so `_pattern` `setdefault`s the seat to (0,0) and searches every
+candidate from the origin, WHILE scoring the incumbent at its real seat (`:3145`): the incumbent
+and its rivals are judged by different objectives, and the "never worse" guard holds only at seat
+zero. Reproduced: seat (0.05,-0.03) in, `camera_x=0.0 camera_y=0.0 seated_m=0.0` out.
+(b) `align.py:4127` — `solve_shoot` hands `_repaint` a pose with no `camera_x`/`camera_y`, and
+`_repaint` (`:3467`) reads a missing key as `0.0`. The comment at `:4771` documents exactly this
+failure for `set_tilt` and says it was swept; `solve_shoot` was not. Reproduced with a stubbed
+`colour_scan`: `camera_x=0.0, camera_y=0.0`. ⭐ Same defect, two doors, one of them already
+diagnosed — **the retry-scope mistake again: the fix was attached to the door that reported it,
+not to the shape of the mistake.**
+
+**⛔ THE MATCHER'S "RANGE" IS `log1p(r)`, NOT METRES — AND IT CORRECTS THE 42nd PASS'S
+STATED CAUSE.** `match.py:216` documents `cloud_picture`'s second return as "the mean distance
+from the camera", but it is `colour._panoramas`' `depth`, whose bins are filled with
+`np.log1p(r)` (`colour.py:493, 708`). `match_pose` then multiplies unit directions by it
+(`:574, 603`). A point at 5.0 m is handed to the fit as 1.79. Reproduced: with true metres
+`refine_six` recovers t=(0,0,0.100) at rms 0; with the log ranges it returns (0,0,0.039) at rms
+0.43°. **So the 42nd pass's docstring — "the six-parameter fit only ever moved a few
+centimetres because RANSAC had already chosen the pairs from the seed's seat" — names the
+wrong cause**: 0.045/0.10 and 0.11/0.29 are both about 40%, which is what compressed ranges
+produce. The seat sweep is masking it because `SEAT_HEIGHTS` are 6 cm apart. `refine_six`'s own
+test passes because it is fed true metres; nothing asserts the array is metric.
+
+**⛔ REMOVING A CLOUD MISNUMBERS THE PICTURE PINS WHENEVER A MATCH RECORD EXISTS.**
+`align.py:12923` chains the `V.pinWho--` shift as an `else if` behind two `V.matched` branches,
+and both are keyed off the same picked scan, so the overlap is the NORMAL case. Reproduced under
+node with the shipped function text: pins and match both on scan 5, remove scan 2 →
+`matched.who` 4, `pinWho` still 5. The pins now belong to the cloud that was index 6, and "Line
+the picture up" POSTs points in another scan's local frame — a plausible, wrong pose onto the
+wrong photograph. The comment three lines above says pins are re-keyed "exactly like the rest".
+
+**⛔ A HEADING OF EXACTLY ZERO IS DROPPED FROM THE PROJECT AND COMES BACK RE-SOLVED, STAMPED
+"GIVEN".** `align.py:5380` — `{k: v for k, v in pose.items() if k != "camera" and v}` is a
+truthiness filter, so `yaw_deg: 0.0` is not written; on reopen `_carry_colour` passes `yaw=None`,
+`colour_scan` re-solves, and `given: True` survived from the saved dict — so the scan wears a
+SOLVED heading labelled operator-given, and `manifest.py:333` records it as
+`operator_given_heading_with_solved_seat`.
+
+**⛔ THE `.laz.part` BESIDE THE OPERATOR'S PROJECT IS EXPLAINED.** `export.py:195` — the
+`keep=True` branch's `os.replace(part, path)` is unguarded (only `keep=False` is). Re-export to a
+name whose previous `.laz` is open in CloudCompare/SketchUp/the Explorer preview pane →
+`PermissionError [WinError 5]` → destination keeps the OLD file and the `.part` is left holding
+the COMPLETE new cloud. Reproduced. ⛔ A fix that deletes the `.part` would destroy work: the right
+shape is a retry or a rename with a message.
+
+**⛔ THE PI CAN REPORT A SCAN COMPLETE WITH ALMOST NO DATA IN IT.** `tls_scan.py:583` —
+tcpdump's liveness is checked once, 0.3 s after launch (`:318`), and never again during the sweep;
+`move_degrees` polls only shutdown/stop. If tcpdump dies 30 s into a 378 s Slow scan (stick pulled,
+ENOSPC, OOM) the motor completes, `write_scan_meta` writes a sidecar claiming the full track, and
+the kiosk says "Scan complete". And the guard that should catch the empty case cannot:
+`tls_scan.py:450` tests `getsize == 0`, but tcpdump writes a 24-byte global header at open —
+the file's own comment at `:299` measured that 24 bytes — so a capture with ZERO packets (lidar
+unpowered, wrong `ETH_INTERFACE`, `CHECK_LIDAR_REACHABILITY` defaulting to "0") passes as a good
+scan. Neither is covered by a test. ⭐ **A diagnostic that cannot fire in the failure mode it was
+built for — the standing lesson, now found on the field hardware.**
+
+**The rest, recorded with `file:line` for whoever fixes them** —
+`pipeline.py:1075` (single-capture DXF gets no outline: the `setup is not None` gate drops the
+tripod for the identity setup, i.e. the reference scan; masked today by the TypeError above);
+`shoot.py:558` (an override's photograph is not removed from the walk's pool, so it is filed twice
+and `apply` dies half-way with the tree half-moved — reproduced, `[WinError 2]`);
+`shoot.py:516` (the plan numbers every capture, `apply` numbers only the photographed ones, so a
+dark capture makes every later folder number the operator is told wrong by one);
+`registration.py:1632` (in a multi fit the final guard and `improved_from` are priced on the merged
+UNION panorama — the "FULL AND WRONG" number `Judge` exists to refuse — so "your own
+alignment was already the better fit" can be a statement about nothing);
+`align.py:1741` (`solve_multi`'s "not placed yet" refusal is dead for every capture that arrived
+through `add`, because `stand_up` writes a non-identity lean on arrival; `Setup.sited` exists for
+exactly this distinction and is what the neighbours code uses);
+`align.py:11817` (saved point pairs are never restored on open — the server writes and returns
+them, `openProject` clears `V.pairs` and never reads `j.pairs`);
+`align.py:2700` (`level_from_floor` judges an odd capture against an average INCLUDING itself —
+the self-contamination `level_from_walls` at `:2853` explicitly fixed with leave-one-out, same
+10° bar, uncorrected on the floor path);
+`align.py:9231` (a typed turn past ±180 is never normalised, so the first touch of the slider
+clamps to 180 and the cloud jumps);
+`align.py:12158` (the photo panel prints the gain percentage `refine` at `:4247` explicitly
+refuses to print, for the reason it gives: a sum through zero prints "+1500.0%");
+`tlspie_studio.py:316` (the browser fallback opens a browser and then stops the server it opened
+it on, exiting 0 — `tlsconvert_cli.run_align` blocks on the join for exactly this reason);
+`tlspie_studio.py:242` (`--selftest`'s `have_native()` is `import webview`, but the backend and
+`clr` load only inside `webview.start()`, so the selftest cannot detect the failure its own comment
+says it exists for — verified in the venv: after `import webview`, no `clr`, no
+`webview.platforms.*`);
+`build_cuda_engine.py:144` (`--out <dir>` `rmtree`s whatever directory is named, with no check
+that it is an engine folder);
+`tlsconvert_cli.py:320` (`--view --quiet` fills the sink and never serves it);
+`desktop.py:280` (`associate(remove=True)` swallows the `OSError` from a key with subkeys and
+still reports success);
+`manifest.py:1053` (CSV and preview are written before the JSON's `os.replace`, so a failed
+replace leaves a fresh CSV beside a STALE manifest — the module header calls that worse than no
+camera);
+`library.py:316` (attaching a `.png` over an existing `.jpg` leaves both, and `find_photo` prefers
+the `.jpg`, so the CLI colours from the wrong image);
+`pipeline.py:1214` (`over_budget`/`bounds_m` use the shared writer's cumulative count inside a
+merge; latent, nothing reads them today);
+`drawing.py:2077` (`DxfWriter.close` truncates the destination directly — the one writer
+outside the `.part` rule);
+`clean.py:47` (the `_BIAS` clamp is ±81.9 m at the UI's 2 cm minimum, not the 120 m the
+comment claims);
+`colour.py:1363` (the beacon term silently drops out of the deep objective when a probe position
+crosses `DEEP_MIN_BEACONS`, so two poses of the same pair are judged by different sums);
+`decode.py:109` (no return-mode check: a dual-return capture decodes silently wrong — nothing
+selects dual today);
+`tls_web.py:283` (`ScannerState._lock` is held across removable-media probes and `vcgencmd`
+subprocesses, and the motor abort path needs that same lock, so a stalling USB stick can make STOP
+and the watchdog wait on it);
+`tls_stepper.py:464` (the duration watchdog and the pan track measure elapsed time with
+`time.time()`, so an NTP step mid-sweep either trips `MoveOverran` or misplaces every later packet
+by `step × deg_per_s`);
+`tls_stepper.py:504` (the head position is persisted only AFTER a move completes, so a power cut
+mid-move leaves a stale position marked `known=True`);
+`tls_storage.py:301` (`MIN_FREE_BYTES` gates the USB stick only; the SD fallback is never checked
+for space);
+`tls_web.py:2720` (`/api/build` resolves against the SD `dumpdir` only while the library lists
+`scan_roots()`, so a USB-recorded scan answers "No capture for that scan");
+`tls_web.py:207` (a STOP accepted while idle is never cleared, so the next Restart aborts on its
+first poll and marks the position unknown — reproduced);
+`tls_cloudbuild.py:331` (build abort is polled in the packet loop only, so "Abandoning" still
+spends 20+ s voxelising and then writes a `.cloud` to the stick during the next sweep);
+`tls_scan.py:588` (a STOP mid-sweep keeps the partial pcap but writes no sidecar, though the track
+is valid up to the abort).
+
+**Also closed by this pass, a live-log mystery from the 44th**: the recurring
+`take_edit: could not read the cut list ('hi')` in `studio.log` (43 occurrences) is a `KeyError`
+from `Box.parse` — a cut list reaching `/photo/*` with a box that has no `hi`. `take_edit`
+catches it, logs, and treats the whole list as no cuts, so a photograph is solved against points
+the operator deleted, silently, once per press. The suite covers the malformed-box case
+(`test_tlsconvert.py:11245` passes `{"lo": 1}`) and asserts only that it does not crash.
+
+**Where the sweep found nothing**, recorded so it is not re-swept: the route table (all 42 page
+routes matched to handlers, both directions), numpy-to-JSON at every boundary, the LAS scale/offset
+headroom, the pcap/packet layout and the VLP-16 angle order, `kabsch`/`ransac_rotation`/`refine_six`
+internals, `Lean.matrix` and `_decompose` (verified symbolically), `close_loop`, the ONNX I/O
+shapes, the GPU fallback (no caller assumes a CuPy array), `save_project`'s atomicity, port
+selection, and `build_exe.py`'s hidden imports against what the modules actually import.
 
 ### ▶ NEXT SESSION STARTS HERE
 
