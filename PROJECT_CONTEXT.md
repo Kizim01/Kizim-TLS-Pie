@@ -6598,6 +6598,17 @@ item 9.
 ⛔ **THE EXES HAVE NOT BEEN REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
 has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
 The other 20 findings stand unfixed; the paragraph below is still the list to work from.
+**⭐ WHERE THIS STOPPED, AND WHAT IS NEXT.** Nothing is half-done: fixes 1-10 are each written,
+tested, reversion-audited, committed and pushed (`87282cc`, `dcb8072`, `8957b19`, `c01b304`,
+`6bc7aa2`, `7d52636`, `ee33f62`); the working tree is clean but for the standing untracked
+`windows-converter/cutjs_tmp.js`, and **no audit debt is outstanding**. The next one chosen is
+**`align.py:11817` — saved point pairs are never restored on open**: the server writes them into
+the project and returns them, and `openProject` clears `V.pairs` and never reads `j.pairs`, so
+every pin an operator places is silently lost the next time the job is opened. After it, the list
+below in the order it is written.
+⛔ **AND THE FIRST THING TO SAY OUT LOUD ON RESUMING**: none of these ten fixes are in anything
+the operator runs. `dist\` is still the 2026-09-07 02:34 build, and the Pi still has the old
+`tls_scan.py`. **Ten fixes in source is not ten fixes delivered.**
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
