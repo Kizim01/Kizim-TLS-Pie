@@ -6560,7 +6560,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ EIGHT OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+**⭐⭐ NINE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
 pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
@@ -6582,12 +6582,17 @@ tested `getsize == 0` when tcpdump writes a 24-byte header the moment it opens t
 was chained as `else if` behind two `V.matched` branches, and a match record exists in the normal
 case. (8) **A heading of exactly 0.0 survives a save** — the save filter dropped every falsy
 value, so a typed zero came back re-solved while `given` (truthy, so it survived) still claimed the
-operator had typed it.
-Suites **1869 → 1898**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
-Pi. Audit **20 breaks, all 20 caught**, each by the check that names it and by no other.
+operator had typed it. (9) **The shoot solve repaints at the seat it solved at** — the one
+`_repaint` caller of seven that passed `camera_z` alone, and the one that applies to EVERY
+photographed scan at once: measured at **13.5 mm and 14.1 mm** of plan seat wiped per scan, out of
+both stores, permanently. Fixed at the door AND at the shape (`_repaint` now falls back to the
+scan's own seat, not to the origin, for a pose that names none).
+Suites **1869 → 1902**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
+Pi. Audit **23 breaks, 22 caught** — and the one that was NOT caught is a finding, not a gap:
+see item 9.
 ⛔ **THE EXES HAVE NOT BEEN REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
 has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
-The other 22 findings stand unfixed; the paragraph below is still the list to work from.
+The other 21 findings stand unfixed; the paragraph below is still the list to work from.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -7988,10 +7993,42 @@ door is asked to recompute something it was told, the recomputation can agree, a
 whenever the solver is any good. **Assert on what the door was ASKED, not only on what it
 answered.**
 
+**9. The shoot solve repaints at the seat it solved at.** `solve_shoot` handed `_repaint` a pose
+carrying `yaw`, `pitch`, `roll` and `camera_z` — no `camera_x`, no `camera_y` — and `_repaint`
+read a missing key as `0.0`. Measured on a two-scan job: seats of (10.9, -8.0) mm and (-4.2, 13.5)
+mm walked to the origin, **13.5 mm and 14.1 mm** of parallax introduced, and because `colour_scan`
+writes the seat back into BOTH `colour_info` and the scan attribute from one tuple, the measured
+seat is not merely ignored — it is **destroyed, in both places, and that is what the next save
+writes**. Six of the seven `_repaint` callers passed all three numbers; this was the seventh.
+⛔ **AND IT IS THE ONE THAT APPLIES TO EVERYTHING AT ONCE.** `set_tilt` carries a comment saying
+this exact defect was found and swept — the 44th pass — and `solve_shoot` is the largest single
+action in the program, one heading refitted across every photographed scan in the job. **The sweep
+followed the door that reported the fault rather than the shape of it**, which is the retry-scope
+mistake by name, now with a fourth instance.
+⛔⛔ **THE CHECK THAT SHOULD HAVE CAUGHT IT WAS A SOURCE PIN ON THE RECEIVING END.** It read
+`'camera_x=pose.get("camera_x") or 0.0' in _ALIGN_SRC` — it proved `_repaint` FORWARDS a seat,
+which was never in doubt, and said nothing about whether any caller SUPPLIES one.
+⭐ **A CONTRACT PINNED AT THE END THAT HONOURS IT SAYS NOTHING ABOUT THE END THAT MUST MEET IT.**
+Both ends are now RUN: `solve_shoot` is driven for real (it had **no test of any kind, anywhere** —
+a shipped button with zero coverage), and `_repaint` is driven with a seatless pose.
+⭐ **AND THE SHAPE IS THE SAME ONE AS FIX 8**: `pose.get(k) or 0.0` made "absent" and "zero" one
+answer and chose the wrong one of the two. A seat the pose does not name is now the seat the scan
+already has; an explicit zero is still zero.
+⛔ **THE AUDIT'S THIRD BREAK FIRED NOTHING, AND THAT IS THE HONEST RESULT.** Three breaks were
+run. Reverting `_repaint` alone fails the seatless-pose check and nothing else. Reverting BOTH
+reproduces the original defect exactly — `['13.5 mm', '14.1 mm']`, `(0.0, 0.0)` in both stores.
+Reverting **`solve_shoot` alone fails nothing at all**: the shape fix makes the door's omission
+harmless, and because the two seat stores cannot diverge in production, no honest test can tell
+the explicit call from the fallback. ⭐ **FIXING BOTH ENDS OF A CONTRACT CAN MAKE THE INNER FIX
+UNOBSERVABLE — AND AN UNOBSERVABLE CHANGE CANNOT BE AUDITED, ONLY JUSTIFIED.** It is kept
+because it names, at the point of use, the seat the heading was solved at; it is NOT claimed as
+independently tested. Constructing a test by forcing the two stores apart would have measured a
+state the program cannot reach.
+
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
 build, so **none of the Studio work reaches the operator until Studio is closed and
 `build_exe.py` is run**, and **the Pi fix needs `tls_scan.py` copied onto the box**. The remaining
-22 findings are untouched.
+21 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 

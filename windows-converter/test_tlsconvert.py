@@ -7623,8 +7623,133 @@ check("setting the height alone keeps the seat the polish measured",
       "THE SEAT SURVIVES A HEIGHT CHANGE" in _ALIGN_SRC)
 check("a reopened project gets its seat back",
       'scan.camera_x = float(pose.get("camera_x") or 0.0)' in _ALIGN_SRC)
-check("the repaint passes the whole seat through",
-      'camera_x=pose.get("camera_x") or 0.0' in _ALIGN_SRC)
+# ⛔⛔ AND THE CHECK THAT USED TO STAND HERE WAS A SOURCE PIN ON `_repaint`'S
+# OWN BODY -- `'camera_x=pose.get("camera_x") or 0.0' in _ALIGN_SRC`. It proved
+# the RECEIVING end of the contract forwards the seat, which was never in
+# doubt, and said nothing about whether any CALLER supplies one. `solve_shoot`
+# supplied `camera_z` alone for as long as it has existed, and this passed
+# every time. ⭐ A CONTRACT PINNED AT THE END THAT HONOURS IT SAYS NOTHING
+# ABOUT THE END THAT MUST MEET IT -- so both ends are now RUN.
+#
+# The receiving end first: a pose that names no seat means "the one the scan
+# already has", and an explicit zero still means zero. Those were the same
+# answer under `or`, and it picked the wrong one.
+_sw_seen = []
+_sw_real = align.colour_scan
+
+
+def _sw_paint(scan, photo, camera_z=0.0, camera_x=0.0, camera_y=0.0,
+              yaw=None, pitch=None, roll=None, **kw):
+    """Stands in for the paint, and syncs the two seats as it does."""
+    _sw_seen.append({"name": scan.name, "camera_x": camera_x,
+                     "camera_y": camera_y, "camera_z": camera_z})
+    scan.camera_x, scan.camera_y, scan.camera_z = camera_x, camera_y, camera_z
+    return {"ok": True, "photo": photo, "yaw_deg": yaw or 0.0,
+            "pitch_deg": pitch or 0.0, "roll_deg": roll or 0.0,
+            "camera_x": camera_x, "camera_y": camera_y, "camera_z": camera_z,
+            "grade": "sure", "confidence": 4.0}
+
+
+class _SwScan(object):
+    """Enough of a photographed scan to drive the shoot solve."""
+
+    def __init__(self, name, seat, anchor):
+        self.path = name
+        self.name = name
+        self.setup = registration.Setup()
+        self.lean = registration.Lean()
+        self.total = 1000
+        self.xyz = np.zeros((8, 3), dtype=np.float64)
+        self.sample = None
+        self.sample_refl = None
+        self.spare = None
+        self.photo = name + ".jpg"
+        self.anchor_deg = anchor
+        self.camera_x, self.camera_y, self.camera_z = seat
+        self.colour_info = {"ok": True, "photo": self.photo, "yaw_deg": 12.0,
+                            "pitch_deg": 1.5, "roll_deg": -0.4,
+                            "camera_x": seat[0], "camera_y": seat[1],
+                            "camera_z": seat[2], "grade": "sure",
+                            "given": False, "rung": 2}
+
+    def buffer(self, max_points=None):
+        # ⭐ THE REAL BUFFER, NOT A STAND-IN. A hand-rolled one would have to
+        # grow a method every time `_rebuild` asks for another, and would go
+        # on answering after the real one stopped -- which is the hole the
+        # DXF `keep=` stub turned out to be.
+        buf = viewer.ViewerBuffer(max_points=max_points or 1000)
+        buf.add(self.xyz, np.zeros((len(self.xyz), 3), dtype=np.uint8))
+        return buf
+
+
+_SW_A, _SW_B = (0.0109, -0.0080, 0.062), (-0.0042, 0.0135, 0.058)
+align.colour_scan = _sw_paint
+try:
+    _sw_srv = align.AlignServer([], out_path=None)
+    _sw_srv.scans = [_SwScan("A", _SW_A, 0.0)]
+    _sw_srv._repaint(_sw_srv.scans[0], "A.jpg", {"yaw_deg": 3.0}, {})
+    check("a pose that names NO seat repaints at the seat the scan already "
+          "has, not at the lidar's own centre",
+          (_sw_seen[-1]["camera_x"], _sw_seen[-1]["camera_y"],
+           _sw_seen[-1]["camera_z"]) == _SW_A, _sw_seen[-1])
+    _sw_srv.scans[0].camera_x, _sw_srv.scans[0].camera_y = _SW_A[0], _SW_A[1]
+    _sw_srv.scans[0].camera_z = _SW_A[2]
+    _sw_srv._repaint(_sw_srv.scans[0], "A.jpg",
+                     {"yaw_deg": 3.0, "camera_x": 0.0, "camera_y": 0.0,
+                      "camera_z": 0.0}, {})
+    check("...while a seat given AS ZERO is still zero, which the `or` could "
+          "not tell from a seat not given at all",
+          (_sw_seen[-1]["camera_x"], _sw_seen[-1]["camera_y"],
+           _sw_seen[-1]["camera_z"]) == (0.0, 0.0, 0.0), _sw_seen[-1])
+
+    # ⛔⛔ NOW THE SENDING END, THROUGH THE REAL `solve_shoot`. It is the
+    # largest single action in the program -- one heading refitted across
+    # EVERY photographed scan at once -- so the seat it drops, it drops a
+    # dozen times, out of both `colour_info` AND the scan attribute, and the
+    # project saves that way. `set_tilt` carries a comment saying this defect
+    # was swept; it was swept over the door that reported it.
+    _sw_seen[:] = []
+    _sw_srv = align.AlignServer([], out_path=None)
+    _sw_srv.scans = [_SwScan("A", _SW_A, 0.0), _SwScan("B", _SW_B, 90.0)]
+    _sw_was = (colour.load_panorama, colour.lift_image, colour.solve_yaw,
+               colour.joint_yaw)
+    colour.load_panorama = lambda p: (np.zeros((4, 8, 3), dtype=np.uint8),
+                                      np.zeros((4, 8)))
+    colour.lift_image = lambda rgb, lum, up: (rgb, lum)
+    colour.solve_yaw = lambda s, l, camera=None: (12.0, 4.0, np.zeros(360))
+    colour.joint_yaw = lambda p, a: (30.0, 5.0, np.zeros(360))
+    try:
+        _sw_got = _sw_srv.solve_shoot(apply=True)
+    finally:
+        (colour.load_panorama, colour.lift_image, colour.solve_yaw,
+         colour.joint_yaw) = _sw_was
+    check("the shoot solve repaints both scans it solved together",
+          _sw_got.get("ok") and sorted(_sw_got.get("applied") or []) ==
+          ["A", "B"], _sw_got.get("applied"))
+    _sw_moved = []
+    for _sc, _sat in ((_sw_srv.scans[0], _SW_A), (_sw_srv.scans[1], _SW_B)):
+        _saw = [s for s in _sw_seen if s["name"] == _sc.name][-1]
+        _sw_moved.append(float(np.hypot(_saw["camera_x"] - _sat[0],
+                                        _saw["camera_y"] - _sat[1])))
+    check("⭐ ...at THE SEAT EACH ONE SAT AT, not walked back to the lidar's "
+          "axis on every scan in the job",
+          max(_sw_moved) < 1e-12, ["%.1f mm" % (m * 1000.0)
+                                   for m in _sw_moved])
+    # ⛔ AND THE CONSEQUENCE IS PERMANENT, WHICH IS WHY THE STORE IS CHECKED
+    # AND NOT ONLY THE CALL: `colour_scan` writes the seat back into BOTH
+    # `colour_info` and the scan attribute from one tuple, so a seat dropped
+    # here is not recoverable -- it is what the next save writes.
+    check("...and the seat the project will SAVE is still the measured one, "
+          "in both places that hold it",
+          all(abs(_sc.camera_x - _sat[0]) < 1e-12
+              and abs(_sc.camera_y - _sat[1]) < 1e-12
+              and abs(_sc.colour_info["camera_x"] - _sat[0]) < 1e-12
+              and abs(_sc.colour_info["camera_y"] - _sat[1]) < 1e-12
+              for _sc, _sat in ((_sw_srv.scans[0], _SW_A),
+                                (_sw_srv.scans[1], _SW_B))),
+          [(s.camera_x, s.colour_info["camera_x"]) for s in _sw_srv.scans])
+finally:
+    align.colour_scan = _sw_real
 check("the page offers all four rungs",
       "RUNGS = 4;" in _ALIGN_SRC and "seat" in _ALIGN_SRC)
 

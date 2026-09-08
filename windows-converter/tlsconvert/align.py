@@ -3494,9 +3494,26 @@ class AlignServer(object):
         number.
         """
         from . import colour as colour_mod
-        info = colour_scan(scan, photo, camera_z=pose.get("camera_z") or 0.0,
-                           camera_x=pose.get("camera_x") or 0.0,
-                           camera_y=pose.get("camera_y") or 0.0,
+        # ⛔⛔ A SEAT THE POSE DOES NOT NAME IS THE ONE THE SCAN ALREADY HAS,
+        # NOT THE ORIGIN. `pose.get(k) or 0.0` made "absent" and "zero" the
+        # same answer and picked the wrong one of the two: a caller that
+        # simply had nothing to say about the seat moved the camera to the
+        # lidar's own centre. `solve_shoot` was such a caller for as long as
+        # it has existed, and the check that was meant to cover this pinned
+        # THIS LINE -- the receiving end, which was never in doubt -- so it
+        # went on passing while a door supplied nothing.
+        # ⭐ A CONTRACT PINNED AT THE END THAT HONOURS IT SAYS NOTHING ABOUT
+        # THE END THAT MUST MEET IT.
+        # An explicit 0.0 is still honoured: only `None`/absent falls back,
+        # which is the distinction the `or` threw away.
+        seat = _seat_of(scan)
+        cam = [seat[i] if want is None else float(want)
+               for i, want in enumerate((pose.get("camera_x"),
+                                         pose.get("camera_y"),
+                                         pose.get("camera_z")))]
+        info = colour_scan(scan, photo, camera_z=cam[2],
+                           camera_x=cam[0],
+                           camera_y=cam[1],
                            yaw=pose.get("yaw_deg"),
                            pitch=pose.get("pitch_deg"),
                            roll=pose.get("roll_deg"))
@@ -4154,12 +4171,28 @@ class AlignServer(object):
                 sc = self.scans[r["index"]]
                 photo = sc.photo or (sc.colour_info or {}).get("photo")
                 keep = dict(sc.colour_info or {})
+                # ⛔⛔ THE WHOLE SEAT, AND THE SAME SEAT IT WAS SOLVED AT.
+                # This passed `camera_z` alone, and `_repaint` reads a missing
+                # key as 0.0, so applying the joint heading quietly walked
+                # every photographed scan's camera back to the lidar's own
+                # centre -- measured at 13.5 mm and 14.1 mm in plan on a
+                # two-scan job, wiped from BOTH `colour_info` and the scan
+                # attribute (`colour_scan` writes the two from one tuple), so
+                # the climb's seat is gone for good and saves that way.
+                # ⛔ `set_tilt` carries this same warning and says the defect
+                # was swept; it was swept over the door that reported it, and
+                # THIS is the door that applies to every scan at once.
+                # ⭐ Taken from `_seat_of`, which is where the heading above
+                # was solved from -- a pose repainted at a seat other than the
+                # one it was solved at is not the pose that was judged.
+                seat = _seat_of(sc)
                 fresh = self._repaint(
                     sc, photo,
                     {"yaw_deg": r["joint_yaw"],
                      "pitch_deg": keep.get("pitch_deg"),
                      "roll_deg": keep.get("roll_deg"),
-                     "camera_z": keep.get("camera_z")}, keep)
+                     "camera_x": seat[0], "camera_y": seat[1],
+                     "camera_z": seat[2]}, keep)
                 if fresh.get("ok"):
                     fresh["rung"] = 0     # a new pose: the ladder starts over
                     sc.colour_info = fresh
