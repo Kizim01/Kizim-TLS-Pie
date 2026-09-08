@@ -6560,8 +6560,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ SIX OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
-pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
+**⭐⭐ EIGHT OF THE SWEEP'S DEFECTS ARE NOW FIXED (46th pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
 page's `levelRot` now applies the compass turn (`spin @ tilt`, the server's order) and `levelShift`
@@ -6578,11 +6577,17 @@ tolerance — passing, and wrong), and the agreeing points were drawn in a shell
 the tripod. Now 6.8 mm and 2.01-5.13 m. (6) **The Pi stops calling a dead capture "Scan
 complete"** — the recorder is now asked after during the sweep, and the empty-capture guard
 tested `getsize == 0` when tcpdump writes a 24-byte header the moment it opens the file.
-Suites **1869 → 1888**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
-Pi; audit 15 breaks, all 15 caught, each by the check that names it. ⛔ **THE EXES HAVE NOT BEEN
+(7) **Removing a cloud no longer hands the picture pins to its neighbour** — `pinWho`'s renumber
+was chained as `else if` behind two `V.matched` branches, and a match record exists in the normal
+case. (8) **A heading of exactly 0.0 survives a save** — the save filter dropped every falsy
+value, so a typed zero came back re-solved while `given` (truthy, so it survived) still claimed the
+operator had typed it.
+Suites **1869 → 1898**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
+Pi. ⛔ **THE AUDIT IS COMPLETE FOR 1-7 ONLY: 18 breaks, all 18 caught. FIX 8'S REVERSION AUDIT
+HAS NOT BEEN RUN — that is the first thing the next session does.** ⛔ **THE EXES HAVE NOT BEEN
 REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
-has the five that are its own; **the Pi fix needs the Pi's files copied over to take effect.**
-The other 24 findings stand unfixed; the paragraph below is still the list to work from.
+has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
+The other 22 findings stand unfixed; the paragraph below is still the list to work from.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -7946,10 +7951,39 @@ the symptom.* New file `Raspberry Pie4/TLS-Pie/test_capture_guards.py`, 18 check
 `run_scan` with a recorder that dies part way; the reverted run printed
 `(True, ['PREFLIGHT', 'RECORDING', 'RETURNING', 'COMPLETE'])`, which is the reported bug itself.
 
+**7. Removing a cloud stopped handing the picture pins to its neighbour.** `forgetScan`
+renumbers every index above the one that went, and `V.pinWho`'s renumber was written as
+`else if(V.pinWho>gone)` behind two `V.matched` branches. Those are **two independent pieces of
+state that happen to be written next to each other**, and a match record exists in the NORMAL case
+— the moment anything has been matched. So whenever one was present and was not itself the
+removed cloud, the pins kept the old number and were handed to whichever cloud inherited it: the
+exact failure the block's own comment says it exists to prevent, arriving through the block itself.
+⭐ **AN `else` IS A CLAIM THAT TWO THINGS CANNOT BOTH NEED DOING.** Here they always both need
+doing, and usually did.
+⛔ Every check on `forgetScan` was a SOURCE PIN, and **a source pin cannot see that the line it
+proves exists is behind an `else` that stops it running**. `forgetScan` is now RUN under node over
+five removal cases; the reversion printed `pinWho: 3` where 2 was owed, while the no-match-record
+case and the pins-dropped case went on passing — which is what makes the check set precise.
+
+**8. A heading of exactly 0.0 survives a save.** `save_project` writes the colour pose through a
+filter that drops every falsy value. That is right for `given=False`, `rung=0`, `image_up_px=0` and
+`matched=None` — they mean "nothing to say", and leaving them out is what lets an older project
+read back byte for byte. It is wrong for the one number an operator types by hand. Dropped, the
+heading reaches `_carry_colour` as `None`, which `colour_scan` reads as **"solve it"** — so the
+scan came back RE-SOLVED while `given`, being `True` and therefore truthy, survived the same filter
+and went on claiming the operator had typed it. ⭐ **TWO HALVES OF ONE FACT MUST NOT BE FILTERED
+BY DIFFERENT RULES.** Now `KEEP_EVEN_IF_ZERO = ("yaw_deg",)`; nothing already on disk changes,
+because a file differs only if its heading really was 0.0. Tested through the real `save_project`
+and the real `_carry_colour`, not by reading the filter.
+⛔⛔ **ITS REVERSION AUDIT HAS NOT BEEN RUN.** The suite is green at 1898 with the fix in,
+and that is all that is established. **Run it first**: restore the bare `if ... and v` filter and
+confirm "the ZERO HEADING IS IN THE FILE" and "keeps the typed zero instead of re-solving it" both
+fire, then restore and re-run. A green suite is not an audit.
+
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
 build, so **none of the Studio work reaches the operator until Studio is closed and
 `build_exe.py` is run**, and **the Pi fix needs `tls_scan.py` copied onto the box**. The remaining
-24 findings are untouched.
+22 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 

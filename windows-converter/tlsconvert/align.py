@@ -80,6 +80,19 @@ DEFAULT_ALIGN_VOXEL = 0.0
 PROJECT_EXT = ".tlspie"
 PROJECT_VERSION = 1
 
+#: Colour-pose keys that go into a project file even when their value is falsy.
+#:
+#: ⛔⛔ THE REST ARE DROPPED ON PURPOSE, and that is what keeps a project saved
+#: before a key existed reading back byte for byte -- `given=False`, `rung=0`,
+#: `image_up_px=0` and `matched=None` all mean "nothing to say". A HEADING OF
+#: EXACTLY ZERO DOES NOT: it is an answer, and the one an operator types by
+#: hand. Dropped, it reaches `_carry_colour` as `None`, which `colour_scan`
+#: reads as "solve it", so the scan came back re-solved while `given` -- True,
+#: and truthy, so it survived the same filter -- went on claiming the operator
+#: had typed the number.
+#: ⭐ TWO HALVES OF ONE FACT MUST NOT BE FILTERED BY DIFFERENT RULES.
+KEEP_EVEN_IF_ZERO = ("yaw_deg",)
+
 #: How far apart in the capture sequence two scans may be for the walk rule to
 #: call them NEIGHBOURS out loud. The rule still aims at the nearest PLACED
 #: capture in the walk whatever the gap -- there may be nothing else -- but
@@ -5394,8 +5407,22 @@ class AlignServer(object):
             # project with no photographs reads back byte for byte as before.
             pose = self.colour_pose(scan)
             if pose:
+                # ⛔⛔ A FALSY VALUE IS DROPPED ON PURPOSE -- `given=False`,
+                # `rung=0`, `image_up_px=0` and `matched=None` are all
+                # "nothing to say", and leaving them out is what lets a project
+                # saved before those keys existed read back byte for byte.
+                # ⛔ BUT A HEADING OF EXACTLY ZERO IS AN ANSWER, NOT A BLANK,
+                # and it is the one an operator types by hand. Dropped, it
+                # reaches `_carry_colour` as `pose.get("yaw_deg") -> None`,
+                # which `colour_scan` reads as "solve it" -- so the scan came
+                # back RE-SOLVED while `given` (True, and truthy, so it
+                # survived) still claimed the operator had typed it. The two
+                # halves of one fact were filtered by different rules.
+                # ⭐ Nothing already on disk changes: a file only differs here
+                # if its heading really was 0.0, which is the case being fixed.
                 entry["colour"] = {k: v for k, v in pose.items()
-                                   if k != "camera" and v}
+                                   if k != "camera"
+                                   and (v or k in KEEP_EVEN_IF_ZERO)}
                 # ⭐ AND THE PHOTOGRAPH'S OWN RELATIVE PATH -- the rung every
                 # capture has had since projects existed and no photograph
                 # had, which is why a shoot moved to another drive came back
@@ -12982,7 +13009,17 @@ function forgetScan(gone){
   if(V.pinWho===gone){ V.pins=[]; V.pinHalf=null; V.pinWho=-1; }
   if(V.matched && V.matched.who===gone) V.matched=null;
   else if(V.matched && V.matched.who>gone) V.matched.who--;
-  else if(V.pinWho>gone) V.pinWho--;
+  /* ⛔⛔ ITS OWN `if`, AND IT WAS AN `else if` BEHIND THE MATCH RECORD. Those
+     are two independent pieces of state that happen to be written next to each
+     other, so chaining them made the pins' renumbering conditional on the match
+     record's -- and a match record exists in the NORMAL case, the moment
+     anything has been matched. Whenever one was present and not itself the
+     removed cloud, the pins kept the old number and were handed to whichever
+     cloud inherited it: exactly the failure the note above says this block
+     exists to prevent, arriving through the block itself.
+     ⭐ AN `else` IS A CLAIM THAT TWO THINGS CANNOT BOTH NEED DOING. Here they
+     always both need doing, and usually did. */
+  if(V.pinWho>gone) V.pinWho--;
   V.pinErr=null;
   /* ⛔⛔ AND THE UNDO STACK IS EMPTIED, WHICH IS BLUNT AND IS THE SAFE ANSWER.
      Every placement entry on it is a closure over a scan INDEX -- `undoSetup`

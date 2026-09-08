@@ -12798,6 +12798,46 @@ check("...while a solved pose writes given=False, which `save_project` "
       align.AlignServer.colour_pose(_gv_srv, _gv_pose_scan).get("given")
       is False)
 
+# ⛔⛔ AND A HEADING OF EXACTLY ZERO IS AN ANSWER, NOT A BLANK. `save_project`
+# drops every falsy value, which is right for `given=False`, `rung=0`,
+# `image_up_px=0` and `matched=None` -- they mean "nothing to say", and leaving
+# them out is what lets an older project read back byte for byte. It is wrong
+# for the one number an operator types by hand. Dropped, the heading reaches
+# `_carry_colour` as `None`, which `colour_scan` reads as "solve it" -- so the
+# scan came back RE-SOLVED while `given` (True, and truthy, so it survived the
+# same filter) went on claiming the operator had typed it.
+# ⭐ TWO HALVES OF ONE FACT MUST NOT BE FILTERED BY DIFFERENT RULES.
+_z0dir = tempfile.mkdtemp(prefix="tlszero")
+_z0cap = os.path.join(_z0dir, "Z.pcap")
+with open(_z0cap, "wb") as _h:
+    _h.write(b"not really a capture")
+_z0scan = _FakeScan(_z0cap)
+_z0scan.photo = _gv_photo
+_z0scan.colour_info = {"ok": True, "photo": _gv_photo, "yaw_deg": 0.0,
+                       "given": True, "grade": "given"}
+_z0srv = align.AlignServer([], out_path=None)
+_z0srv.scans = [_z0scan]
+_z0path = os.path.join(_z0dir, "zero" + align.PROJECT_EXT)
+check("a project holding a heading of exactly zero writes",
+      _z0srv.save_project(_z0path, {"setups": [{"x_m": 0.0, "y_m": 0.0,
+                                                "z_m": 0.0,
+                                                "yaw_deg": 0.0}]})["ok"])
+with io.open(_z0path, encoding="utf-8") as _h:
+    _z0col = (json.load(_h)["scans"][0].get("colour") or {})
+check("⭐ ...and the ZERO HEADING IS IN THE FILE, not filtered away with the "
+      "blanks", _z0col.get("yaw_deg") == 0.0, sorted(_z0col))
+check("...while the genuinely empty values are still left out, so an older "
+      "project reads back byte for byte",
+      "matched" not in _z0col and "rung" not in _z0col
+      and "image_up_px" not in _z0col, sorted(_z0col))
+# ⛔ AND THE CONSEQUENCE, THROUGH THE REAL RESTORE. Reading the file is not
+# enough: what makes the missing key a bug is that the door downstream reads
+# its absence as an instruction.
+_z0back = _gv_carry(_z0col)
+check("...so a reopened project keeps the typed zero instead of re-solving it",
+      _gv_seen[-1] == 0.0 and _z0back.get("yaw_deg") == 0.0,
+      (_gv_seen[-1], _z0back))
+
 _pc_src = inspect.getsource(pipeline.prepare_colour)
 check("the CLI records the door lift and accumulates the settle's on top",
       'info["image_up_px"] = int(image_up_px or 0)' in _pc_src
@@ -13397,6 +13437,76 @@ check("...and an emptied scope drops the cut rather than widening it",
       "alive:got.length>0" in _js_func("forgetScan"))
 check("...and the frames renumber with it",
       "frames[shift(at)]" in _js_func("forgetScan"))
+
+# ⛔⛔ AND NOW IT IS RUN, NOT READ. Every check above this line is a source pin,
+# and a source pin proves a line exists -- it cannot see that the line is
+# behind an `else` that stops it running. `V.pinWho`'s renumber was chained as
+# `else if` behind two `V.matched` branches: two independent pieces of state
+# that happen to be written next to each other. A match record exists in the
+# NORMAL case, so whenever one was present and was not itself the removed
+# cloud, the pins kept the old number and were handed to whichever cloud
+# inherited it -- the exact failure the block's own comment says it prevents.
+# ⭐ AN `else` IS A CLAIM THAT TWO THINGS CANNOT BOTH NEED DOING.
+if not _node:
+    print("  ---- node is not installed; forgetScan was NOT run")
+else:
+    _fg_js = """
+const HIST=[];
+function $(id){ return {textContent:''}; }
+function showHidden(){}
+const V={};
+%s
+const CASES=%s;
+console.log(JSON.stringify(CASES.map(c=>{
+  Object.assign(V, {edits:[], pairs:[], pins:c.pins, pinHalf:null,
+                    pinErr:null, pinWho:c.pinWho,
+                    matched:c.matched, only:-1, editWho:-1, active:0,
+                    chose:false, picked:0, spot:-1, hidden:{}, half:null,
+                    perr:null});
+  forgetScan(c.gone);
+  return {pinWho:V.pinWho, matched:V.matched && V.matched.who,
+          pins:V.pins.length};
+})));
+""" % (_js_func("forgetScan"),
+       json.dumps([
+           # a match record on a LOWER cloud: the case that used to work
+           {"gone": 0, "pinWho": 3, "pins": [1, 2], "matched": None},
+           # the normal case: a match record on the same cloud as the pins
+           {"gone": 1, "pinWho": 3, "pins": [1, 2],
+            "matched": {"who": 3, "pts": [1]}},
+           # a match record above the removed cloud, pins elsewhere above it
+           {"gone": 0, "pinWho": 2, "pins": [1],
+            "matched": {"who": 4, "pts": [1]}},
+           # the removed cloud IS the matched one, pins still above it
+           {"gone": 1, "pinWho": 3, "pins": [1],
+            "matched": {"who": 1, "pts": [1]}},
+           # the removed cloud is the pinned one: pins go, and stay gone
+           {"gone": 2, "pinWho": 2, "pins": [1, 2],
+            "matched": {"who": 4, "pts": [1]}},
+       ]))
+    _fgp = os.path.join(_rdir, "forget.js")
+    with io.open(_fgp, "w", encoding="utf-8") as _fh:
+        _fh.write(_fg_js)
+    _fgr = subprocess.run([_node, _fgp], capture_output=True, text=True)
+    check("forgetScan runs at all", _fgr.returncode == 0,
+          (_fgr.stderr or "")[:400])
+    if _fgr.returncode == 0:
+        _fg = json.loads(_fgr.stdout)
+        check("the pins follow their cloud when no match record is in the way",
+              _fg[0]["pinWho"] == 2, _fg[0])
+        # ⛔ THE ONE THAT WAS BROKEN, AND IT IS THE ORDINARY CASE.
+        check("⭐ ...AND WHEN A MATCH RECORD IS -- the normal case, since one "
+              "exists the moment anything has been matched",
+              _fg[1]["pinWho"] == 2 and _fg[1]["matched"] == 2, _fg[1])
+        check("...and a match record above the gap moves with it, separately",
+              _fg[2]["pinWho"] == 1 and _fg[2]["matched"] == 3, _fg[2])
+        check("...and clearing the match record does not strand the pins",
+              _fg[3]["pinWho"] == 2 and _fg[3]["matched"] is None, _fg[3])
+        # ⛔ AND REMOVING THE PINNED CLOUD STILL DROPS THE PINS RATHER THAN
+        # SHIFTING THEM ONTO A NEIGHBOUR -- or the fix would have swapped one
+        # wrong cloud for another.
+        check("...while removing the pinned cloud drops the pins outright",
+              _fg[4]["pinWho"] == -1 and _fg[4]["pins"] == 0, _fg[4])
 # ⛔ THE NOTICE THAT USED TO SAY CUTS WOULD NOT FOLLOW A LEVEL OR A NORTH IS
 # NOW ONLY TRUE OF CUTS MADE BEFORE THIS EXISTED, and it says so.
 check("levelling no longer warns that every cut will be left behind",
