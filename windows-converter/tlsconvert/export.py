@@ -28,6 +28,7 @@ takes the other road and writes a DXF Max reads natively.
 """
 
 import os
+import time
 
 import numpy as np
 
@@ -181,6 +182,29 @@ class LasWriter:
         _finish(self._part, self.path, keep)
 
 
+#: How hard to try before deciding the destination is really being held.
+#: ⭐ SIZED FOR THE HOLDER THAT LETS GO, NOT THE ONE THAT DOES NOT. Windows
+#: hands out brief locks nobody chose -- the Explorer preview pane on the
+#: selected file, the thumbnailer, an antivirus scanning what was just
+#: written -- and those clear in well under a second. CloudCompare with the
+#: cloud loaded never clears, and no retry budget reaches it, so this is
+#: bounded at under a second: long enough for the accidental holder, short
+#: enough that the operator is not left watching a frozen export while the
+#: real answer is "close it and press the button again".
+REPLACE_TRIES = 4
+REPLACE_WAIT_S = 0.25
+
+
+def rescue_name(path, tag="new"):
+    """A free sibling name, KEEPING THE EXTENSION so it still opens."""
+    stem, ext = os.path.splitext(path)
+    for n in range(1, 100):
+        cand = "%s (%s)%s" % (stem, tag if n == 1 else "%s %d" % (tag, n), ext)
+        if not os.path.exists(cand):
+            return cand
+    return None
+
+
 def _finish(part, path, keep):
     """
     Move the finished file onto the destination, or take the scraps away.
@@ -190,10 +214,49 @@ def _finish(part, path, keep):
     of the two. A refused export leaves neither -- the `.part` goes, because
     a half-cloud lying beside the real one under a name nobody recognises is
     how a wrong file gets picked up a week later.
+
+    ⛔⛔ AND THE MOVE ITSELF CAN FAIL, WHICH IS THE `.laz.part` THE OPERATOR
+    FOUND BESIDE THEIR PROJECT. Re-export over a name whose previous cloud is
+    open in CloudCompare, SketchUp or the Explorer preview pane and Windows
+    refuses the rename with `[WinError 5]`: the destination keeps the OLD
+    export, and the COMPLETE new one is left in a `.part` that nothing opens.
+    The operator saw an access-denied message naming a file extension they
+    have never heard of, about a file they did not ask for.
+    ⭐ THE ONE THING THIS MUST NOT DO IS DELETE THE `.part`. It is not scraps
+    here -- it is the whole export, and it is the only copy. So: retry briefly
+    for the holder that lets go, then move it to a name that OPENS and say
+    all three things -- what went wrong, why, and where the cloud is now.
+    ⛔ Raising is safe from `pipeline`'s `finally` even though a raise there
+    replaced a real error once (see `drawing.DrawingWriter.close`): `keep` is
+    `finished`, so this branch runs only when the stream completed and there
+    is no earlier error to replace. The refusal path below still cannot raise.
     """
     if keep:
-        os.replace(part, path)
-        return
+        held = None
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(part, path)
+                return
+            except OSError as exc:                        # noqa: PERF203
+                held = exc
+                if attempt + 1 < REPLACE_TRIES:
+                    time.sleep(REPLACE_WAIT_S)
+        saved = rescue_name(path)
+        if saved is not None:
+            try:
+                os.replace(part, saved)
+            except OSError:
+                saved = None
+        where = ("The export itself is finished and complete: it has been "
+                 "saved as %r instead." % os.path.basename(saved)
+                 if saved else
+                 "The finished export is in %r, which you can rename."
+                 % os.path.basename(part))
+        raise OSError(
+            "Could not write over %r -- it is open in another program "
+            "(CloudCompare, SketchUp, or the Explorer preview pane will each "
+            "do it). Close it there and export again to replace it. %s "
+            "[%s]" % (os.path.basename(path), where, held))
     try:
         os.remove(part)
     except OSError:

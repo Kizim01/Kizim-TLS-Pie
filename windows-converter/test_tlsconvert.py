@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 import numpy as np
@@ -322,6 +323,99 @@ check("a finished export replaces it",
       open(_keep_path, "rb").read().startswith(b"ply"))
 check("...leaving no .part behind",
       not os.path.exists(_keep_path + export.PART_EXT))
+
+# ⛔⛔ AND THE MOVE ITSELF CAN BE REFUSED -- THE `.laz.part` THE OPERATOR FOUND
+# BESIDE THEIR PROJECT. Re-export over a cloud that is open in CloudCompare,
+# SketchUp or the Explorer preview pane and Windows refuses the rename with
+# `[WinError 5]`. Before this, the destination silently kept the OLD export
+# while the COMPLETE new one sat in a `.part` nothing opens, and the operator
+# was shown an access-denied message naming a file extension they have never
+# heard of. ⭐ THE ONE THING THAT MUST NOT HAPPEN IS DELETING THE `.part`:
+# here it is not scraps, it is the whole export and the only copy.
+_lock_path = os.path.join(tmp, "held.ply")
+_wl = export.PlyWriter(_lock_path)
+_wl.write(xyz, rgb, inten)
+_wl.close()                                 # the export they have open
+_first = open(_lock_path, "rb").read()
+_wl2 = export.PlyWriter(_lock_path, comment="the re-export")
+_wl2.write(np.vstack([xyz, xyz]), np.vstack([rgb, rgb]),
+           np.concatenate([inten, inten]))
+_held = open(_lock_path, "rb")              # ...still open in that program
+try:
+    _lock_err = None
+    try:
+        _wl2.close()
+    except OSError as _exc:
+        _lock_err = _exc
+finally:
+    _held.close()
+check("a re-export over a file another program is holding is REFUSED, not "
+      "reported as done", _lock_err is not None)
+check("...and says what to do about it, naming the program's grip rather "
+      "than an errno and a file extension nobody has heard of",
+      "open in another program" in str(_lock_err)
+      and "Close it" in str(_lock_err)
+      and "held.ply" in str(_lock_err), str(_lock_err)[:120])
+# ⛔ THE LOAD-BEARING PART: THE FINISHED CLOUD IS STILL THERE, AND UNDER A
+# NAME THAT OPENS. A `.part` has to be renamed by hand before any viewer will
+# look at it, and the operator does not know that.
+_rescued = os.path.join(tmp, "held (new).ply")
+check("⭐ ...and the finished export is KEPT, under a name that still opens",
+      os.path.exists(_rescued) and str(_lock_err).count("held (new).ply") == 1,
+      sorted(p for p in os.listdir(tmp) if p.startswith("held")))
+check("...and it is the RE-EXPORT that was kept, not a copy of the old one",
+      os.path.exists(_rescued) and os.path.getsize(_rescued) > len(_first))
+check("...with no .part left lying beside it",
+      not os.path.exists(_lock_path + export.PART_EXT))
+check("...while the destination still holds the export that was open, "
+      "unharmed", open(_lock_path, "rb").read() == _first)
+# ⛔ AND A SECOND REFUSAL MUST NOT EAT THE FIRST RESCUE -- that would make the
+# recovery itself the thing that loses a cloud.
+_wl3 = export.PlyWriter(_lock_path, comment="a third")
+_wl3.write(xyz, rgb, inten)
+_held3 = open(_lock_path, "rb")
+try:
+    _lock_err3 = None
+    try:
+        _wl3.close()
+    except OSError as _exc:
+        _lock_err3 = _exc
+finally:
+    _held3.close()
+check("a second refusal takes the next free name instead of overwriting the "
+      "first rescue",
+      os.path.exists(os.path.join(tmp, "held (new 2).ply"))
+      and os.path.exists(_rescued)
+      and os.path.getsize(_rescued) > len(_first), str(_lock_err3)[:120])
+# ⭐ AND THE BUDGET IS FOR THE HOLDER THAT LETS GO. Windows hands out brief
+# locks nobody chose -- the preview pane, the thumbnailer, an antivirus on a
+# just-written file -- and those clear in well under a second. A holder that
+# releases inside the window must land on the REAL name with nothing rescued
+# beside it, or the retry is only a delay before the same message.
+_go_path = os.path.join(tmp, "letsgo.ply")
+_wg = export.PlyWriter(_go_path)
+_wg.write(xyz, rgb, inten)
+_wg.close()
+_grip = open(_go_path, "rb")
+threading.Thread(target=lambda: (time.sleep(export.REPLACE_WAIT_S * 1.5),
+                                 _grip.close()), daemon=True).start()
+_wg2 = export.PlyWriter(_go_path, comment="after the grip lets go")
+_wg2.write(np.vstack([xyz, xyz]), np.vstack([rgb, rgb]),
+           np.concatenate([inten, inten]))
+# ⛔ CAUGHT RATHER THAN LEFT TO PROPAGATE, so removing the retry FAILS this
+# check instead of killing the run and taking every check after it down.
+_wg_err = None
+try:
+    _wg2.close()
+except OSError as _exc:
+    _wg_err = _exc
+check("a holder that lets go inside the budget is WAITED for, and the export "
+      "lands on the name that was asked for",
+      _wg_err is None
+      and not os.path.exists(os.path.join(tmp, "letsgo (new).ply"))
+      and not os.path.exists(_go_path + export.PART_EXT)
+      and b"after the grip lets go" in open(_go_path, "rb").read(), _wg_err)
+
 # ⛔ AND THE COMMENT MAY NOT BE THE THING THAT LOSES A CLOUD. The header
 # carries capture filenames and was encoded as ASCII AFTER the destination
 # had been truncated, so a job in a folder called `Café` zeroed the previous

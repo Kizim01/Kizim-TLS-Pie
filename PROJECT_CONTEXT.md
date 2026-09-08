@@ -6560,7 +6560,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
 
-**⭐⭐ NINE OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
+**⭐⭐ TEN OF THE SWEEP'S DEFECTS ARE NOW FIXED, TESTED AND REVERSION-AUDITED (46th
 pass).** (1) **The DXF outline export works again** — both drawing writers take `keep=`, and a
 refused export RETURNS instead of raising, so the `finally` can no longer replace a real error with
 "nothing was drawn". (2) **The previewed room and the exported room are one room again** — the
@@ -6587,12 +6587,17 @@ operator had typed it. (9) **The shoot solve repaints at the seat it solved at**
 photographed scan at once: measured at **13.5 mm and 14.1 mm** of plan seat wiped per scan, out of
 both stores, permanently. Fixed at the door AND at the shape (`_repaint` now falls back to the
 scan's own seat, not to the origin, for a pose that names none).
-Suites **1869 → 1902**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
-Pi. Audit **23 breaks, 22 caught** — and the one that was NOT caught is a finding, not a gap:
-see item 9.
+(10) **The `.laz.part` beside the operator's project is fixed** — re-export over a cloud that is
+open in CloudCompare or the preview pane, and `os.replace` was refused with `[WinError 5]`: the
+destination silently kept the OLD export while the COMPLETE new one sat in a `.part` nothing opens.
+Now: a brief retry for the holder that lets go, then the finished cloud is moved to a name that
+OPENS and the message says what to close and where the file went.
+Suites **1869 → 1910**, **171 → 180**, and a new **18-check `test_capture_guards.py`** on the
+Pi. Audit **27 breaks, 26 caught** — the one that was NOT caught is a finding, not a gap: see
+item 9.
 ⛔ **THE EXES HAVE NOT BEEN REBUILT** — `dist\` is still the 2026-09-07 02:34 build, so the Studio the operator runs still
 has all of the Studio ones; **the Pi fix needs the Pi's files copied over to take effect.**
-The other 21 findings stand unfixed; the paragraph below is still the list to work from.
+The other 20 findings stand unfixed; the paragraph below is still the list to work from.
 
 
 **⛔⛔ A READ-ONLY BUG SWEEP FOUND 30 DEFECTS AND FIXED NONE OF THEM (45th pass).** The
@@ -8025,10 +8030,41 @@ because it names, at the point of use, the seat the heading was solved at; it is
 independently tested. Constructing a test by forcing the two stores apart would have measured a
 state the program cannot reach.
 
+**10. The `.laz.part` beside the operator's project, explained and fixed.** The `.part` discipline
+protects the destination from a FAILED export; nothing protected it from a REFUSED MOVE.
+`_finish`'s `keep` branch called `os.replace(part, path)` unguarded, and on Windows a destination
+that is open in CloudCompare, SketchUp or the Explorer preview pane refuses the rename with
+`[WinError 5]`. Reproduced end to end: the destination kept the **505-byte first export**, the
+**complete 10,775-byte re-export** was left in `office.laz.part`, and what the operator saw was
+`PermissionError: [WinError 5] Access is denied: '...office.laz.part' -> '...office.laz'` — an
+errno, a path they did not choose, and a file extension they have never heard of, with no mention
+of the one thing that would fix it.
+⭐ Now: **retry briefly, then rescue and explain.** The retry is sized for the holder that lets go
+(the preview pane, the thumbnailer, an antivirus on a just-written file — those clear in well under
+a second) and not for CloudCompare, which never does; measured, a grip released at 0.4 s lands on
+the REAL name at 0.50 s with nothing rescued beside it. If it is still held, the finished cloud is
+moved to `office (new).laz` — verified by **opening it with laspy: 400 points, the re-export and
+not the old file** — no `.part` is left, the destination is untouched, and the message names the
+program to close and the file to open.
+⛔⛔ **AND THE ONE THING IT MUST NOT DO IS DELETE THE `.part`.** Everywhere else in this module
+a `.part` is scraps; here it is the whole export and the ONLY copy. The audit ran that tempting
+wrong fix as a break — and the check "no `.part` left lying beside it" **PASSED on it**, because
+deleting the operator's only copy satisfies a guard written about tidiness.
+⭐ **A GUARD THAT ASKS WHETHER THE MESS IS GONE IS SATISFIED BY DESTROYING WHAT THE MESS WAS MADE
+OF.** What separates the right fix from that one is the check that asks whether the WORK survived,
+under a name that opens — so that is the check that carries the star.
+⛔ Four breaks, all caught, each by its own set: the whole fix reverted fails 6 of the 8 new
+checks (and leaves `['held.ply', 'held.ply.part']`, the operator's report exactly); removing only
+the retry fails only the holder-that-lets-go check; deleting the `.part` instead of rescuing it
+fails only the three about the work surviving; dropping the `(new 2)` numbering fails only the
+second-refusal check. The two that never fire are honest: the old code DID raise, so "refused, not
+reported as done" holds either way, and the destination was always left unharmed — that is what
+the `.part` design already guaranteed and this fix did not change.
+
 **⛔ WHAT THIS PASS DID NOT DO.** The exes were not rebuilt — `dist\` is the 2026-09-07 02:34
 build, so **none of the Studio work reaches the operator until Studio is closed and
 `build_exe.py` is run**, and **the Pi fix needs `tls_scan.py` copied onto the box**. The remaining
-21 findings are untouched.
+20 findings are untouched.
 
 ### ▶ NEXT SESSION STARTS HERE
 
