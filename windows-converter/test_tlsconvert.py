@@ -3371,9 +3371,15 @@ check("the project restore reads the pairs the file carries",
 # a new job loads -- so a restore written ABOVE it reads the file and is then
 # wiped by the very line it was added to answer, and every check above still
 # passes on the source.
+# ⛔⛔ `find`, NOT `index`, AND THE AUDIT IS WHY. With the restore taken out
+# `index` RAISES, and a check that raises kills the run instead of printing its
+# own name -- the first reversion break came back "suite died" on a claim it
+# had in fact caught. ⭐ A TEST THAT CANNOT FAIL CLEANLY CANNOT REPORT, which
+# is the 48th pass's lesson meeting the 49th pass's code.
+_op_reset = _op_src.find("V.pairs=[]; V.half=null; V.perr=null;")
+_op_back = _op_src.find("V.pairs = (j.pairs||[]).filter(okPair);")
 check("...and it reads them after the reset that clears them, never before",
-      _op_src.index("V.pairs=[]; V.half=null; V.perr=null;")
-      < _op_src.index("V.pairs = (j.pairs||[]).filter(okPair);"))
+      0 <= _op_reset < _op_back, (_op_reset, _op_back))
 # The residuals belonged to a fit made against a placement this project has
 # since had written over. A stale number beside a pair reads as this one's.
 check("the residuals do not come back, only the picks",
@@ -3410,8 +3416,13 @@ console.log(JSON.stringify({kept:V1.pairs.map(p=>p.si), empty:V2.pairs}));
     _pp = os.path.join(tempfile.mkdtemp(prefix="tlspairs"), "p.js")
     with open(_pp, "w", encoding="utf-8") as fh:
         fh.write(_pairjs)
-    _pout = json.loads(subprocess.run([_node, _pp], capture_output=True,
-                                      text=True, check=True).stdout)
+    # ⛔ NO `check=True`, AND EVERY READ BELOW GOES THROUGH `.get`. Take the
+    # restore line away and this script has nothing to call, node exits
+    # non-zero, and `check=True` would raise -- ending the run with a
+    # traceback instead of three checks failing by name.
+    _pr = subprocess.run([_node, _pp], capture_output=True, text=True)
+    _pout = json.loads(_pr.stdout) if _pr.returncode == 0 else {
+        "why": (_pr.stderr or "")[-200:]}
     # ⛔⛔ THE STRANDED PAIR (si 7, a scan this job does not hold) IS KEPT ON
     # PURPOSE. `pairEnds` draws nothing for it and `alignPairs` refuses it BY
     # NAME, and that refusal is the entire difference between a pair the
@@ -3419,14 +3430,14 @@ console.log(JSON.stringify({kept:V1.pairs.map(p=>p.si), empty:V2.pairs}));
     # which is the bug this whole restore exists to end. Filtering it here
     # would re-commit the same fault with better manners.
     check("a pair naming a scan the job no longer holds is kept, not dropped",
-          7 in _pout["kept"], _pout)
+          7 in (_pout.get("kept") or []), _pout)
     # Shape is a different matter: every drawing site reaches straight into
     # `rp[0]`, so one malformed entry throws INSIDE the frame and the window
     # goes black -- from a file that opened and said it had.
     check("a malformed pair is refused at the door, so no frame throws on it",
-          _pout["kept"] == [1, 7], _pout)
+          _pout.get("kept") == [1, 7], _pout)
     check("and a project saved before any were picked restores an empty list",
-          _pout["empty"] == [])
+          _pout.get("empty") == [], _pout)
 
 
 # --- one press, one whole-job replay -----------------------------------------
@@ -3526,9 +3537,12 @@ _PD_ANCHOR = ("addEventListener('pointerdown', e=>{\n"
               "    if(e.target.id!=='cv') return;")
 _pd = _js_listener(_PD_ANCHOR)
 _pd_code = re.sub(r"/\*.*?\*/", "", _pd, flags=re.S)
+_pd_at = [_pd_code.find(t) for t in ("boxGrip>=0", "PICK_TOOLS[tool]",
+                                     "DRAW_TOOLS[tool]")]
 check("the grip is asked before either kind of tool, not after both",
-      _pd_code.index("boxGrip>=0") < _pd_code.index("PICK_TOOLS[tool]")
-      < _pd_code.index("DRAW_TOOLS[tool]"))
+      # find, not index: a break that removes the branch must FAIL this, not
+      # raise out of the run before the later checks are reached.
+      all(a >= 0 for a in _pd_at) and _pd_at == sorted(_pd_at), _pd_at)
 # ⛔ AND THE QUESTION IS ASKED WITHOUT CONSULTING `V.tool`, which is the whole
 # defect: the old branch was reachable only when no tool was armed.
 check("...and asking it does not depend on which tool is armed",
@@ -4238,7 +4252,9 @@ check("...and it really took the strays out, so the case is not vacuous",
 # whole-job press into a partial one with no way to tell which half ran.
 check("a cloud the rule would empty is named, and does not stop the sweep",
       [r["name"] for r in _ca_out["refused"]] == ["C.pcap"]
-      and "every point" in _ca_out["refused"][0]["error"]
+      # `or [{}]` so an empty list fails this check instead of raising out of
+      # the run: the refusal list is exactly what a break here would empty.
+      and "every point" in ((_ca_out["refused"] or [{}])[0].get("error") or "")
       # ⛔ AND THE CLOUD BEHIND IT WAS STILL CLEANED, which is the half a
       # `break` in that loop would take away. Naming the refusal is not the
       # claim; carrying on past it is.
@@ -4280,9 +4296,10 @@ check("...and it arms on the setting it warned about, not on a bare flag",
       "const sig=JSON.stringify(body)+' x '+V.scans.length;" in align.PAGE
       and "if(CLEAN_ARM!==sig)" in align.PAGE)
 _ce = re.sub(r"/\*.*?\*/", "", _js_func("cleanEverywhere"), flags=re.S)
+_ce_undo = _ce.find("remember('cleaning every cloud'")
+_ce_work = _ce.find("await post('clean/all', body)")
 check("...and the undo is armed before the work, not after it succeeds",
-      _ce.index("remember('cleaning every cloud'")
-      < _ce.index("await post('clean/all', body)"))
+      0 <= _ce_undo < _ce_work, (_ce_undo, _ce_work))
 check("...and the snapshot holds each cloud's own rule, not a flag",
       "V.scans.map(s=>({index:s.index, spec:s.clean||null}))" in _ce)
 check("the spotlight reaches the refinement frames as well as the scene "

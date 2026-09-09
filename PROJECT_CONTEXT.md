@@ -6558,7 +6558,175 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-09, forty-eighth pass) — the current one
+### ⚠ LIVE STATE (2026-09-09, forty-ninth pass) — the current one
+
+**✅ THE EXES ARE REBUILT AND THE 48TH PASS IS ON THE MACHINE** — Studio,
+Converter and tlsconvert all **2026-09-09 12:41-12:42**, selftest 0 (native
+window, RTX 3050 Ti, cuda engine found). Colour by `Return strength` existed in
+the source and not in what the operator ran; it does now, and so does
+everything below.
+
+**⭐ THE OPERATOR ASKED WHAT WAS LEFT AND THEN SAID "LEAVE DXF FOR NOW AND DO
+THE REST".** Nine things, each tested by RUNNING the shipped code rather than
+pinning its source, then reversion-audited. Suites **2004 → 2004** (the audit's
+own six repairs are in that number).
+
+**⭐⭐ 1. THE PAIRS AN OPERATOR PICKS WERE SAVED AND NEVER READ BACK**
+(`align.py:11817`, the sweep item chosen last pass). **Three places already
+agreed they should come back**: `projectState` writes them, `save_project`
+writes them under a note saying dropping them *"would throw that away
+silently"*, `open_project` hands them back — and `openProject` cleared
+`V.pairs` and never read `j.pairs`. ⭐ **THE COMMENT WAS THE EVIDENCE, AND IT
+STOOD OVER NO CODE**: a paragraph in `openProject` saying the pairs come back
+half-finished, with nothing under it. ⛔ **SILENT IN THE WORST WAY A LOSS CAN
+BE** — a job with no pairs looks exactly like a job whose pairs were lost, so
+the operator's own reading is "I must not have saved", which is wrong and
+unfixable from where they stand.
+⛔ **AND THE REASON IT SURVIVED A READING WAS A COMMENT THAT GENERALISED FROM
+THE WRONG NEIGHBOUR.** The reset said the pins were session state *"for the
+same reason the pairs are"*. They are not the same: a pin's first half is a
+pick on a **painted** feature, so re-posing the photograph moves the very thing
+it names — it invalidates itself. A pair's halves are two physical features in
+their own scans' **local** coordinates, which no fit, nudge or levelling can
+move. `pairPick` says so in its own comment, two hundred lines away.
+
+**⭐⭐ 2. THE CLIP BOX'S GRIPS WERE OFF WHENEVER ANY TOOL WAS ARMED — THE
+THIRD REPORT IN THAT CLASS.** *"i cannot grab the clipbox controls"* (operator,
+2026-09-09), after *"can't grab the gizmo"* and *"camera movements change when I
+activate the clipping box"*. The grips sat at the END of the pointerdown chain
+behind `!V.tool`, so a pair pick, a lasso, or a level picker left on ten minutes
+earlier switched all seven off — with the box drawn, its dots drawn, and the
+press quietly becoming an orbit. ⭐ **A CONTROL THAT IS DRAWN AND DOES NOTHING
+IS WORSE THAN ONE THAT IS HIDDEN, because the operator's next move is to press
+harder, and there is no harder.**
+⭐ **AND IT COSTS THE TOOLS NOTHING, WHICH IS WHY IT CAN GO FIRST**: the pick
+tools take their pick on RELEASE, so what the grip takes is a press that began
+on a 9 px dot, and anything that misses falls straight through. Proven by
+RUNNING the shipped pointerdown handler under node with five presses — grip
+with no tool, grip with the pair tool, grip with a lasso, and the two misses
+that must still belong to the tool. ⛔ The scan's own widget stays behind
+`!V.tool` deliberately: its rings are at 32, 44 and 62 px and its arms run the
+width of the scan, so letting THOSE go first would take the presses the tools
+are for. The clip box earned its place by being a dot.
+
+**⭐ 3. SIX WHOLE-JOB DOORS PAID FOR THE REPLAY TWICE.** Named and left as
+found on 09-08; this is the other half. They read `recomputeLive();
+invalidate(); editsFollow();` — re-test every cut against every point, draw it,
+then schedule the same pass again 250 ms later against state nothing had
+touched. At the density this operator loads that is **2.0-2.5 s of frozen main
+thread paid over again, after the press already looked finished**. One
+`editsFollowNow()` now: run at once, cancel anything already on the timer.
+⛔ The immediate pass is the one that survives, not the timer — a level is one
+press, not a stream, and deferring it would draw a frame with every mask still
+measured against a room that has since been stood up.
+
+**⭐⭐ 4. REMOVE STRAYS EVERYWHERE — ASKED FOR, AND NOW BUILT.** *"is there a
+remove strays that goes across the entire shoot?"* There was not: cleaning was
+one cloud at a time while the PUT-BACK was already whole-job
+(`restorePoints(null)`), which is the shape of a feature that grew only its
+second half. Fifty-six presses on the job in hand.
+⛔ **IT DOES NOT WEAKEN WHAT `clean_scan` SAYS ABOUT SCOPE.** That note refuses
+one rule measured across a MERGED survey; this is fifty-six independent local
+decisions, because the occupancy test counts occupied CELLS around each point in
+its own cloud and carries no distance threshold to be too harsh near one tripod
+and too soft near another.
+⭐ **THE SERVER WALKS IT, AND THE REASON IS ARITHMETIC**: every `clean` answer
+carries a rebuilt scan list and `_rebuild()` re-encodes EVERY open scan, so
+fifty-six round trips would be n-squared — and each would drag a whole-job
+replay behind it. One door, one rebuild, one replay. `clean_scan` is now a thin
+wrapper that adds the scan list to `_clean_one`.
+⛔ **A REFUSAL DOES NOT STOP THE SWEEP** (a cloud with no reflectivity, or one
+the setting would empty) — it is carried back BY NAME, because abandoning the
+other fifty-five turns a whole-job press into a partial one with nothing to say
+which half ran. ⛔ **AND THE UNDO GOES BACK THROUGH THE SAME DOOR CARRYING THE
+RULES IT FOUND**, not a blanket clearing: a cloud that already had its own rule
+must get THAT rule back, or the undo hands the operator more points than they
+had — the fault `undoClean` was fixed for, one press up. Armed on the SETTING,
+so moving a slider after reading the warning asks again.
+
+**⛔ 5. AN OVERRIDE'S PHOTOGRAPH STAYED IN THE WALK'S POOL** (`shoot.py:558`).
+Settling a row ahead of `pair_in_order` took the ROW out and left its PICTURE
+in, so the walk was free to hand the same file to another capture: two rows came
+back `assigned` to one photograph with `shared` **False on both** — not a share,
+a duplicate that nothing counts or reports. ⛔ **AND IT SURFACES AT THE WORST
+PRESS IN THIS PROGRAM**: `apply` MOVES the file for the first row and dies
+`[WinError 2]` on the second, part-way through rearranging a day's captures —
+the one press whose own confirmation says the originals do not stay where they
+are. The `beside` case had always dropped its picture from the pool before
+`timed` was built; an override is settled after `timed` exists, and nobody
+carried the rule across. Fixed in the PLAN, not in `apply`: a plan that names
+one file twice is wrong before anything is moved.
+
+**⛔ 6. A HEADING PAST HALF A TURN** (`align.py:9231`). The box is
+`<input type="number" min="-180" max="180">` and a browser does **not** clamp a
+value ASSIGNED to it — 200 goes in and shows 200. The moment anything asks the
+input to STEP, `max` is honoured and it becomes 180: the photograph turns 20
+degrees on a control the operator only nudged. Four doors write that box and
+only `nudgeHeading` normalised, with the arithmetic inline — **which is exactly
+how the other three came to be written without it**. One `wrapDeg` now.
+
+**⛔ 7. `build_cuda_engine.py --out` DELETED WHATEVER IT WAS GIVEN.** It opened
+with `if os.path.isdir(out_dir): shutil.rmtree(out_dir)`, so `--out dist` instead
+of `--out dist\cuda-engine`, or a path pasted from somewhere else, took that
+whole directory recursively with no confirmation and nothing to undo.
+⭐ **THE TEST IS EVIDENCE THIS SCRIPT LEFT, NOT A GUESS AT INTENT**: empty is
+nobody's work, `STAMP` marks one we built, a `cupy\` folder is an engine from
+before the stamp existed (which is the operator's current one, so the guard's
+first act is not to break the ordinary rebuild). Anything else is refused BY
+NAME. Lifted into `may_clear` so it can be CALLED by a test — `build` itself
+imports CuPy and copies a gigabyte, so a source pin was the only check it could
+otherwise have had.
+
+**⛔⛔ 8. THE STRAY GRID REACHED 81.9 m UNDER A COMMENT CLAIMING 120**
+(`clean.py:47`). `_BIAS` was `1<<12` = 4,096 cells, which at the panel's 2 cm
+minimum is 81.92 m, and `_keys` **CLAMPS** rather than raising.
+⭐ **AND THE FAILURE IS QUIET AND THE WRONG WAY ROUND.** Every return past the
+edge folds into the edge cell, where they crowd each other and are therefore all
+**KEPT** — so the far returns, the ones most likely to be dust or a mixed pixel
+off an edge, are exactly the ones the test stops being able to judge. Nothing
+is thrown and the count looks ordinary. `1<<13` reaches 163.84 m at 2 cm and the
+key still packs to 4.4e12 against an int64's 9.2e18. Measured both ways in the
+suite: four returns 10 m apart in x but a hair apart in y and z are all dropped
+on the new grid and all KEPT on the old one.
+
+**9.** `manifest.py`'s docstring said *"Three files go beside the exported
+cloud"* and listed four. It says four, and names the preview as the one that
+may be absent.
+
+**⚠ **AUDITED 9 OF 13, AND THE OPERATOR ASKED FOR TESTING TO STOP PART WAY.** Every one of the nine came back **CAUGHT** by the check that NAMES it, each run accounting for all 2004 checks (1999+5, 2001+3, 2003+1, 2002+2, 2000+4, 2002+2, 2001+3, 2003+1, 2003+1) — which is also the evidence that the tree is green at 2004 with the audit's own six test repairs in place, since a baseline failure would have shown in every one of those runs.
+⭐ **AND THE DISCRIMINATORS ARE THE FAULTS THEMSELVES, NOT BOOLEANS**: the clip-box break reports `{'grip': False, 'pick': True}` — the operator's own bug, that a press on the grip became a pick; the replay break reports `{'straightAfter': 1, 'after': 101}`, the pending timer firing a second pass; the undo break reports `[None, None, None]`, a blanket clearing where one cloud's own rule should have gone back; the rebuild break reports `3`.
+⛔ **FOUR BREAKS ARE STILL UNRUN**, and they are named so nobody has to reconstruct them: the heading wrap (`const yaw = wrapDeg(typed);` → `typed`), the override's photograph leaving the walk's pool (`spent = set() or {...}`), the stray grid's reach (`_BIAS = 1 << 13` → `1 << 12`) and the engine builder's refusal (`if (os.path.exists(...STAMP...))` → `if True:`). The driver is `scratchpad\mos\revert49.py` and takes a substring filter as `sys.argv[1]`, so each is a single named re-run.
+⚠ **ONE BREAK'S DISCRIMINATOR IS WEAKER THAN IT SHOULD BE AND THE BREAK IS WHY, NOT THE TEST.** `!!p && ...` → `!!p || ...` makes the node harness itself THROW on the `null` entry, so the three checks failed reporting a node stack rather than the extra pair that got through. Caught, and cleanly; but the cut to make is dropping the `tri()` calls, which lets a malformed pair through and prints the list. Worth one re-run.
+⛔ **AND A KILLED AUDIT LEAVES THE BREAK ON DISK.** Twice this pass the driver was stopped mid-break and `align.py` was left broken — restoring happens in the `finally`, and a killed process has no `finally`. Both times it was put back by reversing that one break BY HAND and confirming the md5 against the baseline (`bedbb06d585d`), NOT by `git checkout`: `.gitattributes` says `*.py text eol=lf` and align.py's working copy is CRLF, so a checkout would rewrite 15,816 line endings and silently break every byte-level anchor in the audit driver.**
+
+**⛔⛔ AND THE AUDIT FOUND THE 48TH PASS'S OWN LESSON IN THE 49TH PASS'S
+TESTS.** The very first break came back `CAUGHT` and **SUITE DIED**: taking the
+pairs restore out made `_op_src.index(...)` RAISE, so the run ended with a
+traceback instead of the checks printing their names. ⭐ **A TEST THAT CANNOT
+FAIL CLEANLY CANNOT REPORT** — recorded on 2026-09-09 in the morning, met again
+in the afternoon in code written after it. Six repairs: `find` instead of
+`index` at four ordering checks, no `check=True` on the node harness (with the
+restore gone there is nothing to call, node exits non-zero and `check=True`
+raises), and `.get` on every result read. Re-run: the same break now reports
+**1999 passed, 5 failed**, five named checks and no traceback.
+⛔ **AND ONE FIXTURE COULD NOT HAVE FAILED EITHER.** The whole-job clean's
+refused cloud was written LAST, where `continue` and `break` do exactly the same
+thing — so the audit's "a refusal stops the sweep" break would have come back
+NOT CAUGHT against a sound claim. It sits in the middle now, and the check
+asserts the cloud BEHIND it was still cleaned. ⭐ **A REFUSAL NEEDS SOMETHING
+AFTER IT FOR "DOES NOT STOP THE SWEEP" TO BE ABLE TO FAIL.**
+
+**⚠ WHAT IS STILL NOT DONE.** The Pi is **unreachable** (`tlspie.local` does
+not resolve), so `tls_scan.py` — the capture-guard fix from the 46th pass —
+is still not on the box; that is the only thing blocking it. **DXF was left
+alone at the operator's instruction** ("leave dxf for now"), so
+`pipeline.py:1075` and `drawing.py:2077` are untouched along with the mesh half.
+The remaining sweep findings are the list below minus the five fixed here.
+**Still unanswered from the operator**: what the rematched project's grades came
+back as, whether they saved after that open, and whether a scan turns without
+freezing on the rebuilt Studio (item 12, still unproven on the machine).
+
+### ⚠ LIVE STATE (2026-09-09, forty-eighth pass)
 
 **⭐ A FOURTH COLOUR MODE: RETURN STRENGTH, IN BLUE.** *"i need an intensity
 filter in blue that gets lighter the more points are gathered"* (operator,
@@ -6841,13 +7009,27 @@ the log) and **`03fcf88`** (item 12, a move re-tests only what it can change). T
 clean but for the standing untracked `windows-converter/cutjs_tmp.js`, and **no audit debt is
 outstanding**.
 
-⛔ **THE 48TH PASS IS IN THE SOURCE AND NOT ON THE MACHINE.** Colour by
-`Return strength` — the fourth mode, the wire's fourth byte, `compsOf`/`hasRef`
-— is committed, suite-green at 1946 and reversion-audited, but **the exes were
-NOT rebuilt**: the operator was in the Studio and a build packs the working tree
-with Studio closed. **Ask whether the Studio can be closed, then run
-`python build_exe.py` from `windows-converter`.** Until then the button does not
-exist for them, and a report that the mode "is in" would be false.
+✅ **THE EXES ARE REBUILT — 2026-09-09 12:41-12:42, selftest 0.** The
+48th pass's `Return strength` mode and all nine of the 49th pass's fixes are in
+what the operator runs. This line led the restart pointer for a day; it is
+closed, and the entry above it is the current one.
+
+⛔ **BUT FOUR REVERSION BREAKS WERE NEVER RUN.** The operator asked for
+testing to stop part way through the audit (nine of thirteen, all CAUGHT). The
+four outstanding are the heading wrap, the override's photograph leaving the
+walk's pool, the stray grid's reach and the engine builder's refusal to delete
+— each named with its exact cut in the 49th-pass entry above, each a single
+`python scratchpad\mos\revert49.py "<substring>"` away. **Until they are run,
+say "nine of thirteen audited", not "audited".**
+⚠ And one of the nine wants re-running for a better discriminator: the pair
+shape guard's break makes the node harness throw rather than letting a
+malformed pair through.
+⛔ **A KILLED AUDIT LEAVES ITS BREAK ON DISK** — the restore is in a
+`finally` and a killed process has no `finally`. Check `git status` and the
+md5 before believing the tree. Put it back by reversing the one break BY HAND,
+never with `git checkout`: `.gitattributes` says `*.py text eol=lf` while
+align.py's working copy is CRLF, so a checkout rewrites 15,816 line endings and
+silently breaks every byte-level anchor the driver uses.
 
 ⛔ **AND THE 47TH PASS LEFT A FILE THE OPERATOR HAS NOT OPENED YET.**
 `Desktop\ministry of sound\scan project (photos rematched).tlspie` — 56 captures, 54
