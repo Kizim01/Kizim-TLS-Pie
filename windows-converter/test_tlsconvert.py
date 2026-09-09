@@ -577,6 +577,41 @@ rgbbuf.add(np.zeros((10, 3), np.float32),
            np.tile(np.array([[9, 40, 200]], np.uint8), (10, 1)))
 check("a real photo colour is detected and kept at three bytes",
       rgbbuf.rgb and len(rgbbuf.encode()) == HEAD + 10 * 6 + 10 * 3)
+check("...and says it has no return strength, so the page draws it flat "
+      "rather than painting the attribute default as a bright return",
+      not (rgbbuf.encode()[6] & viewer.FLAG_REFL), rgbbuf.encode()[6])
+
+# ⛔⛔ THE COLOUR BLOCK CARRIES EITHER THE PHOTOGRAPH OR THE RETURN STRENGTH,
+# and a coloured cloud that drops the strength leaves "colour by return
+# strength" reading the picture's RED CHANNEL -- a red wall painted as a strong
+# return, with nothing on screen to say it is wrong. The fourth byte is what
+# stops that, so these check it is carried, flagged, and in the right ORDER:
+# a strength array that lines up with the wrong points is the same lie told
+# more quietly.
+_refbuf = viewer.ViewerBuffer()
+_refl = np.arange(10, dtype=np.uint8) * 7 + 3
+_refbuf.add(np.zeros((10, 3), np.float32),
+            np.tile(np.array([[9, 40, 200]], np.uint8), (10, 1)), _refl)
+_refblob = _refbuf.encode()
+check("a coloured cloud that kept its reflectivity sends a fourth byte",
+      _refbuf.rgb and len(_refblob) == HEAD + 10 * 6 + 10 * 4, len(_refblob))
+check("...and flags it, because the stride cannot be inferred from FLAG_RGB",
+      bool(_refblob[6] & viewer.FLAG_RGB)
+      and bool(_refblob[6] & viewer.FLAG_REFL), _refblob[6])
+_back = np.frombuffer(_refblob[HEAD + 10 * 6:], np.uint8).reshape(10, 4)
+check("...the fourth byte IS the return strength, point for point",
+      list(_back[:, 3]) == list(_refl), list(_back[:, 3]))
+check("...and the photograph is untouched beside it",
+      bool((_back[:, :3] == np.array([9, 40, 200], np.uint8)).all()))
+
+# ⭐ A grey cloud's ONE byte already IS its reflectivity -- `intensity_to_grey`
+# repeats the byte, it does not map it -- so a fourth byte there would be the
+# same number twice, at a byte a point across sixty million.
+_greyref = viewer.ViewerBuffer()
+_greyref.add(np.zeros((10, 3), np.float32), np.zeros((10, 3), np.uint8), _refl)
+check("a grey cloud does not pay for the strength twice",
+      len(_greyref.encode()) == HEAD + 10 * 6 + 10 * 1
+      and not (_greyref.encode()[6] & viewer.FLAG_REFL))
 
 srv = viewer.ViewerServer(small, title="t&st <x>")
 try:
@@ -590,7 +625,7 @@ try:
           b"t&amp;st &lt;x&gt;" in page)
     check("the point blob is tagged", blob[:4] == b"TLSV", blob[:4])
     check("and versioned, so the page can refuse an old one",
-          int.from_bytes(blob[4:6], "little") == 2)
+          int.from_bytes(blob[4:6], "little") == 3)
     n_blob = int.from_bytes(blob[8:12], "little")
     check("its declared count matches its length",
           n_blob == 5 and len(blob) == HEAD + 5 * 7, (n_blob, len(blob)))
@@ -2777,6 +2812,69 @@ check("the real convert is restored afterwards",
       pipeline.convert is _real_convert)
 
 
+# --- the return strength reaching the page ----------------------------------
+#
+# ⛔⛔ THE HOOKUP THAT WOULD HAVE FAILED IN SILENCE. `viewer.py` can carry the
+# reflectivity beside a photograph, but only if `Scan.buffer` hands it over --
+# and if it does not, nothing throws: the flag is simply never set, the page
+# believes no coloured cloud has a return strength, and the mode built to show
+# it draws the whole job flat. A green suite over the packer alone would have
+# said this feature worked.
+print("\nthe return strength reaching the page")
+
+_sdir = tempfile.mkdtemp(prefix="tlsref")
+_spath = os.path.join(_sdir, "r.pcap")
+with open(_spath, "wb") as fh:
+    fh.write(b"not a real capture, but a real file")
+_spts = np.random.RandomState(11).normal(size=(50, 3)) * 2.0
+# ⛔ A REAL PHOTO COLOUR, NOT A GREY ONE. Three equal channels are detected as
+# grey and sent as one byte, which is the path that needs no fourth byte at
+# all -- so a grey stand-in here would pass this test without exercising it.
+_scan = align.Scan(_spath, _spts,
+                   np.tile(np.array([[9, 40, 200]], np.uint8), (50, 1)), _spts)
+_scan.view_refl = np.arange(50, dtype=np.uint8) * 5 + 1
+_sblob = _scan.buffer().encode()
+check("a photographed cloud reaches the page WITH its return strength",
+      bool(_sblob[6] & viewer.FLAG_REFL), _sblob[6])
+_sn = int.from_bytes(_sblob[8:12], "little")
+_sback = np.frombuffer(_sblob[36 + _sn * 6:], np.uint8).reshape(_sn, 4)
+check("...unchanged, point for point",
+      list(_sback[:, 3]) == list(_scan.view_refl[:_sn]))
+
+# ⛔ AND NARROWED BY THE SAME MASK, IN THE SAME ORDER. `keep` hides the points
+# a clean took out. A strength array not narrowed with them lines up with
+# nothing and every point wears a neighbour's brightness -- which renders as a
+# perfectly plausible picture of the room, not as a fault.
+_scan.keep = np.zeros(50, dtype=bool)
+_scan.keep[::2] = True
+_kblob = _scan.buffer().encode()
+_kn = int.from_bytes(_kblob[8:12], "little")
+# ⛔ THE STRIDE IS READ FROM THE FLAG, NOT ASSUMED TO BE FOUR -- BECAUSE THE
+# FAILURE THIS TEST EXISTS FOR IS THE FOURTH BYTE NOT BEING THERE. An unnarrowed
+# strength array is the wrong length, `ViewerBuffer.add` rightly refuses it, and
+# nothing is sent: reshaping a three-byte block into four columns then THREW,
+# and the suite died with a traceback instead of printing this check's name.
+# Caught in the reversion audit, where the break came back "not caught" while
+# the claim underneath it was perfectly sound. A test that cannot fail cleanly
+# cannot report.
+_kcomps = 4 if (_kblob[6] & viewer.FLAG_REFL) else 3
+_kback = np.frombuffer(_kblob[36 + _kn * 6:], np.uint8).reshape(_kn, _kcomps)
+check("a cleaned cloud's return strength is narrowed with its points",
+      _kcomps == 4 and _kn == 25
+      and list(_kback[:, 3]) == list(_scan.view_refl[::2]),
+      (_kcomps, _kn, list(_kback[:5, -1])))
+
+# ⛔ AND A LENGTH THAT DOES NOT MATCH IS DROPPED RATHER THAN SHIPPED. The two
+# reflectivity arrays on a Scan belong to different passes over the capture
+# (`view_refl` to the points on screen, `sample_refl` to the solver's own
+# decimated sample) and they are the same KIND of thing, which is exactly how
+# the wrong one gets picked up -- it has happened once already, in the clean.
+_scan.keep = None
+_scan.view_refl = np.arange(3, dtype=np.uint8)
+check("a strength array that does not line up is dropped, not shipped",
+      not (_scan.buffer().encode()[6] & viewer.FLAG_REFL))
+
+
 # --- taking a cloud out of the session -------------------------------------
 #
 # ⭐ NOTHING IS DELETED. The operator's word is "delete the wrong cloud", but
@@ -3184,6 +3282,54 @@ check("and the edit list names a clip-limited cut",
 # load-bearing for cuts too, pin the picker's half of it as well.
 check("a pair or level pick still refuses a clipped-away point",
       "if(clipHides(q,wx,wy,wz)) continue;" in _js_func("pickPoint"))
+
+# ⛔⛔ THE COLOUR STRIDE, AND THE INVARIANT IS "NOBODY WORKS IT OUT ALONE".
+# `s.rgb?3:1` was written out in four places -- the download, both draw loops
+# and the graphics-recovery rebuild. Four copies of one rule agreed only by
+# luck, and the day a coloured cloud started carrying a fourth byte of return
+# strength, any copy still saying three walked the attribute three-of-four and
+# sheared every colour along the cloud: no error, no crash, just a scan that
+# looks like a corrupt download. Testing `compsOf` alone would pass while a
+# fifth site went on guessing, so the source is checked for the guess itself.
+check("no site works the colour stride out for itself any more",
+      align.PAGE.count("s.rgb?3:1") == 1
+      and "`s.rgb?3:1`" in align.PAGE, align.PAGE.count("s.rgb?3:1"))
+check("...and every draw binds the attribute through the one home",
+      # The declaration plus its three call sites: the refinement queue, the
+      # scene loop and the graphics-recovery rebuild.
+      align.PAGE.count("compsOf(s)") == 4
+      and "compsOf({rgb, refl})" in align.PAGE,
+      align.PAGE.count("compsOf(s)"))
+# ⛔ AND THE MODE LABELS TOO: the button and the project restore both name
+# them, and a fourth mode added to one array and not the other puts
+# `undefined` on the button the moment a project is opened.
+check("the colour modes are named once, not once per reader",
+      align.PAGE.count("'Return strength'") == 1
+      and align.PAGE.count("MODES[V.mode]") == 2, align.PAGE)
+
+if _node:
+    # ⛔ RUN, NOT READ. A source pin proves the line exists; only a call proves
+    # it answers. Four clouds, one per combination of "is it photographed" and
+    # "did the return strength come with it".
+    _stride = """
+%s
+%s
+const out=[];
+for(const s of [{rgb:false,refl:false},{rgb:false,refl:true},
+                {rgb:true,refl:false},{rgb:true,refl:true}])
+  out.push([compsOf(s), hasRef(s)]);
+console.log(JSON.stringify(out));
+""" % (_js_func("compsOf"), _js_func("hasRef"))
+    _sp = os.path.join(tempfile.mkdtemp(prefix="tlsstride"), "s.js")
+    with open(_sp, "w", encoding="utf-8") as fh:
+        fh.write(_stride)
+    _sout = json.loads(subprocess.run([_node, _sp], capture_output=True,
+                                      text=True, check=True).stdout)
+    # A grey cloud's single byte IS its reflectivity, so it always has the
+    # strength and never pays a fourth byte for it -- which is why the flag
+    # cannot simply be read as "has strength".
+    check("the page's stride answers all four cases the wire can produce",
+          _sout == [[1, True], [1, True], [3, False], [4, True]], _sout)
 
 
 # --- a move re-tests only what a move can change ------------------------------

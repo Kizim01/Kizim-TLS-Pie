@@ -60,8 +60,20 @@ DEFAULT_VIEW_MAX = int(os.environ.get("TLSCONVERT_VIEW_MAX", "60000000"))
 # large enough that the draw-call count stays trivial.
 CHUNK_POINTS = 4_000_000
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 FLAG_RGB = 1
+
+# ⛔⛔ THE COLOUR BLOCK CARRIES *EITHER* THE PHOTOGRAPH OR THE RETURN STRENGTH,
+# AND THAT IS WHY THIS FLAG EXISTS. A grey cloud's one byte a point IS its
+# reflectivity, so "colour by return strength" costs nothing there -- but the
+# moment a photograph is applied the three bytes are the picture and the
+# instrument's own number is GONE from the wire. Rendering `aCol.r` as
+# "intensity" on a coloured cloud is not a missing feature, it is a lie that
+# looks entirely plausible: a red wall reads as a strong return. So a coloured
+# cloud that still has its reflectivity sends a FOURTH byte and says so here;
+# one that does not sends three and says that too, and the page draws it flat
+# rather than inventing a picture. Never infer the layout from FLAG_RGB alone.
+FLAG_REFL = 2
 
 
 class ViewerBuffer:
@@ -187,7 +199,16 @@ class ViewerBuffer:
         offset = ((lo + hi) / 2.0).astype(np.float64)
 
         pos = np.empty((n, 3), dtype="<i2")
-        comps = 3 if self.rgb else 1
+        # ⛔ TAKEN BEFORE THE LOOP, WHICH CONSUMES `_col` BUT NOT `_ref`.
+        # `intensity()` measures itself against `self._n`, and the loop below
+        # rewrites that with the count it actually packed -- so asking
+        # afterwards would compare a full array against a full count and pass,
+        # or compare it against a short one and silently return None. Only a
+        # coloured cloud needs it: on a grey one the single colour byte already
+        # IS the reflectivity (`intensity_to_grey` repeats the byte, it does
+        # not map it), so a fourth byte there would be the same number twice.
+        refl = self.intensity() if self.rgb else None
+        comps = (4 if refl is not None else 3) if self.rgb else 1
         col = np.empty((n, comps), dtype=np.uint8)
 
         at = 0
@@ -198,13 +219,19 @@ class ViewerBuffer:
             q = np.rint((src.astype(np.float64) - offset) / scale)
             np.clip(q, -32767, 32767, out=q)
             pos[at:at + m] = q.astype("<i2")
-            col[at:at + m] = c if self.rgb else c[:, :1]
+            if not self.rgb:
+                col[at:at + m] = c[:, :1]
+            else:
+                col[at:at + m, :3] = c
             at += m
+        if comps == 4:
+            col[:at, 3] = np.asarray(refl[:at], dtype=np.uint8)
         self._n = at
 
         # join, not +: chained concatenation of two 400 MB blocks builds an
         # intermediate copy of the first pair before the second is appended.
-        self._encoded = b"".join([_header(at, scale, offset, self.rgb),
+        self._encoded = b"".join([_header(at, scale, offset, self.rgb,
+                                          comps == 4),
                                   pos.tobytes(), col.tobytes()])
         return self._encoded
 
@@ -217,9 +244,10 @@ def _is_grey(rgb):
                 and np.all(sample[:, 1] == sample[:, 2]))
 
 
-def _header(count, scale, offset, rgb):
+def _header(count, scale, offset, rgb, refl=False):
+    flags = (FLAG_RGB if rgb else 0) | (FLAG_REFL if refl else 0)
     return (b"TLSV"
-            + struct.pack("<HBB", FORMAT_VERSION, FLAG_RGB if rgb else 0, 0)
+            + struct.pack("<HBB", FORMAT_VERSION, flags, 0)
             + struct.pack("<I", count)
             + struct.pack("<3f", *[float(v) for v in scale])
             + struct.pack("<3f", *[float(v) for v in offset]))
@@ -267,8 +295,13 @@ PAGE = r"""<!doctype html>
 const CAM_FLOOR = 0.4, FLY_GAIN = 6.0;
 const V = {cam:{yaw:0.7, pitch:0.45, dist:30, t:[0,0,0]}, free:false,
            psize:1.0, mode:0, n:0, zlo:0, zhi:1, zmin:0, zmax:1,
-           chunks:[], scale:[1,1,1], offset:[0,0,0], rgb:false};
+           chunks:[], scale:[1,1,1], offset:[0,0,0], rgb:false, refl:false};
 let gl, prog, loc, cv, need = true;
+
+/* Bytes of colour per point, from the header's flags. Grey is one byte and
+   that byte is the reflectivity; a photograph is three, and four when the
+   instrument's own return strength was kept alongside it. */
+function compsOf(){ return V.rgb ? (V.refl ? 4 : 3) : 1; }
 
 function fail(m){ const e=document.getElementById('err');
   e.style.display='grid'; e.textContent=m; }
@@ -388,12 +421,11 @@ function draw(){
   gl.uniform1f(loc.uZlo, V.zlo);
   gl.uniform1f(loc.uZhi, V.zhi);
   gl.uniform1f(loc.uGrey, V.rgb ? 0.0 : 1.0);
-  const comps = V.rgb ? 3 : 1;
   for(const c of V.chunks){
     gl.bindBuffer(gl.ARRAY_BUFFER, c.pos);
     gl.vertexAttribPointer(loc.aPos, 3, gl.SHORT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, c.col);
-    gl.vertexAttribPointer(loc.aCol, comps, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.vertexAttribPointer(loc.aCol, compsOf(), gl.UNSIGNED_BYTE, true, 0, 0);
     gl.drawArrays(gl.POINTS, 0, c.n);
   }
 }
@@ -438,13 +470,23 @@ async function boot(){
   const dv=new DataView(buf);
   if(new TextDecoder().decode(new Uint8Array(buf,0,4))!=='TLSV')
     return fail('Point file is not in the expected format.');
+  /* ⛔ ONE HOME FOR THE COLOUR STRIDE. It was computed in two places -- once
+     to slice the download, once to bind the attribute -- and the two agreeing
+     was left to luck; the day a fourth byte arrived, one of them read
+     three-of-four and sheared every colour along the cloud while the other
+     read it correctly, which looks like a corrupt download rather than a
+     mismatched stride. */
   const ver=dv.getUint16(4,true), flags=dv.getUint8(6);
-  if(ver!==2) return fail('Unexpected point format version '+ver+'.');
+  if(ver!==3) return fail('Unexpected point format version '+ver+'.');
   V.rgb = !!(flags & 1);
+  /* A coloured cloud may carry the instrument's own return strength in a
+     fourth byte. This page has no use for it, but it has to know the stride:
+     reading three-of-four would shear every colour along the cloud. */
+  V.refl = !!(flags & 2);
   const n=dv.getUint32(8,true);
   V.scale=[dv.getFloat32(12,true),dv.getFloat32(16,true),dv.getFloat32(20,true)];
   V.offset=[dv.getFloat32(24,true),dv.getFloat32(28,true),dv.getFloat32(32,true)];
-  const HEAD=36, comps=V.rgb?3:1;
+  const HEAD=36, comps=compsOf();
   const pos=new Int16Array(buf, HEAD, n*3);
   const col=new Uint8Array(buf, HEAD+n*6, n*comps);
   V.n=n;

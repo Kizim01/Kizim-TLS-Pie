@@ -420,10 +420,23 @@ class Scan(object):
         # NEXT operation sees, so a stricter clean could never be relaxed and
         # a photograph solved after cleaning would be solved against a
         # different room from the one before it.
+        # ⛔⛔ THE RETURN STRENGTH GOES OVER WITH THE POINTS, OR "colour by
+        # return strength" IS A LIE ON EVERY PHOTOGRAPHED CLOUD. Once a
+        # photograph is applied `self.rgb` is the picture and the instrument's
+        # number is nowhere on the wire, so the page would have nothing to
+        # colour by but the photograph's red channel -- which renders a red
+        # wall as a strong return and looks entirely convincing. `view_refl`
+        # is the array that lines up with THESE points (not `sample_refl`,
+        # which is the solver's own decimated pass), and it has to be narrowed
+        # by the same mask, in the same order, or it lines up with nothing.
+        refl = self.view_refl
+        if refl is not None and len(refl) != len(self.xyz):
+            refl = None
         if self.keep is not None and len(self.keep) == len(self.xyz):
-            buf.add(self.xyz[self.keep], self.rgb[self.keep])
+            buf.add(self.xyz[self.keep], self.rgb[self.keep],
+                    None if refl is None else refl[self.keep])
         else:
-            buf.add(self.xyz, self.rgb)
+            buf.add(self.xyz, self.rgb, refl)
         return buf
 
 
@@ -7239,11 +7252,11 @@ function preLevel(s,p){
 function scanAt(i){ return V.scans.find(z=>z.index===i) || null; }
 
 const VS = `
-attribute vec3 aPos; attribute vec3 aCol; attribute float aLive;
+attribute vec3 aPos; attribute vec4 aCol; attribute float aLive;
 uniform mat4 uVP, uModel; uniform vec3 uScale, uOffset, uTint;
 uniform vec3 uClipC, uClipH; uniform mat3 uClipRT;
 uniform float uPS, uPSmax, uMode, uZlo, uZhi, uGrey, uClipOn, uClipIn,
-              uOrtho, uOrthoW, uDim;
+              uOrtho, uOrthoW, uDim, uRef;
 varying vec3 vCol; varying float vKill;
 vec3 ramp(float t){ t=clamp(t,0.0,1.0);
   return clamp(vec3(1.5-abs(4.0*t-3.0),1.5-abs(4.0*t-2.0),
@@ -7251,10 +7264,24 @@ vec3 ramp(float t){ t=clamp(t,0.0,1.0);
 void main(){
   vec3 p = (uModel * vec4(aPos*uScale + uOffset, 1.0)).xyz;
   gl_Position = uVP * vec4(p,1.0);
-  vec3 base = (uGrey>0.5) ? vec3(aCol.r) : aCol;
+  vec3 base = (uGrey>0.5) ? vec3(aCol.r) : aCol.rgb;
   if(uMode < 0.5)      vCol = uTint * (0.45 + 0.75*base.r);
   else if(uMode < 1.5) vCol = ramp((p.z-uZlo)/max(uZhi-uZlo,1e-4));
-  else                 vCol = base;
+  else if(uMode < 2.5) vCol = base;
+  /* ⛔⛔ RETURN STRENGTH, AND IT IS READ FROM A DIFFERENT PLACE ON A COLOURED
+     CLOUD -- WHICH IS THE WHOLE REASON THIS MODE NEEDED A WIRE CHANGE. On a
+     grey cloud the one colour byte IS the reflectivity, so aCol.r is it. On
+     a photographed cloud aCol.r is the picture's RED, and painting that as
+     intensity turns a red wall into a strong return with nothing on screen to
+     say otherwise -- so the strength travels in a fourth byte and is read from
+     the alpha. uRef is whether this cloud actually has it: without it the
+     alpha is the attribute default of 1.0, which would paint the whole cloud
+     the bright end of the ramp -- the most confident possible picture drawn
+     from no data at all. Flat and dull instead, and the legend names it. */
+  else vCol = (uRef > 0.5)
+       ? mix(vec3(0.02,0.06,0.24), vec3(0.82,0.92,1.00),
+             (uGrey>0.5) ? aCol.r : aCol.a)
+       : vec3(0.13,0.14,0.17);
   /* ⭐⭐ ONE CLOUD LIT AND THE REST TURNED DOWN -- "a button that highlights
      that point cloud" (operator, 2026-09-01). A survey of nineteen tripods in
      one room is nineteen clouds of the same furniture, and the list gives you
@@ -8528,7 +8555,7 @@ function draw(){
     if(fillAt<fillQ.length){
       /* one full-detail chunk per idle frame; the scene's global uniforms
          and viewport still stand from the frame that queued these */
-      const e=fillQ[fillAt++], s=e.s, comps=s.rgb?3:1;
+      const e=fillQ[fillAt++], s=e.s, comps=compsOf(s);
       gl.useProgram(prog);
       /* ⛔ THE SIZE GOES BACK. The scene frame left it grown for the twin,
          and full-detail points drawn at the twin's size would be a blurrier
@@ -8540,6 +8567,7 @@ function draw(){
       gl.uniform3fv(loc.uOffset,s.offset);
       gl.uniform3fv(loc.uTint,s.tintf);
       gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
+      gl.uniform1f(loc.uRef, hasRef(s)?1.0:0.0);
       /* ⛔ THE REFINEMENT FRAMES DIM TOO. These chunks land on the very pixels
          the scene frame drew, so a spotlight applied in one and not the other
          would un-dim the cloud point by point as it sharpened -- the highlight
@@ -8619,8 +8647,9 @@ function draw(){
     gl.uniform3fv(loc.uOffset,s.offset);
     gl.uniform3fv(loc.uTint,s.tintf);
     gl.uniform1f(loc.uGrey, s.rgb?0.0:1.0);
+    gl.uniform1f(loc.uRef, hasRef(s)?1.0:0.0);
     gl.uniform1f(loc.uDim, dimOf(s));
-    const comps=s.rgb?3:1;
+    const comps=compsOf(s);
     /* ⛔⛔ GROWN ONLY WHILE THE HAND IS MOVING, AND THE REASON IS WHAT COVERS
        WHAT. A stand-in point has to cover the area of the K it stands for or
        the surface goes porous -- but a GROWN twin point cannot be painted out
@@ -8669,12 +8698,13 @@ async function loadScan(m){
   const buf = await r.arrayBuffer(), dv=new DataView(buf);
   if(new TextDecoder().decode(new Uint8Array(buf,0,4))!=='TLSV')
     throw new Error('bad point format');
-  const n=dv.getUint32(8,true), rgb=!!(dv.getUint8(6)&1);
+  const flags=dv.getUint8(6);
+  const n=dv.getUint32(8,true), rgb=!!(flags&1), refl=!!(flags&2);
   const scale=[dv.getFloat32(12,true),dv.getFloat32(16,true),
                dv.getFloat32(20,true)];
   const offset=[dv.getFloat32(24,true),dv.getFloat32(28,true),
                 dv.getFloat32(32,true)];
-  const HEAD=36, comps=rgb?3:1;
+  const HEAD=36, comps=compsOf({rgb, refl});
   const pos=new Int16Array(buf,HEAD,n*3);
   const col=new Uint8Array(buf,HEAD+n*6,n*comps);
   /* ⭐ THE POSITIONS ARE KEPT ON THE CPU AS WELL AS UPLOADED. WebGL 1 cannot
@@ -8703,7 +8733,7 @@ async function loadScan(m){
      cross-check has to look at do_GET as well as do_POST. */
   return Object.assign(
     {index:m.index, name:m.name, points:n, total:(m.total||n),
-     rgb, scale, offset, chunks, coarse, raw:pos, live, lo, hi,
+     rgb, refl, scale, offset, chunks, coarse, raw:pos, live, lo, hi,
      reach:(reach[Math.floor(reach.length*0.9)]||10)},
     describeScan(m));
 }
@@ -8752,6 +8782,27 @@ function link(vs,fs){
 /* One scan's GPU buffers. ⛔ SHARED BY FIRST LOAD AND CONTEXT RECOVERY --
    two copies of this loop would be two chances for one of them to upload a
    stale live mask after a cut. */
+/* ⛔⛔ ONE HOME FOR THE COLOUR STRIDE, AND IT HAS TO STAY ONE. This was
+   `s.rgb?3:1` written out in FOUR places -- the download, the two draw loops
+   and the graphics-recovery rebuild -- and the four agreeing was left to
+   luck. The day a coloured cloud started carrying a fourth byte of return
+   strength, any one of them still reading three would walk the attribute
+   three-of-four and shear every colour along the cloud: not a crash, not an
+   error, just a scan that looks like a corrupt download. A scan object is
+   enough to answer it, so nothing else may work it out for itself. */
+/* The colour modes, in the order the button cycles them. ONE list:
+   the button and the project restore both read it, and a mode added
+   to one array and not the other put `undefined` on the button. */
+const MODES=['By scan','Height','Photo / intensity',
+             'Return strength'];
+function compsOf(s){ return s.rgb ? (s.refl ? 4 : 3) : 1; }
+/* Whether this cloud can answer "how strong was the return" at all. A grey
+   cloud always can -- its one colour byte IS the reflectivity. A coloured one
+   can only if the fourth byte came with it, and a cloud read back from an
+   exported .cloud never has it. Asked by the draw so the strength mode can
+   refuse rather than paint the attribute default. */
+function hasRef(s){ return !s.rgb || !!s.refl; }
+
 function makeChunks(pos,col,live,comps,name){
   const n=live.length, chunks=[];
   for(let s0=0;s0<n;s0+=CHUNK){
@@ -8839,7 +8890,7 @@ function dropChunks(list){
    the positions were already held for the lasso, the live mask holds the
    cuts, and the colours live in the same ArrayBuffer as the positions. */
 function reChunk(s){
-  const n=s.points, comps=s.rgb?3:1;
+  const n=s.points, comps=compsOf(s);
   const col=new Uint8Array(s.raw.buffer, s.raw.byteOffset + n*6, n*comps);
   s.chunks=makeChunks(s.raw, col, s.live, comps, s.name);
   s.coarse=makeCoarse(s.raw, col, s.live, comps, s.name);
@@ -8853,7 +8904,7 @@ function buildGL(){
   lprog=link(LVS,LFS);
   loc={};
   for(const u of ['uVP','uModel','uScale','uOffset','uTint','uPS','uPSmax',
-                  'uMode','uZlo','uZhi','uGrey','uClipOn','uClipIn','uClipC',
+                  'uMode','uZlo','uZhi','uGrey','uRef','uClipOn','uClipIn','uClipC',
                   'uClipH','uClipRT','uOrtho','uOrthoW','uDim'])
     loc[u]=gl.getUniformLocation(prog,u);
   loc.aPos=gl.getAttribLocation(prog,'aPos');
@@ -12058,7 +12109,7 @@ async function openProject(path){
       $('detv').textContent=detailText(V.detail);
       $('exv').textContent=detailText(V.exdet);
       $('ps').value=V.psize; $('psv').textContent=V.psize.toFixed(2);
-      $('mode').textContent=['By scan','Height','Photo / intensity'][V.mode];
+      $('mode').textContent=MODES[V.mode]||MODES[0];
       $('mode').classList.toggle('on',V.mode===0);
       $('gizmo').classList.toggle('on',V.gizmo);
       V.ref=!!j.view.ref; V.plumb=j.view.plumb||{a:null,b:null};
@@ -13338,7 +13389,7 @@ async function addPhoto(index){
     if(j.coloured){
       /* Switch to it, or the work just done is invisible and reads as a
          failure -- the scan is still tinted by origin until you ask. */
-      V.mode=2; $('mode').textContent='Photo / intensity';
+      V.mode=2; $('mode').textContent=MODES[2];
       $('mode').classList.remove('on');
       say('Coloured from '+(info.name||'the photo')+', camera heading '+
           (info.yaw_deg==null?'?':(+info.yaw_deg).toFixed(2))+'°'+conf+
@@ -14004,7 +14055,7 @@ async function afterColour(j){
   watch(false);
   /* Switch to photo colour, or the work reads as having done nothing -- the
      cloud is still tinted by origin until somebody asks. */
-  V.mode=2; $('mode').textContent='Photo / intensity';
+  V.mode=2; $('mode').textContent=MODES[2];
   $('mode').classList.remove('on');
 }
 
@@ -15299,9 +15350,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('zeromove').onclick=()=>resetPart('move');
   $('zeroturn').onclick=()=>resetPart('turn');
   $('mode').onclick=e=>{
-    V.mode=(V.mode+1)%3;
-    e.target.textContent=['By scan','Height','Photo / intensity'][V.mode];
-    e.target.classList.toggle('on',V.mode===0); invalidate(); };
+    V.mode=(V.mode+1)%MODES.length;
+    e.target.textContent=MODES[V.mode];
+    e.target.classList.toggle('on',V.mode===0); invalidate();
+    /* ⛔ A CLOUD DRAWN FLAT HAS TO SAY WHY. The strength mode paints a cloud
+       with no reflectivity a dull grey rather than inventing one, and a dull
+       grey cloud among lit ones reads as a scan that failed -- which is the
+       silent refusal this file keeps meeting. Named here, once, on the press
+       that causes it. */
+    if(V.mode===3){
+      const mute=V.scans.filter(s=>!hasRef(s));
+      say('Return strength — dark is a weak return, pale a strong one. '+
+          (mute.length
+            ? mute.length+' cloud'+(mute.length===1?'':'s')+' carr'+
+              (mute.length===1?'ies':'y')+' no return strength and '+
+              (mute.length===1?'is':'are')+' drawn flat: '+
+              mute.map(s=>s.name).join(', ')+'. Re-read the capture to get '+
+              'it back — an exported .cloud does not carry it.'
+            : 'Every cloud has it.'));
+    } };
   $('editwho').onchange=e=>{
     V.editWho=parseInt(e.target.value,10);
     if(V.editWho>=0) V.picked=V.editWho;

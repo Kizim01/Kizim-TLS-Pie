@@ -6558,7 +6558,102 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-09, forty-seventh pass) — the current one
+### ⚠ LIVE STATE (2026-09-09, forty-eighth pass) — the current one
+
+**⭐ A FOURTH COLOUR MODE: RETURN STRENGTH, IN BLUE.** *"i need an intensity
+filter in blue that gets lighter the more points are gathered"* (operator,
+2026-09-09). Asked which they meant — density, or the instrument's own
+reflectivity — and the answer was **return strength**. The mode button now has
+a fourth stop, `Return strength`, ramping deep navy to pale blue-white: dark is
+a weak return, pale a strong one.
+
+**⛔⛔ AND IT COULD NOT BE ONE SHADER LINE, BECAUSE THE COLOUR BLOCK CARRIES
+EITHER THE PHOTOGRAPH OR THE STRENGTH AND NEVER BOTH.** On a grey cloud the one
+byte a point IS the reflectivity (`intensity_to_grey` REPEATS the byte, it does
+not map it), so `aCol.r` is the answer and the mode is free. The moment a
+photograph is applied the wire carries three bytes of picture and the
+instrument's number is **gone**. Painting `aCol.r` as intensity there is not a
+missing feature, it is **a lie that looks entirely plausible: a red wall renders
+as a strong return.** On the rematched Ministry of Sound project 54 of 56
+captures colour on open, so the cheap build would have been wrong about almost
+the whole job. ⭐ **THE DATA WAS ALREADY THERE AND SIMPLY NOT PACKED**:
+`ViewerBuffer` has kept the reflectivity beside the colour, thinned in step with
+it, since it was written — `add(xyz, rgb, refl)`, handed back by `intensity()`.
+Nothing had to be recomputed; `Scan.buffer` just never passed it.
+
+**✅ WHAT SHIPPED.** `FORMAT_VERSION` 2→3 and a new `FLAG_REFL`: a coloured
+cloud that still has its reflectivity sends a **fourth byte** (RGB + strength in
+the alpha) and says so in the header; a grey one stays at one byte, because a
+fourth there would be the same number twice at a byte a point across sixty
+million. The shader reads `(uGrey>0.5) ? aCol.r : aCol.a`, which needs no new
+attribute since `uGrey` is already set per scan from exactly that distinction.
+Cost is 9→10 bytes a point on coloured clouds only.
+⛔ **A CLOUD THAT CANNOT ANSWER IS DRAWN FLAT, NOT PLAUSIBLY.** Without the
+fourth byte the alpha is the attribute default of **1.0** — which would paint
+the whole cloud the BRIGHT end of the ramp, the most confident possible picture
+drawn from no data at all. `uRef` gates it to a dull grey and the press names
+the clouds affected by name.
+
+**⭐⭐ THE STRIDE HAD BEEN WRITTEN OUT IN FOUR PLACES AND AGREED ONLY BY LUCK.**
+`s.rgb?3:1` lived in the download, BOTH draw loops and the graphics-recovery
+rebuild. A fourth byte arriving while any one of them still said three walks the
+attribute three-of-four and **shears every colour along the cloud**: no error,
+no crash, just a scan that looks like a corrupt download. One `compsOf(s)` now,
+with `hasRef(s)` beside it, and a test asserts the guess itself is gone from the
+source rather than only that the helper is right — a fifth site could otherwise
+appear and pass. `MODES` did the same for the mode labels, which the button and
+the project restore each spelled out (`undefined` on the button otherwise).
+
+**⛔⛔ THE SUITE CAUGHT A REAL BUG IN THIS WORK, AND THE FIRST FIX VERIFIED
+ITSELF.** The shader source is a JS **template literal**, so the backtick this
+file uses to quote an identifier everywhere else **closes the string** — the
+page would not have parsed at all, which is a black canvas, not a wrong colour.
+`node --check` fired. The fix then counted backticks "in the shader body", where
+the body was taken as *up to the next backtick*: **zero by construction, however
+many remain**, and a third one only surfaced on the next run. ⭐ **A CHECK WHOSE
+BOUNDARY IS THE THING IT IS CHECKING FOR CANNOT FAIL.** Now measured to the
+literal's real end (``;`), across all four shader strings.
+
+**⛔ AND ONE TEST COULD NOT FAIL CLEANLY, WHICH THE REVERSION AUDIT FOUND.**
+Breaking the `keep`-mask narrowing makes the strength array the wrong length,
+`ViewerBuffer.add` rightly refuses it, no fourth byte is sent — and the test then
+reshaped a three-byte block into four columns and **threw**, so the suite died
+with a traceback instead of printing the check's name. It came back "not
+caught" while the claim underneath it was sound. The stride is read from the
+flag now. ⭐ **A TEST THAT CANNOT FAIL CLEANLY CANNOT REPORT.**
+
+**Audited:** five breaks, all CAUGHT by the check that names them — the handover
+from `Scan.buffer`, the keep-mask narrowing, the fourth byte's ORDER, the flag
+itself, and the one-home stride. Both files restored **byte-for-byte** (md5
+identical before and after). Suites **1936 → 1946**.
+⛔ **THE EXES ARE NOT REBUILT.** The operator was in the Studio throughout, and
+a build packs the WORKING TREE with Studio closed. Until that is done this mode
+exists in the source and NOT on the machine.
+
+**⭐ ALSO ANSWERED THIS PASS, FROM MEASUREMENT RATHER THAN ADVICE:** *"what is a
+good setting for removing strays?"* Ran the shipped `clean.stray_mask` over a
+grid against four of the job's preview clouds. **The defaults are right** —
+10 cm cell, 3 neighbours, which drops 0.2-0.3% of a cloud and ~2% of the
+points beyond 15 m. ⛔ **THE CELL IS THE DANGEROUS KNOB AND THE SLIDER GOES
+SOMEWHERE IT SHOULD NOT**: at 5 cm/n≥3 capture 1 goes from 0.3% to 2.2%
+overall but from 2% to **19% of everything beyond 15 m** — that is wall, not
+dust, because at 5 cm the VLP-16's own +/-30 mm range noise splits a flat
+surface across cells. **Never below 8 cm; tune with Neighbours instead.**
+⚠ And **"bigger cell = gentler" STOPS BEING TRUE at high neighbour counts**
+(capture 55: 0.4% at 10 cm/n≥6, 0.9% at 20 cm/n≥6) — company that sat in a
+NEIGHBOURING cell moves into the point's OWN cell as the cell grows, and a
+point's own cell deliberately does not count as company. ⭐ **JUDGE IT ON THE FAR
+WALL**: only ~1% of these clouds is beyond 15 m, so the overall figure is nearly
+blind to the damage.
+⛔ **AND THERE IS NO SHOOT-WIDE REMOVE STRAYS.** It is one cloud at a time by
+design (`clean_scan`'s docstring), so this job is 56 presses — while the UNDO
+already is whole-job (`restorePoints(null)` walks every cloud with a rule). The
+docstring's objection is to one rule measured across a MERGED survey, which is
+not the same as the same rule measured in each cloud's own frame; the occupancy
+test was built to survive exactly that. Offered, not built — the operator has
+not asked for it.
+
+### ⚠ LIVE STATE (2026-09-09, forty-seventh pass)
 
 **⭐⭐ THE OPERATOR ASKED FOR A REMATCH AND THE ANSWER WAS THAT NOTHING WAS MISMATCHED.**
 *"take this project file and rematch scans to the images ... so when the project opens the right
@@ -6726,7 +6821,15 @@ the log) and **`03fcf88`** (item 12, a move re-tests only what it can change). T
 clean but for the standing untracked `windows-converter/cutjs_tmp.js`, and **no audit debt is
 outstanding**.
 
-⛔ **THE 47TH PASS LEFT A FILE THE OPERATOR HAS NOT OPENED YET.**
+⛔ **THE 48TH PASS IS IN THE SOURCE AND NOT ON THE MACHINE.** Colour by
+`Return strength` — the fourth mode, the wire's fourth byte, `compsOf`/`hasRef`
+— is committed, suite-green at 1946 and reversion-audited, but **the exes were
+NOT rebuilt**: the operator was in the Studio and a build packs the working tree
+with Studio closed. **Ask whether the Studio can be closed, then run
+`python build_exe.py` from `windows-converter`.** Until then the button does not
+exist for them, and a report that the mode "is in" would be false.
+
+⛔ **AND THE 47TH PASS LEFT A FILE THE OPERATOR HAS NOT OPENED YET.**
 `Desktop\ministry of sound\scan project (photos rematched).tlspie` — 56 captures, 54
 photographs, every heading dropped so each re-solves through the feature matcher. **Ask what the
 grades came back as.** The claim being tested is that the `doubtful` count collapses, because
