@@ -3,13 +3,16 @@ The camera manifest: where every panorama's camera sat, in the frame of the
 cloud that was just written, so the surveyed room can be rebuilt in SketchUp
 with the photographs placed where they were taken.
 
-Three files go beside the exported cloud, under the cloud's own stem so an
+Four files go beside the exported cloud, under the cloud's own stem so an
 export folder holding several clouds keeps each manifest with its cloud:
 
     <stem>.camera_manifest.json   -- authoritative: frame, transforms, cameras
     <stem>.camera_positions.csv   -- one row per camera, for a spreadsheet
     <stem>.export_report.md       -- what was validated, what is missing
     <stem>.camera_preview.png     -- the cameras drawn over the cloud, in plan
+
+The preview is the one that may be absent: `write_beside(preview=False)`, or a
+plan that could not be drawn. The other three are always written.
 
 ⛔⛔ EVERY POSITION HERE IS IN THE FILE'S OWN FRAME, AND THAT IS THE WHOLE
 POINT. A point leaves this program as

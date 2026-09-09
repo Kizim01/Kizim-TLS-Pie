@@ -575,6 +575,28 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
         row["shared"] = False
         row["by_picture"] = True
 
+    # ⛔⛔ AND THE OVERRIDE'S PHOTOGRAPH LEAVES THE POOL WITH ITS ROW. Taking
+    # the ROW out of the walk was only half of it, and the other half was
+    # already written for the case above: `beside` drops its picture from
+    # `photos` BEFORE `timed` is built. An override is settled after `timed`
+    # exists, so its photograph stayed in the pool and the walk was free to
+    # hand that same file to a different capture. Two rows then came back
+    # `assigned` to ONE photograph with `shared` False on both -- which is
+    # not a share, it is a duplicate nothing counts or reports.
+    #
+    # ⛔ AND THE PLACE IT SURFACES IS THE WORST ONE IN THIS PROGRAM. `apply`
+    # MOVES the file for the first row and dies on `[WinError 2]` for the
+    # second, part-way through rearranging a day's captures -- the one press
+    # whose own confirmation says the originals do not stay where they are.
+    # Reproduced 2026-09-08; fixed here rather than in `apply`, because a
+    # plan that names one file twice is wrong before anything is moved.
+    if overrides:
+        spent = {os.path.normcase(os.path.abspath(r["assigned"]["path"]))
+                 for r in rows if r.get("by_picture") and r.get("assigned")}
+        timed = [p for p in timed
+                 if os.path.normcase(os.path.abspath(p["path"]))
+                 not in spent]
+
     # ⭐⭐ ONE PHOTOGRAPH, ONE HOME, AND THE DAY'S OWN ORDER KEPT. Filing every
     # photograph inside the window into every capture inside it duplicated most
     # of the shoot: a tripod position produces TWO captures (the rig sweeps

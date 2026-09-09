@@ -44,10 +44,26 @@ DEFAULT_VOXEL_M = 0.10
 # the point is called part of a surface.
 DEFAULT_NEIGHBOURS = 3
 
-# Grid half-width in cells. A VLP-16 reaches 120 m, so at the smallest cell
-# this allows the grid still fits comfortably inside an int64 key.
-_BIAS = 1 << 12
-_SPAN = 1 << 13
+# Grid half-width in cells. A VLP-16 reaches 120 m, and the grid has to cover
+# that at the SMALLEST cell the panel offers, which is 2 cm.
+#
+# ⛔⛔ IT DID NOT. This was 1<<12 -- 4,096 cells, which at 2 cm is 81.92 m --
+# under a comment claiming the 120 m it did not reach, and `_keys` CLAMPS
+# rather than raising: every return beyond 81.92 m was folded into the edge
+# cell. That does not lose those points, it does something quieter and worse.
+# They pile into one cell, which is then the most crowded cell in the cloud, so
+# every one of them is surrounded by company and KEPT -- the far returns, the
+# ones most likely to be dust or a mixed pixel off an edge, are exactly the
+# ones the test stops being able to judge. Nothing is thrown and the count
+# looks ordinary.
+#
+# 1<<13 is 8,192 cells: 163.84 m at 2 cm, past the instrument's own reach, and
+# 409.6 m at the 5 cm this program actually recommends. ⭐ AND THE KEY STILL
+# FITS EASILY: three coordinates in [0, 16384) pack to at most 4.4e12, against
+# an int64's 9.2e18. Only clouds with returns beyond 81.92 m at a cell under
+# 8 cm read differently from before, and they read RIGHT.
+_BIAS = 1 << 13
+_SPAN = 1 << 14
 
 
 def _keys(xyz, voxel_m):

@@ -42,6 +42,12 @@ DIST = os.path.join(HERE, "dist")
 # run time from headers that live inside its own package.
 PACKAGES = ["cupy", "cupyx", "cupy_backends", "fastrlock", "cuda"]
 
+# ⛔ LEFT IN EVERY ENGINE THIS SCRIPT BUILDS, so the NEXT run can tell an engine
+# folder from a directory somebody meant to keep. See the refusal in `build`:
+# without a mark of our own, "is it safe to delete this?" has no answer that
+# does not amount to trusting whatever was typed.
+STAMP = "tls_cuda_engine.txt"
+
 # ⛔ SHIPPED SO THAT `cuda.pathfinder` FINDS THE LIBRARIES BY ITS OWN ORDINARY
 # RULES. It looks for wheel metadata to decide where an NVIDIA library lives;
 # without these it falls back to searching the system and finds the wrong CUDA,
@@ -115,6 +121,36 @@ def copy_metadata(src, dst):
     return got
 
 
+def may_clear(out_dir):
+    """
+    Whether this script may empty `out_dir` before rebuilding into it.
+
+    ⛔⛔ A DIRECTORY NAMED ON THE COMMAND LINE IS NOT A LICENCE TO DELETE IT.
+    `build` used to open with `if os.path.isdir(out_dir): shutil.rmtree(...)`
+    outright -- so `--out dist` instead of `--out dist\\cuda-engine`, or a path
+    pasted from somewhere else, took that whole directory and everything under
+    it: no confirmation, no recycle bin, nothing to undo. The engine is rebuilt
+    from the venv in a minute; whatever was typed by mistake is not.
+
+    ⭐ AND THE TEST IS EVIDENCE THIS SCRIPT LEFT, NOT A GUESS AT INTENT. An
+    empty directory is nobody's work; one this script built carries `STAMP`;
+    one holding `cupy\\` is an engine from before the stamp existed, which is
+    the operator's current one and must not need emptying by hand. Anything
+    else is refused by name, with the two ways forward.
+
+    Returns (True, None) or (False, what to print).
+    """
+    if not os.path.isdir(out_dir) or not os.listdir(out_dir):
+        return True, None
+    if (os.path.exists(os.path.join(out_dir, STAMP))
+            or os.path.isdir(os.path.join(out_dir, "cupy"))):
+        return True, None
+    return False, ("%s already holds files and was not built by this script "
+                   "(no %s and no cupy\\ in it).\nIt has NOT been touched. "
+                   "Empty it yourself, or name a directory that does not "
+                   "exist yet." % (out_dir, STAMP))
+
+
 def build(out_dir):
     try:
         src = site_packages()
@@ -141,6 +177,10 @@ def build(out_dir):
               % (dll_src, "\n  ".join(missing)), file=sys.stderr)
         return 2
 
+    allowed, why = may_clear(out_dir)
+    if not allowed:
+        print(why, file=sys.stderr)
+        return 2
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
@@ -181,6 +221,12 @@ def build(out_dir):
                if f.endswith(".dll") and f not in KEEP_DLLS)
     print("  %-22s %8.1f MB in %d libraries (%.0f MB left behind)"
           % ("nvidia runtime", kept, len(KEEP_DLLS), left))
+
+    # The mark that makes the next rebuild's refusal decidable. Written last,
+    # so a build that died half-way leaves no claim to have finished.
+    with open(os.path.join(out_dir, STAMP), "w", encoding="utf-8") as fh:
+        fh.write("Built by build_cuda_engine.py. Safe to delete: this folder "
+                 "is rebuilt from the venv's CuPy install.\n")
 
     total = mb(out_dir)
     print("\n%s  %.0f MB" % (out_dir, total))

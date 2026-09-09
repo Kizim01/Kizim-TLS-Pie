@@ -1116,6 +1116,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     body.get("neighbours"), body.get("min_refl")))
             if path == "/clean/levels":
                 return self._json(srv.strength_of(body.get("index")))
+            # ⛔ ONE DOOR FOR THE WHOLE-JOB CLEAN AND ITS UNDO. `specs` sends
+            # a stored rule back to each cloud, so the press and the press
+            # that takes it back cannot describe the rule differently.
+            if path == "/clean/all":
+                return self._json(srv.clean_all(
+                    body.get("stray"), body.get("drop_weakest"),
+                    body.get("voxel_m"), body.get("neighbours"),
+                    body.get("specs")))
             # ⭐ EVERY PHOTOGRAPH DOOR FIRST HEARS WHAT HAS BEEN CUT, from
             # this one line, so no solve behind any of them can read a point
             # the operator deleted. The page attaches the list in ITS one
@@ -3977,6 +3985,131 @@ class AlignServer(object):
 
     def clean_scan(self, index, stray=None, drop_weakest=None,
                    voxel_m=None, neighbours=None, min_refl=None):
+        """One cloud cleaned, with the page's new scan list attached.
+
+        ⛔ THE REBUILD IS THE ONLY THING THIS ADDS, and it is split out
+        because `_rebuild()` RE-ENCODES EVERY OPEN SCAN. Whole-job cleaning
+        walks `_clean_one` fifty-six times and rebuilds once; had it walked
+        this door instead it would have rebuilt fifty-six clouds fifty-six
+        times, which is n-squared in the one number that is large.
+        """
+        out = self._clean_one(index, stray=stray, drop_weakest=drop_weakest,
+                              voxel_m=voxel_m, neighbours=neighbours,
+                              min_refl=min_refl)
+        if out.get("ok"):
+            out["scans"] = self._rebuild()
+        return out
+
+    @staticmethod
+    def _spec_args(spec):
+        """A stored cleaning spec, back in the arguments that would make it.
+
+        ⛔ ONE HOME, for the reason `sendCleanSpec` gives on the page: an undo
+        must put back the SAME rule, and `min_refl` cannot be re-derived --
+        the button asks for a SHARE ("the weakest 10%") and what is stored is
+        the reflectivity that share worked out to. Anything that rebuilds the
+        arguments by hand gets that one wrong, quietly, and the cloud comes
+        back with more points than it had before the thing being undone.
+        """
+        spec = spec or {}
+        stray = spec.get("stray") or {}
+        return {"stray": bool(spec.get("stray")),
+                "voxel_m": stray.get("voxel_m"),
+                "neighbours": stray.get("neighbours"),
+                "min_refl": spec.get("min_refl"),
+                "drop_weakest": None}
+
+    def clean_all(self, stray=None, drop_weakest=None, voxel_m=None,
+                  neighbours=None, specs=None):
+        """
+        One cleaning rule applied to every open cloud, in one press.
+
+        ⭐⭐ ASKED FOR AS "IS THERE A REMOVE STRAYS THAT GOES ACROSS THE
+        ENTIRE SHOOT?" (operator, 2026-09-09), on a job of fifty-six captures
+        where the answer was fifty-six presses. The UNDO was already whole-job
+        (`restorePoints(null)`), which is the shape of a job that had grown
+        one half of a feature.
+
+        ⛔⛔ AND IT DOES NOT WEAKEN WHAT `_clean_one` SAYS ABOUT SCOPE. That
+        note refuses ONE RULE MEASURED ACROSS A MERGED SURVEY, which this is
+        not: the occupancy test counts OCCUPIED CELLS around each point, in
+        that point's own cloud, so it carries no distance threshold to be too
+        harsh near one tripod and too soft near another. Fifty-six independent
+        local decisions taken in one press are still fifty-six local
+        decisions. ⛔ The CELL is the knob that can still break it -- below
+        8 cm the VLP-16's own +/-30 mm range noise splits a flat surface
+        across cells and the far wall goes with the dust (measured 2026-09-09:
+        5 cm cost 19% of everything beyond 15 m) -- and that is as true of one
+        press as of fifty-six.
+
+        ⛔ A REFUSAL DOES NOT STOP THE SWEEP. A cloud with no reflectivity, or
+        one the setting would empty, is a fact about that cloud; abandoning
+        the other fifty-five for it turns a whole-job press into a partial one
+        with nothing to say which half ran. Every refusal comes back BY NAME.
+
+        ⛔ AND THE PUT-BACK COMES THROUGH THE SAME DOOR. `specs` is a list of
+        {index, spec} to restore, so one press forward is one press back --
+        the undo cannot drift from the thing it undoes, and it costs one
+        rebuild rather than fifty-six.
+        """
+        if not self.scans:
+            return {"ok": False, "error": "there is nothing open to clean"}
+        putting_back = specs is not None
+        if putting_back:
+            jobs = [(int(e.get("index", -1)), self._spec_args(e.get("spec")))
+                    for e in (specs or [])]
+        else:
+            jobs = [(i, {"stray": stray, "drop_weakest": drop_weakest,
+                         "voxel_m": voxel_m, "neighbours": neighbours,
+                         "min_refl": None})
+                    for i in range(len(self.scans))]
+        done, refused = [], []
+        gone = shown = 0
+        try:
+            for n, (i, args) in enumerate(jobs):
+                if not 0 <= i < len(self.scans):
+                    refused.append({"name": "cloud %d" % (i + 1),
+                                    "error": "no longer open"})
+                    continue
+                scan = self.scans[i]
+                # ⛔ THE BAR IS SET HERE AND `_clean_one` IS TOLD NOT TO TOUCH
+                # IT. Left to itself each cloud reports "1 of 1" and then
+                # "done", so a sweep of fifty-six reads as fifty-six finished
+                # jobs -- a bar that reaches the end fifty-six times says
+                # less than no bar at all.
+                self._progress = {"stage": "%s %s"
+                                  % ("putting back" if putting_back
+                                     else "cleaning", scan.name),
+                                  "n": n, "total": len(jobs), "busy": True}
+                out = self._clean_one(i, progress=False, **args)
+                if not out.get("ok"):
+                    refused.append({"name": scan.name,
+                                    "error": out.get("error") or "refused"})
+                    continue
+                done.append({"index": i, "name": scan.name,
+                             "dropped": out.get("dropped") or 0})
+                gone += out.get("dropped") or 0
+                shown += out.get("shown") or 0
+        finally:
+            self._progress = {"stage": "done", "n": len(jobs),
+                              "total": len(jobs), "busy": False}
+        if putting_back:
+            text = ("%d cloud%s put back the way %s were"
+                    % (len(done), "" if len(done) == 1 else "s",
+                       "it" if len(done) == 1 else "they"))
+        else:
+            text = ("%d of %d clouds cleaned: %d of %d preview points hidden "
+                    "(%.2f%%). The export applies the same rule to every "
+                    "point in each capture."
+                    % (len(done), len(jobs), gone, shown,
+                       100.0 * gone / max(shown, 1)))
+        return {"ok": True, "cleaned": done, "refused": refused,
+                "dropped": gone, "shown": shown, "text": text,
+                "scans": self._rebuild()}
+
+    def _clean_one(self, index, stray=None, drop_weakest=None,
+                   voxel_m=None, neighbours=None, min_refl=None,
+                   progress=True):
         """
         Take the rubbish out of one cloud: strays, weak returns, or both.
 
@@ -4046,25 +4179,27 @@ class AlignServer(object):
             scan.clean, scan.keep = None, None
             return {"ok": True, "cleared": True, "clean": None,
                     "kept": len(scan.xyz), "dropped": 0,
-                    "text": "cleaning turned off -- every point is back",
-                    "scans": self._rebuild()}
+                    "shown": len(scan.xyz),
+                    "text": "cleaning turned off -- every point is back"}
 
         # ⚠ THE PREVIEW IS DECIMATED AND THE COUNT SAYS SO. This mask is
         # measured on the points on screen, which are a fraction of the
         # capture; the export re-reads at full density and applies the same
         # RULE, so the proportion carries over but the count does not.
-        self._progress = {"stage": "cleaning %s" % scan.name, "n": 0,
-                          "total": 1, "busy": True}
+        if progress:
+            self._progress = {"stage": "cleaning %s" % scan.name, "n": 0,
+                              "total": 1, "busy": True}
         try:
             mask = clean_mod.apply_spec(scan.xyz, refl, spec)
         finally:
-            self._progress = {"stage": "done", "n": 1, "total": 1,
-                              "busy": False}
+            if progress:
+                self._progress = {"stage": "done", "n": 1, "total": 1,
+                                  "busy": False}
         if mask is None:
             scan.clean, scan.keep = None, None
             return {"ok": True, "cleared": True, "clean": None,
                     "kept": len(scan.xyz), "dropped": 0,
-                    "scans": self._rebuild(),
+                    "shown": len(scan.xyz),
                     "text": "nothing to clean by"}
         # ⛔ A RULE THAT WOULD EMPTY THE CLOUD IS REFUSED RATHER THAN OBEYED.
         # An empty preview looks exactly like a crash, and the operator's next
@@ -4083,8 +4218,7 @@ class AlignServer(object):
                         "capture."
                         % (scan.name, gone, len(scan.xyz),
                            100.0 * gone / max(len(scan.xyz), 1)),
-                "describe": clean_mod.describe(spec),
-                "scans": self._rebuild()}
+                "describe": clean_mod.describe(spec)}
 
     def strength_of(self, index):
         """What each share of weak returns would cost, for this cloud."""
@@ -6670,6 +6804,11 @@ PAGE = r"""<!doctype html>
   <div class="blurb">Take out strays and weak returns.</div>  <label>Clean this cloud <span class="num" id="clnwho">—</span></label>
   <div class="row"><button id="clnstray" class="go">Remove strays</button>
     <button id="clnoff">Put them back</button></div>
+  <div class="row"><button id="clnall">Remove strays everywhere</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 5px">
+    The whole job with the settings below, each cloud measured in its own
+    frame — one press, and <b>one</b> Ctrl-Z to take it all back. Press it
+    twice: it asks first.</div>
   <label>Cell <span class="num" id="clnvv">10 cm</span></label>
   <input id="clnv" type="range" min="2" max="50" step="1" value="10">
   <label>Neighbours needed <span class="num" id="clnnv">3</span></label>
@@ -9099,7 +9238,7 @@ async function autoFloorLevel(){
   try{
     const j = await postLevelFloor();
     if(!j || !j.ok) return;
-    V.level=j.level; showLevel(); recomputeLive(); invalidate(); editsFollow();
+    V.level=j.level; showLevel(); editsFollowNow(); invalidate();
     /* ⛔ THIS USED TO SAY "NOTHING WAS MOVED", WHICH WAS TRUE OF THE SCANS AND
        READ AS TRUE OF THE WORLD. No placement changes -- that part still
        holds and still matters -- but the ground plane now lands on the grid
@@ -9145,7 +9284,7 @@ async function levelArrivals(list, loud){
   const done=[];
   for(const i of list){ const j = await levelOne(i, loud); if(j) done.push(j); }
   if(!done.length) return done;
-  syncSliders(); recomputeLive(); invalidate(); editsFollow();
+  syncSliders(); editsFollowNow(); invalidate();
   const worst = done.reduce((a,b)=>a.was_deg>b.was_deg?a:b);
   say(done.length===1
       ? done[0].text + '. The world grid did not move — the scan came to it.'
@@ -9160,8 +9299,8 @@ async function levelToFloor(){
   try{
     const j = await postLevelFloor();
     if(!j.ok) return say(j.error||'no floor could be found', 'warn');
-    V.level=j.level; showLevel(); showFloors(j); recomputeLive();
-    invalidate(); editsFollow(); dirty();
+    V.level=j.level; showLevel(); showFloors(j); editsFollowNow();
+    invalidate(); dirty();
     /* ⛔ THE SCATTER IS A NUMBER, NOT AN ACCUSATION -- and the first version
        of this line got that wrong. It named every capture more than two
        degrees off as "a step in the building, or a scan that is misplaced".
@@ -9202,8 +9341,8 @@ async function levelToWalls(){
   try{
     const j = await postLevelWalls();
     if(!j.ok) return say(j.error||'no walls could be found', 'warn');
-    V.level=j.level; showLevel(); showWalls(j); recomputeLive();
-    invalidate(); editsFollow(); dirty();
+    V.level=j.level; showLevel(); showWalls(j); editsFollowNow();
+    invalidate(); dirty();
     say(j.text + (j.odd.length
         ? '. ⚠ Left out — their walls lean another way entirely, so most '+
           'likely a misplaced scan: '+j.odd.join(', ')
@@ -9655,6 +9794,29 @@ function editsFollow(s){
   followTimer=setTimeout(()=>{ followTimer=null;
                                if(s) followMoved(s); else recomputeLive(); },
                          250);
+}
+/* ⛔⛔ A WHOLE-JOB REPLAY RUN NOW IS NOT OWED AGAIN 250 ms LATER, AND SIX DOORS
+   USED TO PAY IT TWICE. They read `recomputeLive(); invalidate();
+   editsFollow();` -- re-test everything, draw it, and then schedule a second
+   re-test of the same unchanged state a quarter of a second behind. At the
+   density the operator loads that is 2.0-2.5 s of frozen main thread paid
+   over again, after the press already looked finished: worse than the first
+   one, because nothing on screen is waiting for it and the freeze arrives out
+   of nowhere. Named as a defect on 2026-09-08 and left as found, since it was
+   merely doubled and not wrong; this is the second half of that fix.
+
+   ⛔ THE IMMEDIATE PASS IS THE ONE THAT SURVIVES, NOT THE TIMER. A level, a
+   north or an origin is ONE press, not a stream -- there is nothing for a
+   trailing timer to coalesce -- and deferring it would draw one frame with
+   every mask still measured against a room that has since been stood up, so
+   deleted points would flash back into the view and vanish again.
+
+   ⛔ AND IT CANCELS WHAT WAS ALREADY PENDING. A move of one cloud may have
+   left a `followMoved` on the timer; the whole-job pass just did that work and
+   more, so letting it fire is a third replay for nothing. */
+function editsFollowNow(){
+  if(followTimer){ clearTimeout(followTimer); followTimer=null; }
+  recomputeLive();
 }
 /* Wide open, square to the world, pivoted at the middle of everything. The
    sliders read 0..1 across the scene, so this is the state they describe. */
@@ -11210,6 +11372,24 @@ function pairEnds(p){
   return [put(affine(r),p.rp[0],p.rp[1],p.rp[2]),
           put(affine(m),p.mp[0],p.mp[1],p.mp[2])];
 }
+/* ⛔ A PAIR OUT OF A FILE IS NOT A PAIR OUT OF THE PICKER, AND EVERY DRAWING
+   SITE REACHES STRAIGHT INTO `rp[0]`. `pairEnds` guards that the two scans are
+   open and nothing guards the shape, because until the restore below there was
+   no door a malformed one could come through. One now: a hand-edited or
+   half-written project throws inside `drawPairs`, which is a frame that never
+   finishes -- a black window, from a file that opened and said so.
+
+   ⛔ A PAIR NAMING A SCAN THE JOB NO LONGER HAS IS KEPT, NOT DROPPED.
+   `pairEnds` already draws nothing for it and `alignPairs` already refuses it
+   BY NAME ("a pair points at a scan that is no longer open"), and that message
+   is the whole difference between a pair the operator can see is stranded and
+   a pair that was quietly deleted on the way in -- which is the bug this
+   restore exists to end. Shape is refused; arithmetic is not. */
+function okPair(p){
+  const tri=v=>Array.isArray(v) && v.length===3 && v.every(Number.isFinite);
+  return !!p && Number.isInteger(p.ri) && Number.isInteger(p.si)
+         && tri(p.rp) && tri(p.mp);
+}
 /* And what goes to the solver: the reference half in the merged frame BEFORE
    levelling, because that is the frame a Setup lands in. */
 function pairWire(p){
@@ -11677,7 +11857,7 @@ async function setOrigin(axes){
     if(!j.ok) return say(j.error||'zero could not be set there', 'warn');
     V.level=j.level;
     if(!V.wgrid){ V.wgrid=true; $('wgrid').classList.add('on'); }
-    showOrigin(); showLevel(); recomputeLive(); invalidate(); editsFollow();
+    showOrigin(); showLevel(); editsFollowNow(); invalidate();
     dirty();
     say(j.text+'. The world grid is showing so you can see it.');
   }catch(e){ say('Could not set zero: '+e.message, 'bad'); }
@@ -11693,7 +11873,7 @@ function clearOrigin(){
     delete keep.origin;
     V.level=keep;
   }
-  showOrigin(); showLevel(); recomputeLive(); invalidate(); editsFollow();
+  showOrigin(); showLevel(); editsFollowNow(); invalidate();
   dirty(); say('Zero is back where the survey started.');
 }
 function showLevel(){
@@ -12046,9 +12226,16 @@ async function openProject(path){
     dropChunks(V.scans);
     V.scans=[]; V.edits=[]; V.pending=null; askLasso(false);
     V.pairs=[]; V.half=null; V.perr=null;
-    /* ⛔ AND THE PINS ARE SESSION STATE FOR THE SAME REASON THE PAIRS ARE:
-       both halves of every one are a point in a scan that is about to be
-       closed, held against a photograph that is about to be replaced. */
+    /* ⛔⛔ THE PINS ARE SESSION STATE AND THE PAIRS ARE NOT, AND THIS COMMENT
+       USED TO SAY THEY WERE THE SAME THING. That reading is what kept the
+       restore below from ever being written: a pin's first half is a pick on a
+       PAINTED feature, so re-posing the photograph MOVES THE VERY THING IT
+       NAMES -- a pin invalidates itself, which is why `pinScan` says they are
+       not saved at all. A pair's halves are two physical features held in
+       their own scans' LOCAL coordinates (`pairPick` stores them that way on
+       purpose), and no fit, nudge or levelling can move those. So the pairs
+       are cleared here only to be read straight back out of the file further
+       down; the pins have nothing to read back. */
     V.pins=[]; V.pinHalf=null; V.pinErr=null; V.pinWho=-1; V.matched=null;
     /* ⛔ THE PICK IS SESSION STATE AND GOES WITH THE REST OF IT. A project
        opened over another job would otherwise keep the last one's choice --
@@ -12131,10 +12318,19 @@ async function openProject(path){
        came first in the list. `pushEdit` is the only other door, and this is
        the one the file comes through. */
     V.edits.forEach(e=>{ e.eid = ++EDIT_ID; });
-    /* Pairs saved half-finished come back half-finished: the residuals do not,
+    /* ⛔⛔ AND THIS COMMENT STOOD OVER NO CODE AT ALL, WHICH IS HOW THE BUG
+       SURVIVED A READING. `projectState` has always WRITTEN `pairs` (with its
+       own note that dropping them "would throw that away silently"), and
+       `open_project` has always handed them back -- and nothing here ever read
+       `j.pairs`, so the reset above threw every pair away and the file's copy
+       was never opened. Silent in the worst way: a job that has lost its pairs
+       looks exactly like a job that never had any, and the operator's only
+       clue is that the careful picking they did yesterday is gone.
+       Pairs saved half-finished come back half-finished: the residuals do not,
        because they belonged to a fit made against a placement this project has
        since had written over it. A stale number beside a pair would be read as
        this project's. */
+    V.pairs = (j.pairs||[]).filter(okPair);
     $('clipon').textContent=V.clip?'On':'Off';
     $('clipon').classList.toggle('on',V.clip);
     $('clipflip').textContent=V.inside?'Hiding inside':'Hiding outside';
@@ -12301,7 +12497,10 @@ function photoRow(s){
      end: on 2026-08-20 the refused heading was the CORRECT one, thrown out by
      a confidence that the scanner's position had flattened. Hiding the number
      behind the refusal would have hidden the answer along with it. */
-  const start = (s.yaw==null) ? '' : (+s.yaw).toFixed(2);
+  /* ⛔ WRAPPED ON THE WAY IN: the box is bounded at +/-180 and the server is
+     not, so a stored 200 painted a box whose own spinner would silently
+     clamp it. See `wrapDeg`. */
+  const start = (s.yaw==null) ? '' : wrapDeg(s.yaw).toFixed(2);
   const b = s.baseline;
   const bbtn = !b ? '' :
     '<button class="mini" title="'+(b.why||'').replace(/"/g,'&quot;')+
@@ -13700,6 +13899,79 @@ function undoClean(i){
   return ()=>sendCleanSpec(i, was);
 }
 
+/* ---- cleaning every cloud in one press --------------------------------
+
+   ⭐⭐ "IS THERE A REMOVE STRAYS THAT GOES ACROSS THE ENTIRE SHOOT?"
+   (operator, 2026-09-09). There was not: cleaning was one cloud at a time
+   while the PUT-BACK was already whole-job -- `restorePoints(null)` walks
+   every cloud with a rule -- which is the shape of a feature that had grown
+   only its second half. Fifty-six presses on the Ministry of Sound job.
+
+   ⛔ THE SERVER WALKS IT, NOT THIS. Every `clean` answer carries a rebuilt
+   scan list, and `refreshScans` re-derives the whole cut mask from it: fifty-
+   six round trips would be fifty-six whole-job replays, 2.5 s each at the
+   density this operator loads, on the main thread. One door, one rebuild,
+   one replay -- see `clean_all`.
+
+   ⛔ AND THE UNDO GOES BACK THROUGH THE SAME DOOR WITH THE RULES IT FOUND.
+   Not "clear the cleaning everywhere": a cloud that already had its own rule
+   before this press must get THAT rule back, or the undo hands the operator
+   more points than they had, which is the fault `undoClean` was fixed for. */
+let CLEAN_ARM=null;
+async function cleanEverywhere(){
+  if(!V.scans.length) return say('Add a scan first.', 'warn');
+  const body={stray:true, voxel_m:(+$('clnv').value)/100,
+              neighbours:+$('clnn').value,
+              drop_weakest:(+$('clnw').value)||null};
+  /* ⛔ ARMED ON THE SETTING, NOT ON A FLAG. The warning quotes the numbers,
+     so moving a slider after reading it must ask again -- otherwise the
+     second press goes ahead with a setting nobody was warned about. */
+  const sig=JSON.stringify(body)+' x '+V.scans.length;
+  if(CLEAN_ARM!==sig){
+    CLEAN_ARM=sig;
+    return say('This cleans ALL '+V.scans.length+' clouds with the same '+
+               'setting — '+$('clnv').value+' cm cells, '+$('clnn').value+
+               ' neighbours'+(body.drop_weakest
+                 ? ', dropping the weakest '+body.drop_weakest+'% of each'
+                 : '')+'. Press again to go ahead. ⛔ Below 8 cm the cell '+
+               'splits a flat wall across cells and takes the far wall with '+
+               'the dust — tune with Neighbours instead.', 'warn');
+  }
+  CLEAN_ARM=null;
+  /* ⛔ THE SNAPSHOT IS TAKEN BEFORE ANYTHING IS SENT, and the undo is armed
+     before the work starts, not after it succeeds: a sweep that cleans forty
+     clouds and then throws has still changed forty clouds, and an undo
+     registered on success would not exist for any of them. */
+  const was=V.scans.map(s=>({index:s.index, spec:s.clean||null}));
+  remember('cleaning every cloud', async()=>{
+    watch(true);
+    try{
+      const b=await post('clean/all', {specs:was});
+      if(b && b.ok) await refreshScans(b);
+      else say('The rules would not go back: '+((b&&b.error)||'no answer'),
+               'bad');
+    }finally{ watch(false); }
+  });
+  say('cleaning every cloud…'); watch(true);
+  try{
+    const j=await post('clean/all', body);
+    if(!j.ok) throw new Error(j.error||'could not clean the job');
+    await refreshScans(j);
+    const bad=j.refused||[];
+    $('clnsay').textContent=j.text||'';
+    /* ⛔ A CLOUD LEFT ALONE IS NAMED. A sweep that quietly skipped four of
+       fifty-six reads as a sweep that ran, and the four would be found at
+       export or not at all. */
+    say((j.text||'Done.')+
+        (bad.length ? ' ⚠ '+bad.length+' left alone: '+
+           bad.slice(0,3).map(r=>r.name+' — '+r.error).join('; ')+
+           (bad.length>3 ? ' …and '+(bad.length-3)+' more' : '') : '')+
+        ' Ctrl-Z puts every rule back exactly as it was.',
+        bad.length ? 'warn' : null);
+  }catch(e){ say('Could not clean the job: '+e.message, 'bad'); }
+  finally{ watch(false); }
+}
+
 /* ---- sorting a whole shoot ----------------------------------------- */
 
 async function askFolder(what){
@@ -13868,10 +14140,25 @@ async function wholeShoot(){
   }catch(e){ watch(false); say('Could not do the shoot: '+e.message, 'bad'); }
 }
 
+/* ⛔⛔ A HEADING PAST HALF A TURN IS THE SAME HEADING, AND THE BOX DOES NOT
+   AGREE. The heading box is `<input type="number" min="-180" max="180">`, and
+   a browser does NOT clamp a value assigned to it -- so 200 goes in and shows
+   200, from a baseline carried over, a fit tried off the shortlist, or the
+   operator simply typing it. The moment anything asks the input to STEP,
+   though (its own native spinner, or a keyboard arrow in it), the browser
+   honours `max` and the value becomes 180: a silent 20 degree jump of the
+   photograph, on a control the operator only nudged.
+
+   ⭐ ONE HOME, because there are four doors onto that box -- the panel's
+   first paint, the baseline, a candidate off the shortlist, and the arrows --
+   and three of them were not normalising. `nudgeHeading` had this arithmetic
+   inline and correct, which is exactly how the other three came to be
+   written without it. */
+function wrapDeg(d){ return ((+d + 180) % 360 + 360) % 360 - 180; }
 function nudgeHeading(index, by){
   const box=$('hd'+index);
   const now = box && isFinite(parseFloat(box.value)) ? parseFloat(box.value) : 0;
-  const to = ((now + by + 180) % 360 + 360) % 360 - 180;
+  const to = wrapDeg(now + by);
   if(box) box.value = to.toFixed(2);
   setHeading(index, to);
 }
@@ -13882,7 +14169,7 @@ function nudgeHeading(index, by){
    how the camera sits on the tripod, and trying a candidate is a question, not
    a claim. Pressing Use once it looks right is what makes it one. */
 function tryFit(index, yaw){
-  const box=$('hd'+index); if(box) box.value=(+yaw).toFixed(2);
+  const box=$('hd'+index); if(box) box.value=wrapDeg(yaw).toFixed(2);
   setHeading(index, yaw, false);
 }
 
@@ -14076,8 +14363,18 @@ function post(where, body){
 async function setHeading(index, deg, remember){
   coalesce('pose'+index, 'turning the photograph', ()=>undoPose(index));
   const box=$('hd'+index);
-  const yaw = (deg==null) ? (box ? parseFloat(box.value) : NaN) : deg;
-  if(!isFinite(yaw)){ say('Type a heading in degrees first.', 'warn'); return; }
+  const typed = (deg==null) ? (box ? parseFloat(box.value) : NaN) : deg;
+  if(!isFinite(typed)){ say('Type a heading in degrees first.', 'warn');
+                        return; }
+  /* ⛔ NORMALISED HERE, AT THE ONE DOOR THAT SENDS A HEADING. Typing 200 and
+     pressing Use sent 200: the server took it, the panel repainted with it,
+     and the next touch of the box's own spinner clamped it to the 180 the
+     input is bounded by. The box is put right too, so what the operator can
+     see is what was sent. */
+  const yaw = wrapDeg(typed);
+  if(box && isFinite(parseFloat(box.value))
+     && Math.abs(parseFloat(box.value) - yaw) > 1e-9)
+    box.value = yaw.toFixed(2);
   const keep = (remember===undefined) ? true : !!remember;
   say('colouring…'); watch(true);
   try{
@@ -14107,7 +14404,7 @@ function useBaseline(index){
   const s=V.scans.find(x=>x.index===index);
   if(!s||!s.baseline){ say('No baseline saved yet.', 'warn'); return; }
   const box=$('hd'+index);
-  if(box) box.value=(+s.baseline.yaw_deg).toFixed(2);
+  if(box) box.value=wrapDeg(s.baseline.yaw_deg).toFixed(2);
   if(!s.baseline.exact)
     say('Using the baseline unturned: '+s.baseline.why+'. Check the result.',
         'warn');
@@ -14638,8 +14935,38 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     const left = (e.button===0), mid = (e.button===1);
     panning = mid ? !e.shiftKey : (e.button===2 || e.shiftKey);
     const tool = (left && !panning) ? V.tool : '';
+    /* ⛔⛔ THE CLIP BOX'S GRIPS ARE ASKED BEFORE THE TOOLS, AND THIS IS THE
+       THIRD REPORT IN ITS CLASS. "I cannot grab the clipbox controls"
+       (operator, 2026-09-09), after "can't grab the gizmo" and "camera
+       movements change when I activate the clipping box". The grips used to
+       live at the END of this chain behind `!V.tool`, so ANY armed tool -- a
+       pair pick, a lasso, the level picker, one left on from ten minutes ago
+       -- turned all seven of them off. Nothing said so: the box is still
+       drawn, its dots are still drawn, and the press just becomes an orbit.
+       ⭐ A CONTROL THAT IS DRAWN AND DOES NOTHING IS WORSE THAN ONE THAT IS
+       HIDDEN, because the operator's next move is to press harder, and there
+       is no harder.
+
+       ⛔ AND IT COSTS THE TOOLS NOTHING, WHICH IS WHY IT CAN GO FIRST. The
+       pick tools take their pick on RELEASE, so what a grip takes here is a
+       press that started on a 9 px dot -- and a click aimed at a point
+       underneath a drawn grip is not a click aimed at that point. Anything
+       that misses the dot falls straight through to the tool, unchanged.
+
+       ⛔ THE GRAB ZONE IS THE DOT, NOT A HALO -- the other side of the same
+       bound, and it is why this is safe to put first. The dots are drawn
+       11-13 px across and the pick radius was once 15, a halo three times the
+       visible dot with seven of them over the room: that is what "activating
+       the clipping box changed the camera controls" was. 9 px is the dot plus
+       a hairline; see pickHandle, and the hover highlight lights exactly that
+       zone so the one place a drag is not the camera announces itself before
+       the press. */
+    const boxGrip = (left && !panning) ? pickHandle(e.clientX,e.clientY) : -1;
     if(V.nav){
       /* one branch, deliberately: in camera mode nothing else is consulted */
+    } else if(boxGrip>=0){
+      grip=handles()[boxGrip];
+      if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
     } else if(PICK_TOOLS[tool]){
       /* ⛔ TAKEN ON RELEASE, NOT ON PRESS. Picking pairs means orbiting between
          nearly every click -- you have to get round to the other side of the
@@ -14650,19 +14977,14 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
     } else if(DRAW_TOOLS[tool]){
       lassoing=true; startDraft(e.clientX,e.clientY);
     } else if(left && !panning && !V.tool){
-      /* ⛔ A GRIP IS TAKEN ON ITS DOT, NOT IN A HALO AROUND IT. Two operator
-         reports, one day apart, bound this from both sides: the 15 px pick
-         halo stole orbits ("camera movements change when I activate the
-         clipping box"), and gating the grips behind ctrl read as broken
-         ("can't grab the gizmo"). The grab zone is now the drawn dot itself
-         -- see pickHandle -- and the hover highlight lights exactly that
-         zone, so the one place a drag is not the camera announces itself
-         before the press. */
-      const i=pickHandle(e.clientX,e.clientY);
-      if(i>=0){
-        grip=handles()[i];
-        if(grip.turn) spin=turnBox(e.clientX,e.clientY,null);
-      } else if(camGrip(e.clientX,e.clientY)){
+      /* ⛔ THE CLIP BOX'S GRIPS WERE ASKED ABOVE, BEFORE THE TOOLS. What is
+         left in here is the camera's arms, the photograph's rings and the
+         scan's own move-and-turn widget, and those DO stay behind an armed
+         tool: every one of them is a large target -- rings at 32, 44 and 62
+         pixels around the tripod, arms running the width of the scan -- so
+         letting them go first would take the presses the tools are for.
+         The clip box earned its place by being a 9 px dot. */
+      if(camGrip(e.clientX,e.clientY)){
         /* ⛔ THE CAMERA'S ARMS COME BEFORE ITS RINGS, for the reason the scan's
            arms come before the scan's ring: an arm is a thin line the operator
            aimed at, while a ring passes near everything at its radius. */
@@ -14731,12 +15053,22 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
        button happens to be held. */
     if(V.poly){ V.poly.at=[e.clientX,e.clientY]; invalidate(); }
     if(!down){
-      const over = e.target.id==='cv' && !V.tool;
+      const onCv = e.target.id==='cv';
+      const over = onCv && !V.tool;
       const was=V.hot, wasRing=V.ring;
       /* ⛔ SHIFT AND THE WIDGET BREAK THE PROMISE, so they unlight it: a
          shift-press pans whatever it starts on, and a press inside the
-         world-axes circle is gizmoClick's before the grips are asked. */
-      V.hot = (over && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))
+         world-axes circle is gizmoClick's before the grips are asked.
+         ⛔⛔ AND IT LIGHTS WITH A TOOL ARMED, because the press now TAKES the
+         grip with a tool armed. This was gated on `!V.tool` alongside the
+         press, so the two agreed -- and agreed on being silent. The hover is
+         the only test an operator can run without committing to anything: if
+         the dot lights, the press will take it. A control that still works
+         and no longer lights is the same fault wearing better manners.
+         ⛔ THE SCAN'S WIDGET AND ITS RING KEEP `over` BELOW, tool and all,
+         because their presses still stand behind an armed tool -- a highlight
+         must promise what the next press will actually do. */
+      V.hot = (onCv && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))
               ? pickHandle(e.clientX,e.clientY) : -1;
       /* Lit only when the ring is what a press would take, so the highlight
          is a promise about the next click rather than a decoration. */
@@ -15277,6 +15609,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('clnstray').onclick=cleanStray;
   $('clnweak').onclick=cleanWeak;
   $('clnoff').onclick=cleanOff;
+  $('clnall').onclick=cleanEverywhere;
   ['clnv','clnn','clnw'].forEach(id=>{ $(id).oninput=showClean; });
   showClean();
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');

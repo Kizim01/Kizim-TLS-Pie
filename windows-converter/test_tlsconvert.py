@@ -1972,15 +1972,24 @@ try:
     # that starts on the lit dot takes the grip -- directly, no modifier.
     check("a grip is taken on its dot, not in a halo around it",
           "let best=-1, bd=9;" in _page)
-    check("and taken directly -- no modifier key guards the grips",
-          "const i=pickHandle(e.clientX,e.clientY);" in _page
+    # ⛔ AND NO ARMED TOOL GUARDS THEM EITHER, which is the third report in
+    # this class ("i cannot grab the clipbox controls", 2026-09-09): the grips
+    # used to sit at the end of the pointerdown chain behind `!V.tool`, so any
+    # tool left armed switched all seven off with the box still drawn.
+    check("and taken directly -- no modifier key and no armed tool guards "
+          "the grips",
+          "const boxGrip = (left && !panning) "
+          "? pickHandle(e.clientX,e.clientY) : -1;" in _page
           and "e.ctrlKey ? pickHandle" not in _page)
     check("and the hover highlight lights exactly the zone a press would "
           "take, so the one non-camera spot announces itself",
           # The promise sharpened on review: shift-presses pan whatever they
           # start on and presses inside the world-axes circle are
           # gizmoClick's, so the highlight yields to both.
-          "V.hot = (over && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))"
+          # ⛔ `onCv`, NOT `over`: `over` carries `!V.tool` and the highlight
+          # must promise what the press will do -- the press now takes the
+          # grip with a tool armed, so the light has to follow it there.
+          "V.hot = (onCv && !e.shiftKey && !gizmoZone(e.clientX,e.clientY))"
           in _page
           and "? pickHandle(e.clientX,e.clientY) : -1;" in _page)
     check("and the help teaches the dot rule",
@@ -3332,6 +3341,338 @@ console.log(JSON.stringify(out));
           _sout == [[1, True], [1, True], [3, False], [4, True]], _sout)
 
 
+# --- the pairs an operator picked come back with the project ------------------
+#
+# ⭐⭐ FOUND BY A READ-ONLY SWEEP, AND THE COMMENT WAS THE EVIDENCE. Three
+# places already agreed the pairs should survive an open: `projectState` writes
+# them, `save_project` writes them with a note that dropping them "would throw
+# that away silently", `open_project` hands them back -- and a comment in
+# `openProject` said in as many words that they come back. It stood over NO
+# CODE. Nothing ever read `j.pairs`, so the reset above it cleared every pair
+# and the file's copy was never opened.
+#
+# ⛔ SILENT IN THE WORST WAY A LOSS CAN BE: a job with no pairs looks exactly
+# like a job whose pairs were lost, so the only clue is that yesterday's
+# careful picking is gone -- and the operator's reading of that is "I must not
+# have saved", which is wrong and unfixable from where they stand.
+print("\nthe point pairs survive an open")
+_op_src = _js_func("openProject")
+# ⛔ COUNTED IN THE CODE, NOT IN THE PROSE. The first version of this check
+# counted `j.pairs` across the whole page and failed at 2 -- the second was the
+# comment ABOVE the fix, explaining the very bug. A source-text check cannot
+# tell an explanation from an instruction, and the comments in this file name
+# the identifiers they are about on purpose. Same family as the backtick check
+# that verified itself: strip what is not code before measuring code.
+_op_code = re.sub(r"/\*.*?\*/", "", _op_src, flags=re.S)
+check("the project restore reads the pairs the file carries",
+      "V.pairs = (j.pairs||[]).filter(okPair);" in align.PAGE
+      and _op_code.count("j.pairs") == 1, _op_code.count("j.pairs"))
+# ⛔ ORDER IS THE WHOLE FIX. The reset is right -- session state must go before
+# a new job loads -- so a restore written ABOVE it reads the file and is then
+# wiped by the very line it was added to answer, and every check above still
+# passes on the source.
+check("...and it reads them after the reset that clears them, never before",
+      _op_src.index("V.pairs=[]; V.half=null; V.perr=null;")
+      < _op_src.index("V.pairs = (j.pairs||[]).filter(okPair);"))
+# The residuals belonged to a fit made against a placement this project has
+# since had written over. A stale number beside a pair reads as this one's.
+check("the residuals do not come back, only the picks",
+      "j.perr" not in align.PAGE)
+# ⛔ AND THE PINS STILL DO NOT, which is not the same decision wearing the same
+# words: a pin's first half is a pick on a PAINTED feature, so re-posing the
+# photograph moves the thing the pin names. A pair's halves are two physical
+# features in their own scans' local coordinates, which no fit can move.
+check("the pins are still session state, and for their own reason",
+      "j.pins" not in align.PAGE
+      and "V.pins=[]; V.pinHalf=null;" in align.PAGE)
+
+if _node:
+    # ⛔ RUN, NOT READ -- and it is the SHIPPED line that runs, lifted out of
+    # the page rather than retyped, because a retyped copy is a test of the
+    # test. The line goes into an arrow so it can be called twice.
+    _restore = [ln.strip() for ln in align.PAGE.splitlines()
+                if "(j.pairs||[]).filter(okPair)" in ln]
+    _pairjs = """
+%s
+const apply=(V,j)=>{ %s };
+const V1={}, V2={};
+apply(V1, {pairs:[
+  {ri:0, rp:[1,2,0.5], si:1, mp:[0,1,0.5]},
+  {ri:0, rp:[1,2,0.5], si:7, mp:[0,1,0.5]},
+  {ri:0, rp:[1,2,0.5], si:1},
+  {ri:0, rp:[1,2],     si:1, mp:[0,1,0.5]},
+  {ri:0, rp:[1,2,NaN], si:1, mp:[0,1,0.5]},
+  {ri:0.5, rp:[1,2,0.5], si:1, mp:[0,1,0.5]},
+  null]});
+apply(V2, {});
+console.log(JSON.stringify({kept:V1.pairs.map(p=>p.si), empty:V2.pairs}));
+""" % (_js_func("okPair"), _restore[0] if _restore else "")
+    _pp = os.path.join(tempfile.mkdtemp(prefix="tlspairs"), "p.js")
+    with open(_pp, "w", encoding="utf-8") as fh:
+        fh.write(_pairjs)
+    _pout = json.loads(subprocess.run([_node, _pp], capture_output=True,
+                                      text=True, check=True).stdout)
+    # ⛔⛔ THE STRANDED PAIR (si 7, a scan this job does not hold) IS KEPT ON
+    # PURPOSE. `pairEnds` draws nothing for it and `alignPairs` refuses it BY
+    # NAME, and that refusal is the entire difference between a pair the
+    # operator can see is stranded and a pair quietly deleted on the way in --
+    # which is the bug this whole restore exists to end. Filtering it here
+    # would re-commit the same fault with better manners.
+    check("a pair naming a scan the job no longer holds is kept, not dropped",
+          7 in _pout["kept"], _pout)
+    # Shape is a different matter: every drawing site reaches straight into
+    # `rp[0]`, so one malformed entry throws INSIDE the frame and the window
+    # goes black -- from a file that opened and said it had.
+    check("a malformed pair is refused at the door, so no frame throws on it",
+          _pout["kept"] == [1, 7], _pout)
+    check("and a project saved before any were picked restores an empty list",
+          _pout["empty"] == [])
+
+
+# --- one press, one whole-job replay -----------------------------------------
+#
+# ⭐ THE OTHER HALF OF THE 2026-09-08 FREEZE, LEFT NAMED AND UNFIXED THAT NIGHT.
+# Six doors read `recomputeLive(); invalidate(); editsFollow();` -- re-test
+# every cut against every point, draw it, then SCHEDULE THE SAME PASS AGAIN a
+# quarter of a second later against state nothing has touched. At the density
+# the operator loads that is 2.0-2.5 s of frozen main thread, paid twice, the
+# second time after the press already looked finished.
+#
+# ⛔ THE IMMEDIATE PASS IS THE ONE THAT SURVIVES. A level, a north or an origin
+# is one press, not a stream -- a trailing timer has nothing to coalesce -- and
+# deferring it would draw a frame with every mask still measured against a room
+# that has since been stood up, so deleted points flash back and vanish.
+print("\none press pays for one whole-job replay, not two")
+_page_code = re.sub(r"/\*.*?\*/", "", align.PAGE, flags=re.S)
+check("no door runs the whole-job replay and then books another one",
+      not re.search(r"recomputeLive\(\);.{0,140}?editsFollow\(\);",
+                    _page_code, re.S),
+      (re.search(r"recomputeLive\(\);.{0,140}?editsFollow\(\);",
+                 _page_code, re.S) or [""])[0][:140])
+# Six doors: level-to-floor on import, the levelled arrivals, level from the
+# floor, level from the walls, setting zero and clearing it.
+check("the six whole-job doors go through the one that owes nothing after",
+      _page_code.count("editsFollowNow();") == 6, _page_code)
+# ⛔ AND THE ONE-SCAN DOORS ARE UNTOUCHED. `editsFollow(s)` is the trailing
+# timer a drag needs; replacing those would put a 2.5 s pass inside a ring turn
+# for every degree, which is the freeze this whole line of work is about.
+check("the doors that move one cloud still trail, they were not swept up",
+      _page_code.count("editsFollow(s)") >= 1
+      and "followMoved(s)" in _page_code)
+
+if _node:
+    # ⛔ RUN, NOT READ. The shipped function, with the replay counted and a
+    # trailing one already booked: the fix is worth nothing if it runs once and
+    # lets a pending timer fire a second pass behind it.
+    _twicejs = """
+let followTimer=null, replays=0;
+function recomputeLive(){ replays++; }
+%s
+followTimer=setTimeout(()=>{ replays+=100; }, 5);
+editsFollowNow();
+const straightAfter=replays;
+setTimeout(()=>console.log(JSON.stringify(
+  {straightAfter:straightAfter, after:replays})), 80);
+""" % _js_func("editsFollowNow")
+    _tp = os.path.join(tempfile.mkdtemp(prefix="tlstwice"), "t.js")
+    with open(_tp, "w", encoding="utf-8") as fh:
+        fh.write(_twicejs)
+    _tout = json.loads(subprocess.run([_node, _tp], capture_output=True,
+                                      text=True, check=True).stdout)
+    check("the whole-job replay runs at once, so no frame draws a stale mask",
+          _tout["straightAfter"] == 1, _tout)
+    # 101 would be the pending trailing pass firing behind it -- a third replay
+    # for a press that has already been answered twice.
+    check("...and it cancels the pass that was already on the timer",
+          _tout["after"] == 1, _tout)
+
+
+# --- the clip box's grips are asked before the tools --------------------------
+#
+# ⭐⭐ "I CANNOT GRAB THE CLIPBOX CONTROLS" (operator, 2026-09-09) -- the THIRD
+# report in this class, after "can't grab the gizmo" and "camera movements
+# change when I activate the clipping box". The grips sat at the END of the
+# pointerdown chain behind `!V.tool`, so ANY armed tool -- a pair pick, a
+# lasso, a level picker left on from ten minutes ago -- switched all seven of
+# them off. Nothing said so: the box is still drawn, the dots are still drawn,
+# and the press quietly becomes an orbit.
+#
+# ⛔ A CONTROL THAT IS DRAWN AND DOES NOTHING IS WORSE THAN ONE THAT IS HIDDEN,
+# because the operator's next move is to press harder, and there is no harder.
+#
+# ⛔ AND IT COSTS THE TOOLS NOTHING, which is the only reason it can go first:
+# the pick tools take their pick on RELEASE, so what the grip takes is a press
+# that began on a 9 px dot, and anything that misses falls straight through.
+print("\nthe clip box can be grabbed with a tool armed")
+
+
+def _js_listener(anchor):
+    """One addEventListener's arrow body, lifted out by matching its braces."""
+    at = _PAGE.index(anchor)
+    i = _PAGE.index("{", _PAGE.index("e=>", at))
+    depth, j = 0, i
+    while j < len(_PAGE):
+        if _PAGE[j] == "{":
+            depth += 1
+        elif _PAGE[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return _PAGE[i + 1:j]
+        j += 1
+    raise AssertionError("unbalanced braces after " + anchor[:40])
+
+
+_PD_ANCHOR = ("addEventListener('pointerdown', e=>{\n"
+              "    if(e.target.id!=='cv') return;")
+_pd = _js_listener(_PD_ANCHOR)
+_pd_code = re.sub(r"/\*.*?\*/", "", _pd, flags=re.S)
+check("the grip is asked before either kind of tool, not after both",
+      _pd_code.index("boxGrip>=0") < _pd_code.index("PICK_TOOLS[tool]")
+      < _pd_code.index("DRAW_TOOLS[tool]"))
+# ⛔ AND THE QUESTION IS ASKED WITHOUT CONSULTING `V.tool`, which is the whole
+# defect: the old branch was reachable only when no tool was armed.
+check("...and asking it does not depend on which tool is armed",
+      re.search(r"const boxGrip = \(left && !panning\) \? pickHandle",
+                _pd_code) is not None, _pd_code[:400])
+# The hover is the one test an operator can run without committing to
+# anything: if the dot lights, the press will take it. It was gated on
+# `!V.tool` alongside the press, so the two agreed on being silent.
+_pm = re.sub(r"/\*.*?\*/", "",
+             _js_listener("addEventListener('pointermove', e=>{"), flags=re.S)
+check("the hover lights the grip with a tool armed, as the press now takes it",
+      "V.hot = (onCv && !e.shiftKey" in _pm)
+# ⛔ AND THE SCAN'S OWN WIDGET KEEPS THE OLD GATE ON BOTH SIDES. Its rings sit
+# at 32, 44 and 62 px and its arms run the width of the scan, so letting those
+# go first WOULD take the presses the tools are for -- and a highlight must
+# promise what the next press will really do.
+check("the scan's widget and ring still light only with no tool armed",
+      "const over = onCv && !V.tool;" in _pm
+      and "over && V.hot<0" in _pm)
+
+if _node:
+    # ⛔⛔ RUN, NOT READ -- and the SHIPPED handler is what runs, lifted whole
+    # out of the page. A source-order check passes on a chain that `V.nav` or a
+    # mis-set `left` never reaches; only a call says what a press does.
+    _clipjs = """
+let down=false, panning=false, moving=false, grip=null, lassoing=false,
+    spin=null, lx=0, ly=0, picking=null, drift=0, ring=null, midDown=false,
+    tilting=null, leaning=null, camming=null, axis=null;
+%s
+%s
+const V={nav:false, tool:'', poly:null, grab:false, hot:-1};
+let HIT=false;
+function pickHandle(){ return HIT ? 3 : -1; }
+function handles(){ return [0,1,2,{axis:0,side:1},4,5,6]; }
+function gizmoClick(){ return false; }
+function gizmoZone(){ return false; }
+function camGrip(){ return null; }
+function tiltGrip(){ return null; }
+function moveGrip(){ return null; }
+function leanGrip(){ return null; }
+function ringGap(){ return 999; }
+function turnBox(){ return null; }
+function turnScan(){ return null; }
+function camDrag(){ return null; }
+function tiltDrag(){ return null; }
+function moveDrag(){ return null; }
+function leanDrag(){ return null; }
+function startDraft(){}
+function polyClose(){}
+function polyParked(){}
+function rushCancel(){}
+function rushGrab(){}
+function rushDrop(){}
+const cv={classList:{add(){}}, setPointerCapture(){}};
+function pdown(e){ %s }
+function press(tool, hit){
+  V.tool=tool; HIT=hit;
+  grip=null; lassoing=false; picking=null; spin=null; ring=null;
+  pdown({target:{id:'cv'}, button:0, shiftKey:false,
+         clientX:100, clientY:100, pointerId:1});
+  return {grip:grip!==null, pick:picking!==null, lasso:lassoing};
+}
+console.log(JSON.stringify({
+  bare:      press('', true),
+  pairArmed: press('pair', true),
+  lassoArmed:press('lasso', true),
+  pairMiss:  press('pair', false),
+  lassoMiss: press('lasso', false)}));
+""" % (re.search(r"const PICK_TOOLS = \{.*?\};", align.PAGE, re.S).group(0),
+       re.search(r"const DRAW_TOOLS = \{.*?\};", align.PAGE, re.S).group(0),
+       _pd)
+    _cp = os.path.join(tempfile.mkdtemp(prefix="tlsclip"), "c.js")
+    with open(_cp, "w", encoding="utf-8") as fh:
+        fh.write(_clipjs)
+    _cout = json.loads(subprocess.run([_node, _cp], capture_output=True,
+                                      text=True, check=True).stdout)
+    check("a press on a grip takes the grip when no tool is armed",
+          _cout["bare"]["grip"] is True, _cout["bare"])
+    # ⛔⛔ THE REPORTED FAULT, AS A CHECK. Before the fix both of these came
+    # back False and the press became an orbit, with the box and its dots
+    # still drawn on screen.
+    check("a press on a grip takes the grip with the pair tool armed",
+          _cout["pairArmed"]["grip"] is True
+          and _cout["pairArmed"]["pick"] is False, _cout["pairArmed"])
+    check("...and with a lasso armed, which would otherwise start a draft",
+          _cout["lassoArmed"]["grip"] is True
+          and _cout["lassoArmed"]["lasso"] is False, _cout["lassoArmed"])
+    # ⛔ AND THE TOOLS ARE NOT PAYING FOR IT. A press that misses the 9 px dot
+    # is the tool's, exactly as before -- if this pair failed, the fix would
+    # have traded one silent control for another.
+    check("a press that misses the dot is still the pick tool's",
+          _cout["pairMiss"]["pick"] is True
+          and _cout["pairMiss"]["grip"] is False, _cout["pairMiss"])
+    check("...and still starts the lasso it was going to start",
+          _cout["lassoMiss"]["lasso"] is True
+          and _cout["lassoMiss"]["grip"] is False, _cout["lassoMiss"])
+
+
+# --- a heading past half a turn is the same heading ---------------------------
+#
+# ⭐ FROM THE 45TH PASS'S SWEEP (`align.py:9231`). The heading box is
+# `<input type="number" min="-180" max="180">`, and a browser does NOT clamp a
+# value ASSIGNED to it -- 200 goes in and shows 200. The moment anything asks
+# the input to step, though, `max` is honoured and the value becomes 180: the
+# photograph turns 20 degrees on a control the operator only nudged, with
+# nothing said. Four doors write that box and only one of them normalised.
+print("\na heading past half a turn is the same heading")
+check("the wrap is one function, not arithmetic repeated at each door",
+      align.PAGE.count("function wrapDeg(d)") == 1
+      and align.PAGE.count("((+d + 180) % 360 + 360) % 360 - 180") == 1,
+      align.PAGE.count("function wrapDeg(d)"))
+# ⛔ AND THE BOUND IS STILL THERE, so the wrap is load-bearing rather than
+# decorative: a box without min/max would clamp nothing and this would be a
+# tidy-up. It clamps, so it matters.
+check("...and the box it protects is still bounded at half a turn",
+      'id="hd\'+s.index+\'" type="number" step="0.1" ' in align.PAGE
+      and "'min=\"-180\" max=\"180\" value=\"'+start+'\">'" in align.PAGE)
+for _door, _src in (("the panel's first paint", "wrapDeg(s.yaw).toFixed(2)"),
+                    ("the saved baseline",
+                     "box.value=wrapDeg(s.baseline.yaw_deg).toFixed(2)"),
+                    ("a candidate off the shortlist",
+                     "box.value=wrapDeg(yaw).toFixed(2)"),
+                    ("the arrows", "const to = wrapDeg(now + by);"),
+                    ("the one door that sends it", "const yaw = wrapDeg(typed);")):
+    check("...and %s goes through it" % _door, _src in align.PAGE, _src)
+
+if _node:
+    # ⛔ RUN, NOT READ: the shipped function over the cases that matter, half a
+    # turn included -- 180 and -180 name the same heading and the box holds
+    # only one of them.
+    _wrapjs = """
+%s
+console.log(JSON.stringify([200, -200, 180, -180, 0, 90, 540, -540]
+  .map(d=>+wrapDeg(d).toFixed(6))));
+""" % _js_func("wrapDeg")
+    _wp = os.path.join(tempfile.mkdtemp(prefix="tlswrap"), "w.js")
+    with open(_wp, "w", encoding="utf-8") as fh:
+        fh.write(_wrapjs)
+    _wout = json.loads(subprocess.run([_node, _wp], capture_output=True,
+                                      text=True, check=True).stdout)
+    check("every heading comes back inside the box's own bounds",
+          _wout == [-160, 160, -180, -180, 0, 90, -180, -180], _wout)
+
+
 # --- a move re-tests only what a move can change ------------------------------
 #
 # ⭐⭐ "WHEN I ROTATE A POINT CLOUD, AFTER A COUPLE OF SECONDS THE PROGRAM
@@ -3822,6 +4163,128 @@ check("...and it really removed something, so the case is not vacuous",
       _mr_kept is not None and 0 < _mr_kept < _mr_n, _mr_pct)
 check("...through the route the page posts to",
       'body.get("min_refl")' in _ALIGN_SRC)
+
+# --- one press cleans the whole shoot ----------------------------------------
+#
+# ⭐⭐ "IS THERE A REMOVE STRAYS THAT GOES ACROSS THE ENTIRE SHOOT?" (operator,
+# 2026-09-09). There was not -- cleaning was one cloud at a time while the
+# PUT-BACK was already whole-job, which is the shape of a feature that grew
+# only its second half. Fifty-six presses on the job in hand.
+print("\ncleaning the whole shoot in one press")
+
+
+def _dense_scan(where, strays=5, seed=1):
+    """A surface dense enough to keep, with a handful of real strays off it."""
+    rs = np.random.RandomState(seed)
+    g = np.arange(30) * 0.02
+    xx, yy = np.meshgrid(g, g)
+    face = np.stack([xx.ravel(), yy.ravel(),
+                     np.zeros(xx.size)], axis=1).astype(np.float32)
+    off = (rs.uniform(-6.0, 6.0, (strays, 3))
+           + np.array([20.0, 20.0, 20.0])).astype(np.float32)
+    pts = np.vstack([face, off]).astype(np.float32)
+    scan = align.Scan(where, pts, np.full((len(pts), 3), 128, np.uint8), pts)
+    scan.view_refl = (np.arange(len(pts)) % 200).astype(np.uint8)
+    return scan
+
+
+_ca_dir = tempfile.mkdtemp(prefix="tlscleanall")
+_ca_srv = align.AlignServer([], out_path=None)
+# ⛔ THE THIRD CLOUD IS SCATTER AND NOTHING ELSE, so the rule would take every
+# point in it -- the refusal `_clean_one` already makes for one cloud. A sweep
+# that stopped there would leave the job half cleaned with nothing to say so.
+_ca_lost = align.Scan(
+    os.path.join(_ca_dir, "C.pcap"),
+    (np.random.RandomState(9).uniform(-8.0, 8.0, (40, 3))).astype(np.float32),
+    np.full((40, 3), 128, np.uint8), None)
+_ca_lost.view_refl = (np.arange(40) % 200).astype(np.uint8)
+# ⛔⛔ THE REFUSED CLOUD SITS IN THE MIDDLE, AND THAT PLACEMENT IS THE CHECK.
+# It was written last at first, where `continue` and `break` do exactly the
+# same thing -- so the audit's break "a refusal stops the sweep" would have
+# come back NOT CAUGHT against a claim that was perfectly sound, which is the
+# same shape of dud check the 48th pass had to fix. A refusal has to have
+# something AFTER it for "does not stop the sweep" to be able to fail.
+_ca_srv.scans = [_dense_scan(os.path.join(_ca_dir, "A.pcap"), seed=1),
+                 _ca_lost,
+                 _dense_scan(os.path.join(_ca_dir, "B.pcap"), seed=2)]
+# A rule already on one cloud before the sweep: the undo must give THAT back,
+# not "cleaning off". This is the fault `undoClean` was fixed for, one press up.
+_ca_srv.clean_scan(2, stray=True, voxel_m=0.20, neighbours=1)
+_ca_before = [s.clean for s in _ca_srv.scans]
+_ca_specs = [{"index": i, "spec": s.clean}
+             for i, s in enumerate(_ca_srv.scans)]
+# ⛔ COUNTED, BECAUSE THE WHOLE REASON THIS IS ONE DOOR IS THE REBUILD.
+# `_rebuild()` re-encodes EVERY open scan; a sweep that called `clean_scan`
+# per cloud would rebuild n clouds n times, and nothing about the result
+# would look wrong -- it would just take minutes on the job it was built for.
+_ca_real, _ca_hits = _ca_srv._rebuild, []
+
+
+def _counted_rebuild():
+    _ca_hits.append(1)
+    return _ca_real()
+
+
+_ca_srv._rebuild = _counted_rebuild
+_ca_out = _ca_srv.clean_all(stray=True, voxel_m=0.10, neighbours=3)
+check("one press cleans every cloud that can be cleaned",
+      _ca_out["ok"] and [c["name"] for c in _ca_out["cleaned"]]
+      == ["A.pcap", "B.pcap"], _ca_out.get("cleaned"))
+check("...and it really took the strays out, so the case is not vacuous",
+      _ca_out["dropped"] == 10 and _ca_srv.scans[0].keep is not None,
+      _ca_out["dropped"])
+# ⛔ THE REPORTED FAULT MADE INTO A CHECK. A cloud the rule cannot be applied
+# to is a fact about that cloud; abandoning the rest of the job for it turns a
+# whole-job press into a partial one with no way to tell which half ran.
+check("a cloud the rule would empty is named, and does not stop the sweep",
+      [r["name"] for r in _ca_out["refused"]] == ["C.pcap"]
+      and "every point" in _ca_out["refused"][0]["error"]
+      # ⛔ AND THE CLOUD BEHIND IT WAS STILL CLEANED, which is the half a
+      # `break` in that loop would take away. Naming the refusal is not the
+      # claim; carrying on past it is.
+      and "B.pcap" in [c["name"] for c in _ca_out["cleaned"]],
+      (_ca_out.get("refused"), [c["name"] for c in _ca_out["cleaned"]]))
+check("the whole job costs ONE rebuild, not one per cloud",
+      len(_ca_hits) == 1, len(_ca_hits))
+# ⛔ AND THE PUT-BACK COMES THROUGH THE SAME DOOR WITH THE RULES IT FOUND.
+# Not "clear the cleaning everywhere": the cloud that already had its own rule
+# must get THAT rule back, or an undo hands the operator MORE points than they
+# had before the thing being undone.
+_ca_back = _ca_srv.clean_all(specs=_ca_specs)
+check("the undo puts each cloud's own rule back, not a blanket clearing",
+      _ca_back["ok"]
+      and [s.clean for s in _ca_srv.scans] == _ca_before,
+      [s.clean for s in _ca_srv.scans])
+check("...and it says it is putting back, not cleaning",
+      "put back" in _ca_back["text"], _ca_back["text"])
+_ca_srv._rebuild = _ca_real
+check("a sweep with nothing open is refused in words, never a silent no-op",
+      not align.AlignServer([], out_path=None).clean_all(stray=True)["ok"])
+# ⛔ AND THE ONE-CLOUD DOOR STILL CARRIES ITS SCAN LIST. The split that made
+# the sweep cheap moved the rebuild out of the worker; leaving it out of the
+# single-cloud door as well would have left the page holding stale buffers
+# after every ordinary Remove strays, with nothing thrown.
+check("the one-cloud door still answers with the rebuilt scan list",
+      "scans" in _ca_srv.clean_scan(0, stray=True, voxel_m=0.10,
+                                    neighbours=3))
+check("...and a refusal still carries no scan list to rebuild from",
+      "scans" not in _ca_srv.clean_scan(1, stray=True, voxel_m=0.10,
+                                        neighbours=3))
+# The page: one door, armed on the SETTING so moving a slider after reading
+# the warning asks again, and the undo registered BEFORE the work -- a sweep
+# that cleans forty clouds and then throws has still changed forty clouds.
+check("the page sends the whole job through the one whole-job door",
+      "await post('clean/all', body)" in align.PAGE
+      and "await post('clean/all', {specs:was})" in align.PAGE)
+check("...and it arms on the setting it warned about, not on a bare flag",
+      "const sig=JSON.stringify(body)+' x '+V.scans.length;" in align.PAGE
+      and "if(CLEAN_ARM!==sig)" in align.PAGE)
+_ce = re.sub(r"/\*.*?\*/", "", _js_func("cleanEverywhere"), flags=re.S)
+check("...and the undo is armed before the work, not after it succeeds",
+      _ce.index("remember('cleaning every cloud'")
+      < _ce.index("await post('clean/all', body)"))
+check("...and the snapshot holds each cloud's own rule, not a flag",
+      "V.scans.map(s=>({index:s.index, spec:s.clean||null}))" in _ce)
 check("the spotlight reaches the refinement frames as well as the scene "
       "frame, so a highlight cannot fade out as the cloud sharpens",
       _ALIGN_SRC.count("gl.uniform1f(loc.uDim, dimOf(s));") == 2
@@ -4272,6 +4735,69 @@ check("an override from outside the clock's window is NAMED, not obeyed",
                                                 "TLS_26_08_20_99_00_00_Z.pcap"]
       and _ckplan3["scans"][0]["assigned"]["name"] == _ck_p1,
       _ckplan3["ignored_overrides"])
+# ⛔⛔ AND AN OVERRIDE'S PHOTOGRAPH LEAVES THE POOL WITH ITS ROW. Found by the
+# 45th pass's read-only sweep (`shoot.py:558`) and reproduced: settling a row
+# ahead of the walk took the ROW out but left its PICTURE in, so the walk was
+# free to hand the same file to another capture. Two rows came back `assigned`
+# to one photograph with `shared` False on BOTH -- which is not a share, it is
+# a duplicate that nothing counts, nothing reports, and `apply` then MOVES for
+# the first row and dies `[WinError 2]` on the second, part-way through
+# rearranging a day's captures.
+_dupdir = tempfile.mkdtemp(prefix="tlsdup")
+_dupcaps, _duppix = os.path.join(_dupdir, "caps"), os.path.join(_dupdir, "pix")
+os.makedirs(_dupcaps)
+os.makedirs(_duppix)
+
+
+def _dup_capture(stem, started):
+    with open(os.path.join(_dupcaps, stem + ".pcap"), "wb") as fh:
+        fh.write(b"not a capture, but a file")
+    with open(os.path.join(_dupcaps, stem + ".json"), "w") as fh:
+        json.dump({"capture": {"started_epoch": started},
+                   "sweep": {"track": [[0, 0], [95.0, 190.8]]}}, fh)
+
+
+# ⭐ ONE PHOTOGRAPH INSIDE BOTH CAPTURES' WINDOWS, which is the ordinary shape
+# of this shoot: sweeps end 95 s after they start, the window is 240 s, and the
+# frame lands 30 s after the second sweep -- 150 s after the first.
+_dup_capture("TLS_26_08_20_11_00_00_P", _ck0)
+_dup_capture("TLS_26_08_20_11_02_00_Q", _ck0 + 120.0)
+_dup_p = "IMG_%s_00.png" % time.strftime("%Y%m%d_%H%M%S",
+                                         time.gmtime(_ck0 + 245.0))
+_write_photo(os.path.join(_duppix, _dup_p),
+             np.zeros((16, 32), dtype=np.uint8) + 128)
+_dupclock = _shoot_mod.plan(_dupcaps, _duppix, offset=0.0)
+# The clock gives it outright to the nearer capture and lets the other SHARE
+# it -- the honest answer when a position produced two captures and one usable
+# frame, and the shape this fixture exists to compare the override against.
+check("the clock gives the one photograph to the nearer capture and shares it",
+      [(r["assigned"] and r["assigned"]["name"], r.get("shared"))
+       for r in _dupclock["scans"]] == [(_dup_p, True), (_dup_p, False)],
+      [(r["assigned"], r.get("shared")) for r in _dupclock["scans"]])
+_dupover = _shoot_mod.plan(_dupcaps, _duppix, offset=0.0,
+                           overrides={"TLS_26_08_20_11_00_00_P.pcap":
+                                      os.path.join(_duppix, _dup_p)})
+_dupnames = [r["assigned"] and r["assigned"]["path"]
+             for r in _dupover["scans"]]
+check("AN OVERRIDDEN PHOTOGRAPH IS NOT HANDED OUT A SECOND TIME BY THE WALK",
+      # Both rows may still END on that one frame -- there is only one -- but
+      # the second must arrive through the SHARING path, which copies, counts
+      # and reports. Two `assigned` rows with `shared` False on both is the
+      # duplicate that breaks `apply` half-way.
+      sum(1 for r in _dupover["scans"]
+          if r["assigned"] and not r.get("shared")) == 1,
+      [(r["number"], r["assigned"] and r["assigned"]["name"], r.get("shared"),
+        r.get("by_picture")) for r in _dupover["scans"]])
+check("...and the capture that had to share says so, so the press can report "
+      "it",
+      _dupover["shared"] == [2] and _dupover["by_picture"] == [1],
+      (_dupover["shared"], _dupover["by_picture"]))
+check("...and no two rows are moving the same file, which is what apply dies "
+      "on",
+      len([p for p in _dupnames if p]) - len(set(p for p in _dupnames if p))
+      == sum(1 for r in _dupover["scans"] if r.get("shared")),
+      _dupnames)
+
 check("the check is on the route table, and apply carries the overrides",
       '"/shoot/check"' in _ALIGN_SRC and "srv.shoot_check(" in _ALIGN_SRC
       and 'body.get("overrides")))' in _ALIGN_SRC
@@ -5602,6 +6128,37 @@ check("and every stray is dropped", not _keep[30000:].any(),
 _lonely = np.array([[0.0, 0.0, 0.0]])
 check("a single point on its own has no neighbours at all",
       not cleanmod.stray_mask(_lonely, 0.1, 1).any())
+
+# ⛔⛔ THE GRID HAS TO REACH THE INSTRUMENT AT THE SMALLEST CELL THE PANEL
+# OFFERS. Found by the 45th pass's sweep (`clean.py:47`): `_BIAS` was 1<<12,
+# which at the 2 cm minimum is 81.92 m, under a comment claiming the VLP-16's
+# 120 m. `_keys` CLAMPS rather than raising, and the failure is quiet and the
+# wrong way round -- every return past the edge folds into the edge cell,
+# where they crowd each other and are all KEPT. The far returns, the ones most
+# likely to be dust or a mixed pixel, are exactly the ones the test stops
+# being able to judge.
+check("the stray grid reaches past the instrument at the finest cell offered",
+      cleanmod._BIAS * 0.02 >= 120.0, cleanmod._BIAS * 0.02)
+check("...and the cell key still fits an int64 with room to spare",
+      (cleanmod._SPAN - 1) * cleanmod._SPAN * cleanmod._SPAN < 2 ** 62
+      and cleanmod._SPAN >= 2 * cleanmod._BIAS,
+      (cleanmod._SPAN - 1) * cleanmod._SPAN * cleanmod._SPAN)
+# ⭐ RUN, NOT READ, AND THE FOUR POINTS ARE CHOSEN TO EXPOSE THE FOLD. They sit
+# 10 m apart in x -- isolated by any honest reading -- but a hair apart in y
+# and z, so once x is clamped to one plane they land in a 2x2 block of cells
+# and each finds the three neighbours it needs. Judged where they ARE, all four
+# are strays; judged after the fold, all four are surfaces.
+_farpts = np.array([[100.0, 0.00, 0.00], [110.0, 0.02, 0.00],
+                    [120.0, 0.00, 0.02], [130.0, 0.02, 0.02]])
+_g = np.mgrid[0:4, 0:4, 0:4].reshape(3, -1).T * 0.02
+_nearfar = np.vstack([_g, _farpts])
+_fk = cleanmod.stray_mask(_nearfar, 0.02, 3)
+check("a return past the old grid's edge is judged where it is, not folded "
+      "into the edge cell",
+      not _fk[-4:].any(), list(_fk[-4:]))
+check("...while the dense patch beside the tripod is kept, so it is the fold "
+      "being measured and not the filter",
+      _fk[:-4].all(), _fk[:-4].mean())
 
 check("a weak-return floor keeps what is at or above it",
       list(cleanmod.weak_mask(np.array([1, 5, 9]), 5.0)) == [False, True, True])
@@ -7534,6 +8091,52 @@ _bce = os.path.join(os.path.dirname(os.path.abspath(align.__file__)),
                     "..", "build_cuda_engine.py")
 check("there is a builder for it", os.path.exists(_bce))
 _BCE = open(_bce, encoding="utf-8").read()
+
+# ⛔⛔ AND `--out` IS NOT A LICENCE TO DELETE WHAT IT NAMES. Found by the 45th
+# pass's sweep (`build_cuda_engine.py:144`): the builder opened by rmtree-ing
+# whatever directory was given, so one wrong word on a hand-typed path took it
+# and everything under it, with no confirmation and nothing to undo.
+# ⭐ RUN, NOT READ. The rule is lifted into its own function precisely so it
+# can be CALLED here -- `build` itself imports CuPy and copies a gigabyte, so
+# a source pin was the only thing this check could ever have been.
+import build_cuda_engine as _bce_mod                            # noqa: E402
+
+_bcd = tempfile.mkdtemp(prefix="tlsengine")
+_bc_missing = os.path.join(_bcd, "not-there-yet")
+_bc_empty = os.path.join(_bcd, "empty")
+_bc_theirs = os.path.join(_bcd, "Documents")
+_bc_stamped = os.path.join(_bcd, "stamped")
+_bc_old = os.path.join(_bcd, "an engine from before the stamp")
+for _d in (_bc_empty, _bc_theirs, _bc_stamped, _bc_old):
+    os.makedirs(_d)
+with open(os.path.join(_bc_theirs, "the quote.docx"), "wb") as _h:
+    _h.write(b"a day's work")
+with open(os.path.join(_bc_stamped, _bce_mod.STAMP), "w") as _h:
+    _h.write("built here")
+os.makedirs(os.path.join(_bc_old, "cupy"))
+check("a directory that does not exist yet is fine to build into",
+      _bce_mod.may_clear(_bc_missing)[0] is True)
+check("...and so is an empty one",
+      _bce_mod.may_clear(_bc_empty)[0] is True)
+check("SOMEBODY ELSE'S DIRECTORY IS REFUSED, NOT EMPTIED",
+      _bce_mod.may_clear(_bc_theirs)[0] is False
+      and "NOT been touched" in _bce_mod.may_clear(_bc_theirs)[1],
+      _bce_mod.may_clear(_bc_theirs))
+check("...and the file that was in it is still there, because the test would "
+      "otherwise pass on a directory this had already destroyed",
+      os.path.exists(os.path.join(_bc_theirs, "the quote.docx")))
+check("an engine this script built before may be rebuilt over",
+      _bce_mod.may_clear(_bc_stamped)[0] is True)
+# ⛔ AND SO MAY THE ONE THE OPERATOR ALREADY HAS. Every engine built before the
+# stamp existed carries no mark of ours; refusing those would make the guard's
+# first act be to break the ordinary rebuild.
+check("...and so may one from before the stamp, recognised by its cupy folder",
+      _bce_mod.may_clear(_bc_old)[0] is True)
+check("the guard is what the builder actually asks, not a comment beside it",
+      "allowed, why = may_clear(out_dir)" in _BCE
+      and _BCE.count("shutil.rmtree(out_dir)") == 1)
+check("...and every engine it builds is marked, so the next run can tell",
+      "os.path.join(out_dir, STAMP)" in _BCE and 'STAMP = "' in _BCE)
 _BEX = open(os.path.join(os.path.dirname(_bce), "build_exe.py"),
             encoding="utf-8").read()
 _CLI = open(os.path.join(os.path.dirname(_bce), "tlsconvert_cli.py"),
@@ -11311,7 +11914,10 @@ check("the button lives under Close the loop, wired to its own endpoint",
 check("...a press is one undo of the room's level, the same as the floor's",
       "remember('straightening from the walls', undoLevel());" in _fsrc)
 check("...and it writes the room's ONE level, never a scan's placement",
-      "V.level=j.level; showLevel(); showWalls(j); recomputeLive();"
+      # `editsFollowNow` since 2026-09-09: the whole-job replay run at once
+      # and nothing owed 250 ms later. What this check is about is the left
+      # of the line -- one level on the room, no `s.setup` anywhere near it.
+      "V.level=j.level; showLevel(); showWalls(j); editsFollowNow();"
       in _fsrc)
 
 # --- the scan comes to the grid, not the grid to the scan --------------------
