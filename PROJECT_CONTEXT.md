@@ -6558,7 +6558,104 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-08, forty-sixth pass) — the current one
+### ⚠ LIVE STATE (2026-09-09, forty-seventh pass) — the current one
+
+**⭐⭐ THE OPERATOR ASKED FOR A REMATCH AND THE ANSWER WAS THAT NOTHING WAS MISMATCHED.**
+*"take this project file and rematch scans to the images ... so when the project opens the right
+images are tied properly to the scans"* (2026-09-09, the Ministry of Sound job on the Desktop).
+Every one of the 54 photographed captures already wears the right photograph: **48 the pictures
+read outright, 0 changes, 5 mute-but-bracketed, 1 unvouched, 2 captures the camera never shot.**
+48+5+1 = **54 photographed positions**, which is the number `pair_in_order`'s own docstring cites
+for this job — the sort was repaired by `a72417f` and has been right ever since.
+
+**⛔⛔ AND THE FAULT WAS THE POSE, NOT THE PAIRING — WHICH IS A TRAP THAT WILL RECUR.**
+18 of the project's 23 scans graded `doubtful`, and a weak fit paints the RIGHT photograph at the
+WRONG angle, which on screen is indistinguishable from the wrong photograph. Those headings were
+solved on 2026-09-02/03 by the old correlation ladder. The feature matcher landed on 09-06
+(`12cdc24`) and finds **30-159 agreeing features on these same captures**. They never met it,
+because `_carry_colour` RESTORES a saved pose rather than re-solving it — by design, and rightly,
+since a hand-set heading must survive a reopen. ⭐ **A SOLVER FIX DOES NOT REACH WORK ALREADY
+SAVED.** The only two scans in the file graded `matched` are the two that had been through the
+matcher by hand. Every improvement to a solver leaves every project saved before it untouched, and
+looking like a bug in the thing that was just fixed.
+
+**⛔⛔ THE CLOCK CANNOT DECIDE THIS JOB, AND IT LOOKS LIKE IT CAN.** The camera is walked ahead
+of the scanner: the photographs fall in tight pairs **30-80 s apart** while the captures they
+belong to are **~180 s apart**. So no 1:1 alignment of the two lists can have consistent gaps —
+every one of them alternates by 150 s, and at least three different global shifts of the diagonal
+look equally plausible. Re-running the shipped `pair_in_order` here (bypassing the sibling
+shortcut) returned **28 changes of 56 with every internal check passing**: a whole-diagonal slide
+by one, which is exactly the failure its own docstring names — *"a global shift IS monotonic"*. It
+was believed for half an hour and reported to the operator before the pictures overturned it.
+⭐ **THE PICTURES ARE NOT A CHECK ON THE CLOCK HERE, THEY ARE THE ONLY JUDGE**, and reaching for
+them first would have saved the detour.
+
+**⭐⭐ THE JUDGE THAT SETTLED IT, AND IT IS CHEAP ENOUGH TO BE A BUTTON.** `match.rank_photos`,
+run against the **preview `.cloud` beside each capture** instead of a decode of its 98 MB pcap. The
+cloud is already levelled with the sensor at the origin and carries reflectivity — exactly what
+`cloud_picture` renders from — at 300k-900k points. **25-30 s a capture including the render, the
+whole 56-capture shoot in 25 minutes**, with NO offset, NO window and NO clock anywhere in it, so a
+global slide has nowhere to hide. Margins ran 2x to 20x (capture 52 chose `125` at **159** inliers
+against 6; capture 38 chose `109` at 125 against 6).
+⛔ **THE BAR HAD TO BE THE MARGIN, NOT `MATCH_MIN`.** That bar is 30 agreeing features, measured
+on lit jobs; this is an unlit club and the counts run 5-159, so `rank_photos` calls many of these
+rankings "weak" while still standing one photograph 2-20 times above the runner-up. A ranking whose
+best beats the second by a wide margin has identified the room whether or not it clears a bar set
+somewhere else.
+⭐ **THE MIRROR ROOM, FROM THE OPERATOR:** captures 22-24 score 4-7 on EVERY frame *"becase its a
+mirror room for those 3 captures"*. The lidar records the mirror as a surface and the photograph
+records the room reflected in it, so there are no shared features for the two pictures to agree on.
+**Mute there is the method being honest, not failing** — and it is why a mute capture bracketed by
+two CONFIRMED neighbours KEEPS what it wears (an order-preserving sort has nothing else to put
+between them) rather than being dropped to grey. Named INTERPOLATED, kept apart from what was read.
+
+**⛔ THE 16.5 GB TRAP, AND IT RAN FOR TEN MINUTES BEFORE IT WAS SPOTTED.** Caching
+`colour.load_panorama`'s luminance is **573 MB a photograph** (11968x5984 as float64); sixty is
+34 GB, and the first ranking run reached 16.5 GB against a 47 GB commit limit before it was killed.
+It was also mis-read as the operator's Studio at first, on nothing but its size. What the matcher
+actually reads is `photo_picture` — the same panorama equalised onto a **1024x512 uint8 grid, half
+a megabyte**. ⭐ **CACHE THE GRID, NEVER THE PANORAMA**: rendered once into an `.npz`, the whole
+shoot's photographs are 30 MB and every capture afterwards is a comparison of small pictures.
+(`shoot_check` gets this right with a 2x`CHECK_REACH` cap; the cap was lost when the loop was
+lifted out of it.)
+
+**⛔ `shoot.plan` HONOURS THE SIBLING, SO IT CANNOT RE-JUDGE A FOLDER ALREADY SORTED.** A
+photograph sitting beside its capture is taken as a decision somebody already made — correct for
+filing, useless for auditing, because the sibling IS the answer under test. Re-judging needs the
+pieces underneath (`find_captures`, `scan_times`, `image_time`, `estimate_offset`, `pair_in_order`)
+or `rank_photos`. Worth a flag on `plan` if this is ever wanted from the page.
+
+**✅ WHAT WAS DELIVERED:** `C:\Users\sunun\Desktop\ministry of sound\scan project (photos
+rematched).tlspie` — a SIBLING file, never the operator's open one. They were working in the
+Studio throughout: it re-saved that project at 00:43, deleted `IMG_..._071.jpg` at 00:49 and
+removed `ministry of sound.tlspie` outright, so **the folder moved under the work and every read
+had to be re-taken**. The new file holds all **56 captures in shoot order with 54 distinct
+photographs**, none used twice, every referenced file present. The original 23 keep their solved
+placements byte-for-byte, and the cuts, pairs, level, level points, clip box, view, voxel and
+out_path are identical. **Every `yaw_deg` is dropped on purpose** — `KEEP_EVEN_IF_ZERO` means an
+absent heading reaches `colour_scan` as "solve it", so all 54 re-solve through `match.arrival` on
+open. Slow once; a SAVE writes the poses back and every later open restores them, so the operator
+was told to save afterwards or pay it again.
+⛔ **A PROJECT ENTRY'S `setup` CARRIES THE LEAN AS WELL AS THE PLACE.** `_take_placement` reads ONE
+dict through both `Setup.from_dict` and `Lean.from_dict`, so the 33 added captures needed
+`pitch_deg`/`roll_deg` too — without them 33 clouds arrive leaning, with their floors a tripod's
+height under the grid, in a project whose other 23 are straight. Fitted with the shipped
+`floor_plane`/`lean_from_floor`, the height taken **through** the lean as `stand_up` does. `x_m`,
+`y_m` and `yaw_deg` stay zero so `Setup.sited` reports them honestly as nowhere in plan.
+⭐ **THE FIT CORROBORATED ITSELF**: it independently reproduced the two odd tripod heights the
+since-deleted 09-03 project had recorded — 1.61 against its 1.617 for 14:24:32, and 1.63 against
+1.647 for 14:30:38.
+⚠ **ONE OUTLIER TO LEVEL BEFORE PLACING**: `TLS_26_09_02_15_44_34` fitted its floor **2.70 m**
+below the sensor on 18,747 points, the fewest of any capture, where every other lands 1.42-1.63 —
+a raised surface or a ceiling taken for the ground. It will come in sunk about 1.25 m.
+
+**⭐ PRODUCT QUEUE FROM THIS PASS.** A "check the whole shoot's pairing" press is now cheap: today
+`shoot_check` decodes pcaps and asks only `CHECK_REACH` candidates per capture, and against the
+preview clouds it could ask EVERY photograph about EVERY capture in minutes. That is the press that
+would have answered this in one click instead of a session. Nothing in the repo changed this pass:
+no code was touched, no suite was run, and the exes are still the 09-08 23:57 build.
+
+### ⚠ LIVE STATE (2026-09-08, forty-sixth pass)
 
 **⛔⛔ READ ITEM 12 FIRST: THE FREEZE SURVIVED THE GPU FIX, BECAUSE IT WAS NEVER THE CARD.**
 Item 11 put the window on the RTX and the log proves it; the operator then turned a scan on that
@@ -6629,7 +6726,17 @@ the log) and **`03fcf88`** (item 12, a move re-tests only what it can change). T
 clean but for the standing untracked `windows-converter/cutjs_tmp.js`, and **no audit debt is
 outstanding**.
 
-⛔ **THE ONE THING NOT SETTLED, AND IT IS THE FIRST THING TO ASK ABOUT: item 12 is unproven on
+⛔ **THE 47TH PASS LEFT A FILE THE OPERATOR HAS NOT OPENED YET.**
+`Desktop\ministry of sound\scan project (photos rematched).tlspie` — 56 captures, 54
+photographs, every heading dropped so each re-solves through the feature matcher. **Ask what the
+grades came back as.** The claim being tested is that the `doubtful` count collapses, because
+those 18 weak fits were the 09-02 correlation ladder's and the matcher finds 30-159 features on
+the same captures. If they come back `doubtful` ANYWAY, the heading was never the problem and
+nothing further should be changed until it is clear what the operator is actually seeing on
+screen. Also ask whether they SAVED after that open: unsaved, the slow re-solve is paid again
+every time, and the poses never reach the file.
+
+⛔ **AND THE ONE FROM THE 46TH PASS IS STILL OPEN: item 12 is unproven on
 the machine.** The suite is green and the exes are built, but nobody has turned a scan on the
 23:57 Studio. Do not report the freeze as fixed on the strength of a green suite — the same
 sentence has now had two different causes, and the first fix was proven while the symptom stood.
