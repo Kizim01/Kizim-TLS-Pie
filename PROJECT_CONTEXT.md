@@ -6653,6 +6653,26 @@ not the same as the same rule measured in each cloud's own frame; the occupancy
 test was built to survive exactly that. Offered, not built — the operator has
 not asked for it.
 
+**⭐ ASKED AND ANSWERED FROM THE SOURCE: where the 360 camera's position is
+written.** *"what file gets exported with the point cloud that points to the
+position of the 360 camera"* — `<stem>.camera_manifest.json`, written by
+`manifest.write_beside` under the CLOUD's own stem, with
+`.camera_positions.csv`, `.export_report.md` and (when one could be drawn)
+`.camera_preview.png` beside it. Point clouds only: `CLOUD_EXTS` is
+`.las/.laz/.ply`, and a `.dxf` drawing gets none.
+⭐ **TWO POSITIONS PER CAMERA AND THE DIFFERENCE IS ~0.10 m ON THIS RIG**:
+`position.xyz` is the panorama's OPTICAL CENTRE (where the rays leave) and
+`station.xyz` is the LIDAR's centre. Placing photographs wants `position`.
+⛔ Every coordinate is in the EXPORTED FILE's frame, `Level(Setup(Lean(p)))`,
+the same order the points go out in — the suite checks the matrix against
+`pipeline.convert`'s emit over random points. Refused poses are `null` with
+`status: "unavailable"`; the Insta360's all-zero EXIF GPS block is read,
+reported absent and never used.
+⚠ **ONE DOC NIT, UNFIXED**: `manifest.py`'s docstring says *"Three files go
+beside the exported cloud"* and then lists FOUR. Not touched — the operator
+asked for the record to be saved, not for a drive-by edit, and it is one line
+whenever the file is next opened.
+
 ### ⚠ LIVE STATE (2026-09-09, forty-seventh pass)
 
 **⭐⭐ THE OPERATOR ASKED FOR A REMATCH AND THE ANSWER WAS THAT NOTHING WAS MISMATCHED.**
