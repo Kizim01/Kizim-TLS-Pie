@@ -217,6 +217,75 @@ short = decode.decode_chunk(stamps, payload.reshape(1, -1),
                             min_range=50.0)[2]
 check("out-of-range returns are dropped", short.size == 0, short.size)
 
+# --- 5a. a dual-return packet is six firings reported twice ----------------------
+# ⛔ THE SWEEP'S decode.py:109 FINDING. The factory byte at 1204 says which
+# return the sensor is sending, and the decoder never read it. In DUAL mode the
+# twelve blocks are six pairs sharing an azimuth and a firing time, so a
+# decoder that reads twelve firings gives the first block of every pair no
+# per-laser spread (its step to its partner is zero) and runs the times on for
+# twelve firings. Every capture this rig has made is Strongest, so nothing is
+# wrong today -- which is why nothing but a fixture can hold this.
+print("\ndecode_chunk: dual return")
+
+
+def make_dual_packet(azimuth_deg, last_m, strongest_m, mode=0x39):
+    blocks = b""
+    for b in range(12):
+        az = int(round((azimuth_deg + (b // 2) * 0.4) * 100)) % 36000
+        dist = last_m if b % 2 == 0 else strongest_m
+        blk = struct.pack("<HH", 0xEEFF, az)
+        blk += struct.pack("<HB", int(round(dist / 0.002)), 42) * 32
+        blocks += blk
+    return blocks + struct.pack("<IBB", 0, mode, 0x22)
+
+
+_dual = np.frombuffer(make_dual_packet(90.0, 10.0, 7.0),
+                      dtype=np.uint8).reshape(1, -1)
+_da, _, _dr, _, _dt = decode.decode_chunk(stamps, _dual)
+check("every return of a dual packet decodes, both blocks of each pair",
+      _da.size == 12 * 32, _da.size)
+check("...and both returns are kept, not one of them written twice",
+      int(np.sum(np.isclose(_dr, 10.0))) == 6 * 32
+      and int(np.sum(np.isclose(_dr, 7.0))) == 6 * 32,
+      (int(np.sum(np.isclose(_dr, 10.0))), int(np.sum(np.isclose(_dr, 7.0)))))
+_dt2 = _dt.reshape(12, 32)
+check("the two blocks of a dual pair were ONE firing, so they share its time",
+      np.array_equal(_dt2[0::2], _dt2[1::2]),
+      float(np.abs(_dt2[0::2] - _dt2[1::2]).max()))
+check("...and a dual packet spans six firings, not twelve",
+      abs((_dt2[-1, 0] - _dt2[0, 0]) - 5 * decode.T_BLOCK_US * 1e-6) < 1e-9,
+      float(_dt2[-1, 0] - _dt2[0, 0]))
+_pa = decode.decode_chunk(stamps, _dual, per_laser_azimuth=True)[0]
+_pa = _pa.reshape(12, 32)
+check("per-laser: the FIRST block of every dual pair gets its spread too",
+      all(len(np.unique(np.round(_pa[b], 6))) == 32 for b in range(0, 12, 2)),
+      [len(np.unique(np.round(_pa[b], 6))) for b in range(0, 12, 2)])
+check("...the same spread as its partner, because it was the same firing",
+      np.allclose(_pa[0::2], _pa[1::2], rtol=0.0, atol=1e-12),
+      float(np.abs(_pa[0::2] - _pa[1::2]).max()))
+# ⭐ AND THE MODE THE RIG ACTUALLY RECORDS CHANGES NOTHING. The fixture above
+# pads its factory bytes with zeros, which no real capture carries; a packet
+# marked Strongest must decode byte-for-byte as it always has.
+_s37 = np.frombuffer(make_packet(90.0, 10.0)[:-6]
+                     + struct.pack("<IBB", 0, 0x37, 0x22),
+                     dtype=np.uint8).reshape(1, -1)
+for _m in (False, True):
+    _x = decode.decode_chunk(stamps, payload.reshape(1, -1),
+                             per_laser_azimuth=_m)
+    _y = decode.decode_chunk(stamps, _s37, per_laser_azimuth=_m)
+    check("a packet marked Strongest decodes exactly as before (per_laser=%s)"
+          % _m, all(np.array_equal(_p, _q) for _p, _q in zip(_x, _y)))
+from tlsconvert import gpu as _gpu_dual                    # noqa: E402
+if _gpu_dual.on():
+    for _m in (False, True):
+        _c = decode.decode_chunk(stamps, _dual, per_laser_azimuth=_m)
+        _g = decode.decode_chunk(stamps, _dual, per_laser_azimuth=_m,
+                                 xp=_gpu_dual.xp())
+        check("the card decodes a dual packet as the processor does "
+              "(per_laser=%s)" % _m,
+              all(np.allclose(_p, _gpu_dual.to_host(_q), rtol=0.0, atol=1e-12)
+                  for _p, _q in zip(_c, _g)))
+
 # --- 5b. the card decodes too, and is not allowed to change an answer --------
 # ⭐ stream_world_points routes every chunk through gpu.xp() (measured
 # 2026-09-01 on TLS_26_08_20_16_03_15: 3.48 s -> 0.47 s for 23.46M returns,
@@ -3610,6 +3679,19 @@ document.getElementById('o').textContent = 'RESULT<<'+r+'>>';
     _gp = os.path.join(_gd, "c.html")
     with open(_gp, "w", encoding="utf-8") as fh:
         fh.write(_glsl_html)
+    # ⛔ A WINDOWS COMPATIBILITY LAYER INHERITED FROM THE SHELL STOPS EDGE
+    # COLD. `__COMPAT_LAYER=DetectorsAppHealth` was in the environment of the
+    # shell that ran this suite on 2026-09-10 and not in PowerShell's, and a
+    # Chromium browser that inherits it exits 0 in a tenth of a second having
+    # rendered nothing: no page, no log, not one line of stderr even with
+    # logging switched on. Proved both ways -- with it removed Edge rendered
+    # from that shell, and with it added Edge went dark from PowerShell. The
+    # check then failed on every run as "no result in the page", which reads
+    # as a shader fault and was an inherited variable; the shipped shaders
+    # compiled OK three times out of three from the other shell. So Edge is
+    # handed the environment WITHOUT it -- a variable no browser wants.
+    _genv = dict((k, v) for k, v in os.environ.items()
+                 if k.upper() != "__COMPAT_LAYER")
     try:
         _go = subprocess.run(
             [_edge, "--headless=new", "--no-sandbox", "--disable-gpu-sandbox",
@@ -3617,11 +3699,21 @@ document.getElementById('o').textContent = 'RESULT<<'+r+'>>';
              "--virtual-time-budget=6000", "--dump-dom",
              "--user-data-dir=" + os.path.join(_gd, "u"), _gp],
             capture_output=True, text=True, timeout=240,
-            encoding="utf-8", errors="replace").stdout or ""
+            encoding="utf-8", errors="replace", env=_genv).stdout or ""
     except Exception as _ge:                       # noqa: BLE001
         _go = "RESULT<<edge would not run: %s>>" % _ge
     _gm = re.search(r"RESULT(?:&lt;&lt;|<<)(.*?)(?:&gt;&gt;|>>)", _go, re.S)
-    _gv = (_gm.group(1).strip() if _gm else "no result in the page")
+    # ⭐ AN EMPTY PAGE IS EDGE NOT RUNNING, NEVER A SHADER FAULT. A shader
+    # that will not compile still comes back as RESULT<<... FAILED ...>>, so
+    # nothing in the shaders can produce zero bytes. It stays a FAILURE --
+    # this machine CAN answer the question, which is what made the failure
+    # worth finding -- but it now names where to look instead of pointing at
+    # the shaders.
+    _gv = (_gm.group(1).strip() if _gm
+           else "no result in the page" if _go.strip()
+           else ("Edge returned no page at all, so it never ran: look at the "
+                 "environment it inherits, not the shaders (__COMPAT_LAYER "
+                 "did exactly this)"))
     if _gv == "NOGL":
         print("  skip the shaders compile -- this Edge has no software GL")
     else:

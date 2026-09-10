@@ -37,6 +37,15 @@ BLOCK_BYTES = 100
 CHANNELS_PER_BLOCK = 32
 BLOCK_FLAG = 0xEEFF
 
+# The factory bytes after the twelve blocks and the four-byte timestamp: byte
+# 1204 is the return mode, 1205 the product. Every capture this rig has made
+# reads 0x37 / 0x22 -- Strongest, VLP-16 -- checked 2026-09-10 on four of them
+# from 08-14 to 09-02, 16,000 packets, not one pair of equal azimuths.
+RETURN_MODE_BYTE = DATA_PACKET_BYTES - 2
+RETURN_STRONGEST = 0x37
+RETURN_LAST = 0x38
+RETURN_DUAL = 0x39
+
 # VLP-16 firing schedule, microseconds: 16 lasers at 2.304 us make a sequence
 # in 55.296 us, and two sequences fill one 110.592 us block.
 T_LASER_US = 2.304
@@ -115,12 +124,34 @@ def decode_chunk(stamps, raw, per_laser_azimuth=False,
               | (blocks[:, :, 3].astype(xp.uint32) << 8))
     az_deg = az_raw.astype(xp.float64) / 100.0
 
+    # ⛔ THE RETURN MODE IS IN THE PACKET, AND IT CHANGES WHAT A BLOCK IS.
+    # In dual mode the twelve blocks are six PAIRS: one firing, reported
+    # twice, once per return. The two blocks of a pair share an azimuth and a
+    # firing time. Read as twelve firings -- which is what this function did
+    # until 2026-09-10 -- the first block of every pair lost its per-laser
+    # spread, because the step to its partner is zero, and the times ran on
+    # for twelve firings when the packet holds six.
+    # Nothing has selected dual on this rig yet, so this is protective: a
+    # sensor switched to dual in its own web page must decode right rather
+    # than quietly wrong. Both returns are KEPT. When the strongest return is
+    # also the last, the sensor reports the second-strongest in its place, so
+    # a pair is never one point written twice.
+    dual = raw[:, RETURN_MODE_BYTE] == RETURN_DUAL
+    blk = xp.arange(BLOCKS_PER_PACKET)
+    fire = xp.where(dual[:, None], blk[None, :] // 2, blk[None, :])
+
     k = xp.arange(CHANNELS_PER_BLOCK)
     if per_laser_azimuth:
         # Azimuth advances during the block; recover each laser's own angle.
         d = xp.diff(az_deg, axis=1)
         d = xp.where(d < 0, d + 360.0, d)
         delta = xp.concatenate([d, d[:, -1:]], axis=1)
+        # A dual pair's step is to the NEXT PAIR, two blocks on, and both
+        # blocks of the pair take it -- they were the same firing.
+        pd = xp.diff(az_deg[:, 0::2], axis=1)
+        pd = xp.where(pd < 0, pd + 360.0, pd)
+        pd = xp.concatenate([pd, pd[:, -1:]], axis=1)
+        delta = xp.where(dual[:, None], xp.repeat(pd, 2, axis=1), delta)
         # A glitched or stalled block gives a nonsense delta. One block spans
         # 110 us, so even a 1200 rpm puck cannot turn more than ~0.8 degrees.
         delta = xp.clip(delta, 0.0, 1.0)
@@ -147,7 +178,7 @@ def decode_chunk(stamps, raw, per_laser_azimuth=False,
     omega = _vertical_angles(xp)[lane[good]]
 
     t = (stamps[:, None, None]
-         + (xp.arange(BLOCKS_PER_PACKET)[None, :, None] * T_BLOCK_US
+         + (fire[:, :, None] * T_BLOCK_US
             + frac[None, None, :] * T_BLOCK_US) * 1e-6)
 
     return (xp.asarray(alpha)[good], omega, rng[good], refl[good], t[good])

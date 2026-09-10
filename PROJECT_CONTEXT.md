@@ -6558,7 +6558,77 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fifty-first pass) — the current one
+### ⚠ LIVE STATE (2026-09-10, fifty-second pass) — the current one
+
+The operator asked whether anything else needed doing, was given three things
+in order, and said *"do it"*: the memory index, the four unrun breaks, then the
+dual-return check.
+
+**✅ THE 49TH PASS IS FULLY AUDITED**, thirteen cuts of thirteen. The detail,
+including a cut that broke nothing, is in the restart pointer below.
+
+**⭐⭐ THE MEMORY INDEX WAS NEARLY SEVEN TIMES WHAT A SESSION LOADS, AND THE
+NEWEST PASSES WERE THE ONES CUT OFF.** It had grown to 165 KB against a loader
+that reads about 24 KB, and every pass appended its line at the BOTTOM — so the
+49th, 50th and 51st were exactly the entries a cold session never saw, while
+the oldest hardware notes were always loaded. Trimmed to about 10 KB: one short
+line per memory, the standing rules first, the passes newest first. ⭐ **Nothing
+was thrown away**: every long index line was appended verbatim to the topic
+file it pointed at, and the 22 entries that pointed at no file became nine
+topic files of their own. One "entry" was the tail of another, split exactly
+where it quoted a backslash-n — the line recording that a Bash heredoc turns
+`\n` into a real newline had been broken by that same fault.
+
+**⭐⭐ THE REAL-GL SHADER CHECK FAILED ON EVERY RUN, AND THE SHADERS WERE
+FINE.** In this session "the page's own vertex and fragment shaders compile AND
+link in a real GL" failed with `no result in the page` on every audit break,
+whatever the break touched. Edge was exiting 0 in a tenth of a second having
+rendered nothing: no page, no log, not one line of stderr even with logging
+switched on. ⛔ **The cause was a Windows compatibility layer in the shell's
+environment**, `__COMPAT_LAYER=DetectorsAppHealth`, which Bash here carries and
+PowerShell does not. **Proved both ways**: with it removed, Edge rendered from
+Bash; with it added, Edge went dark from PowerShell. The shipped shaders
+compiled `OK` three runs of three from PowerShell. Where the variable comes
+from was not established, but **it is not on the operator's side**: Windows
+holds no compatibility flag for the Studio, Edge or WebView2 (the only program
+flagged is OneDrive, for display scaling), so a Studio opened from Explorer
+never inherits it. The suite now hands Edge its environment without it,
+and an empty page fails naming the environment rather than the shaders. It
+stays a FAILURE: this machine CAN answer the question, which is what made the
+failure worth finding.
+⚠ **A check that fails on every run becomes background.** The audit could still
+judge its verdicts only because it matches each break to a check BY NAME; a
+driver that counted failures would have scored every break as caught.
+
+**⭐ THE DUAL-RETURN FINDING (`decode.py:109`) WAS SMALLER THAN ITS SENTENCE,
+AND WORTH FIXING ANYWAY.** Every capture this rig has made is Strongest from a
+VLP-16: factory bytes `0x37 / 0x22` on four captures from 08-14 to 09-02,
+16,000 packets, not one pair of neighbouring blocks sharing an azimuth. And in
+dual mode the default decode was already right about angle, range and
+reflectivity, because a pair's two blocks share their azimuth and both returns
+are real points. What it got wrong was the **per-laser spread**, which the
+first block of every pair lost because the step to its partner is zero, and the
+**firing times**, which ran for twelve firings when the packet holds six. The
+decoder now reads the mode byte per packet, times a pair as one firing, steps
+the spread pair to pair, and keeps both returns. A packet marked Strongest
+decodes byte-for-byte as before. The Pi's preview decoder takes every block at
+its own azimuth and needs nothing.
+Suite **2026 passed, 0 failed**, run from the very shell that carries the compatibility
+layer. Audited: five cuts, each caught by the check that names it — the mode
+never recognised, the mode read from the product byte, only the timing
+reverted, only the spread reverted, and Edge handed the old environment.
+Driver `scratchpad\mos\revert52.py`.
+
+**✅ EXES REBUILT 2026-09-10 19:42-19:43**, with the Studio confirmed closed, and **asked
+what they carry**: `tlsconvert.decode` in all three holds the return-mode
+constants. Studio selftest 0.
+
+**⚠ STILL OPEN.** The Pi still does not resolve, so the capture-guard fix and
+the park at 180 are both waiting in `tls_scan.py`. The rematched project's
+grades are still unanswered. Twenty sweep findings remain, the whole-shoot
+pairing check is unbuilt, and DXF is parked at the operator's instruction.
+
+### ⚠ LIVE STATE (2026-09-10, fifty-first pass)
 
 **⭐ THE QUICK 360 PARKS THE HEAD AT 180.** *"i would like the pi head to
 move back to a 180 position after a fast capture"* (operator, 2026-09-10). The
@@ -7189,16 +7259,21 @@ judgement is theirs and it is a matter of taste as much as of correctness. Two
 knobs, both one line in `strength()`: the exponent (0.45 — lower lifts the
 weak returns further) and the middle stop's colour.
 
-⛔ **BUT FOUR REVERSION BREAKS WERE NEVER RUN.** The operator asked for
-testing to stop part way through the audit (nine of thirteen, all CAUGHT). The
-four outstanding are the heading wrap, the override's photograph leaving the
-walk's pool, the stray grid's reach and the engine builder's refusal to delete
-— each named with its exact cut in the 49th-pass entry above, each a single
-`python scratchpad\mos\revert49.py "<substring>"` away. **Until they are run,
-say "nine of thirteen audited", not "audited".**
-⚠ And one of the nine wants re-running for a better discriminator: the pair
-shape guard's break makes the node harness throw rather than letting a
-malformed pair through.
+✅ **THE 49TH PASS IS FULLY AUDITED — THIRTEEN CUTS OF THIRTEEN, EACH CAUGHT
+BY THE CHECK THAT NAMES IT** (2026-09-10, 52nd pass). Of the four left unrun
+when testing was paused, the heading wrap, the stray grid's reach and the engine
+builder's refusal came back CAUGHT first time.
+⛔ **The override's photograph leaving the pool came back NOT CAUGHT, and the
+fault was the CUT, not the test.** It was written `spent = set() or {...}`, and
+an empty set is falsy, so `or` hands back the original set: the break changed
+nothing, the suite had nothing to notice, and a sound claim read as an
+untested one. Rewritten as `set() and {...}` it came back CAUGHT
+(`AN OVERRIDDEN PHOTOGRAPH IS NOT HANDED OUT A SECOND TIME BY THE WALK [(1, 'IMG_20260820_10`). ⭐ **A BREAK HAS TO BE SEEN TO CHANGE BEHAVIOUR BEFORE ITS
+SILENCE SAYS ANYTHING ABOUT THE TEST** — the mirror image of the 49th pass's
+fixture that could not fail.
+⭐ And the pair shape guard now has the discriminator it lacked. The old cut
+made the node harness throw on the null entry; dropping only the coordinate
+test lets a malformed pair IN, which is the fault itself (`{'kept': [1, 7, 1, 1, 1]...`).
 ⛔ **A KILLED AUDIT LEAVES ITS BREAK ON DISK** — the restore is in a
 `finally` and a killed process has no `finally`. Check `git status` and the
 md5 before believing the tree. Put it back by reversing the one break BY HAND,
