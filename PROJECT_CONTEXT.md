@@ -6581,6 +6581,34 @@ written, and the commit after this one records how it ended: the Studio's
 reversion audit (16 breaks, each in its own copy of the tree, five at a time,
 beside a CONTROL copy with no break). Next, in order:
 
+⛔⛔ **SESSION END (2026-09-10 ~23:40): TWO THINGS OPEN. READ BEFORE (a).**
+1. **The real-data check of the repaired project came back GREY, and it is
+   not explained.** `scratchpad\mos\realopen55.py` cuts two captures out of
+   `scan project (grades repaired).tlspie` -- `TLS_26_09_02_12_08_38` (saved
+   `matched`, rung 4) and `TLS_26_09_02_13_01_04` (heading dropped) -- and
+   opens them headlessly through `AlignServer.open_project`: `ok`, no lost and
+   no refound photographs, and BOTH scans came back with `colour_info` None,
+   so a save would write no pose at all. Called directly on the same opened
+   scans a moment later, `colour_scan` coloured both: the first "given" at
+   104.514 (a heading handed in), the second solved, "doubtful", given False,
+   yaw -34.92. `colour_scan` does assign `scan.colour_info` on success
+   (align.py ~798), so the suite's stand-in is not the explanation. Something
+   between the colouring inside `_carry_colour` and the end of the open loses
+   the colour, or the colouring fails inside the open and not outside it. NOT
+   YET KNOWN whether it is this pass's change, older than it, or the headless
+   check itself (the first run died of memory beside the audit; the second ran
+   at `max_points` 1.5M). **Until it is traced the operator should NOT rely on
+   the repaired copy**; the rematched project they saved at 11:15 is
+   untouched. Next: instrument `_carry_colour` inside the open (print what
+   `colour_scan` returned and `scan.colour_info` after it) on these two
+   captures, before anything else.
+2. **The Studio reversion audit was still running** (`audit55_par.py`: 16
+   breaks plus a CONTROL, five at a time; output in
+   `scratchpad\mos\audit55_studio.txt`, results in
+   `scratchpad\mos\aud55_results.json`). No job had finished when the session
+   ended. Read it; if the copies are gone and no result was written, run it
+   again.
+
 - **(a) The operator opens `Desktop\ministry of sound\scan project (grades
   repaired).tlspie` IN THE REBUILT STUDIO ONLY.** 19 of its photographs carry
   no heading on purpose and are solved on open; a Studio built before this
