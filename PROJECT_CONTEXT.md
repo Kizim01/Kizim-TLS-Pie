@@ -5,6 +5,13 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
+> **▶ WHERE THE WORK IS NOW (2026-09-10 ~20:50):** search this file for
+> `LIVE STATE (2026-09-10, fifty-third and fifty-fourth passes)` and read its
+> **RESUME HERE** first. The restart pointer's opening entries are older than
+> it; the newest LIVE STATE is the current one, and each older one below it is
+> history. At the end of that session the rig was idle and shut down, all work
+> pushed, and the Pi carried every Pi change in the repo.
+
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
 system: a pan stepper on a harmonic drive sweeping a Velodyne VLP-16, with a Raspberry Pi 4
@@ -6558,9 +6565,25 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fifty-third pass) — the current one
+### ⚠ LIVE STATE (2026-09-10, fifty-third and fifty-fourth passes) — the current one
 
-**▶ RESUME HERE (saved for compaction, 2026-09-10 evening).** In order:
+**▶ RESUME HERE (updated at the end of the session, 2026-09-10 ~20:50).** The
+rig is IDLE and being shut down by the operator. Everything is committed and
+pushed (`c9f7f57`), and the Pi carries every Pi change in the repo (md5
+checked after each delivery). Next, in order:
+
+- **(a) Watch the first real STOP and the first 180 Rapid** — both are
+  unexercised on the rig. A STOP mid-sweep should make that scan vanish from
+  the library and turn the head back to where it started; a Rapid should end
+  facing 180. A green suite is not production evidence.
+- **(b) Make `test_splash.py` skip when Pillow is missing**, so `deploy53.py`
+  can restart the scanner by itself (item 1). Twice tonight it refused, and
+  the restart was done by hand while idle.
+- **(c) Trace the door that saves solved headings as `given`** (item 2).
+- **(d) The sweep: `shoot.py:516` next** (item 3; 19 open plus 2 DXF). DXF
+  stays parked.
+
+The items below carry the detail:
 
 1. **✅ DELIVERED TO THE PI — 2026-09-10, 20:29-20:30 BST.** The 46th pass's
    capture guard, the Rapid's park at 180, and stop = delete + turn back are on
