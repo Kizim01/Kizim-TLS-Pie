@@ -38,12 +38,22 @@ That is a hardware requirement, not a software one. The MicroView handled this
 in setup(); on a Pi there is no software running during the window that
 matters.
 
-POSITION AFTER AN ABORT
------------------------
-If a move is aborted (stop button), the number of steps actually emitted is
-not recoverable from pigpio, so the position is treated as UNKNOWN and the
-caller must re-home manually. This matches the old firmware's behaviour, which
-showed "STOPPED / PRESS RESET" and required operator intervention.
+POSITION AFTER A STOP
+---------------------
+pigpio cannot say how many steps it had emitted when a move is stopped, and
+until 2026-09-10 that made the position UNKNOWN after every stop, with the
+operator re-homing by hand as the old firmware's "STOPPED / PRESS RESET" did.
+It never had to be read back. The planner fixed every step's timing before the
+move began, so the count at the moment of a stop follows from how long the
+move had been running -- the same timing the pan track already trusts to put
+every point of a cloud in its place. `steps_by_time` does that arithmetic, and
+its error is the poll interval: about a hundredth of a degree at scan speed.
+So a stop keeps the position KNOWN, which is what lets a stopped scan turn the
+head back to where it started.
+
+⛔ THE ONE EXCEPTION IS THE DURATION WATCHDOG. A move that overran was, by
+definition, not following its plan, so its timing says nothing about where the
+head got to; that position is still treated as unknown and re-homed by hand.
 """
 
 import io
@@ -306,6 +316,35 @@ def plan_move(steps, rate_hz, accel=ACCEL_STEPS_PER_S2):
     return segments, rate_hz
 
 
+def steps_by_time(segments, elapsed_s):
+    """
+    How many of a planned move's steps have gone out `elapsed_s` into it.
+
+    Within a segment the rate is constant, so steps are exactly linear in
+    time; across segments they add. Clamped to the move: nothing before it
+    starts, all of it after it ends. Pure arithmetic, so it is testable off
+    the Pi and it cannot disagree with `plan_move` about the plan.
+    """
+    done = 0.0
+    t = 0.0
+    total = 0
+    for n, rate in segments:
+        if n > 0 and rate > 0:
+            total += int(n)
+    if elapsed_s <= 0.0:
+        return 0
+    for n, rate in segments:
+        if n <= 0 or rate <= 0:
+            continue
+        dur = n / rate
+        if elapsed_s < t + dur:
+            done += (elapsed_s - t) * rate
+            return max(0, min(total, int(round(done))))
+        t += dur
+        done += n
+    return total
+
+
 class Stepper:
     """Pan axis on the Big Easy Driver, clocked by pigpio DMA waveforms."""
 
@@ -328,11 +367,15 @@ class Stepper:
         self.last_move_started_at = None
         self.last_move_segments = None
         self.last_move_forward = True
+        # How far the last move got before a stop, counted from its plan; None
+        # when it was not stopped. The scan reads it to turn the head back.
+        self.last_stop_steps = None
 
-        # Where the head's zero came from. Scans either side of an abort do NOT
-        # share an origin -- after one, zero is wherever the operator aligned
-        # the head by hand -- so any tool that overlays two scans has to be
-        # able to see that rather than assume a common frame.
+        # Where the head's zero came from. Scans either side of an OVERRUN do
+        # NOT share an origin -- after one, zero is wherever the operator
+        # aligned the head by hand (a stop keeps the count; see the module
+        # docstring) -- so any tool that overlays two scans has to be able to
+        # see that rather than assume a common frame.
         self.zero_provenance = _restored_provenance
 
         for pin in (self.step_pin, self.dir_pin, self.enable_pin):
@@ -477,12 +520,21 @@ class Stepper:
             self.last_move_started_at = time.time()
             self.last_move_segments = list(segments)
             self.last_move_forward = bool(forward)
+            self.last_stop_steps = None
+            # ⭐ MONOTONIC, because this one measures how far the head got,
+            # and a clock step in the middle of a move would move the answer.
+            moving_since = time.monotonic()
 
             while self.pi.wave_tx_busy():
                 if should_abort is not None and should_abort():
+                    ran = time.monotonic() - moving_since
                     self.pi.wave_tx_stop()
-                    # Steps actually emitted are unrecoverable from pigpio.
-                    self.position_known = False
+                    # ⭐ pigpio cannot say how many steps went out; the plan
+                    # can. See steps_by_time and the module docstring.
+                    done = steps_by_time(segments, ran)
+                    self.last_stop_steps = done
+                    if self.position_known:
+                        self.position_steps += done if forward else -done
                     self._remember()
                     return False
                 elapsed = time.time() - started
@@ -518,9 +570,10 @@ class Stepper:
         """
         Declare the current head position to be the start position.
 
-        Used by Restart after an abort, where the steps actually emitted are
-        unrecoverable from pigpio. The operator aligns the head physically and
-        this makes that alignment authoritative again.
+        Used by Restart when the position is unknown -- after a watchdog
+        overrun, since a stop is counted from the plan and keeps it. The
+        operator aligns the head physically and this makes that alignment
+        authoritative again.
         """
         self.position_steps = 0
         self.position_known = True

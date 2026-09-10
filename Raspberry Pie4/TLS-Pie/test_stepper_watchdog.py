@@ -196,7 +196,71 @@ check("returns False rather than raising", result is False, result)
 check("aborts immediately, well before the watchdog",
       took < limit_s / 2, "%.2fs" % took)
 check("called wave_tx_stop", pi.stop_calls >= 1, pi.stop_calls)
-check("position marked unknown", st.position_known is False)
+# ⭐ A STOP KEEPS THE POSITION (2026-09-10). This check used to assert the
+# opposite -- "position marked unknown" -- because pigpio cannot report how many
+# steps went out. It never had to: the plan fixed every step's time, so the
+# count follows from how long the move ran. Asked at once, that is no steps.
+check("a stop keeps the position KNOWN, counted from the plan",
+      st.position_known is True, st.position_known)
+check("...and asked before the first step, the count is nothing",
+      st.last_stop_steps == 0 and st.position_steps == 0,
+      (st.last_stop_steps, st.position_steps))
+
+# --- 3b. a stop part way is counted on the clock that places the cloud --------
+print("\na stop part way through a move is counted from its plan")
+import tls_geometry                                          # noqa: E402
+
+_segs, _ = tls_stepper.plan_move(20000, RATE)
+_total_s = sum(n / r for n, r in _segs)
+check("steps_by_time: nothing has gone out at the start",
+      tls_stepper.steps_by_time(_segs, 0.0) == 0)
+check("...all of it has by the end, and no more after that",
+      tls_stepper.steps_by_time(_segs, _total_s) == 20000
+      and tls_stepper.steps_by_time(_segs, _total_s * 3) == 20000)
+check("...exactly the first segment by the end of the first segment",
+      tls_stepper.steps_by_time(_segs, _segs[0][0] / _segs[0][1])
+      == _segs[0][0],
+      (tls_stepper.steps_by_time(_segs, _segs[0][0] / _segs[0][1]),
+       _segs[0][0]))
+_ts = [_total_s * k / 50.0 for k in range(51)]
+_cs = [tls_stepper.steps_by_time(_segs, t) for t in _ts]
+check("...and it never runs backwards as time goes on",
+      all(b >= a for a, b in zip(_cs, _cs[1:])), _cs)
+# ⭐ THE SAME CLOCK THE CLOUD IS PLACED ON. The pan track turns a packet's time
+# into the head's angle from these very segments. A stop counted any other way
+# would turn the head back by a different arithmetic from the one that drew
+# the scan it has just deleted.
+_tr = tls_geometry.PanTrack.from_segments(_segs, tls_stepper.STEPS_PER_REV,
+                                          forward=True)
+_bp = _tr.as_breakpoints()
+
+
+def _angle_at(t):
+    for (ta, da), (tb, db) in zip(_bp, _bp[1:]):
+        if ta <= t <= tb:
+            return da + (db - da) * ((t - ta) / (tb - ta) if tb > ta else 0.0)
+    return _bp[-1][1]
+
+
+_step_deg = 360.0 / tls_stepper.STEPS_PER_REV
+_worst = max(abs(tls_stepper.steps_by_time(_segs, t) * _step_deg
+                 - _angle_at(t)) for t in _ts)
+check("...and it agrees with the pan track to within a step, all the way",
+      _worst <= _step_deg, "%.6f deg against a step of %.6f" % (_worst,
+                                                                 _step_deg))
+pi = FakePi(busy_for_s=10_000)
+st = make_stepper(pi)
+_t0 = time.monotonic()
+st.move_steps(20000, RATE, should_abort=lambda: time.monotonic() - _t0 > 0.3)
+_ran = time.monotonic() - _t0
+_lo = tls_stepper.steps_by_time(_segs, 0.25)
+_hi = tls_stepper.steps_by_time(_segs, _ran)
+check("a move stopped after 0.3 s has counted about 0.3 s of steps",
+      st.last_stop_steps is not None and _lo <= st.last_stop_steps <= _hi,
+      (st.last_stop_steps, _lo, _hi))
+check("...and the head moved by exactly that count, still known",
+      st.position_known is True and st.position_steps == st.last_stop_steps,
+      (st.position_known, st.position_steps, st.last_stop_steps))
 
 # --- 4. the watchdog scales with the move, not a fixed timeout ------------
 print("\nwatchdog scales with move length")
@@ -314,14 +378,29 @@ try:
     check("moves accumulate across the restart rather than starting over",
           _st2.position_steps == 3000, _st2.position_steps)
 
-    # ⛔ AN UNKNOWN POSITION MUST NOT COME BACK KNOWN. An abort leaves the
-    # steps actually emitted unrecoverable from pigpio; a reboot does not
-    # recover them either. Restoring the stale figure as trustworthy is exactly
-    # the failure this file exists to prevent, so it is driven, not asserted.
-    _ab = make_stepper(FakePi(5.0))
-    _ab.move_steps(160000, tls_stepper.deg_per_s_to_step_rate(2.0),
-                   forward=True, should_abort=lambda: True)
-    check("an aborted move leaves the position unknown", _ab.position_known is False)
+    # A stopped move's count is written down like any other, so a restart
+    # comes back to where the head really is rather than to "unknown".
+    _sp = make_stepper(FakePi(10_000))
+    _t2 = time.monotonic()
+    _sp.move_steps(20000, RATE, forward=True,
+                   should_abort=lambda: time.monotonic() - _t2 > 0.2)
+    _sp2 = make_stepper(FakePi(0.0), fresh=False)
+    check("a stopped move's counted position is what a restart comes back to",
+          _sp2.position_known is True and _sp.position_steps > 0
+          and _sp2.position_steps == _sp.position_steps,
+          (_sp2.position_known, _sp2.position_steps, _sp.position_steps))
+
+    # ⛔ AN UNKNOWN POSITION MUST NOT COME BACK KNOWN. Since 2026-09-10 a stop
+    # is counted from the plan and keeps the position, so the case that still
+    # leaves it unknown is the duration watchdog's: a move that overran was by
+    # definition not following its plan, and its timing says nothing about
+    # where it got to. That is the case driven here, not asserted.
+    _ab = make_stepper(FakePi(10_000))
+    try:
+        _ab.move_steps(STEPS, RATE, forward=True)
+    except tls_stepper.MoveOverran:
+        pass
+    check("an overrun leaves the position unknown", _ab.position_known is False)
     _ab2 = make_stepper(FakePi(0.0), fresh=False)
     check("and it is STILL unknown after a restart, not quietly trusted",
           _ab2.position_known is False, _ab2.position_known)

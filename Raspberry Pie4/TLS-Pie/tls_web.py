@@ -208,6 +208,17 @@ class ScannerState:
             self._stop_request = True
             return True, "Stopping"
 
+    def clear_stop(self):
+        """
+        Forget a stop that has been acted on, so the next press is heard.
+
+        A stopped scan turns the head back to where it started, and that move
+        has to be stoppable as well. Left set, the press that ended the sweep
+        would end the return before its first step.
+        """
+        with self._lock:
+            self._stop_request = False
+
     def request_restart(self):
         with self._lock:
             if self.busy:
@@ -890,7 +901,7 @@ body{transition:opacity .25s ease}
 <div class="stack" style="margin-bottom:14px">
   <button class="stop" id="stop" onclick="cmd('stop')" disabled>
     <span class="lbl">STOP</span>
-    <span class="det">aborts the scan and closes the capture</span>
+    <span class="det">deletes this scan and turns the head back</span>
   </button>
 </div>
 

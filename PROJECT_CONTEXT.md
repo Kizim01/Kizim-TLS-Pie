@@ -6558,7 +6558,85 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fifty-second pass) — the current one
+### ⚠ LIVE STATE (2026-09-10, fifty-third pass) — the current one
+
+**⭐⭐ A STOP NOW THROWS THE SCAN AWAY AND TURNS THE HEAD BACK.** *"i would
+like it if i stop a scan mid sweep to delete that scan and lidar resets"*,
+then *"resets heading"* (operator, 2026-09-10). A STOP pressed during a sweep
+deletes the capture that scan was recording, and the sidecar beside it if one
+exists, then turns the head back to where that scan started.
+
+⭐⭐ **THE POSITION AFTER A STOP WAS "UNKNOWN" BY DESIGN, AND IT NEVER HAD TO
+BE.** Since the MicroView firmware's "STOPPED / PRESS RESET", a stopped move
+threw its position away because pigpio cannot report how many steps it had
+emitted, and the operator re-homed by hand. But the planner fixes every step's
+timing before the move begins, so the count at the moment of a stop follows
+from how long the move had been running — the same timing the pan track already
+trusts to put every point of a cloud in place. `tls_stepper.steps_by_time` does
+that arithmetic on a monotonic clock, and the suite checks it against the pan
+track itself: within one step at every point of a 20,000-step move. The error is
+the poll interval, about a hundredth of a degree at scan speed. A stop therefore
+keeps the position KNOWN, and a restart comes back to it. ⛔ **The duration
+watchdog is the one exception**: a move that overran was by definition not
+following its plan, so its timing says nothing, and that position is still
+unknown.
+
+⛔ **ONLY WHAT THIS SCAN WROTE**, by name and never by pattern — tested on a
+real folder with an earlier scan beside it, which is untouched.
+⛔⛔ **STOP STILL MEANS STOP.** The panel's STOP is the only software stop on
+the rig, so a press that ends in the motor running again has to be answerable
+by another press: the spent stop is cleared, the return asks the stop flag as
+the sweep did, and a second press halts it where it is, reported as so many
+degrees short of where the scan started.
+⛔ **ONLY AN OPERATOR'S PRESS.** A shutdown mid-sweep never starts the motor and
+keeps what was recorded, since nobody decided against it; a recorder that died
+keeps its capture, which is the evidence of why, and leaves the head alone.
+The STOP button's line now reads *"deletes this scan and turns the head back"*.
+⚠ **"Where that scan started", not "home"**, is an interpretation: the two are
+the same unless a 180 Rapid has just parked the head half a turn round.
+This settles the sweep's `tls_scan.py:588` by the operator's decision: the
+partial capture is thrown away rather than given a sidecar.
+
+**⭐⭐ THE PARK AT 180 HAD BEEN PUT ON THE WRONG SCAN.** Asked whether the head
+moves back to 180 after a fast scan, I answered that the 360 Quick already did
+— and the operator's reply was *"quick 180 scan"*. The 51st pass had read "a
+fast capture" as the profile whose key is literally `fast`, the 360 Quick, and
+given it a 198° walk: 28 s at 7°/s, the very wait that had the return leg
+removed in August, on a scan nobody asked to change. ⭐ **A KEY IN THE CODE IS
+NOT THE OPERATOR'S NAME FOR THE THING.** The button says "180° Rapid" and they
+call it the quick 180. Now the 180 Rapid walks back its 10.8° overlap — 4,800
+steps, about 1.6 s — and finishes on exactly 180; both 360s stop where they
+finish. The planner gives the Rapid 1.64 min and the Quick 3.17 min, so their
+buttons read "about 1¾ min" and "about 3¼ min".
+
+Pi suites **all green (blankcursor 41, capture_guards 36, cloud_registration 78, intro 54, power 33, scan_profiles 61, shutdown 48, splash 55, stepper_watchdog 47, storage 26, viewer 80, web_install 49)**. Audited: **10 cuts, each caught by the check that
+names it** — the stop uncounted, the count off the pan track's clock, the spent
+stop left set, nothing deleted, the head turned the wrong way, a second stop
+ignored, a shutdown starting the motor, a dead recorder's capture deleted, the
+Rapid not walking back, and the Quick 360 given its walk again. Driver
+`scratchpad\mos\revert53.py`.
+⚠ Its first run died after the third break, and on its own output: printing a
+check name that carries a star to a console that could not encode it. Its
+`finally` had already put the file back, but seven breaks never ran; the run
+recorded here is the second, with UTF-8 output. ⭐ The 48th pass's lesson in a
+new place: **a driver that cannot print its result cannot report it.**
+
+**⛔⛔ NOT ON THE BOX, THOUGH THE OPERATOR SAYS THE PI IS CONNECTED.** From the
+laptop, on the same hotspot (`10.222.41.0/24`), it is invisible: mDNS is dead
+there as recorded on 2026-08-13, a ping sweep answered only the phone, and a
+connection sweep on ports 22 and 8080 found nothing. **The Pi's address is
+needed from the phone's hotspot list or the panel.** Then
+`python scratchpad\mos\deploy53.py <address>` backs up, copies only what
+differs, verifies checksums, runs the suites ON THE PI and restarts `tls-scan`
+only when every suite is green and the scanner is idle. Waiting in it: the
+46th pass's capture guard, the Rapid's park and this stop, across
+`tls_scan.py`, `tls_stepper.py` and `tls_web.py`.
+
+⚠ Still open beside it: `tls_web.py:207`, a STOP pressed while idle is
+remembered and aborts the next Restart — `clear_stop` now exists, and Restart
+does not call it yet.
+
+### ⚠ LIVE STATE (2026-09-10, fifty-second pass)
 
 The operator asked whether anything else needed doing, was given three things
 in order, and said *"do it"*: the memory index, the four unrun breaks, then the
@@ -6629,6 +6707,8 @@ grades are still unanswered. Twenty sweep findings remain, the whole-shoot
 pairing check is unbuilt, and DXF is parked at the operator's instruction.
 
 ### ⚠ LIVE STATE (2026-09-10, fifty-first pass)
+
+⛔ **CORRECTED BY THE 53RD PASS: the park at 180 belongs to the 180 Rapid, not the 360 Quick.** The operator meant "quick 180 scan". Everything below about a 198° walk on the Quick 360 describes a change that has been taken back out.
 
 **⭐ THE QUICK 360 PARKS THE HEAD AT 180.** *"i would like the pi head to
 move back to a 180 position after a fast capture"* (operator, 2026-09-10). The

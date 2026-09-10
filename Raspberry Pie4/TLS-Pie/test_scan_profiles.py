@@ -173,8 +173,10 @@ for key, p in BY_ORDER:
 # --- 3b. where the head is left ----------------------------------------------
 #
 # "i would like the pi head to move back to a 180 position after a fast
-# capture" (operator, 2026-09-10). The Quick 360 sweeps 378 and walks back 198,
-# which lands it on exactly 180 from where the sweep began.
+# capture", then "quick 180 scan" (operator, 2026-09-10). The 180 Rapid sweeps
+# 190.8 and walks back its 10.8 degree overlap, which lands it on exactly 180
+# from where the sweep began. (It was first put on the 360 Quick, whose key is
+# `fast`; the operator's name for the scan is what settled which one.)
 #
 # ⛔ THE POINT OF THESE CHECKS IS THE ARITHMETIC BETWEEN TWO NUMBERS, NOT
 # EITHER NUMBER. Nothing stops someone editing `sweep_deg` for a good reason
@@ -182,28 +184,28 @@ for key, p in BY_ORDER:
 # somewhere else entirely while both values still looked reasonable on their
 # own and every other check in this file went on passing.
 print("\nthe head is left where it was asked to be")
-check("the Quick 360 finishes at 180 deg from where it started",
-      abs(tls_scan.park_deg(PROFILES["fast"]) - 180.0) < 1e-9,
-      tls_scan.park_deg(PROFILES["fast"]))
-check("...and it gets there by walking BACK, not by sweeping further",
-      PROFILES["fast"]["return_deg"] > 0.0
-      and PROFILES["fast"]["sweep_deg"] > 180.0,
-      PROFILES["fast"]["return_deg"])
+check("the 180 Rapid finishes at 180 deg from where it started",
+      abs(tls_scan.park_deg(PROFILES["rapid"]) - 180.0) < 1e-9,
+      tls_scan.park_deg(PROFILES["rapid"]))
+check("...and it gets there by walking BACK its overlap, not sweeping further",
+      PROFILES["rapid"]["return_deg"] > 0.0
+      and PROFILES["rapid"]["sweep_deg"] > 180.0,
+      PROFILES["rapid"]["return_deg"])
 # ⭐ AND THE WALK IS PAID FOR IN THE ESTIMATE. The progress bar is built from
 # `estimate_duration`, so a return leg the planner did not know about would
 # leave the bar full while the head was still moving -- which reads as a hung
 # rig, and the rig is the thing the operator is standing in front of.
-_sweep_only = dict(PROFILES["fast"], return_deg=0.0)
+_sweep_only = dict(PROFILES["rapid"], return_deg=0.0)
 check("the walk back is inside the duration the progress bar is drawn from",
-      tls_scan.estimate_duration(PROFILES["fast"])
-      - tls_scan.estimate_duration(_sweep_only) > 20.0,
+      tls_scan.estimate_duration(PROFILES["rapid"])
+      - tls_scan.estimate_duration(_sweep_only) > 1.0,
       "%.1f s"
-      % (tls_scan.estimate_duration(PROFILES["fast"])
+      % (tls_scan.estimate_duration(PROFILES["rapid"])
          - tls_scan.estimate_duration(_sweep_only)))
 # The two profiles that were NOT asked for must be untouched: a change to the
 # rig's motion that quietly widened to every profile would be a surprise the
 # operator finds by watching the head, not by reading anything.
-for _k in ("slow", "rapid"):
+for _k in ("slow", "fast"):
     check("the %s profile still stops where it finishes" % _k,
           PROFILES[_k]["return_deg"] == 0.0
           and abs(tls_scan.park_deg(PROFILES[_k])

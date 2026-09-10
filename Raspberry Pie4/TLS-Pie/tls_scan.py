@@ -149,15 +149,17 @@ TCPDUMP_SETTLE_S = float(os.environ.get("TLSPIE_TCPDUMP_SETTLE_S", "0.3"))
 # place in the program that ever read it.
 #
 # ⭐ AND IT CAME BACK FOR ONE PROFILE -- 2026-09-10: "i would like the pi head
-# to move back to a 180 position after a fast capture" (operator). The Quick
-# 360 sweeps 378 and now walks back 198, which puts it at exactly 180 from
-# where it started. ⛔ THAT WALK COSTS ABOUT 28 s AT 7 deg/s, WHICH IS THE
-# VERY COST THAT HAD THE LEG REMOVED IN AUGUST -- 198/7.0 on a scan of about
-# 195 s. It is worth paying here only because it was asked for by name, and it
-# is one number to undo if the wait turns out to matter more than the parking.
-# The Slow 360 ends in the same place as the Quick and could have the same
-# number; it was left alone because it was not asked for. The 180 Rapid already
-# finishes at 190.8, a sliver past the same facing.
+# to move back to a 180 position after a fast capture", then "quick 180 scan"
+# (operator). The 180 Rapid sweeps 190.8 -- half a turn plus the 10.8 degree
+# overlap that closes its seam -- so it now walks back 10.8 and finishes on
+# exactly 180 from where it started: 4,800 steps, about two seconds.
+# ⛔ THE SAME DAY IT WAS FIRST PUT ON THE WRONG PROFILE. "A fast capture" was
+# read as the 360 Quick, because that profile's key is literally `fast`, and it
+# was given a 198 degree walk: 28 s at 7 deg/s, the very wait that had the leg
+# removed in August, on a scan nobody had asked to change. The operator's own
+# name for the scan settled it. ⭐ A KEY IN THE CODE IS NOT THE OPERATOR'S NAME
+# FOR THE THING -- the button says "180° Rapid" and they call it the quick 180.
+# Both 360s stop where they finish.
 RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 
 # Three scans. The 180 came back on 2026-08-19, asked for by name: the quick
@@ -188,18 +190,18 @@ RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 #
 # `return_deg` is kept rather than deleted: the field is written into every
 # sidecar, so removing it would change the shape of a record that older
-# captures already carry. Zero is the honest value for the two profiles that
-# do not walk back; the Quick 360's 198 is what puts it on 180.
+# captures already carry. Zero is the honest value for the two 360s, which do
+# not walk back; the 180 Rapid's 10.8 is what puts it on 180.
 SCAN_PROFILES = {
     "slow": {"label": "360° Slow", "detail": "1°/s · about 6¼ min",
              "order": 1, "sweep_deg": 378.0, "deg_per_s": 1.0,
              "return_deg": 0.0},
-    "fast": {"label": "360° Quick", "detail": "2°/s · about 3¾ min",
+    "fast": {"label": "360° Quick", "detail": "2°/s · about 3¼ min",
              "order": 2, "sweep_deg": 378.0, "deg_per_s": 2.0,
-             "return_deg": 198.0},
-    "rapid": {"label": "180° Rapid", "detail": "2°/s · about 1½ min · one pass",
+             "return_deg": 0.0},
+    "rapid": {"label": "180° Rapid", "detail": "2°/s · about 1¾ min · one pass",
               "order": 3, "sweep_deg": 190.8, "deg_per_s": 2.0,
-              "return_deg": 0.0},
+              "return_deg": 10.8},
 }
 
 STATUSFILE = os.path.join(TMPDIR, "VLPrecord.status")
@@ -534,8 +536,10 @@ def do_restart(pi, stepper):
     """
     Put the head back to the start position and clear any fault.
 
-    Two cases, because after an abort the position is genuinely unknown --
-    pigpio cannot report how many steps left the DMA buffer:
+    Two cases, because after a watchdog overrun the position is genuinely
+    unknown -- that move was not following its plan, so its timing says
+    nothing about where it got to. (A stop is counted from the plan and keeps
+    the position; see tls_stepper.steps_by_time.)
 
       * position known  -> drive back to zero
       * position unknown -> the operator has aligned the head by hand, so take
@@ -586,6 +590,77 @@ def do_restart(pi, stepper):
 
 
 # --- Scan sequence --------------------------------------------------------
+def _discard_and_return(stepper, capture_file, swept):
+    """
+    A scan the operator stopped: delete what it recorded, turn the head back.
+
+    Asked for on 2026-09-10: "if i stop a scan mid sweep to delete that scan
+    and lidar resets ... resets heading". A stopped scan is one the operator
+    has decided against, and leaving its fragment in the library puts a partial
+    capture beside the real ones, looking exactly like them.
+
+    ⛔ ONLY WHAT THIS SCAN WROTE. The capture tcpdump was told to create and
+    the sidecar beside it, if one exists -- by name, never by pattern, so
+    nothing else on the stick can be caught up in it.
+
+    ⛔⛔ THE HEAD GOES BACK TO WHERE THIS SCAN STARTED, AND A SECOND STOP ENDS
+    THAT TOO. The panel's STOP is the only software stop on the rig, so a press
+    that ends in the motor running again has to be answerable by another press.
+    The stop that ended the sweep is cleared first -- left set, it would end the
+    return before its first step -- and the return then asks the stop flag
+    exactly as the sweep did. The distance is the steps the sweep got through,
+    counted from its plan (tls_stepper.steps_by_time), taken the other way.
+    """
+    gone, kept = [], []
+    for path in ((capture_file, meta_path_for(capture_file))
+                 if capture_file else ()):
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+            gone.append(os.path.basename(path))
+        except OSError as exc:
+            kept.append("%s (%s)" % (os.path.basename(path), exc))
+    _state.set(capture_file=None)
+    if kept:
+        said = "could not delete %s" % ", ".join(kept)
+    elif gone:
+        said = "deleted %s" % gone[0]
+    else:
+        said = "nothing had been recorded"
+
+    steps, forward = swept
+    if not steps:
+        status_update("STOPPED", "Scan stopped — %s; the head had not moved"
+                      % said)
+        return
+    deg = steps * 360.0 / tls_stepper.STEPS_PER_REV
+    _state.clear_stop()
+    status_update("HOMING", "Scan stopped — %s; turning the head back "
+                            "%.1f° to where it started" % (said, deg))
+    try:
+        stepper.enable()
+        time.sleep(1.0)
+        back = stepper.move_steps(
+            steps, tls_stepper.deg_per_s_to_step_rate(RETURN_DEG_PER_S),
+            forward=not forward,
+            should_abort=lambda: _shutdown or _state.stop_requested())
+    except tls_stepper.MoveOverran as exc:
+        stepper.stop_and_release()
+        status_update("ABORTED", "MOVE_OVERRAN on the way back: %s" % exc)
+        return
+    finally:
+        stepper.disable()
+    if back:
+        status_update("STOPPED", "Scan stopped — %s; the head is back where "
+                                 "it started" % said)
+    else:
+        short = steps - (getattr(stepper, "last_stop_steps", None) or 0)
+        status_update("STOPPED", "Stopped again on the way back — the head "
+                                 "is %.1f° short of where the scan started"
+                      % (short * 360.0 / tls_stepper.STEPS_PER_REV))
+
+
 def run_scan(pi, stepper, profile_name, record=True):
     profile = SCAN_PROFILES[profile_name]
     # Why the recorder stopped, if it stopped by itself. A list rather than a
@@ -618,6 +693,10 @@ def run_scan(pi, stepper, profile_name, record=True):
     proc = None
     capture_file = None
     capture_started = None
+    # Who stopped the sweep, and how far it got: read where they happen, used
+    # after the abort has been reported.
+    by_operator = False
+    swept = (None, True)
     try:
         if record:
             preflight()
@@ -647,6 +726,10 @@ def run_scan(pi, stepper, profile_name, record=True):
             profile["sweep_deg"], profile["deg_per_s"], should_abort=should_abort
         )
         _state.set(position_known=stepper.position_known)
+        # Taken now, before any other move can overwrite it: after a stop, the
+        # way back is the same number of steps the other way.
+        swept = (getattr(stepper, "last_stop_steps", None),
+                 getattr(stepper, "last_move_forward", True))
 
         # ⛔ THE DEAD RECORDER IS READ BEFORE `completed`, AND THE ORDER IS THE
         # POINT. A recorder that dies stops the sweep THROUGH `should_abort`,
@@ -662,6 +745,11 @@ def run_scan(pi, stepper, profile_name, record=True):
                 "the scan was stopped rather than finished"
                 % capture_died[0])
         if not completed:
+            # ⛔ WHO STOPPED IT DECIDES WHAT HAPPENS NEXT. Only a press on the
+            # panel means "throw this scan away and turn back". A shutdown must
+            # not start the motor, and a dying recorder never reaches here --
+            # its capture is the evidence of why, and it is kept.
+            by_operator = (not _shutdown) and _state.stop_requested()
             raise ScanAborted("INTERRUPTED", "Stop pressed during the sweep")
 
         # Capture stops before the return leg, exactly as the firmware did.
@@ -725,6 +813,8 @@ def run_scan(pi, stepper, profile_name, record=True):
         stepper.stop_and_release()
         _terminate(proc)
         status_update("ABORTED", "%s: %s" % (exc.reason, exc.message))
+        if exc.reason == "INTERRUPTED" and by_operator:
+            _discard_and_return(stepper, capture_file, swept)
         _state.set(position_known=stepper.position_known)
         if not stepper.position_known:
             status_update("REHOME",

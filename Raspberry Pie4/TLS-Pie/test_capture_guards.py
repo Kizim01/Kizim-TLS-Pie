@@ -29,6 +29,7 @@ pressed Stop. The abort code is all the phone panel has, so it has to name the
 cause and not the symptom.
 """
 import os
+import shutil
 import sys
 import tempfile
 
@@ -229,6 +230,158 @@ _ab3 = [m for s, m in _said3 if s == "ABORTED"]
 check("a stop press is still reported as INTERRUPTED",
       _ok3 is False and len(_ab3) == 1 and _ab3[0].startswith("INTERRUPTED"),
       _ab3)
+
+# --- 3. a stop press throws the scan away and turns the head back -------------
+# "i would like it if i stop a scan mid sweep to delete that scan and lidar
+# resets ... resets heading" (operator, 2026-09-10). Driven through the real
+# run_scan and the real ScannerState. Only the motor and the recorder are stood
+# in for, and the disk is a real folder -- so a deletion is something that
+# happened to a file, not a call that was recorded.
+print("\na stop press deletes the scan and turns the head back")
+_step_rate = tls_scan.tls_stepper.deg_per_s_to_step_rate(
+    tls_scan.RETURN_DEG_PER_S)
+
+
+class _StopStepper(_SweepStepper):
+    """Stopped part way by a press arriving mid-sweep; can be driven back."""
+
+    def __init__(self, got=3000, press=None, press_back=False):
+        _SweepStepper.__init__(self, asks=20)
+        self.got = got
+        self.press = press              # called once, part way through
+        self.press_back = press_back    # a second press during the return
+        self.last_stop_steps = None
+        self.last_move_forward = True
+        self.back = []
+
+    def move_degrees(self, degrees, deg_per_s, should_abort=None):
+        self.moves.append(degrees)
+        self.last_move_forward = degrees >= 0
+        self.last_stop_steps = None
+        if self.press is not None:
+            self.press()
+        for _ in range(self.asks):
+            if should_abort is not None and should_abort():
+                self.last_stop_steps = self.got
+                return False
+        return True
+
+    def move_steps(self, steps, rate_hz, forward=True, should_abort=None):
+        self.back.append((steps, forward, rate_hz))
+        self.last_stop_steps = None
+        for i in range(10):
+            if self.press_back and i == 4:
+                tls_scan._state.request_stop()
+            if should_abort is not None and should_abort():
+                self.last_stop_steps = steps * i // 10
+                return False
+        return True
+
+
+_made = []
+
+
+def run_stopped(stepper, proc=None):
+    """run_scan into a real folder: (said, folder, capture, sidecar, other)."""
+    said = []
+    td = tempfile.mkdtemp(prefix="tlsstop")
+    _made.append(td)
+    cap = os.path.join(td, "TLS_26_09_10_12_00_00.pcap")
+    with open(cap, "wb") as fh:
+        fh.write(b"\xd4\xc3\xb2\xa1" + b"\0" * 20 + b"a partial sweep")
+    side = os.path.splitext(cap)[0] + ".json"
+    with open(side, "w") as fh:
+        fh.write("{}")
+    other = os.path.join(td, "TLS_26_09_10_11_00_00.pcap")
+    with open(other, "wb") as fh:
+        fh.write(b"an earlier scan that finished")
+    live = proc if proc is not None else _DyingProc(alive_for=10_000)
+    was = (tls_scan.preflight, tls_scan.start_capture, tls_scan.stop_capture,
+           tls_scan.write_scan_meta, tls_scan.status_update,
+           tls_storage.choose_dumpdir, tls_scan._builder)
+    try:
+        tls_scan.preflight = lambda *a, **k: None
+        tls_scan.start_capture = lambda *a, **k: (live, cap, 0.0)
+        tls_scan.stop_capture = lambda p, f: f
+        tls_scan.write_scan_meta = lambda *a, **k: None
+        tls_scan.status_update = lambda s, m: said.append((s, m))
+        tls_storage.choose_dumpdir = lambda **k: (td, False, None)
+        tls_scan._builder = None
+        tls_scan.run_scan(None, stepper, "rapid", record=True)
+    finally:
+        (tls_scan.preflight, tls_scan.start_capture, tls_scan.stop_capture,
+         tls_scan.write_scan_meta, tls_scan.status_update,
+         tls_storage.choose_dumpdir, tls_scan._builder) = was
+    return said, td, cap, side, other
+
+
+_s1 = _StopStepper(got=3000, press=tls_scan._state.request_stop)
+_said1, _td1, _cap1, _side1, _other1 = run_stopped(_s1)
+_ph1 = [s for s, _m in _said1]
+check("a stop press deletes the capture it was recording",
+      not os.path.exists(_cap1), sorted(os.listdir(_td1)))
+check("...and the sidecar beside it",
+      not os.path.exists(_side1), sorted(os.listdir(_td1)))
+check("...and NOTHING else in the folder -- an earlier scan is untouched",
+      os.path.exists(_other1), sorted(os.listdir(_td1)))
+check("the head turns back by exactly the steps the sweep got through",
+      len(_s1.back) == 1 and _s1.back[0][0] == 3000, _s1.back)
+check("...the other way from the sweep",
+      bool(_s1.back) and _s1.back[0][1] is False, _s1.back)
+check("...at the return speed, the same one Restart uses",
+      bool(_s1.back) and abs(_s1.back[0][2] - _step_rate) < 1e-9, _s1.back)
+check("⭐ the press that ended the sweep does not end the return before it "
+      "starts", bool(_said1) and "back where it started" in _said1[-1][1],
+      _said1[-3:])
+check("the panel is told the scan was deleted, by name",
+      any("deleted TLS_26_09_10_12_00_00.pcap" in m for _s, m in _said1),
+      _said1)
+check("...it shows the turn back as a live phase while it runs",
+      "HOMING" in _ph1, _ph1)
+check("...and it ends STOPPED, never COMPLETE",
+      bool(_ph1) and _ph1[-1] == "STOPPED" and "COMPLETE" not in _ph1, _ph1)
+check("...having named the cause first, as it always did",
+      any(s == "ABORTED" and m.startswith("INTERRUPTED") for s, m in _said1),
+      _said1)
+
+_s2 = _StopStepper(got=3000, press=tls_scan._state.request_stop,
+                   press_back=True)
+_said2, _td2, _cap2, _, _ = run_stopped(_s2)
+check("⛔ a second stop ends the return where it is -- STOP still means stop",
+      bool(_said2) and "short of where the scan started" in _said2[-1][1],
+      _said2[-2:])
+check("...and the scan it was throwing away is still deleted",
+      not os.path.exists(_cap2))
+
+
+def _shutting_down():
+    tls_scan._shutdown = True
+
+
+_s3 = _StopStepper(got=3000, press=_shutting_down)
+try:
+    _said3, _td3, _cap3, _, _ = run_stopped(_s3)
+finally:
+    tls_scan._shutdown = False
+check("⛔ a shutdown mid-sweep does NOT start the motor again",
+      _s3.back == [], _s3.back)
+check("...and does not delete what was recorded -- nobody decided against it",
+      os.path.exists(_cap3))
+
+_s4 = _StopStepper(got=3000)
+_said4, _td4, _cap4, _, _ = run_stopped(_s4, proc=_DyingProc(alive_for=3))
+check("a capture whose recorder died is KEPT -- it is the evidence of why",
+      os.path.exists(_cap4), [s for s, _m in _said4])
+check("...and the head is left where it stopped", _s4.back == [], _s4.back)
+
+_s5 = _StopStepper(got=0, press=tls_scan._state.request_stop)
+_said5, _td5, _cap5, _, _ = run_stopped(_s5)
+check("a stop before the head has moved still deletes, and drives nothing",
+      not os.path.exists(_cap5) and _s5.back == [],
+      (os.path.exists(_cap5), _s5.back))
+
+for _d in _made:
+    shutil.rmtree(_d, ignore_errors=True)
 
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
