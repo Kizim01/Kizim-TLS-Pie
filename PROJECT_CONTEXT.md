@@ -6560,6 +6560,73 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-10, fifty-third pass) — the current one
 
+**▶ RESUME HERE (saved for compaction, 2026-09-10 evening).** In order:
+
+1. **⛔⛔ DELIVER TO THE PI — BLOCKED ON ITS CURRENT ADDRESS.** Three passes of
+   Pi work are committed and green but NOT on the box: the 46th pass's capture
+   guard, the Rapid's park at 180, and stop = delete + turn back, across
+   `tls_scan.py`, `tls_stepper.py` and `tls_web.py`. The operator said "pi is
+   connected" twice, and the laptop still cannot see it. Every address the
+   record holds is stale or not on WiFi: `10.153.229.165` and
+   `10.89.212.165` are earlier hotspot sessions and time out; `192.168.1.100`
+   is the Pi's `eth0` to the lidar and `192.168.1.201` the lidar itself, so
+   neither is reachable over WiFi. Today's hotspot range is `10.222.41.0/24`
+   (laptop `.8`, phone `.164`); `.165` timed out, and a ping sweep plus a
+   connection sweep on 22 and 8080 across the whole range, run twice, found
+   only the phone. **Ask the operator for the address the Pi shows on its own
+   screen at startup, or the one in the phone's connected-devices list.** Then:
+   `python scratchpad\mos\deploy53.py <address>` (add `--dry` to list only).
+   It pins the connection to the host key known for `tlspie.local`, refuses
+   while a scan runs, backs up to `~/TLS-Pie/.deploy-backup/<stamp>`, copies
+   only files whose checksum differs, re-verifies, runs every suite ON THE
+   PI, and restarts `tls-scan` only if all are green and the scanner is idle.
+   If an address in `10.222.41.x` still does not answer, the phone is isolating
+   its clients: put both on another WiFi network, or cable the laptop to the Pi.
+
+2. **⭐⭐ THE REMATCHED PROJECT WAS OPENED AND SAVED — AND IT SHOWS A GRADING
+   FAULT.** `Desktop\ministry of sound\scan project (photos rematched).tlspie`
+   records `saved: 2026-09-10 11:15:40`, inside a Studio session that ran
+   01:13:48-11:15:45 (`studio.log`, pid 7380). The 47th pass's prediction held
+   on the grade it was about: **`doubtful` fell from 14 to 1** (the original
+   project: doubtful 14, confirmed 3, unsure 2, matched 2, sure 1). Now: given
+   38, matched 15, doubtful 1, and 2 captures with no photograph.
+   ⛔ **But at least 25 of the 38 `given` were SOLVED, not typed.** Each carries
+   a matcher record whose heading equals the saved heading to fourteen decimal
+   places (e.g. `TLS_26_09_02_12_08_38`: 104.51421679896777 in both), and none
+   carries a `rung`; the heading box sends two decimals, so no person produced
+   them. `given` means "a person took responsibility", and several places obey
+   it: `deep_all` skips such a scan, and the lean resolver and the auto-align
+   guard read the same flag. **So Deep align them all will pass over 25 poses
+   it should be allowed to improve.** What is known of the code: on open a
+   photo keeps its saved grade and only an ungraded one becomes `given`
+   (`align.py` ~5512); `colour_scan` marks any heading handed in as `given`
+   (`align.py:622-623`); `_repaint` restores the grade afterwards; the typed
+   door is `set_heading` (~5348). **The door that handed a matcher's heading in
+   as typed is NOT traced** — find it first: it is the same class as the 31st
+   pass's reopen fault, arriving by another route. The one `doubtful`
+   (`TLS_26_09_02_14_37_46`) is the matcher refusing its own pairing
+   (`belongs: false`, saved heading 206.7 against the matcher's 112.2).
+
+3. **The sweep's open list is 20, plus 2 DXF items parked** — 13 in the Studio
+   and converter, 7 on the Pi, all in the 45th-pass list with `file:line`.
+   The 52nd pass wrote "twenty" when it was twenty-one: `shoot.py:516` (a dark
+   capture shifts every later folder number off by one from what the confirm
+   shows) had been left out of the count, and is confirmed still in the code.
+   The 53rd pass then settled `tls_scan.py:588` by the operator's decision.
+   Worth taking first: the relabelled headings above, then `shoot.py:516`, then
+   the Pi's stale STOP (`tls_web.py:207` — `clear_stop` now exists and Restart
+   does not call it).
+
+4. **Parked or unbuilt**: DXF (operator: "leave dxf for now"); the whole-shoot
+   pairing check (designed, not built — see the 49th pass).
+
+5. **⚠ In this session's Bash, `__COMPAT_LAYER=DetectorsAppHealth` stops every
+   Chromium-based browser cold.** The suite now strips it for its Edge check;
+   anything else that launches Edge or WebView2 from Bash needs the same.
+   Windows flags nothing on the Studio, so the operator's own launches are
+   unaffected.
+
+
 **⭐⭐ A STOP NOW THROWS THE SCAN AWAY AND TURNS THE HEAD BACK.** *"i would
 like it if i stop a scan mid sweep to delete that scan and lidar resets"*,
 then *"resets heading"* (operator, 2026-09-10). A STOP pressed during a sweep
@@ -7361,15 +7428,7 @@ never with `git checkout`: `.gitattributes` says `*.py text eol=lf` while
 align.py's working copy is CRLF, so a checkout rewrites 15,816 line endings and
 silently breaks every byte-level anchor the driver uses.
 
-⛔ **AND THE 47TH PASS LEFT A FILE THE OPERATOR HAS NOT OPENED YET.**
-`Desktop\ministry of sound\scan project (photos rematched).tlspie` — 56 captures, 54
-photographs, every heading dropped so each re-solves through the feature matcher. **Ask what the
-grades came back as.** The claim being tested is that the `doubtful` count collapses, because
-those 18 weak fits were the 09-02 correlation ladder's and the matcher finds 30-159 features on
-the same captures. If they come back `doubtful` ANYWAY, the heading was never the problem and
-nothing further should be changed until it is clear what the operator is actually seeing on
-screen. Also ask whether they SAVED after that open: unsaved, the slow re-solve is paid again
-every time, and the poses never reach the file.
+✅ **THE 47TH PASS'S REMATCHED PROJECT WAS OPENED AND SAVED** (2026-09-10 11:15:40). `doubtful` fell from 14 to 1, as predicted — but 25 or more photos the matcher solved were saved graded `given`, as if typed, which Deep align skips. See the 53rd pass's RESUME HERE, item 2.
 
 ✅ **ITEM 12 IS CLOSED — THE OPERATOR TURNED A CLOUD AND IT TURNED.**
 *"yeah the cloud turns good now"* (2026-09-10). That watch item had been open since the 46th
