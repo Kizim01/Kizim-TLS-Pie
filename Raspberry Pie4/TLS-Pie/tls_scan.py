@@ -551,6 +551,14 @@ def do_restart(pi, stepper):
         # was removed with the rest of the buttons on 2026-08-09.
         return _shutdown or _state.stop_requested()
 
+    # ⛔ A LEFTOVER STOP MUST NOT END THIS BEFORE IT STARTS. Restart polls the
+    # same flag a scan does, and nothing had cleared a press left from before
+    # it -- so it stopped on its first poll, drove nothing, and said it had
+    # been interrupted. The panel now refuses a STOP while idle
+    # (tls_web.request_stop); this is the other half. Cleared BEFORE `busy` is
+    # raised: a press is only accepted once it is, so nothing meant for this
+    # restart can be thrown away here.
+    _state.clear_stop()
     _state.set(busy=True)
     try:
         if not stepper.position_known:

@@ -6623,15 +6623,29 @@ when the two names disagree.
    (`TLS_26_09_02_14_37_46`) is the matcher refusing its own pairing
    (`belongs: false`, saved heading 206.7 against the matcher's 112.2).
 
-3. **The sweep's open list is 20, plus 2 DXF items parked** — 13 in the Studio
-   and converter, 7 on the Pi, all in the 45th-pass list with `file:line`.
+3. **The sweep's open list is 19, plus 2 DXF items parked** — 13 in the Studio
+   and converter, 6 on the Pi, all in the 45th-pass list with `file:line`.
    The 52nd pass wrote "twenty" when it was twenty-one: `shoot.py:516` (a dark
    capture shifts every later folder number off by one from what the confirm
    shows) had been left out of the count, and is confirmed still in the code.
    The 53rd pass then settled `tls_scan.py:588` by the operator's decision.
-   Worth taking first: the relabelled headings above, then `shoot.py:516`, then
-   the Pi's stale STOP (`tls_web.py:207` — `clear_stop` now exists and Restart
-   does not call it).
+   Worth taking first: the relabelled headings above, then `shoot.py:516`.
+   ✅ **THE PI'S STALE STOP (`tls_web.py:207`) IS FIXED — 54th pass, 2026-09-10
+   20:43.** Two halves, each audited on its own. `request_stop` refuses a press
+   while nothing runs ("Nothing is running", HTTP 409), so an idle press is no
+   longer saved up for the next move; every move the head makes runs with
+   `busy` set (a scan, its turn back after a stop, a Restart), so nothing that
+   could be stopped is refused. And `do_restart` clears any leftover stop
+   BEFORE it raises `busy`, so no press meant for that restart can be thrown
+   away. A STOP during a Restart still stops it. How an idle press got in: the
+   panel polls at 1 Hz, so STOP stays enabled for up to a second after a scan
+   ends, and a second phone or a stale page can post it at any time.
+   `test_capture_guards.py` 36 → 45; four breaks (`revert54.py`), each caught
+   by its named check, restored byte-for-byte. Delivered via `deploy53.py`
+   (backup `~/TLS-Pie/.deploy-backup/20260910-204238`), 11/12 green on the Pi
+   (splash: no Pillow, as before), restarted by hand while idle at 20:43:22,
+   and PROVEN LIVE: an idle `POST /api/stop` on the rig answered 409 "Nothing
+   is running", with `stopPending` false afterwards.
 
 4. **Parked or unbuilt**: DXF (operator: "leave dxf for now"); the whole-shoot
    pairing check (designed, not built — see the 49th pass).
@@ -6715,9 +6729,9 @@ only when every suite is green and the scanner is idle. Waiting in it: the
 46th pass's capture guard, the Rapid's park and this stop, across
 `tls_scan.py`, `tls_stepper.py` and `tls_web.py`.
 
-⚠ Still open beside it: `tls_web.py:207`, a STOP pressed while idle is
-remembered and aborts the next Restart — `clear_stop` now exists, and Restart
-does not call it yet.
+✅ Beside it, `tls_web.py:207` (a STOP pressed while idle was remembered and
+aborted the next Restart) was fixed by the 54th pass: see the RESUME HERE,
+item 3.
 
 ### ⚠ LIVE STATE (2026-09-10, fifty-second pass)
 
@@ -8776,7 +8790,8 @@ for space);
 `tls_web.py:2720` (`/api/build` resolves against the SD `dumpdir` only while the library lists
 `scan_roots()`, so a USB-recorded scan answers "No capture for that scan");
 `tls_web.py:207` (a STOP accepted while idle is never cleared, so the next Restart aborts on its
-first poll and marks the position unknown — reproduced);
+first poll and marks the position unknown — reproduced; ✅ FIXED 2026-09-10,
+54th pass);
 `tls_cloudbuild.py:331` (build abort is polled in the packet loop only, so "Abandoning" still
 spends 20+ s voxelising and then writes a `.cloud` to the stick during the next sweep);
 `tls_scan.py:588` (a STOP mid-sweep keeps the partial pcap but writes no sidecar, though the track

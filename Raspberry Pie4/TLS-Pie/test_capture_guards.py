@@ -380,6 +380,91 @@ check("a stop before the head has moved still deletes, and drives nothing",
       not os.path.exists(_cap5) and _s5.back == [],
       (os.path.exists(_cap5), _s5.back))
 
+# --- 4. a STOP with nothing running is not saved up for the next move ---------
+# The 45th pass's sweep, reproduced: a STOP accepted while idle was never
+# cleared, so the next Restart stopped on its first poll, drove nothing and
+# reported itself interrupted. Two halves, each checked on its own: the press
+# is refused while idle, and Restart clears any stop left from before it began.
+print("\na STOP with nothing running does not wait for the next move")
+_idle = tls_web.ScannerState(tls_scan.SCAN_PROFILES)
+_ok_i, _msg_i = _idle.request_stop()
+check("a STOP while idle is refused, not remembered",
+      _ok_i is False and _idle.stop_requested() is False, (_ok_i, _msg_i))
+check("...and the panel is not told a stop is pending",
+      _idle.snapshot()["stopPending"] is False)
+_idle.begin_scan("rapid", 60.0)
+_ok_b, _msg_b = _idle.request_stop()
+check("a STOP while a scan runs is still accepted",
+      _ok_b is True and _idle.stop_requested() is True, (_ok_b, _msg_b))
+_idle.end_scan()
+check("...and it is forgotten when the scan ends",
+      _idle.stop_requested() is False)
+
+
+class _HomeStepper(object):
+    """A head `offset` steps from home; `press` is called part way back."""
+
+    def __init__(self, offset, press=None):
+        self.position_steps = offset
+        self.position_known = True
+        self.press = press
+        self.back = []
+        self.homed = False
+
+    def enable(self):
+        pass
+
+    def disable(self):
+        pass
+
+    def set_home(self):
+        self.position_steps = 0
+        self.homed = True
+
+    def move_steps(self, steps, rate_hz, forward=True, should_abort=None):
+        self.back.append((steps, forward))
+        for i in range(10):
+            if self.press is not None and i == 4:
+                self.press()
+            if should_abort is not None and should_abort():
+                return False
+        return True
+
+
+def run_restart(stepper, stale=False):
+    """do_restart on the real ScannerState; returns the status lines."""
+    said = []
+    was = tls_scan.status_update
+    if stale:
+        # Set directly: the panel can no longer leave one, which is the point
+        # of the first half. This proves the second half on its own.
+        tls_scan._state._stop_request = True
+    try:
+        tls_scan.status_update = lambda s, m: said.append((s, m))
+        tls_scan.do_restart(None, stepper)
+    finally:
+        tls_scan.status_update = was
+    return said
+
+
+_h1 = _HomeStepper(4800)
+_said_h1 = run_restart(_h1, stale=True)
+check("⭐ a Restart after a leftover STOP still drives the head home",
+      _h1.homed and bool(_said_h1) and _said_h1[-1][0] == "IDLE"
+      and "At the start position" in _said_h1[-1][1], _said_h1)
+check("...by the whole distance, the way back",
+      _h1.back == [(4800, False)], _h1.back)
+check("...and nothing is left pending afterwards",
+      tls_scan._state.stop_requested() is False)
+
+_h2 = _HomeStepper(4800, press=tls_scan._state.request_stop)
+_said_h2 = run_restart(_h2)
+check("⛔ a STOP pressed DURING a Restart still stops it",
+      not _h2.homed and any(s == "ABORTED" and "Restart interrupted" in m
+                            for s, m in _said_h2), _said_h2)
+check("...and is cleared when the Restart ends, so it cannot linger either",
+      tls_scan._state.stop_requested() is False)
+
 for _d in _made:
     shutil.rmtree(_d, ignore_errors=True)
 

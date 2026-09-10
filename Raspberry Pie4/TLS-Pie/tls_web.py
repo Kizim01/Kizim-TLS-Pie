@@ -204,7 +204,23 @@ class ScannerState:
             return True, "Starting"
 
     def request_stop(self):
+        """
+        Stop whatever is moving the head -- and only while something is.
+
+        ⛔ A PRESS WITH NOTHING RUNNING IS REFUSED, NOT REMEMBERED. The flag is
+        cleared when a scan begins and when it ends, and nowhere else, so a
+        press that landed while idle sat there until the next thing that asked.
+        The panel shows STOP for up to a second after a scan ends (it polls at
+        1 Hz), and a second phone or a stale page can post it at any time. A
+        scan's start cleared it; Restart did not, so Restart stopped on its
+        first poll, drove nothing, and reported itself interrupted (the 45th
+        pass's sweep, reproduced). Every move the head makes runs with `busy`
+        set -- a scan, its turn back after a stop, and a Restart -- so this
+        refuses nothing that could be stopped.
+        """
         with self._lock:
+            if not self.busy:
+                return False, "Nothing is running"
             self._stop_request = True
             return True, "Stopping"
 
