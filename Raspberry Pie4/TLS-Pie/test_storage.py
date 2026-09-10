@@ -179,6 +179,32 @@ try:
 finally:
     shutil.rmtree(sd, ignore_errors=True)
 
+# --- 4b. the SD card is measured too ----------------------------------------
+# `_usb_usable` refused a stick without MIN_FREE_BYTES, and the SD card the scan
+# falls back to was never measured, so a nearly full card took the scan and
+# lost it part way (the 45th pass's sweep, `tls_storage.py:301`). The bar is
+# moved rather than the disk filled, so this runs the same on any machine.
+print("\nroom for a scan, wherever it lands")
+sd = tempfile.mkdtemp(prefix="tlspie_sd_")
+_min_was = tls_storage.MIN_FREE_BYTES
+# Looked up, not called by name: a missing function must FAIL these checks,
+# not end the run before they can say so.
+_sor = getattr(tls_storage, "short_of_room",
+               lambda p: "short_of_room is missing")
+try:
+    tls_storage.MIN_FREE_BYTES = 0
+    check("a disk with room for a scan is not refused", _sor(sd) is None)
+    tls_storage.MIN_FREE_BYTES = 10 ** 18            # more than any disk holds
+    _short = _sor(sd)
+    check("⭐ A DISK WITHOUT ROOM FOR A SCAN IS REFUSED, SD CARD INCLUDED",
+          bool(_short) and "free" in _short, _short)
+    _later = _sor(os.path.join(sd, "not", "made", "yet"))
+    check("...and a folder not made yet is measured on the disk it will be "
+          "made on", bool(_later), _later)
+finally:
+    tls_storage.MIN_FREE_BYTES = _min_was
+    shutil.rmtree(sd, ignore_errors=True)
+
 # --- 5. human-readable sizes -------------------------------------------------
 print("\nsize formatting")
 h = tls_storage.human

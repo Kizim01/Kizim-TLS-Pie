@@ -317,6 +317,12 @@ def main(argv=None):
             failures += 1
             continue
 
+        # ⛔ BEFORE THE QUIET EXIT, NOT AFTER IT. `--quiet` is about what is
+        # printed, and it used to skip this line along with the report, so
+        # `--view --quiet` filled the viewer and never served it (the 45th
+        # pass's sweep, `tlsconvert_cli.py:320`).
+        if sink is not None and sink.count:
+            last_view = (sink, os.path.basename(out))
         if args.quiet:
             continue
         sys.stdout.write("\r" + " " * 70 + "\r")
@@ -346,8 +352,6 @@ def main(argv=None):
                   % (format(info["points"], ","), format(args.max_points, ",")))
         print("  wrote    : %s in %.1f s"
               % (human(os.path.getsize(out)), info["seconds"]))
-        if sink is not None and sink.count:
-            last_view = (sink, os.path.basename(out))
 
     if last_view is not None:
         sink, name = last_view

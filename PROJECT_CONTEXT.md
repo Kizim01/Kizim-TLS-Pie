@@ -5,12 +5,13 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-10 ~20:50):** search this file for
-> `LIVE STATE (2026-09-10, fifty-third and fifty-fourth passes)` and read its
-> **RESUME HERE** first. The restart pointer's opening entries are older than
-> it; the newest LIVE STATE is the current one, and each older one below it is
-> history. At the end of that session the rig was idle and shut down, all work
-> pushed, and the Pi carried every Pi change in the repo.
+> **▶ WHERE THE WORK IS NOW (2026-09-10 ~23:10):** search this file for
+> `LIVE STATE (2026-09-10, fifty-fifth pass)` and read its **RESUME HERE**
+> first. The restart pointer's opening entries are older than it; the newest
+> LIVE STATE is the current one, and each older one below it is history. The
+> 45th pass's sweep list is fixed but for DXF. The Pi does NOT carry the 55th
+> pass's Pi changes (it was off), and the operator must open the repaired
+> project only in the rebuilt Studio.
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
@@ -6565,7 +6566,161 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fifty-third and fifty-fourth passes) — the current one
+### ⚠ LIVE STATE (2026-09-10, fifty-fifth pass) — the current one
+
+The operator asked whether anything was left, was given the list, and said
+*"yeah work throught them"*.
+
+**▶ RESUME HERE (2026-09-10 ~23:10).** Everything below is committed and
+pushed. ✅ **The exes are REBUILT (2026-09-10 23:05-23:07)** with every fix
+of this pass inside: the Studio's selftest returned 0 and, for the first time,
+says what it actually loaded -- "native window backend available: True
+(edgechromium)" -- and `tlsconvert.exe --gpu` returned 0, the card agreeing
+with the processor at 6.6x. One thing was still running when this was
+written, and the commit after this one records how it ended: the Studio's
+reversion audit (16 breaks, each in its own copy of the tree, five at a time,
+beside a CONTROL copy with no break). Next, in order:
+
+- **(a) The operator opens `Desktop\ministry of sound\scan project (grades
+  repaired).tlspie` IN THE REBUILT STUDIO ONLY.** 19 of its photographs carry
+  no heading on purpose and are solved on open; a Studio built before this
+  pass would stamp every one of them "given" all over again. Slow once (19
+  solves); a save writes the grades back.
+- **(b) Deliver the Pi changes when the Pi is next on**: `python
+  scratchpad\mos\deploy53.py <address>` -- five source files (`tls_stepper`,
+  `tls_scan`, `tls_web`, `tls_storage`, `tls_cloudbuild`) and six test files.
+  The Pi was off all evening, so NOTHING of this pass is on it. The splash test
+  now skips without Pillow, so the deploy should restart the scanner by itself
+  for the first time.
+- **(c) Watch on the rig**: the first real STOP and the first 180 Rapid (both
+  still unexercised), and a scan started soon after boot -- the watchdog no
+  longer trips on the network clock's first sync, and the sidecar now records
+  how far the clock jumped during the sweep.
+- **(d) DXF stays parked** (`pipeline.py:1075`, `drawing.py:2077`), and the
+  whole-shoot pairing check is still unbuilt. Otherwise the 45th pass's sweep
+  list is EMPTY.
+
+**⭐⭐ THE DOOR THAT SAVED SOLVED HEADINGS AS "GIVEN" WAS THE OPEN ITSELF.**
+`_carry_colour` restores a saved pose onto a re-decoded cloud, and it ended
+with `grade = saved_grade or "given"`. The 47th pass's rematched project wrote
+every photograph with NO heading and NO grade, on purpose, so the open would
+solve it fresh -- and it did, through the matcher, and then that line stamped
+the answer "given" (the file had no grade to restore) and reset its rung to 0.
+The save wrote `grade: "given"` with no flag, and the next open read that
+grade as typed (`given = pose.given or saved_grade == "given"`). Two opens,
+and a solved heading had become a hand-typed one, which Deep align must skip.
+⭐ **ALL 38 "given" PHOTOGRAPHS IN THE OPERATOR'S FILE WERE SOLVED**, not the
+25 the previous pass counted: every heading carries 12 to 14 decimals and the
+heading box sends 2. The other 13 had lost their match record on the second
+open, because a heading handed in is not matched again.
+**Fix**: a pose the file gives no heading is solved on open and keeps the
+solve's own grade, rung and match record; the restore now applies only to a
+heading the file supplied. Run against the unfixed code first, the suite
+failed exactly the three new checks, the third reproducing the operator's
+two-open history step by step.
+**Repaired copy, never the operator's file**: `scan project (grades
+repaired).tlspie` (`scratchpad\mos\repair55.py`). 19 photographs whose saved
+heading equals their match record's, with `belongs`, are written back exactly
+as the match door writes them (`matched`, rung 4, not given). The other 19
+were solved by the correlation ladder, whose grade is gone, so their heading is
+dropped and the rebuilt Studio solves and grades them on open. The ladder is
+deterministic: two of them came back within 1e-14 of their 2026-09-02
+headings.
+
+**⭐ THE SWEEP LIST IS DONE BUT FOR DXF: 19 ITEMS**, each with a check that
+fails when its fix is taken out.
+Studio and converter, 13:
+- `shoot.py:516` -- the plan numbered every capture and the sort only the
+  photographed ones, so a dark capture put every later capture one folder off
+  the number confirmed. The plan now numbers only what gets a folder, the sort
+  files by the plan's numbers, and a dark capture shows no number.
+- `registration.py:1632` -- the ladder's last word (the operator's placement
+  for the guard and "improved on", and the runner-up) was priced on a profile
+  of `xyz_ref`, the UNION in a multi fit, against an answer the judge had
+  priced. Now the judge prices both, per neighbour; a pair stays bit-identical.
+- `align.py:1741` -- the multi fit's "not placed yet" refusal now asks
+  `Setup.sited`: every capture that arrives is stood on its floor (a height
+  and a lean) and is still nowhere in plan.
+- `align.py:2700` -- each floor is judged against the OTHERS (leave-one-out),
+  as the walls already were; a 14 degree floor among three at 2 degrees used
+  to hide inside the bar by dragging the average toward itself.
+- `align.py:12158` -- the photo panel prints a percentage only for a refine
+  judged by the edges alone, the rule `refine` keeps; otherwise how far the
+  heading turned. The two-eyed and deep scores are sums through zero.
+- `tlspie_studio.py:316` -- with no native window the Studio now serves the
+  browser (`_serve_browser`) until the page has been quiet for ten minutes, or
+  never came up, instead of stopping the server it had just opened.
+- `tlspie_studio.py:242` -- `--selftest` loads the window backend itself
+  (`desktop.native_backend`, pywebview's own `guilib.initialize`). Measured:
+  with pythonnet blocked, `import webview` still succeeds, so the old selftest
+  passed a bundle that could not open a window.
+- `tlsconvert_cli.py:320` -- `--view --quiet` serves the viewer it filled.
+- `desktop.py:280` -- removing an association clears only this program's
+  default value, deletes our own ProgID key leaf first, deletes an extension
+  key only once it is empty, and names what it could not take back.
+  `associate` takes `classes=` so the suite runs on a scratch key.
+- `manifest.py:1053` -- the CSV and preview are written aside and go into
+  place only once the manifest has; a manifest held open changes nothing and
+  says so (it used to RAISE, from a door documented never to); a CSV that
+  cannot follow is named STALE in the manifest.
+- `library.py:316` -- a picture attached over one of another kind wins; the
+  old one is renamed "(replaced)", never deleted, because a picture beside its
+  capture may be the camera's only copy.
+- `pipeline.py:1214` -- each capture in a merge reports its own share against
+  its own budget, and one that wrote nothing reports no bounds (it reported
+  +/-inf). Latent: nothing reads either in a merge today.
+- `colour.py:1363` -- a pose where a voting term cannot be priced (the beacon
+  cells dip under DEEP_MIN_BEACONS at some camera seats) is disqualified,
+  the `Judge` rule, instead of being judged by a shorter sum.
+On the Pi, 6:
+- `tls_stepper.py:464` -- the watchdog times on the monotonic clock. The Pi
+  has no clock battery and jumps when the network clock first syncs; a
+  two-hour jump mid-move used to trip it. The pan track has to stay on the
+  wall clock (tcpdump stamps packets with it), so the jump is measured into
+  the sidecar (`sweep.clock_step_s`) and the cloud build warns.
+- `tls_stepper.py:504` -- "unknown" is written before the first step, so a
+  power cut mid-move reads back unknown, not as where the move began.
+- `tls_web.py:283` -- `snapshot` copies its fields under the lock and asks the
+  stick, the power chip, the builder and the disk after it; a stalled stick
+  held a STOP for 2.8 s in the test, now under 0.5.
+- `tls_web.py:2720` -- `/api/build` resolves the capture across every root the
+  library lists, through `tls_scanstore.scan_file_path`.
+- `tls_storage.py:301` -- `short_of_room` measures wherever the scan will
+  record, SD card included, and preflight refuses NO_SPACE before the
+  recorder or the motor starts.
+- `tls_cloudbuild.py:331` -- the averaging asks `should_abort` too, so an
+  abandoned build writes no `.cloud` in the middle of the sweep it gave way to.
+And `test_splash.py` now SKIPS, out loud, without Pillow (RESUME item (b) of
+the 54th pass).
+
+**Suites**: Studio 2026 -> 2063 passed, 0 failed (the unfixed baseline was
+2026 + 3 failing); every Pi suite green -- capture_guards 50, cloud_registration
+82, stepper_watchdog 51, storage 29, the rest unchanged; splash 55 here and
+SKIPPED where there is no Pillow.
+**Audit**: splash 1 of 1; Pi 10 of 10 (`scratchpad\mos\revert55.py pi`), each
+caught by the check that names it and restored byte for byte, then all 12 Pi
+suites clean. Studio: 16 breaks RUNNING when this was written
+(`scratchpad\mos\audit55_par.py`: each break in its own copy of
+windows-converter and the Pi folder, the real CUDA engine named through
+`TLSPIE_CUDA_ENGINE`, a CONTROL copy with no break, and the real tree hashed
+before and after).
+⚠ Two tests now name their scratch registry key by process id (the GPU
+preference and the association), so two suites side by side cannot delete
+each other's key.
+
+⭐ **Lessons.**
+- **A restore that fills a missing grade with "given" turns a solve into a
+  claim.** The 31st pass fixed the reopen of a solved heading; this was the
+  route it did not cover, a pose with no heading at all.
+- **Run the new checks on the unfixed code first.** Every check written this
+  pass was seen failing before its fix existed, which is the cheapest audit
+  there is and caught one test that could not fail cleanly (a missing function
+  ended the storage suite instead of failing it).
+- **The Pi's clock is not a clock until it syncs.** Anything that times a move
+  uses the monotonic clock; the one thing that cannot -- the pan track, tied to
+  tcpdump's wall-clock stamps -- has the jump measured and carried instead.
+
+### ⚠ LIVE STATE (2026-09-10, fifty-third and fifty-fourth passes)
 
 **▶ RESUME HERE (updated at the end of the session, 2026-09-10 ~20:50).** The
 rig is IDLE and being shut down by the operator. Everything is committed and
@@ -8751,6 +8906,10 @@ the file's own comment at `:299` measured that 24 bytes — so a capture with ZE
 unpowered, wrong `ETH_INTERFACE`, `CHECK_LIDAR_REACHABILITY` defaulting to "0") passes as a good
 scan. Neither is covered by a test. ⭐ **A diagnostic that cannot fire in the failure mode it was
 built for — the standing lesson, now found on the field hardware.**
+
+✅ **2026-09-10: the 55th pass fixed every item in this list that was still
+open, except the two DXF ones (`pipeline.py:1075`, `drawing.py:2077`)** -- see
+LIVE STATE (2026-09-10, fifty-fifth pass).
 
 **The rest, recorded with `file:line` for whoever fixes them** —
 `pipeline.py:1075` (single-capture DXF gets no outline: the `setup is not None` gate drops the

@@ -232,7 +232,15 @@ def choose_stride(expected_packets, max_points, oversample=DECODE_OVERSAMPLE):
     return stride
 
 
-def voxel_average(points, voxel_m, max_points):
+#: How many points the averaging handles between asking whether to give way.
+ABORT_POLL_POINTS = 65536
+
+#: A wall-clock jump during a sweep worth telling the operator about. At the
+#: Quick's 2 deg/s a tenth of a second is a fifth of a degree.
+CLOCK_STEP_WARN_S = 0.1
+
+
+def voxel_average(points, voxel_m, max_points, should_abort=None):
     """
     Collapse points onto a voxel grid, averaging each cell.
 
@@ -240,11 +248,21 @@ def voxel_average(points, voxel_m, max_points):
     `max_points` cells the edge is doubled and the already-averaged points are
     re-binned -- cheap, because the second pass runs over cells rather than
     over the original returns.
+
+    ⛔ `should_abort` IS ASKED HERE TOO, every ABORT_POLL_POINTS points, and
+    (None, voxel_m) comes back when it says so. It was asked only while the
+    packets were walked, so a build abandoned for a scan still spent its 20 s
+    or more averaging, and then wrote its `.cloud` in the middle of the very
+    sweep it had given way to (the 45th pass's sweep,
+    `tls_cloudbuild.py:331`).
     """
     while True:
         inv = 1.0 / voxel_m
         cells = {}
-        for x, y, z, intensity in points:
+        for n, (x, y, z, intensity) in enumerate(points):
+            if (should_abort is not None and not n % ABORT_POLL_POINTS
+                    and should_abort()):
+                return None, voxel_m
             key = (int(math.floor(x * inv)),
                    int(math.floor(y * inv)),
                    int(math.floor(z * inv)))
@@ -328,7 +346,10 @@ def build(pcap_path, meta=None, max_points=MAX_POINTS, voxel_m=VOXEL_M,
                 progress(min(1.0, index / float(expected)),
                          "%d packets, %d points" % (packets_decoded, len(raw)))
 
-    points, voxel_used = voxel_average(raw, voxel_m, max_points)
+    points, voxel_used = voxel_average(raw, voxel_m, max_points,
+                                       should_abort=should_abort)
+    if points is None:
+        return None, {"aborted": True, "packets_decoded": packets_decoded}
 
     bounds = _bounds(points)
     info = {
@@ -351,6 +372,19 @@ def build(pcap_path, meta=None, max_points=MAX_POINTS, voxel_m=VOXEL_M,
             "No pan track for this capture, so the cloud is in the SENSOR "
             "frame: the head's rotation is not undone and static surfaces are "
             "smeared around every azimuth the head passed through.")
+    # ⛔ A CLOCK THAT JUMPED DURING THE SWEEP IS SAID, NOT HIDDEN. The pan
+    # track and every packet's time are on the wall clock, so a jump part way
+    # through puts every later packet at the wrong angle -- by the jump times
+    # the sweep's speed. The stepper measures it and the sidecar carries it;
+    # nothing can undo it after the fact.
+    step = sweep.get("clock_step_s")
+    if registered and step is not None and abs(float(step)) > CLOCK_STEP_WARN_S:
+        info["clock_step_s"] = float(step)
+        info["warning"] = (
+            "The rig's clock jumped %.1f s during this sweep, so every point "
+            "recorded after the jump sits at the wrong angle. Scan again once "
+            "the clock has settled, a minute or two after the rig starts."
+            % float(step))
     return points, info
 
 

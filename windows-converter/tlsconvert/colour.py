@@ -2414,7 +2414,21 @@ class DeepObjective(object):
             got = fns[t](yaw_deg, pitch_deg, roll_deg, camera_z,
                          camera_x, camera_y)
             if got is None:
-                continue
+                # ⛔⛔ A TERM WITH A VOTE THAT CANNOT PRICE THIS POSE
+                # DISQUALIFIES IT; it does not drop out of the sum. The beacon
+                # cells are rebuilt for every camera seat, and a seat where
+                # fewer than DEEP_MIN_BEACONS qualify returns nothing -- so a
+                # probe that crossed that line was judged by a sum without the
+                # term while its neighbours were judged with it: two poses of
+                # the same pair by two different functions (the 45th pass's
+                # sweep, `colour.py:1363`). It is the rule `registration.Judge`
+                # keeps for a view that cannot price a pose, for the same
+                # reason: otherwise the search can raise its score by moving
+                # out of a term's sight. The start always prices (the sweep
+                # that granted the vote ran there), and `_pattern` adopts only
+                # a trial that BEATS the incumbent, so this can decline a move
+                # and never invent one.
+                return float("-inf")
             total += self.weights[t] * (float(got) - mean) / sd
         return total
 

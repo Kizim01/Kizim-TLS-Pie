@@ -324,8 +324,40 @@ def attach_photo(scan_path, image_path, organise_first=True):
         shutil.copyfile(image_path, dest)
     except Exception as exc:                              # noqa: BLE001
         return {"ok": False, "error": "could not copy the image (%s)" % exc}
+    # ⛔⛔ AND AN OLDER PICTURE UNDER THE SAME STEM IS SET ASIDE, NOT LEFT TO
+    # WIN. `pipeline.find_photo` takes the first of .jpg, .jpeg, .png, .tif in
+    # that order, so attaching a .png beside an existing .jpg left both, and
+    # every later session -- the CLI, a reopened job -- coloured from the OLD
+    # one (the 45th pass's sweep, `library.py:316`).
+    # ⛔ RENAMED, NEVER DELETED: a picture beside its capture may be the
+    # camera's only copy (a shoot sort MOVES photographs in), so it keeps its
+    # bytes under a name nothing looks for, and the result names it.
+    replaced, stuck = [], []
+    folder, stem = os.path.dirname(dest), stem_of(scan_path)
+    for other in IMAGE_EXTS:
+        for name in (stem + other, stem + other.upper()):
+            path = os.path.join(folder, name)
+            if (not os.path.isfile(path)
+                    or os.path.normcase(os.path.abspath(path))
+                    == os.path.normcase(dest)):
+                continue
+            n, aside = 1, os.path.join(folder, "%s (replaced)%s"
+                                       % (stem, os.path.splitext(name)[1]))
+            while os.path.exists(aside):
+                n += 1
+                aside = os.path.join(folder, "%s (replaced %d)%s"
+                                     % (stem, n, os.path.splitext(name)[1]))
+            try:
+                os.rename(path, aside)
+                replaced.append(os.path.basename(aside))
+            except OSError as exc:
+                stuck.append("%s (%s)" % (name, exc))
     result.update({"ok": True, "photo": dest, "scan": scan_path,
-                   "replaced": None})
+                   "replaced": replaced or None})
+    if stuck:
+        result["warning"] = ("%s could not be set aside, so a later session "
+                             "may colour from it instead of %s"
+                             % ("; ".join(stuck), os.path.basename(dest)))
     return result
 
 

@@ -1629,17 +1629,23 @@ def solve_ladder(xyz_ref, xyz_mov, start=None, lean=None, progress=None,
     if need_rival or need_began:
         if progress:
             progress("pricing the runner-up", len(rungs) + 1, len(rungs) + 2)
-        lon_b, lat_b = scoring_bins(sol.voxel or rungs[-1])
-        prof = median_profile(xyz_ref, lon_b, lat_b)
+        # ⛔⛔ PRICED BY THE JUDGE, NOT BY A PROFILE OF `xyz_ref`. For a pair
+        # the two are one number, bit for bit: the judge is built from
+        # `xyz_ref` itself and `Judge` short-circuits the one-view case. For a
+        # multi fit `xyz_ref` is the UNION of the neighbours, and a profile of
+        # a union is the "FULL AND WRONG" number `Judge` exists to refuse --
+        # while the answer it was compared with had been priced by the judge,
+        # so the guard below weighed two different scales, and
+        # `improved_from` reported the union's. "Your own alignment was
+        # already the better fit" could be a statement about no surface at all
+        # (the 45th pass's sweep, `registration.py:1632`).
+        at = sol.voxel or rungs[-1]
         if need_rival:
-            scored = (xyz_mov if rival.lean.is_identity()
-                      else rival.lean.apply(xyz_mov))
-            rr = compare(prof, scored, rival.setup, lon_b, lat_b)
+            rr = jd.score(xyz_mov, rival.setup, rival.lean, at)
             if rr == rr:
                 sol.rival, sol.rival_residual = rival.setup, rr
         if need_began:
-            was = xyz_mov if lean0.is_identity() else lean0.apply(xyz_mov)
-            began = compare(prof, was, true_start, lon_b, lat_b)
+            began = jd.score(xyz_mov, true_start, lean0, at)
             if began == began and began > sol.residual:
                 sol.improved_from = began
             elif began == began:

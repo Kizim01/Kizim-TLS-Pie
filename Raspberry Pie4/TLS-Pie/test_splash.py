@@ -10,7 +10,9 @@ if the texture does not wrap, a horizontal seam marches up the panel once a
 second. Nothing errors -- it just looks broken, on a screen nobody is watching
 at the moment it is generated.
 
-Needs Pillow, no Pi and no plymouth.
+Needs Pillow, no Pi and no plymouth. Without Pillow it says SKIPPED and exits
+0, which is what the Pi does: it has no Pillow, and nothing the scanner runs
+needs it.
 """
 import os
 import random
@@ -19,7 +21,19 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PIL import Image
+# ⛔ A MACHINE WITHOUT PILLOW SKIPS, OUT LOUD, RATHER THAN FAILING. The Pi has
+# no Pillow, and the scanner never loads it: `tls_splash` imports it inside a
+# function, and nothing the service runs imports `tls_splash`. So the
+# traceback this used to raise there was a gap in the test machine, not a
+# fault in the scanner -- and it made the deploy refuse every restart
+# (2026-09-10, twice). The line still says SKIPPED, so a deploy's output shows
+# the suite did not run; it runs in full wherever Pillow is installed.
+try:
+    from PIL import Image
+except ImportError:
+    print("SKIPPED: Pillow is not installed here, so the splash cannot be "
+          "built or checked on this machine -- 0 passed, 0 failed")
+    sys.exit(0)
 import tls_splash as ts
 
 passed = failed = 0

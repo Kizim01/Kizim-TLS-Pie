@@ -413,6 +413,54 @@ try:
     check("so the next restart starts from a known place again",
           make_stepper(FakePi(0.0), fresh=False).position_known is True)
 
+    # ⛔⛔ A MOVE IN FLIGHT IS NOT A KNOWN POSITION. The position was written
+    # only when a move ended, so a power cut mid-move left the move's start on
+    # disk marked known (the 45th pass's sweep, `tls_stepper.py:504`). Read
+    # back WHILE the move runs -- which is what a boot after a power cut reads.
+    _pc = make_stepper(FakePi(10_000), fresh=False)
+    _mid = []
+    _pc.move_steps(20000, RATE, forward=True,
+                   should_abort=lambda: _mid.append(tls_stepper.load_position())
+                   or True)
+    check("⭐ A POWER CUT MID-MOVE READS BACK AS UNKNOWN, NOT AS WHERE THE "
+          "MOVE STARTED", bool(_mid) and _mid[0][1] is False, _mid[:1])
+    check("...and the move's own ending writes the real answer over it",
+          tls_stepper.load_position()[1] is True, tls_stepper.load_position())
+
+    # ⛔⛔ AND THE WATCHDOG TIMES A MOVE ON A CLOCK THAT CANNOT JUMP. The Pi has
+    # no clock battery, and its clock jumps when the network time first syncs
+    # -- which can be hours, and can land mid-sweep. On the wall clock that
+    # jump counted as time elapsed, and the watchdog stopped a move that was
+    # running fine (the 45th pass's sweep, `tls_stepper.py:464`). A two-hour
+    # jump, part way through a move.
+    _jump = [0.0]
+    _real_time_mod = tls_stepper.time
+
+    class _JumpyClock(object):
+        monotonic = staticmethod(time.monotonic)
+        sleep = staticmethod(time.sleep)
+
+        @staticmethod
+        def time():
+            return _real_time_mod.time() + _jump[0]
+
+    _jc = make_stepper(FakePi(0.3), fresh=False)
+    tls_stepper.time = _JumpyClock
+    try:
+        try:
+            _jdone = _jc.move_steps(
+                20000, RATE, forward=True,
+                should_abort=lambda: _jump.__setitem__(0, 7200.0) or False)
+        except tls_stepper.MoveOverran as _exc:
+            _jdone = repr(_exc)
+    finally:
+        tls_stepper.time = _real_time_mod
+    check("⭐ A TWO-HOUR JUMP OF THE WALL CLOCK MID-MOVE DOES NOT TRIP THE "
+          "WATCHDOG", _jdone is True, _jdone)
+    check("...and the jump is measured, for the sidecar to carry",
+          abs((getattr(_jc, "last_move_clock_step_s", None) or 0.0)
+              - 7200.0) < 1.0, getattr(_jc, "last_move_clock_step_s", None))
+
     # ⛔ A DAMAGED FILE IS NOT A ZERO POSITION, IT IS NO INFORMATION. Reading
     # it as zero would put the head's origin somewhere arbitrary and call it
     # commanded, which reads as authoritative.

@@ -412,6 +412,12 @@ def write_scan_meta(capture_file, profile_name, profile, stepper,
             "sweep": {
                 "started_epoch": stepper.last_move_started_at,
                 "forward": stepper.last_move_forward,
+                # How far the wall clock jumped during the sweep, in seconds.
+                # The pan track is on that clock, so a jump misplaces every
+                # packet after it; see tls_stepper.move_steps. None from a
+                # stepper that did not measure it.
+                "clock_step_s": getattr(stepper, "last_move_clock_step_s",
+                                        None),
                 "steps_per_rev": tls_stepper.STEPS_PER_REV,
                 "planned_deg": track.total_deg,
                 "planned_seconds": track.duration_s,
@@ -716,6 +722,15 @@ def run_scan(pi, stepper, profile_name, record=True):
                 sd_dumpdir=DUMPDIR)
             if note:
                 status_update("PREFLIGHT", note)
+            # ⛔ AND WHEREVER IT RECORDS HAS TO HOLD A SCAN. Only the stick was
+            # ever measured; the SD card the scan falls back to was not, so a
+            # nearly full card took the scan and lost it part way -- the loss
+            # the stick's check exists to prevent (the 45th pass's sweep,
+            # `tls_storage.py:301`). Refused here, before the recorder or the
+            # motor starts.
+            short = tls_storage.short_of_room(dumpdir)
+            if short:
+                raise ScanAborted("NO_SPACE", short)
             proc, capture_file, capture_started = start_capture(dumpdir)
             _state.set(capture_file=capture_file, recording_to_usb=on_usb)
             status_update("RECORDING", "tcpdump started — sweeping%s"

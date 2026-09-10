@@ -514,8 +514,9 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
         offset, conf, hits = float(offset), float("inf"), len(timed)
 
     rows.sort(key=lambda r: (r["start"] is None, r["start"] or 0, r["name"]))
-    for n, r in enumerate(rows, 1):
-        r["number"] = n
+    for r in rows:
+        # Numbered at the end, once the photographs are settled -- see there.
+        r["number"] = None
         r["photos"] = []
         r["gap_s"] = None
         r["assigned"] = None
@@ -631,6 +632,19 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
         r["shared"] = not free
         spoken.add(r["assigned"]["path"])
 
+    # ⛔⛔ NUMBERED ONLY ONCE THE PHOTOGRAPHS ARE SETTLED, AND ONLY THE ONES
+    # THAT HAVE ONE, because that is what `apply` files. A capture with no
+    # photograph goes to the "no photos" folder, not a numbered one, and
+    # numbering it here made every later number the operator was shown one
+    # higher than the folder it landed in (the 45th pass's sweep,
+    # `shoot.py:516`). `apply` reads these numbers rather than counting
+    # again, so the confirm and the folders cannot disagree.
+    n = 0
+    for r in rows:
+        if r["assigned"]:
+            n += 1
+            r["number"] = n
+
     used = {r["assigned"]["path"] for r in rows if r["assigned"]}
     spare = [p for p in photos if p["path"] not in used]
     return {"ok": True, "folder": os.path.abspath(scan_folder),
@@ -648,7 +662,9 @@ def plan(scan_folder, image_folder=None, window_s=WINDOW_S, offset=None,
             "scans": rows, "aborted": aborted,
             "unmatched": [{"name": p["name"], "path": p["path"]}
                           for p in spare],
-            "no_photo": [r["number"] for r in rows if not r["photos"]],
+            # Named, not numbered: a capture with no photograph has no
+            # number, because no numbered folder is made for it.
+            "no_photo": [r["name"] for r in rows if not r["assigned"]],
             "note": _plan_note(offset, conf, rows, spare, aborted,
                                duplicates)}
 
@@ -758,13 +774,23 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None,
     rows = made["scans"]
     withpic = [r for r in rows if r.get("assigned")]
     dark = [r for r in rows if not r.get("assigned")]
+    # ⛔⛔ THE PLAN'S NUMBERS, NOT A SECOND COUNT. This used to number the
+    # photographed captures itself while the plan numbered every capture, so
+    # a dark one early in the day put every later capture in a folder one
+    # lower than the number the operator had confirmed. The plan numbers
+    # exactly the captures filed here; a plan that does not is one this
+    # cannot carry out faithfully, so nothing is moved.
+    if any(not isinstance(r.get("number"), int) for r in withpic):
+        return {"ok": False,
+                "error": "that plan does not number every capture it files, "
+                         "so nothing was moved"}
 
     clashes = []
-    for n, _r in enumerate(withpic, 1):
-        folder = os.path.join(dest, str(n))
+    for r in withpic:
+        folder = os.path.join(dest, str(r["number"]))
         if os.path.isdir(folder) and any(
                 x.lower().endswith(".pcap") for x in os.listdir(folder)):
-            clashes.append(str(n))
+            clashes.append(str(r["number"]))
     if clashes:
         return {"ok": False,
                 "error": "folder%s %s already hold%s a capture, so nothing "
@@ -849,7 +875,7 @@ def apply(made, dest, move=True, delete_aborted=True, progress=None,
         return os.path.basename(target)
 
     try:
-        numbers = {id(r): n for n, r in enumerate(withpic, 1)}
+        numbers = {id(r): r["number"] for r in withpic}
         order = ([r for r in withpic if r.get("shared")]
                  + [r for r in withpic if not r.get("shared")])
         for row in order:

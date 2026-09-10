@@ -504,7 +504,13 @@ class Stepper:
         # process dying while the DMA engine keeps clocking steps on its own.
         expected_s = sum(n / r for n, r in segments if r > 0)
         limit_s = expected_s * WATCHDOG_FACTOR + WATCHDOG_SLACK_S
-        started = time.time()
+        # ⛔ MONOTONIC, NOT THE WALL CLOCK. The Pi has no clock battery: it
+        # boots on the time it last shut down and jumps when the network clock
+        # first syncs, which can be hours and can land mid-sweep. On the wall
+        # clock that jump counted as time elapsed, the watchdog fired on a
+        # move that was running perfectly, and the position was thrown away
+        # (the 45th pass's sweep, `tls_stepper.py:464`).
+        started = time.monotonic()
 
         direction = DIR_FORWARD if forward else (1 - DIR_FORWARD)
         self.pi.write(self.dir_pin, direction)
@@ -513,6 +519,14 @@ class Stepper:
         self.pi.wave_clear()
         try:
             chain = self._build_chain(segments)
+            # ⛔ A MOVE IN FLIGHT IS NOT A KNOWN POSITION, AND THE FILE SAYS SO
+            # BEFORE THE FIRST STEP. The position used to be written only when
+            # a move ended, so a power cut mid-move left the move's START on
+            # disk marked known, and the next boot trusted it -- a head up to
+            # a whole sweep from where it was said to be (the 45th pass's
+            # sweep, `tls_stepper.py:504`). Every way a move ends in this
+            # process writes the real answer over this one.
+            save_position(self.position_steps, False, self.zero_provenance)
             self.pi.wave_chain(chain)
             # Motion starts here, not at `started` above: `started` deliberately
             # includes chain construction so the watchdog stays conservative,
@@ -521,9 +535,18 @@ class Stepper:
             self.last_move_segments = list(segments)
             self.last_move_forward = bool(forward)
             self.last_stop_steps = None
+            self.last_move_clock_step_s = None
             # ⭐ MONOTONIC, because this one measures how far the head got,
             # and a clock step in the middle of a move would move the answer.
             moving_since = time.monotonic()
+
+            def clock_step():
+                # How far the wall clock jumped while the head moved. The pan
+                # track has to stay on the wall clock -- tcpdump stamps every
+                # packet with it -- so a jump cannot be undone here, only
+                # measured, for the sidecar to carry and the build to say.
+                return ((time.time() - self.last_move_started_at)
+                        - (time.monotonic() - moving_since))
 
             while self.pi.wave_tx_busy():
                 if should_abort is not None and should_abort():
@@ -533,11 +556,12 @@ class Stepper:
                     # can. See steps_by_time and the module docstring.
                     done = steps_by_time(segments, ran)
                     self.last_stop_steps = done
+                    self.last_move_clock_step_s = clock_step()
                     if self.position_known:
                         self.position_steps += done if forward else -done
                     self._remember()
                     return False
-                elapsed = time.time() - started
+                elapsed = time.monotonic() - started
                 if elapsed > limit_s:
                     self.pi.wave_tx_stop()
                     self.position_known = False
@@ -549,6 +573,7 @@ class Stepper:
                         "driver's microstep jumpers."
                         % (elapsed, expected_s, steps, rate_hz, limit_s))
                 time.sleep(poll_interval)
+            self.last_move_clock_step_s = clock_step()
         finally:
             self.pi.wave_tx_stop()
             self.pi.wave_clear()

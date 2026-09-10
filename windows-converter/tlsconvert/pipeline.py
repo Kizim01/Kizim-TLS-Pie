@@ -1211,10 +1211,18 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         if own_writer:
             writer.close(keep=finished)
 
-    over = bool(budget and writer.count > budget * 1.15)
+    # ⛔ THIS CALL'S OWN POINTS, NOT THE SHARED WRITER'S RUNNING TOTAL. In a
+    # merge every capture writes into one writer, so `writer.count` is the
+    # whole merge so far: the budget test measured the earlier captures
+    # against the last one's budget, and a capture that wrote nothing still
+    # reported bounds -- of +/-inf, since `lo`/`hi` are this call's own (the
+    # 45th pass's sweep, `pipeline.py:1214`; latent, nothing reads either in a
+    # merge today).
+    mine = writer.count - before
+    over = bool(budget and mine > budget * 1.15)
     return {
         "out": out_path,
-        "points": writer.count - before,
+        "points": mine,
         # the drawing writer's own account of what it drew, or None from a
         # point writer -- the caller checks rather than guessing by extension
         "drawing": (getattr(writer, "summary", None) or None) if own_writer
@@ -1233,7 +1241,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         "colour": colour_info,
         "over_budget": over,
         "setup": None if setup is None else setup.describe(),
-        "bounds_m": (None if writer.count == 0
+        "bounds_m": (None if mine == 0
                      else [lo.tolist(), hi.tolist()]),
     }
 

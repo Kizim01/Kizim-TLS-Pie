@@ -531,6 +531,35 @@ check("no photo is not an error", pipeline.find_photo(stem + ".pcap") is None)
 open(stem + ".jpg", "wb").close()
 check("a sibling .jpg is found by stem",
       pipeline.find_photo(stem + ".pcap") == stem + ".jpg")
+# ⛔⛔ AND A PICTURE ATTACHED OVER ONE OF ANOTHER KIND IS THE ONE FOUND. The
+# lookup takes .jpg before .png, so attaching a .png beside an existing .jpg
+# left both, and every later session coloured from the OLD one (the 45th
+# pass's sweep, `library.py:316`). The old one is set aside under a name
+# nothing looks for -- renamed, never deleted, because a picture beside its
+# capture may be the camera's only copy.
+from tlsconvert import library as _lib55                  # noqa: E402
+_ap_dir = os.path.join(tmp, "ATT")
+os.makedirs(_ap_dir)
+_ap_cap = os.path.join(_ap_dir, "ATT.pcap")
+open(_ap_cap, "wb").close()
+with open(os.path.join(_ap_dir, "ATT.jpg"), "wb") as _h:
+    _h.write(b"the old picture")
+_ap_new = os.path.join(tmp, "newer.png")
+with open(_ap_new, "wb") as _h:
+    _h.write(b"the new picture")
+_ap = _lib55.attach_photo(_ap_cap, _ap_new)
+check("⭐ A PICTURE ATTACHED OVER ONE OF ANOTHER KIND IS THE ONE FOUND "
+      "AFTERWARDS",
+      _ap.get("ok")
+      and pipeline.find_photo(_ap_cap) == os.path.join(_ap_dir, "ATT.png"),
+      (_ap, sorted(os.listdir(_ap_dir))))
+_ap_aside = os.path.join(_ap_dir, "ATT (replaced).jpg")
+check("...and the one it replaced is set aside with its bytes, not deleted, "
+      "and named",
+      os.path.isfile(_ap_aside)
+      and open(_ap_aside, "rb").read() == b"the old picture"
+      and _ap.get("replaced") == ["ATT (replaced).jpg"],
+      (_ap.get("replaced"), sorted(os.listdir(_ap_dir))))
 
 # --- 8. a capture with no sidecar is refused ---------------------------------
 print("\nrefusals")
@@ -2499,7 +2528,9 @@ try:
     # scratch key so the machine's real setting is not touched by a test.
     if os.name == "nt":
         import winreg as _wr
-        _gkey = r"Software\TLS-Pie\test-gpu-pref"
+        # ⭐ One scratch key PER PROCESS, so two suites run side by side (a
+        # parallel reversion audit) cannot delete each other's key mid-test.
+        _gkey = r"Software\TLS-Pie\test-gpu-pref-%d" % os.getpid()
         _fake = [r"C:\fake\EdgeWebView\Application\1.0.0.1\msedgewebview2.exe",
                  r"C:\fake\EdgeWebView\Application\1.0.0.2\msedgewebview2.exe"]
         try:
@@ -2528,6 +2559,77 @@ try:
               (_v1, _r1))
         check("...and a second start finds its own entry and keeps it",
               _r2 and _r2[0] == (_fake[0], "kept"), _r2)
+
+        # ⛔⛔ REMOVING THE ASSOCIATION TAKES BACK OUR CLAIM, AND ONLY OURS.
+        # The removal deleted the whole extension key and swallowed the
+        # refusal `DeleteKey` gives a key with subkeys -- which Windows and
+        # other programs keep there -- then reported "removed" with the
+        # extension still opening in this program (the 45th pass's sweep,
+        # `desktop.py:280`). On a scratch key, with another program's entries
+        # beside ours.
+        _akey = r"Software\TLS-Pie\test-assoc-%d" % os.getpid()
+        _acls = _akey + r"\Classes"
+
+        def _adel(path):
+            try:
+                with _wr.OpenKey(_wr.HKEY_CURRENT_USER, path) as _k:
+                    _subs, _i = [], 0
+                    while True:
+                        try:
+                            _subs.append(_wr.EnumKey(_k, _i))
+                        except OSError:
+                            break
+                        _i += 1
+            except OSError:
+                return
+            for _s in _subs:
+                _adel(path + "\\" + _s)
+            try:
+                _wr.DeleteKey(_wr.HKEY_CURRENT_USER, path)
+            except OSError:
+                pass
+
+        def _aval(path, name=""):
+            try:
+                with _wr.OpenKey(_wr.HKEY_CURRENT_USER, path) as _k:
+                    return _wr.QueryValueEx(_k, name)[0]
+            except OSError:
+                return None
+
+        def _akeyed(path):
+            try:
+                _wr.OpenKey(_wr.HKEY_CURRENT_USER, path).Close()
+                return True
+            except OSError:
+                return False
+
+        _aexe = r"C:\fake\TLS-Pie-Studio.exe"
+        try:
+            _aset = _dt.associate(_aexe, (".tlsx", ".tlsy"), classes=_acls)
+            with _wr.CreateKey(_wr.HKEY_CURRENT_USER,
+                               _acls + r"\.tlsx\OpenWithProgids") as _k:
+                _wr.SetValueEx(_k, "SomeViewer.tlsx", 0, _wr.REG_SZ, "")
+            with _wr.OpenKey(_wr.HKEY_CURRENT_USER, _acls + r"\.tlsx", 0,
+                             _wr.KEY_SET_VALUE) as _k:
+                _wr.SetValueEx(_k, "Content Type", 0, _wr.REG_SZ,
+                               "application/x-tls")
+            _aoff = _dt.associate(_aexe, (".tlsx", ".tlsy"), remove=True,
+                                  classes=_acls)
+            _ax = (_aval(_acls + r"\.tlsx"),
+                   _akeyed(_acls + r"\.tlsx\OpenWithProgids"),
+                   _aval(_acls + r"\.tlsx", "Content Type"),
+                   _akeyed(_acls + r"\.tlsy"),
+                   _akeyed(_acls + "\\" + _dt.PROG_ID))
+        finally:
+            _adel(_akey)
+        check("the association is written under the key it is given",
+              _aset[0], _aset)
+        check("⭐ REMOVING THE ASSOCIATION TAKES BACK OUR CLAIM EVEN WHERE "
+              "OTHER PROGRAMS KEEP ENTRIES",
+              _aoff[0] and _ax[0] is None and _ax[3] is False
+              and _ax[4] is False, (_aoff, _ax))
+        check("...and leaves their entries exactly where they were",
+              _ax[1] is True and _ax[2] == "application/x-tls", _ax)
         _w2 = _dt.webview2_exes()
         check("the installed WebView2 runtimes are found by version folder",
               all(os.path.isfile(p) and p.lower().endswith("msedgewebview2.exe")
@@ -3064,6 +3166,54 @@ def _js_func(name):
                 return _PAGE[at:j + 1]
         j += 1
     raise AssertionError("unbalanced braces in " + name)
+
+
+# ⛔⛔ THE PHOTO PANEL'S PERCENTAGE, RUN RATHER THAN READ. `refine` refuses to
+# print a percentage when the reflectivity judge voted: that score is a
+# standardised SUM through zero, and a gain over a near-zero "was" prints as a
+# thousand per cent of nothing. The panel printed one anyway, on every press
+# (the 45th pass's sweep, `align.py:12158`). The SHIPPED expression is lifted
+# out of `photoRow` and run under node on four presses.
+_gain_node = shutil.which("node")
+_gain_src = re.search(r"const gain = .*?'</span>';", _js_func("photoRow"),
+                      re.S)
+if not _gain_node:
+    print("  skip node is not installed, so the photo panel's gain was NOT "
+          "run")
+elif _gain_src is None:
+    check("the photo panel's gain line can be found to run it", False)
+else:
+    _gain_cases = [
+        {"improved": True, "gain": 0.3, "was": 0.0002, "turned_deg": 1.234,
+         "judged": ["edge", "mi"]},
+        {"improved": True, "gain": 0.3, "was": -0.0001, "turned_deg": 0.5},
+        {"improved": True, "gain": 0.05, "was": 0.5, "turned_deg": 0.2,
+         "judged": ["edge"]},
+        {"improved": False, "gain": 0.0, "was": 0.5, "turned_deg": 0.0,
+         "judged": ["edge"]},
+    ]
+    _gain_js = ("const out=[];\nfor(const r of %s){ const s={refined:r};\n"
+                "%s\nout.push(gain); }\nconsole.log(JSON.stringify(out));\n"
+                % (json.dumps(_gain_cases), _gain_src.group(0)))
+    _gain_run = subprocess.run([_gain_node, "-e", _gain_js],
+                               capture_output=True, text=True,
+                               encoding="utf-8")
+    try:
+        _gain_out = json.loads(_gain_run.stdout)
+    except ValueError:
+        _gain_out = None
+    check("the photo panel's gain line runs under node",
+          isinstance(_gain_out, list) and len(_gain_out) == 4,
+          (_gain_run.stderr or "")[:300])
+    _g = _gain_out if isinstance(_gain_out, list) else ["", "", "", ""]
+    check("⭐ A TWO-EYED OR DEEP REFINE PRINTS NO PERCENTAGE, but how far the "
+          "heading turned",
+          "%" not in _g[0] and "turned 1.23" in _g[0]
+          and "%" not in _g[1] and "turned 0.50" in _g[1], _g[:2])
+    check("...while a press judged by the edges alone still prints its gain",
+          "+10.0%" in _g[2], _g[2])
+    check("...and a press that found nothing still says so",
+          "nothing left" in _g[3], _g[3])
 
 
 # ⛔ AND THE PREVIEW IS RUN, NOT REBUILT ALONGSIDE. The first version of this
@@ -6870,6 +7020,20 @@ check("a photograph already beside a capture is taken as its own",
       and _beside[0]["assigned"]["name"] == "TLS_26_08_20_22_01_00.jpg",
       [(r["name"], r.get("beside")) for r in _p3["scans"]])
 _d3 = os.path.join(_sdir3, "out")
+# ⛔ THE SORT FILES BY THE PLAN'S NUMBERS, NOT A COUNT OF ITS OWN. A plan
+# carrying a number the sort would not have counted to is filed under that
+# number, so the confirm is the only place a number comes from. Copied, not
+# moved, so the real sort below still has its files.
+_p3x = json.loads(json.dumps(_p3))
+for _r in _p3x["scans"]:
+    if _r.get("beside"):
+        _r["number"] = 7
+_d3x = os.path.join(_sdir3, "doctored")
+_r3x = shoot.apply(_p3x, _d3x, move=False, delete_aborted=False)
+check("⭐ THE SORT FILES A CAPTURE UNDER THE NUMBER ITS PLAN SHOWED",
+      _r3x.get("ok") and os.path.exists(
+          os.path.join(_d3x, "7", "TLS_26_08_20_22_01_00.pcap")),
+      (_r3x, sorted(os.listdir(_d3x)) if os.path.isdir(_d3x) else None))
 _r3 = shoot.apply(_p3, _d3, move=True, delete_aborted=True)
 check("the ones with no photograph get their own named folder",
       os.path.isdir(os.path.join(_d3, shoot.NO_PHOTO_DIR)),
@@ -6883,6 +7047,26 @@ check("the photograph travelled with its own capture",
           for n in os.listdir(_d3)), sorted(os.listdir(_d3)))
 check("and was not orphaned in the folder it came from",
       not os.path.exists(os.path.join(_scans3, "TLS_26_08_20_22_01_00.jpg")))
+# ⛔⛔ AND THE NUMBER THE CONFIRM SHOWS IS THE FOLDER IT LANDS IN. The plan
+# numbered every capture while `apply` numbered only the photographed ones, so
+# a dark capture early in the day made every later number the operator was
+# shown wrong by one: here the plan called the photographed capture 2 and the
+# sort filed it in folder 1 (the 45th pass's sweep, `shoot.py:516`).
+_shown = dict((r["name"], r["number"]) for r in _p3["scans"])
+check("⭐ THE NUMBER THE CONFIRM SHOWS IS THE FOLDER THE CAPTURE LANDS IN",
+      _r3.get("ok") and _shown.get("TLS_26_08_20_22_01_00.pcap") == 1
+      and all(_shown.get(d["scan"] + ".pcap") == d["number"]
+              and os.path.exists(os.path.join(_d3, str(d["number"]),
+                                              d["scan"] + ".pcap"))
+              for d in _r3["folders"] if d["number"] is not None),
+      (_shown, _r3.get("folders")))
+check("...and a capture with no photograph is given no number to be wrong by",
+      _shown.get("TLS_26_08_20_22_00_00.pcap") is None
+      and _shown.get("TLS_26_08_20_22_02_00.pcap") is None, _shown)
+check("...and the plan names the dark ones rather than numbering them",
+      sorted(_p3["no_photo"]) == ["TLS_26_08_20_22_00_00.pcap",
+                                  "TLS_26_08_20_22_02_00.pcap"],
+      _p3["no_photo"])
 shutil.rmtree(_sdir3, ignore_errors=True)
 
 # --- the same picture under two names --------------------------------------
@@ -11078,6 +11262,23 @@ check("the reference cannot be fitted onto its own neighbours",
 _unp = _msrv.solve_multi(3)
 check("AN UNPLACED SCAN IS REFUSED, and told why rather than guessed at",
       not _unp["ok"] and "only a placed" in _unp["error"], _unp.get("error"))
+# ⛔⛔ AND ONE STOOD ON ITS OWN FLOOR IS STILL UNPLACED. Every capture that
+# arrives through `add` is stood up -- a height and a lean, and no place in
+# plan. The refusal asked whether the setup AND the lean were identity, so it
+# could never fire for a scan that had actually been added (the 45th pass's
+# sweep, `align.py:1741`): the fit ran on a cloud sitting at the origin, whose
+# "neighbours" were whatever stood near the reference.
+_stood = _msrv.scans[3]
+_stood_was = (_stood.setup, _stood.lean, getattr(_stood, "rung", None))
+_stood.setup = registration.Setup(0.0, 0.0, -1.42, 0.0)
+_stood.lean = registration.Lean(1.2, -0.7)
+try:
+    _unp2 = _msrv.solve_multi(3)
+finally:
+    _stood.setup, _stood.lean, _stood.rung = _stood_was
+check("⭐ A SCAN STOOD ON ITS OWN FLOOR BUT NOWHERE IN PLAN IS STILL REFUSED",
+      not _unp2.get("ok") and "only a placed" in (_unp2.get("error") or ""),
+      _unp2.get("error") or sorted(_unp2))
 check("...and one lone neighbour is refused: two is what makes it a multi fit",
       not _msrv.solve_multi(5)["ok"])
 
@@ -11092,6 +11293,36 @@ finally:
     registration.have_gicp = _had
 check("A MULTI FIT HAS NO GRID-SEARCH FALLBACK, because that would score it "
       "through a merged profile", _none is None, _none)
+
+# ⛔⛔ AND THE LADDER'S LAST WORD IS THE JUDGE'S TOO. After the rungs, the
+# ladder prices the operator's placement (for the guard, and for "improved on
+# your placement's ...") and the runner-up -- and it did that on a profile of
+# `xyz_ref`, which in a multi fit is the UNION of the neighbours: the "FULL AND
+# WRONG" number `Judge` exists to refuse, set against an answer the judge had
+# priced (the 45th pass's sweep, `registration.py:1632`). Here the judge is
+# built from half the points of the cloud being fitted to, so the two prices
+# differ, and the one reported must be the judge's.
+if registration.have_gicp():
+    _pj = registration.Judge([(_ma[::2], None)])
+    _pstart = registration.Setup(-0.4 + 0.25, 0.3 - 0.2, 0.0, -6.0 + 3.0)
+    _psol = registration.solve_ladder(_ma, _mv, start=_pstart, judge=_pj)
+    _pat = (_psol.voxel if _psol is not None and _psol.voxel
+            else registration.GICP_LADDER[-1])
+    _plb, _ptb = registration.scoring_bins(_pat)
+    _pjudge = _pj.score(_mv, _pstart, registration.Lean(), _pat)
+    _punion = registration.compare(registration.median_profile(_ma, _plb,
+                                                               _ptb),
+                                   _mv, _pstart, _plb, _ptb)
+    check("the fixture can tell the two prices apart: the judge and a profile "
+          "of the fitted cloud disagree about the placement",
+          _pjudge == _pjudge and _punion == _punion and _pjudge != _punion,
+          (_pjudge, _punion))
+    check("⭐ THE PLACEMENT'S PRICE THE LADDER REPORTS IS THE JUDGE'S, NOT A "
+          "PROFILE OF THE UNION'S",
+          _psol is not None and not _psol.kept_start
+          and _psol.improved_from == _pjudge,
+          None if _psol is None else (_psol.kept_start, _psol.improved_from,
+                                      _pjudge, _punion))
 
 if registration.have_gicp():
     _off = registration.Setup(3.5 + 0.22, 1.0 - 0.17, 0.0, 5.0)
@@ -12138,6 +12369,25 @@ check("...while the answer stays what the real floors said",
 check("the odd-floor bar sits OUTSIDE the scatter a real floor produces",
       registration.FLOOR_ODD_DEG > 3.52 * 2.0,
       registration.FLOOR_ODD_DEG)
+_fsrv.scans.pop()
+# ⛔⛔ AND A FLOOR LEANING FAR ENOUGH TO MOVE THE AVERAGE IS JUDGED AGAINST THE
+# OTHERS, NOT AGAINST THE AVERAGE IT MOVED -- the leave-one-out rule the walls
+# already keep. Judged the old way, a capture 12° off three agreeing floors
+# drags the joint normal about 3° toward itself and then sits about 9° off it,
+# inside the 10° bar: not flagged, and averaged into the survey's level (the
+# 45th pass's sweep, `align.py:2700`).
+_fsrv.scans.append(_mscan("leaner", _floored(tip_deg=14.0, seed=15,
+                                             yaw_deg=10.0),
+                          registration.Setup(2.0, -2.0, 0.0, 10.0)))
+_lv3 = _fsrv.level_from_floor()
+_lv3off = dict((_f["name"], round(_f["off_deg"], 2))
+               for _f in _lv3.get("floors", []))
+check("⭐ A FLOOR THAT LEANS FAR ENOUGH TO MOVE THE AVERAGE IS STILL LEFT OUT, "
+      "AND NAMED",
+      _lv3["ok"] and _lv3["odd"] == ["leaner"], (_lv3.get("odd"), _lv3off))
+check("...while the answer stays what the agreeing floors said",
+      _lv3["ok"] and abs(_lv3["tilt_deg"] - 2.0) < 0.3,
+      (_lv3.get("tilt_deg"), _lv3off))
 _fsrv.scans.pop()
 check("a scan with no floor in view is named, not silently skipped",
       "missing" in _fsrv.level_from_floor())
@@ -13472,6 +13722,95 @@ check("...which are two different frames, or this proves nothing",
       _seen_colour and _seen_write
       and not np.allclose(_seen_colour[0], _seen_write[0]))
 
+# ⛔ EACH CAPTURE IN A MERGE REPORTS ITS OWN SHARE, NOT THE SHARED WRITER'S
+# RUNNING TOTAL. In a merge every capture writes into one writer, and the
+# budget test and the bounds gate read `writer.count` -- the whole merge so
+# far -- so a later capture was measured against earlier ones' points, and one
+# that wrote nothing reported bounds of +/-inf (the 45th pass's sweep,
+# `pipeline.py:1214`; latent, nothing reads either in a merge today). Three
+# captures into one writer, the reading of each stood in for as above.
+
+
+class _CountWriter(object):
+    def __init__(self):
+        self.count = 0
+
+    def write(self, xyz, rgb, intensity=None):
+        self.count += len(xyz)
+
+    def close(self, keep=True):
+        pass
+
+
+_cw = _CountWriter()
+_cw_real = (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+            pipeline.choose_stride)
+_cw_got = []
+try:
+    pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+    rig.frame_for = lambda meta, **kw: _FakeFrame()
+    pipeline.choose_stride = lambda path, budget: 1
+    for _pts, _bud in ((np.asarray(_raw_exp, np.float64), 4000),
+                       (np.asarray(_raw_exp[:1000], np.float64), 1000),
+                       (np.zeros((0, 3)), 1000)):
+        decode.stream_world_points = (
+            lambda path, meta, frame, _p=_pts, **kw:
+            iter([(_p, np.full(len(_p), 90, np.uint8))]))
+        _cw_got.append(pipeline.convert("ghost.pcap", "ghost.laz",
+                                        budget=_bud, writer=_cw,
+                                        colour=False, photo=None))
+finally:
+    (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+     pipeline.choose_stride) = _cw_real
+check("⭐ EACH CAPTURE IN A MERGE IS MEASURED AGAINST ITS OWN BUDGET, NOT THE "
+      "MERGE'S RUNNING TOTAL",
+      [g["points"] for g in _cw_got] == [4000, 1000, 0]
+      and not _cw_got[1]["over_budget"],
+      [(g["points"], g["over_budget"]) for g in _cw_got])
+check("...and one that wrote nothing reports no bounds, not infinite ones",
+      len(_cw_got) == 3 and _cw_got[2]["bounds_m"] is None,
+      _cw_got[2]["bounds_m"] if len(_cw_got) == 3 else _cw_got)
+
+# ⛔⛔ AND A POSE WHERE A VOTING TERM CANNOT BE PRICED IS DISQUALIFIED. The
+# beacon cells are rebuilt for every camera seat, and a seat where fewer than
+# DEEP_MIN_BEACONS qualify makes `beacon` return nothing; the objective then
+# skipped the term, so a probe past that line was judged by a sum without it
+# while its neighbours were judged with it (the 45th pass's sweep,
+# `colour.py:1363`). The four measures are stood in for, with beacon cells at
+# one seat only -- what is under test is the objective's own rule, and the
+# stand-in does no more than `PoseScorer.beacon` does there: return None.
+
+
+class _SeatBeacons(object):
+    def score(self, *_a):
+        return 0.5
+
+    def mutual(self, *_a):
+        return 0.2
+
+    def beacon(self, y, p, r, cz, cx, cy):
+        return None if (cx or 0.0) > 0.01 else 3.0
+
+    def mark(self, *_a):
+        return 1.0
+
+
+_sbo = colour.DeepObjective(_SeatBeacons(),
+                            {"edge": 1.0, "mi": 1.0, "beacon": 1.0,
+                             "mark": 1.0})
+_sbo.stats = {"edge": (0.4, 0.1), "mi": (0.1, 0.1), "beacon": (0.0, 1.0),
+              "mark": (0.5, 0.5)}
+_sbo_here = _sbo(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_sbo_there = _sbo(10.0, 0.0, 0.0, 0.0, 0.02, 0.0)
+check("a pose at a seat where every voting term prices gets a score",
+      bool(np.isfinite(_sbo_here)), _sbo_here)
+check("⭐ A POSE WHERE A VOTING TERM CANNOT BE PRICED IS DISQUALIFIED, NOT "
+      "JUDGED BY A SHORTER SUM", _sbo_there == float("-inf"), _sbo_there)
+_sbo.weights["beacon"] = 0.0
+_sbo_mute = _sbo(10.0, 0.0, 0.0, 0.0, 0.02, 0.0)
+check("...while a term that has no vote cannot disqualify anything",
+      bool(np.isfinite(_sbo_mute)), _sbo_mute)
+
 # ⭐ AND THE CLI's OWN SOLVE STANDS IN THAT FRAME TOO, or a pose solved on raw
 # points would be applied to levelled ones, off by exactly the tripod's lean.
 _saw_cli = []
@@ -14380,6 +14719,38 @@ check("...while a solved pose writes given=False, which `save_project` "
       align.AlignServer.colour_pose(_gv_srv, _gv_pose_scan).get("given")
       is False)
 
+# ⛔⛔ AND A POSE THE FILE GIVES NO HEADING IS SOLVED, NOT TYPED. Found on the
+# operator's rematched project, 2026-09-10: the rematch wrote each photograph
+# with no heading so the open would solve it fresh, and it did -- then
+# `_carry_colour` stamped every one "given", because the pose had no saved
+# grade and "no grade" fell back to "given". The save wrote that grade down,
+# and the next open read it as typed. 38 solved headings, not one typed, and
+# Deep align would have skipped all of them.
+_gv_fresh = _gv_carry({"photo": _gv_photo, "camera_z": 0.06})
+check("⭐ A POSE WITH NO HEADING IS SOLVED ON OPEN AND KEEPS THE SOLVE'S OWN "
+      "GRADE, not 'given'",
+      _gv_seen[-1] is None and _gv_fresh.get("grade") == "sure"
+      and _gv_fresh.get("given") is False, _gv_fresh)
+_gv_stale = _gv_carry({"photo": _gv_photo, "grade": "doubtful", "rung": 2})
+check("...and a grade left over from a heading that was dropped does not come "
+      "back over the fresh solve",
+      _gv_seen[-1] is None and _gv_stale.get("grade") == "sure"
+      and _gv_stale.get("given") is False and not _gv_stale.get("rung"),
+      _gv_stale)
+# ⛔ AND THROUGH THE SAVE AND THE NEXT OPEN, which is how the operator's file
+# got `given=True`: the first open wrote grade "given" with no flag, and the
+# second open read that grade as typed.
+_gv_rt = _mscan("roundtrip", _lc_pts)
+_gv_rt.photo = _gv_photo
+_gv_rt.colour_info = dict(_gv_fresh)
+_gv_saved = dict((k, v) for k, v in
+                 align.AlignServer.colour_pose(_gv_srv, _gv_rt).items()
+                 if k != "camera" and (v or k in align.KEEP_EVEN_IF_ZERO))
+_gv_again = _gv_carry(_gv_saved)
+check("...and the next open of what that save wrote is still not typed",
+      _gv_again.get("given") is False and _gv_again.get("grade") == "sure",
+      (_gv_saved, _gv_again))
+
 # ⛔⛔ AND A HEADING OF EXACTLY ZERO IS AN ANSWER, NOT A BLANK. `save_project`
 # drops every falsy value, which is right for `given=False`, `rung=0`,
 # `image_up_px=0` and `matched=None` -- they mean "nothing to say", and leaving
@@ -14508,6 +14879,170 @@ check("...and the session-end line does not certify 'cleanly' for a "
       "NEVER came up" in _STUDIO_SRC
       and "window session ended" in _STUDIO_SRC
       and 'pid %d exiting cleanly"' not in _STUDIO_SRC)
+
+# ⛔⛔ THE SELFTEST LOADS THE BACKEND ITSELF, NOT ONLY THE PACKAGE. `import
+# webview` loads none of it -- pywebview imports pythonnet's `clr`, WinForms and
+# the Edge control inside `start()` -- so a bundle missing the backend passed
+# the selftest and then fell back to the browser at its first real start (the
+# 45th pass's sweep, `tlspie_studio.py:242`). Run in fresh processes, with the
+# backend present, and with `clr` blocked the way a bundle that lost it would
+# have it.
+_wc_dir = os.path.abspath(os.path.join(os.path.dirname(align.__file__), ".."))
+_nb_ok = subprocess.run(
+    [sys.executable, "-c",
+     "from tlsconvert import desktop; print(desktop.native_backend())"],
+    cwd=_wc_dir, capture_output=True, text=True, timeout=180)
+check("the window backend loads here without opening a window",
+      _nb_ok.stdout.strip().startswith("(True,"),
+      (_nb_ok.stdout.strip(), _nb_ok.stderr[-300:]))
+_nb_bad = subprocess.run(
+    [sys.executable, "-c",
+     "import sys, runpy; sys.modules['clr'] = None; "
+     "sys.argv = ['tlspie_studio.py', '--selftest']; "
+     "runpy.run_path('tlspie_studio.py', run_name='__main__')"],
+    cwd=_wc_dir, capture_output=True, text=True, timeout=180)
+check("⭐ THE SELFTEST FAILS A BUNDLE WHOSE WINDOW BACKEND CANNOT LOAD",
+      _nb_bad.returncode == 3
+      and "native window backend available: False" in _nb_bad.stdout,
+      (_nb_bad.returncode, _nb_bad.stdout.strip()[:200],
+       _nb_bad.stderr[-200:]))
+
+# ⛔⛔ AND WITH NO NATIVE WINDOW, THE SERVER OUTLIVES THE CALL THAT OPENED THE
+# BROWSER. `desktop.show` opens the browser and RETURNS, and `main` fell
+# straight through to `server.stop()`: a tab opened on a server that had just
+# been shut, exit code 0 (the 45th pass's sweep, `tlspie_studio.py:316`).
+import tlspie_studio as _ts                               # noqa: E402
+
+
+class _SBThread(object):
+    def __init__(self, live_for=None):
+        self.joins, self.live_for = 0, live_for
+
+    def is_alive(self):
+        return self.live_for is None or self.joins < self.live_for
+
+    def join(self, _t=None):
+        self.joins += 1
+
+
+class _SBServer(object):
+    def __init__(self, pulse=None, live_for=None, fresh=False, clock=None):
+        self.thread = _SBThread(live_for)
+        self._pulse, self._fresh, self._clock = pulse, fresh, clock
+
+    @property
+    def last_alive(self):
+        return self._clock.now if self._fresh else self._pulse
+
+
+class _SBClock(object):
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += 100.0
+        return self.now
+
+
+_sbc = _SBClock()
+check("a page that never comes up in the browser does not keep the server "
+      "for good",
+      _ts._serve_browser(_SBServer(None, clock=_sbc), silent_s=600.0,
+                         poll_s=0, clock=_sbc) == "never came up")
+_sbc = _SBClock()
+check("...and one that stops pulsing is let go once it has been quiet long "
+      "enough",
+      _ts._serve_browser(_SBServer(50.0, clock=_sbc), silent_s=600.0,
+                         poll_s=0, clock=_sbc) == "page went quiet")
+_sbc = _SBClock()
+_sbs = _SBServer(fresh=True, live_for=25, clock=_sbc)
+check("...while a page that keeps pulsing keeps it up, for as long as the "
+      "server runs",
+      _ts._serve_browser(_sbs, silent_s=600.0, poll_s=0, clock=_sbc)
+      == "server ended" and _sbs.thread.joins == 25, _sbs.thread.joins)
+_ts_order = []
+
+
+class _MainSrv(object):
+    url = "http://127.0.0.1:1/"
+    last_alive = None
+
+    def __init__(self, *_a, **_k):
+        pass
+
+    def stop(self):
+        _ts_order.append("stop")
+
+
+_ts_was = (_ts.desktop.show, _ts.desktop.prefer_fast_gpu,
+           _ts.align.AlignServer, _ts.align.log_event, _ts._serve_browser,
+           _ts._arm_crash_log, _ts._watch_page)
+try:
+    _ts.desktop.show = lambda url, **_k: False
+    _ts.desktop.prefer_fast_gpu = lambda: []
+    _ts.align.AlignServer = _MainSrv
+    _ts.align.log_event = lambda *_a, **_k: None
+    _ts._serve_browser = lambda server, **_k: (_ts_order.append("serve")
+                                               or "interrupted")
+    _ts._arm_crash_log = lambda: None
+    _ts._watch_page = lambda server: None
+    _ts_rc = _ts.main([])
+finally:
+    (_ts.desktop.show, _ts.desktop.prefer_fast_gpu, _ts.align.AlignServer,
+     _ts.align.log_event, _ts._serve_browser, _ts._arm_crash_log,
+     _ts._watch_page) = _ts_was
+check("⭐ WITH NO NATIVE WINDOW THE STUDIO SERVES THE BROWSER BEFORE IT STOPS",
+      _ts_order == ["serve", "stop"], (_ts_order, _ts_rc))
+
+# ⛔⛔ `--view --quiet` SERVES THE VIEWER IT FILLED. `--quiet` is about what is
+# printed, and it skipped the line that records the viewer along with the
+# report, so the cloud went into the viewer and the program exited without
+# ever serving it (the 45th pass's sweep, `tlsconvert_cli.py:320`). The
+# conversion and the server are stood in for; the loop between them is the
+# shipped one, and the stand-in server stops it at `open()`.
+import tlsconvert_cli as _cli_mod                         # noqa: E402
+
+
+class _Served(Exception):
+    pass
+
+
+_cli_seen = []
+
+
+class _CliViewer(object):
+    def __init__(self, sink, title="Point cloud", port=0):
+        _cli_seen.append((sink.count, title))
+        self.url = "http://127.0.0.1:1/"
+
+    def open(self):
+        raise _Served()
+
+
+def _cli_convert(path, out, viewer_sink=None, **_k):
+    if viewer_sink is not None:
+        viewer_sink.add(np.zeros((4, 3)), np.zeros((4, 3), np.uint8))
+    return {}
+
+
+_cli_dir = tempfile.mkdtemp(prefix="tlsquiet")
+_cli_cap = os.path.join(_cli_dir, "Q.pcap")
+with open(_cli_cap, "wb") as _h:
+    _h.write(b"not a capture")
+_cli_was = (_cli_mod.pipeline.convert, _cli_mod.viewer.ViewerServer)
+try:
+    _cli_mod.pipeline.convert = _cli_convert
+    _cli_mod.viewer.ViewerServer = _CliViewer
+    try:
+        _cli_rc = _cli_mod.main([_cli_cap, "--view", "--quiet"])
+    except _Served:
+        _cli_rc = "served"
+finally:
+    _cli_mod.pipeline.convert, _cli_mod.viewer.ViewerServer = _cli_was
+    shutil.rmtree(_cli_dir, ignore_errors=True)
+check("⭐ --view --quiet SERVES THE VIEWER IT FILLED, rather than exiting",
+      _cli_rc == "served" and bool(_cli_seen) and _cli_seen[0][0] == 4,
+      (_cli_rc, _cli_seen))
 
 # ⛔⛔ OPENBLAS GETS ONE THREAD IN STUDIO, AND OPENBLAS ITSELF IS ASKED.
 # 2026-09-07 01:53 the program died inside OpenBLAS's Windows worker loop: a
@@ -15920,6 +16455,66 @@ check("...and a CSV that disagrees with the JSON",
           for lv, t in _mf.validate(_mm, csv_path=_mcsv2)))
 check("a drawing gets no manifest, and says so instead of failing",
       _mf.write_beside(os.path.join(_mdir, "x.dxf"), _mst).get("skipped"))
+
+# ⛔⛔ AND A MANIFEST THAT CANNOT BE REPLACED CHANGES NOTHING BESIDE THE CLOUD.
+# The CSV and the preview were written in place first and the manifest
+# replaced last, so a manifest held open by another program refused its
+# replace and left a FRESH CSV beside a STALE manifest -- the pair this
+# module's header calls worse than no camera (the 45th pass's sweep,
+# `manifest.py:1053`) -- and the refusal was RAISED, from a door documented
+# never to raise past a missing cloud. On Windows a file another handle holds
+# open without delete-sharing refuses to be replaced; Python's own `open`
+# holds it that way, as a viewer does.
+import copy as _copy55                                    # noqa: E402
+_mst2 = _copy55.deepcopy(_mst)
+_mst2[2]["setup"] = dict(_mst2[2]["setup"], x_m=1.5)     # moves camera C
+_mfiles = _mgot["files"]
+_mbefore = dict((k, open(v, "rb").read()) for k, v in _mfiles.items()
+                if v and k in ("manifest", "csv", "preview"))
+_mheld = open(_mfiles["manifest"], "rb")
+try:
+    try:
+        _mlock = _mf.write_beside(_mcloud, _mst2, level=_mlevel,
+                                  project="p.tlspie",
+                                  points_written=len(_mroom))
+    except Exception as _exc:                             # noqa: BLE001
+        _mlock = {"raised": repr(_exc)}
+finally:
+    _mheld.close()
+_mafter = dict((k, open(_mfiles[k], "rb").read()) for k in _mbefore)
+_mparts = [n for n in os.listdir(os.path.dirname(_mcloud)) if ".part" in n]
+check("⭐ A MANIFEST THAT CANNOT BE REPLACED CHANGES NOTHING BESIDE THE CLOUD",
+      _mafter == _mbefore and not _mparts,
+      (sorted(k for k in _mbefore if _mafter[k] != _mbefore[k]), _mparts))
+check("...and says so in words rather than raising",
+      _mlock.get("ok") is False
+      and "could not be written" in (_mlock.get("error") or ""), _mlock)
+_mfree = _mf.write_beside(_mcloud, _mst2, level=_mlevel, project="p.tlspie",
+                          points_written=len(_mroom))
+check("the fixture can tell: the same export, unhindered, DOES change the CSV",
+      _mfree.get("ok")
+      and open(_mfiles["csv"], "rb").read() != _mbefore["csv"], _mfree)
+# ⛔ AND THE OTHER ORDER'S FAILURE IS SAID BY THE MANIFEST. Once the manifest
+# is in, a CSV held open (a spreadsheet has it) cannot follow; the manifest is
+# the file a downstream program trusts, so it is the one that names the CSV
+# beside it as left over from an earlier export.
+_mheld = open(_mfiles["csv"], "rb")
+try:
+    _mcsvlock = _mf.write_beside(_mcloud, _mst, level=_mlevel,
+                                 project="p.tlspie",
+                                 points_written=len(_mroom))
+finally:
+    _mheld.close()
+_mm3 = json.load(open(_mfiles["manifest"], encoding="utf-8"))
+check("...and a CSV that cannot be replaced is written into the manifest as "
+      "STALE, not left to disagree silently",
+      _mcsvlock.get("ok") and "csv" not in _mm3["files"]
+      and any(v["level"] == "fail" and "EARLIER export" in v["text"]
+              for v in _mm3["validation"]),
+      (_mcsvlock.get("ok"), _mm3.get("files"),
+       [v["text"] for v in _mm3.get("validation", []) if v["level"] == "fail"]))
+_mf.write_beside(_mcloud, _mst, level=_mlevel, project="p.tlspie",
+                 points_written=len(_mroom))              # back to clean
 # ⛔ AND THE DOOR IS WIRED, pinned where it lives
 _msv = _ALIGN_SRC[_ALIGN_SRC.index("    def save(self, setups"):]
 _msv = _msv[:_msv.index("\n    @property", 10)]

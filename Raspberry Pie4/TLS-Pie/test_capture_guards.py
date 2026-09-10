@@ -465,6 +465,160 @@ check("⛔ a STOP pressed DURING a Restart still stops it",
 check("...and is cleared when the Restart ends, so it cannot linger either",
       tls_scan._state.stop_requested() is False)
 
+# --- 5. a slow USB stick cannot hold up STOP ---------------------------------
+# The panel's status poll held the state lock while it asked the USB stick for
+# its free space, the power chip for its voltage and the builder for its
+# progress -- and STOP, and the stop flag the motor polls, wait on that same
+# lock (the 45th pass's sweep, `tls_web.py:283`). A stick that stalls for three
+# seconds, and a STOP pressed while it does.
+print("\na STOP is heard while the panel waits on a slow USB stick")
+import threading                                             # noqa: E402
+import time                                                  # noqa: E402
+
+_stall = threading.Event()
+
+
+class _StallingStorage(object):
+    @staticmethod
+    def status(sd_dumpdir=None):
+        _stall.wait(3.0)
+        return {}
+
+
+_s5st = tls_web.ScannerState(tls_scan.SCAN_PROFILES)
+_s5st.begin_scan("rapid", 60.0)
+_was_storage = tls_web.tls_storage
+tls_web.tls_storage = _StallingStorage
+try:
+    _poll = threading.Thread(target=_s5st.snapshot)
+    _poll.start()
+    time.sleep(0.2)                       # the poll is now inside the probe
+    _t5 = time.monotonic()
+    _ok5, _m5 = _s5st.request_stop()
+    _heard = _s5st.stop_requested()
+    _took5 = time.monotonic() - _t5
+    _stall.set()
+    _poll.join(5.0)
+finally:
+    tls_web.tls_storage = _was_storage
+check("⭐ A STOP IS HEARD WHILE THE PANEL IS WAITING ON A SLOW USB STICK",
+      _ok5 is True and _heard is True and _took5 < 0.5,
+      (_ok5, _heard, round(_took5, 2)))
+check("...and the panel's poll still answers once the stick does",
+      not _poll.is_alive())
+
+# --- 6. a disk without room is refused before anything starts ---------------
+# Only the stick was ever measured; the SD card a scan falls back to was not,
+# so a nearly full card took the scan and lost it part way (the 45th pass's
+# sweep, `tls_storage.py:301`). Driven through the real run_scan: the disk's
+# answer is stood in for, and what must not happen is the recorder or the
+# motor starting.
+print("\na disk without room for a scan is refused before it starts")
+_started6, _said6 = [], []
+_st6 = _SweepStepper()
+_sor_had = hasattr(tls_storage, "short_of_room")
+_sor_was = getattr(tls_storage, "short_of_room", None)
+_was6 = (tls_scan.preflight, tls_scan.start_capture, tls_scan.status_update,
+         tls_storage.choose_dumpdir, tls_scan._builder)
+try:
+    tls_scan.preflight = lambda *a, **k: None
+    tls_scan.start_capture = (lambda *a, **k: _started6.append(a)
+                              or (_DyingProc(alive_for=10_000), "cap.pcap",
+                                  0.0))
+    tls_scan.status_update = lambda s, m: _said6.append((s, m))
+    tls_storage.choose_dumpdir = lambda **k: ("/tmp", False, None)
+    tls_storage.short_of_room = (lambda p: "only 5 MB free where this scan "
+                                           "would record")
+    tls_scan._builder = None
+    _ok6 = tls_scan.run_scan(None, _st6, "rapid", record=True)
+finally:
+    (tls_scan.preflight, tls_scan.start_capture, tls_scan.status_update,
+     tls_storage.choose_dumpdir, tls_scan._builder) = _was6
+    if _sor_had:
+        tls_storage.short_of_room = _sor_was
+    else:
+        del tls_storage.short_of_room
+check("⭐ A DISK WITHOUT ROOM FOR A SCAN IS REFUSED BEFORE THE RECORDER OR "
+      "THE MOTOR STARTS",
+      _ok6 is False and not _started6 and not _st6.moves
+      and any(s == "ABORTED" and m.startswith("NO_SPACE") for s, m in _said6),
+      (_ok6, len(_started6), _st6.moves, _said6[-2:]))
+
+# --- 7. the sidecar carries the clock's jump ----------------------------------
+# The pan track and every packet's time are on the wall clock, and the Pi's
+# clock jumps when the network time first syncs; the stepper measures the jump
+# and the sidecar is where the cloud build can read it.
+import json as _json7                                         # noqa: E402
+
+
+class _MetaStepper(object):
+    last_move_segments = tls_scan.tls_stepper.plan_move(4800, 800.0)[0]
+    last_move_forward = True
+    last_move_started_at = 1787238794.0
+    last_move_clock_step_s = 2.5
+    zero_provenance = "commanded"
+    position_known = True
+
+
+_md7 = tempfile.mkdtemp(prefix="tlsmeta")
+_made.append(_md7)
+_cap7 = os.path.join(_md7, "TLS_26_09_10_13_00_00.pcap")
+open(_cap7, "wb").close()
+_path7 = tls_scan.write_scan_meta(_cap7, "rapid",
+                                  tls_scan.SCAN_PROFILES["rapid"],
+                                  _MetaStepper(), 1787238790.0, start_steps=0)
+_meta7 = _json7.load(open(_path7)) if _path7 else {}
+check("the sidecar carries how far the rig's clock jumped during the sweep",
+      (_meta7.get("sweep") or {}).get("clock_step_s") == 2.5,
+      (_path7, (_meta7.get("sweep") or {}).get("clock_step_s")))
+
+# --- 8. a build request finds the capture wherever the library found it -----
+# The library has listed the USB stick's scans since it existed, and the build
+# request looked only in the SD folder, so a scan recorded to the stick was
+# listed and then answered "No capture for that scan" (the 45th pass's sweep,
+# `tls_web.py:2720`). The handler's own method, on a capture that is only on
+# the stick.
+print("\na build request finds the capture wherever the library found it")
+_usb8 = tempfile.mkdtemp(prefix="tlsusb")
+_sd8 = tempfile.mkdtemp(prefix="tlssd")
+_made.extend([_usb8, _sd8])
+open(os.path.join(_usb8, "TLS_26_09_10_14_00_00.pcap"), "wb").close()
+
+
+class _Builder8(object):
+    def __init__(self):
+        self.asked = []
+
+    def request(self, pcap):
+        self.asked.append(pcap)
+        return True
+
+    def status(self):
+        return None
+
+
+class _Roots8(object):
+    @staticmethod
+    def roots(sd_dumpdir=None):
+        return [_usb8, _sd8]
+
+
+_b8 = _Builder8()
+_st8 = tls_web.ScannerState(tls_scan.SCAN_PROFILES, builder=_b8,
+                            dumpdir=_sd8)
+_was8 = tls_web.tls_storage
+tls_web.tls_storage = _Roots8
+try:
+    _got8 = tls_web._Handler._request_build(
+        type("_Fake8", (), {"state": _st8})(),
+        {"name": ["TLS_26_09_10_14_00_00"]})
+finally:
+    tls_web.tls_storage = _was8
+check("⭐ A BUILD IS FOUND ON THE USB STICK AS WELL AS THE SD CARD",
+      _got8 == (True, "Building")
+      and _b8.asked == [os.path.join(_usb8, "TLS_26_09_10_14_00_00.pcap")],
+      (_got8, _b8.asked))
+
 for _d in _made:
     shutil.rmtree(_d, ignore_errors=True)
 

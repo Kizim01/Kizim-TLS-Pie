@@ -224,6 +224,37 @@ def _watch_page(server):
             os._exit(2)
 
 
+def _serve_browser(server, silent_s=600.0, poll_s=1.0, clock=time.time):
+    """
+    Keep the server up for a page that lives in a browser tab.
+
+    Returns why it stopped: "interrupted", "server ended", "never came up" or
+    "page went quiet".
+
+    ⛔ IT HAS TO END BY ITSELF. A windowed exe has no console, so Ctrl+C is
+    not a way out, and a server nobody can reach would sit in the background
+    for good. The page pulses while it is open (`/alive`), so the server
+    stays up while it does, and stops once it has been silent for
+    `silent_s` -- or if it never came up at all within that time.
+    """
+    began = clock()
+    try:
+        while True:
+            thread = getattr(server, "thread", None)
+            if thread is None or not thread.is_alive():
+                return "server ended"
+            thread.join(poll_s)
+            last = getattr(server, "last_alive", None)
+            now = clock()
+            if last is None:
+                if now - began > silent_s:
+                    return "never came up"
+            elif now - last > silent_s:
+                return "page went quiet"
+    except KeyboardInterrupt:
+        return "interrupted"
+
+
 def _bundle_dir():
     """Where our files live, PyInstaller one-file bundle included."""
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -247,8 +278,10 @@ def main(argv=None):
     # browser -- looking like it works while being exactly what it must not do.
     # Exit codes carry the answer out of a program that cannot print.
     if "--selftest" in argv:
-        ok = desktop.have_native()
-        print("native window backend available: %s" % ok)
+        # ⛔ THE BACKEND ITSELF IS LOADED, not only the package that would
+        # load it -- see desktop.native_backend.
+        ok, what = desktop.native_backend()
+        print("native window backend available: %s (%s)" % (ok, what))
         # ⭐ REPORTED, NOT REQUIRED. A build with no engine beside it is a
         # correct build -- everything falls back to the processor -- so this
         # says what it found and does not change the exit code. The console
@@ -326,7 +359,17 @@ def main(argv=None):
     print("Ready. Merged output will go to %s" % out)
     sys.stdout.flush()
     try:
-        desktop.show(server.url, title="TLS-Pie Studio")
+        native = desktop.show(server.url, title="TLS-Pie Studio")
+        if not native:
+            # ⛔⛔ THE BROWSER FALLBACK NEEDS THE SERVER IT WAS HANDED.
+            # `desktop.show` opens the browser and RETURNS, and this used to
+            # fall straight through to `server.stop()` -- a tab opened on a
+            # server that had just been shut, and an exit code of 0 (the 45th
+            # pass's sweep, `tlspie_studio.py:316`). `run_align` in the CLI
+            # blocks on the server for exactly this reason.
+            align.log_event("no native window, pid %d: serving the page to "
+                            "the browser" % os.getpid())
+            _serve_browser(server)
     finally:
         # ⛔ NOT "exiting cleanly" -- desktop.show also returns when the
         # native window FAILED and the browser fallback was taken, and a

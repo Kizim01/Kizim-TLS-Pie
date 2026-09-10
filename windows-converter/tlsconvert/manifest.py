@@ -1030,6 +1030,26 @@ def report_text(manifest, findings, reimport, files):
 
 # --- the door ---------------------------------------------------------------------
 
+def _part(path):
+    """Where a file is written before it replaces `path`: the extension is
+    kept last, because the preview's writer picks its format from it."""
+    root, ext = os.path.splitext(path)
+    return root + ".part" + ext
+
+
+def _drop(path):
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _dump(path, manifest):
+    with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(manifest, fh, indent=1, ensure_ascii=False)
+
+
 def write_beside(cloud_path, stations, level=None, project=None,
                  points_written=None, preview=True, max_points=1_500_000):
     """
@@ -1053,8 +1073,16 @@ def write_beside(cloud_path, stations, level=None, project=None,
              "preview": (stem + PREVIEW_SUFFIX) if preview else None}
     manifest = build(cloud_path, stations, level=level, project=project,
                      points_written=points_written)
-    write_csv(files["csv"], manifest)
-    findings = validate(manifest, csv_path=files["csv"],
+    # ⛔⛔ NOTHING BESIDE THE CLOUD CHANGES UNTIL THE MANIFEST HAS. The CSV and
+    # the preview used to be written in place first and the manifest replaced
+    # last, so a manifest open in another program refused its replace and left
+    # a FRESH CSV and preview beside a STALE manifest -- the pair this
+    # module's header calls worse than no camera at all (the 45th pass's
+    # sweep, `manifest.py:1053`). They are written aside now, and go into
+    # place only once the manifest is.
+    part = {"csv": _part(files["csv"])}
+    write_csv(part["csv"], manifest)
+    findings = validate(manifest, csv_path=part["csv"],
                         manifest_dir=os.path.dirname(cloud_path))
     reimport, xyz = None, None
     try:
@@ -1065,9 +1093,11 @@ def write_beside(cloud_path, stations, level=None, project=None,
                                   % exc)]}
     if preview and xyz is not None and len(xyz):
         try:
-            preview_png(files["preview"], xyz, manifest)
+            part["preview"] = _part(files["preview"])
+            preview_png(part["preview"], xyz, manifest)
         except Exception as exc:                          # noqa: BLE001
             reimport["findings"].append(("warn", "no preview (%s)" % exc))
+            _drop(part.pop("preview", None))
             files["preview"] = None
     else:
         files["preview"] = None
@@ -1081,9 +1111,48 @@ def write_beside(cloud_path, stations, level=None, project=None,
     manifest["files"] = {k: os.path.basename(v) for k, v in files.items()
                          if v}
     tmp = files["manifest"] + ".part"
-    with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(manifest, fh, indent=1, ensure_ascii=False)
-    os.replace(tmp, files["manifest"])
+    try:
+        _dump(tmp, manifest)
+        os.replace(tmp, files["manifest"])
+    except OSError as exc:
+        # ⛔ REFUSED, SO NOTHING MOVES: the files already beside the cloud
+        # still describe each other, which is the one thing that matters.
+        for p in list(part.values()) + [tmp]:
+            _drop(p)
+        return {"ok": False, "files": {},
+                "error": "the camera manifest %s could not be written (%s) -- "
+                         "it is probably open in another program. Nothing "
+                         "beside the cloud was changed, so the files there "
+                         "still match each other; close it and export again."
+                         % (os.path.basename(files["manifest"]), exc)}
+    # ⛔ AND A FILE THAT WILL NOT GO INTO PLACE AFTER IT IS WRITTEN INTO THE
+    # MANIFEST AS STALE -- the manifest is the file a downstream program
+    # trusts, so it is the one that has to say so.
+    stale = []
+    for k in ("csv", "preview"):
+        if k not in part:
+            continue
+        try:
+            os.replace(part[k], files[k])
+        except OSError as exc:
+            _drop(part[k])
+            stale.append(k)
+            findings.append(("fail", "%s could not be replaced (%s), so the "
+                             "%s beside this manifest is from an EARLIER "
+                             "export -- close it and export again"
+                             % (os.path.basename(files[k]), exc,
+                                "CSV" if k == "csv" else "preview")))
+    if stale:
+        for k in stale:
+            manifest["files"].pop(k, None)
+            files[k] = None
+        manifest["validation"] = [{"level": a, "text": b}
+                                  for a, b in findings]
+        try:
+            _dump(tmp, manifest)
+            os.replace(tmp, files["manifest"])
+        except OSError:
+            _drop(tmp)   # the first write went in; this only adds the warning
     with io.open(files["report"], "w", encoding="utf-8", newline="\n") as fh:
         fh.write(report_text(manifest, findings, reimport, files))
     worst = "ok"

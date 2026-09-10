@@ -266,6 +266,14 @@ class ScannerState:
             return self.dumpdir
 
     def snapshot(self):
+        # ⛔⛔ THE LOCK COVERS THE FIELDS, NOT THE PROBES. This used to hold the
+        # state lock while it asked the USB stick for its free space, the
+        # power chip for its voltage, the builder for its progress and the
+        # disk for the capture's size -- and STOP, the stop flag the motor
+        # polls, and so the watchdog's own loop, all wait on that same lock.
+        # A stick stalling one stat() stalled the only software stop the rig
+        # has (the 45th pass's sweep, `tls_web.py:283`). The fields are copied
+        # under the lock; everything that can block is asked once it is free.
         with self._lock:
             elapsed = progress = remaining = None
             if self.started_at is not None:
@@ -273,15 +281,10 @@ class ScannerState:
                 if self.expected_s:
                     progress = max(0.0, min(1.0, elapsed / self.expected_s))
                     remaining = max(0.0, self.expected_s - elapsed)
+            capture_file, builder = self.capture_file, self.builder
+            dumpdir = self.dumpdir
 
-            size = None
-            if self.capture_file:
-                try:
-                    size = os.path.getsize(self.capture_file)
-                except OSError:
-                    size = None
-
-            return {
+            out = {
                 "phase": self.phase,
                 "message": self.message,
                 "profile": self.profile,
@@ -294,31 +297,39 @@ class ScannerState:
                 "progress": progress,
                 "captureFile": (os.path.basename(self.capture_file)
                                 if self.capture_file else None),
-                "captureBytes": size,
+                "captureBytes": None,           # asked below, unlocked
                 "lastCapture": (os.path.basename(self.last_capture)
                                 if self.last_capture else None),
                 "positionKnown": self.position_known,
                 "stopPending": self._stop_request,
                 "preview": self.cloud is not None,
                 "library": self.dumpdir is not None,
-                "build": (self.builder.status() if self.builder is not None
-                          else None),
-                # Read outside the state lock would be tidier, but tls_power
-                # caches for 2 s and never raises, so the cost here is a dict
-                # lookup on all but one poll in two.
-                "power": (tls_power.read() if tls_power is not None else None),
-                "storage": (tls_storage.status(sd_dumpdir=self.dumpdir)
-                            if tls_storage is not None else None),
+                "build": None,                  # these are asked below,
+                "power": None,                  # once the lock is free
+                "storage": None,
                 "recordingToUsb": self.recording_to_usb,
-                # Cheap: one stat() per poll, and only the rig's own screen acts
-                # on it. The phone ignores the field entirely.
-                "introPlaying": intro_playing(),
+                "introPlaying": None,
                 "scans": [
                     {"id": key, "label": value["label"], "detail": value["detail"]}
                     for key, value in sorted(
                         self.profiles.items(), key=lambda kv: kv[1]["order"])
                 ],
             }
+        size = None
+        if capture_file:
+            try:
+                size = os.path.getsize(capture_file)
+            except OSError:
+                size = None
+        out["captureBytes"] = size
+        out["build"] = builder.status() if builder is not None else None
+        out["power"] = tls_power.read() if tls_power is not None else None
+        out["storage"] = (tls_storage.status(sd_dumpdir=dumpdir)
+                          if tls_storage is not None else None)
+        # Cheap: one stat() per poll, and only the rig's own screen acts on
+        # it. The phone ignores the field entirely.
+        out["introPlaying"] = intro_playing()
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -2744,8 +2755,16 @@ class _Handler(BaseHTTPRequestHandler):
         name = query.get("name", [""])[0]
         if not name or os.path.basename(name) != name:
             return False, "Bad scan name"
-        pcap = os.path.join(self.state.dumpdir, name + ".pcap")
-        if not os.path.exists(pcap):
+        # ⛔ EVERY ROOT THE LIBRARY LISTS, NOT ONLY THE SD CARD. The library
+        # has read the USB stick since it existed, and this looked only in the
+        # SD folder, so a scan recorded to the stick was listed and then
+        # answered "No capture for that scan" (the 45th pass's sweep,
+        # `tls_web.py:2720`). The resolver the downloads use, traversal check
+        # included.
+        import tls_scanstore
+        pcap = tls_scanstore.scan_file_path(self.state.scan_roots(), name,
+                                            ".pcap")
+        if pcap is None:
             return False, "No capture for that scan"
         if not self.state.builder.request(pcap):
             return False, "A build is already running"

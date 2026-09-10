@@ -299,6 +299,33 @@ def _usb_usable():
     return True, None
 
 
+def short_of_room(path):
+    """
+    None if `path` can hold a scan, else why not, in the operator's words.
+
+    ⛔⛔ THE SAME BAR WHEREVER THE SCAN LANDS. `_usb_usable` refused a stick
+    without MIN_FREE_BYTES, and the SD card the scan falls back to was never
+    measured at all, so a nearly full card took the scan and lost it part way
+    (the 45th pass's sweep, `tls_storage.py:301`). A folder not made yet is
+    measured on the nearest one that exists -- the disk it will be made on.
+    Free space that cannot be read is not a reason to refuse a scan: the
+    recorder's own guard still catches a capture that dies.
+    """
+    probe = path
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    free = free_bytes(probe) if probe else None
+    if free is None or free >= MIN_FREE_BYTES:
+        return None
+    return ("only %s free where this scan would record (%s), and a scan needs "
+            "%s -- a disk that fills mid-scan loses the scan. Free some space "
+            "or plug in a USB drive."
+            % (human(free), path, human(MIN_FREE_BYTES)))
+
+
 def choose_dumpdir(sd_dumpdir=None, allow_mount=True):
     """
     Decide where THIS scan records. Called once, at PREFLIGHT.

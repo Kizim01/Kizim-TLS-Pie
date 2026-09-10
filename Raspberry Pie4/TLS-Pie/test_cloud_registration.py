@@ -466,5 +466,53 @@ aborted_points, aborted_info = tls_cloudbuild.build(
 check("a build gives way immediately when asked",
       aborted_points is None and aborted_info["aborted"] is True)
 
+# ⛔ AND IT GIVES WAY WHILE AVERAGING, NOT ONLY WHILE WALKING THE PACKETS. The
+# averaging never asked, so a build abandoned for a scan still averaged for its
+# 20 s or more and then wrote its .cloud in the middle of the very sweep it had
+# given way to (the 45th pass's sweep, `tls_cloudbuild.py:331`). A scan that
+# arrives once the walk is over, while the points are being averaged.
+_in_avg = [False]
+_real_avg = tls_cloudbuild.voxel_average
+
+
+def _avg_marked(*a, **k):
+    _in_avg[0] = True
+    return _real_avg(*a, **k)
+
+
+tls_cloudbuild.voxel_average = _avg_marked
+try:
+    _late_out, _late_info = tls_cloudbuild.build_and_write(
+        wall, out_path=os.path.join(tmpdir, "late.cloud"), meta=meta,
+        should_abort=lambda: _in_avg[0])
+finally:
+    tls_cloudbuild.voxel_average = _real_avg
+check("⭐ A BUILD GIVES WAY WHILE IT AVERAGES, AND WRITES NO .cloud",
+      _late_out is None and (_late_info or {}).get("aborted") is True
+      and not os.path.exists(os.path.join(tmpdir, "late.cloud")),
+      (_late_out, _late_info))
+try:
+    _asked = tls_cloudbuild.voxel_average(
+        [(0.0, 0.0, 0.0, 1)] * 10, 0.03, 10,
+        should_abort=lambda: True)[0] is None
+except TypeError as _e:
+    _asked = repr(_e)
+check("...and the averaging asks on its own, when handed the question",
+      _asked is True, _asked)
+
+# ⛔ A CLOCK THAT JUMPED DURING THE SWEEP IS SAID ON THE CLOUD. The pan track
+# and every packet's time are on the wall clock, so a jump part way through
+# puts every later packet at the wrong angle; the stepper measures it and the
+# sidecar carries it.
+_jinfo = tls_cloudbuild.build(
+    wall, meta=dict(meta, sweep=dict(meta["sweep"], clock_step_s=4.0)))[1]
+check("a sweep during which the rig's clock jumped says so on the cloud",
+      "clock jumped" in (_jinfo.get("warning") or "")
+      and _jinfo.get("clock_step_s") == 4.0, _jinfo.get("warning"))
+_steady = tls_cloudbuild.build(
+    wall, meta=dict(meta, sweep=dict(meta["sweep"], clock_step_s=0.001)))[1]
+check("...and a steady one does not",
+      "clock" not in (_steady.get("warning") or ""), _steady.get("warning"))
+
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

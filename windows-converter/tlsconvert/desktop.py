@@ -56,6 +56,35 @@ def have_native():
     return True
 
 
+def native_backend():
+    """
+    Load the window backend `webview.start()` would load, without a window.
+
+    Returns `(True, renderer)` or `(False, why)`.
+
+    ⛔⛔ `have_native` CANNOT SEE THE FAILURE THE SELFTEST EXISTS FOR.
+    `import webview` loads none of the backend: pywebview picks one and
+    imports it (pythonnet's `clr`, WinForms, the Edge control) only inside
+    `webview.start()`. Measured in the venv: with `clr` blocked, `import
+    webview` still succeeds, so a bundle missing the backend reported
+    "native window backend available: True" and then fell back to the
+    browser at the first real start (the 45th pass's sweep,
+    `tlspie_studio.py:242`). This runs pywebview's own loader, the one
+    `start()` calls, and so fails exactly where a real start would.
+    ⚠ It sets up the backend's application object, so it is for the
+    selftest, not for the ordinary start path.
+    """
+    try:
+        import importlib
+        # ⛔ NOT `from webview import guilib`: the package binds a module
+        # attribute `guilib = None`, which that form returns instead of the
+        # submodule.
+        lib = importlib.import_module("webview.guilib").initialize()
+    except Exception as exc:                             # noqa: BLE001
+        return False, "%s: %s" % (type(exc).__name__, exc)
+    return True, str(getattr(lib, "renderer", None) or lib.__name__)
+
+
 def choose_captures(title="Choose captures to open"):
     """
     Native file picker, so the exe can be launched with no arguments.
@@ -344,8 +373,14 @@ def prefer_fast_gpu(exes=None, subkey=GPU_PREF_KEY):
     return out
 
 
-def associate(exe_path, extensions=SAFE_EXTS, remove=False):
-    """Make `exe_path` the default opener for these extensions, for this user."""
+def associate(exe_path, extensions=SAFE_EXTS, remove=False,
+              classes=r"Software\Classes"):
+    """
+    Make `exe_path` the default opener for these extensions, for this user.
+
+    `classes` is the key the associations live under; the suite points it at
+    a scratch key so the machine's own associations are never touched.
+    """
     if os.name != "nt":
         return False, "file association is a Windows feature"
     import winreg
@@ -353,23 +388,72 @@ def associate(exe_path, extensions=SAFE_EXTS, remove=False):
     root = winreg.HKEY_CURRENT_USER
     try:
         if remove:
-            for ext in extensions:
-                try:
-                    winreg.DeleteKey(root, r"Software\Classes\%s" % ext)
-                except OSError:
-                    pass
-            return True, "associations removed for %s" % ", ".join(extensions)
+            return _unassociate(winreg, root, classes, extensions)
 
-        with winreg.CreateKey(root,
-                              r"Software\Classes\%s\shell\open\command"
-                              % PROG_ID) as key:
+        with winreg.CreateKey(root, r"%s\%s\shell\open\command"
+                              % (classes, PROG_ID)) as key:
             winreg.SetValueEx(key, None, 0, winreg.REG_SZ,
                               '"%s" "%%1"' % exe_path)
-        with winreg.CreateKey(root, r"Software\Classes\%s" % PROG_ID) as key:
+        with winreg.CreateKey(root, r"%s\%s" % (classes, PROG_ID)) as key:
             winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "TLS-Pie point cloud")
         for ext in extensions:
-            with winreg.CreateKey(root, r"Software\Classes\%s" % ext) as key:
+            with winreg.CreateKey(root, r"%s\%s" % (classes, ext)) as key:
                 winreg.SetValueEx(key, None, 0, winreg.REG_SZ, PROG_ID)
         return True, "opening %s with this program" % ", ".join(extensions)
     except OSError as exc:
         return False, str(exc)
+
+
+def _unassociate(winreg, root, classes, extensions):
+    """
+    Take back this program's claim on each extension, and only that.
+
+    ⛔⛔ THE EXTENSION KEY IS NOT OURS TO DELETE, AND TRYING TO WAS HOW THE
+    REMOVAL FAILED SILENTLY. `DeleteKey` refuses a key that has subkeys, and
+    Windows and other programs keep theirs there (`OpenWithProgids`,
+    `ShellNew`); the refusal was swallowed and "removed" reported while the
+    extension still opened with this program (the 45th pass's sweep,
+    `desktop.py:280`). So the default value is cleared only when it names
+    this program, the key itself goes only once nothing else lives in it,
+    and anything that could not be taken back is named, not swallowed.
+    """
+    left = []
+    for ext in extensions:
+        path = r"%s\%s" % (classes, ext)
+        try:
+            key = winreg.OpenKey(root, path, 0,
+                                 winreg.KEY_READ | winreg.KEY_SET_VALUE)
+        except FileNotFoundError:
+            continue                    # nothing there, so nothing of ours
+        except OSError as exc:
+            left.append("%s (%s)" % (ext, exc))
+            continue
+        with key:
+            try:
+                ours = winreg.QueryValueEx(key, "")[0] == PROG_ID
+            except OSError:
+                ours = False
+            if ours:
+                try:
+                    winreg.DeleteValue(key, "")
+                except OSError as exc:
+                    left.append("%s (%s)" % (ext, exc))
+                    continue
+            subkeys, values, _when = winreg.QueryInfoKey(key)
+        if ours and not subkeys and not values:
+            try:
+                winreg.DeleteKey(root, path)
+            except OSError:
+                pass            # emptied already: nothing of ours is left in it
+    # The program's own entry is ours entirely, and goes leaf first.
+    for sub in (r"\shell\open\command", r"\shell\open", r"\shell", ""):
+        try:
+            winreg.DeleteKey(root, r"%s\%s%s" % (classes, PROG_ID, sub))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            left.append("%s (%s)" % (PROG_ID, exc))
+            break
+    if left:
+        return False, "could not take back: %s" % "; ".join(left)
+    return True, "associations removed for %s" % ", ".join(extensions)

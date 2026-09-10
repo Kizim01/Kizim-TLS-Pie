@@ -1772,7 +1772,12 @@ class AlignServer(object):
         scan = self.scans[index]
         hint = registration.Setup.from_dict(start) if start else None
         here = hint if hint is not None else scan.setup
-        if here.is_identity() and scan.lean.is_identity():
+        # ⛔ IN PLAN -- see `Setup.sited`. This asked whether the setup AND
+        # the lean were both identity, and every capture that arrives through
+        # `add` is stood on its own floor, a height and a lean, so the refusal
+        # could never fire for a scan that had actually been added (the 45th
+        # pass's sweep, `align.py:1741`). A height and a tilt are not a place.
+        if not here.sited:
             return {"ok": False,
                     "error": "this scan has not been placed yet, and which "
                              "scans are near it is a question only a placed "
@@ -2749,9 +2754,24 @@ class AlignServer(object):
         w = np.array([float(s["points"]) for s in seen])
         avg = (stack * w[:, None]).sum(axis=0)
         avg = avg / (float(np.linalg.norm(avg)) or 1.0)
+        # ⛔⛔ JUDGED AGAINST EVERYONE ELSE, NEVER AGAINST AN AVERAGE IT IS
+        # ITSELF PART OF -- the rule `level_from_walls` already keeps, for the
+        # reason measured there: a capture leaning far enough away pulls the
+        # joint average toward itself, then sits inside the bar off the answer
+        # it moved, with that answer visibly wrong and nothing flagged. The
+        # bar was fine; the reference was contaminated (the 45th pass's sweep,
+        # `align.py:2700`). A lone capture has no one else to be judged
+        # against, and is judged against itself, as before.
         for s in seen:
+            rest = [t for t in seen if t is not s]
+            ref = avg
+            if rest:
+                ref = (np.array([t["normal"] for t in rest])
+                       * np.array([float(t["points"]) for t in rest])[:, None]
+                       ).sum(axis=0)
+                ref = ref / (float(np.linalg.norm(ref)) or 1.0)
             s["off_deg"] = float(np.degrees(np.arccos(
-                min(1.0, max(-1.0, float(np.dot(s["normal"], avg)))))))
+                min(1.0, max(-1.0, float(np.dot(s["normal"], ref)))))))
         odd = [s for s in seen if s["off_deg"] > registration.FLOOR_ODD_DEG]
         agreed = [s for s in seen if s not in odd]
         if not agreed:
@@ -5508,6 +5528,19 @@ class AlignServer(object):
         # photograph and no reason. The pose dict in the project still holds
         # the lift for the next successful repaint.
         if (scan.colour_info or {}).get("ok"):
+            # ⛔⛔ A POSE THAT CARRIES NO HEADING WAS SOLVED JUST NOW, AND THE
+            # SOLVE HAS ALREADY GRADED ITSELF. Everything below restores what
+            # the FILE knew about a heading the file supplied. With no heading
+            # there is nothing of the file's to restore: `colour_scan` solved
+            # this one fresh, and its grade, rung and match record describe
+            # that answer. The old line stamped "given" on any pose saved
+            # without a grade, so a solved heading came back claiming to be
+            # typed; the save wrote that grade down, and the next open turned
+            # it into `given=True`. Found on the operator's rematched project
+            # (2026-09-10): all 38 photographs graded "given" were solved, not
+            # one typed, and Deep align would have skipped every one.
+            if pose.get("yaw_deg") is None:
+                return
             saved_grade = pose.get("grade")
             scan.colour_info["grade"] = saved_grade or "given"
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
@@ -12635,8 +12668,18 @@ function photoRow(s){
     'cosine between two edge fields, so it means the same at every pose \u2014 '+
     'but it is NOT the confidence: refining raises it by construction, and a '+
     'refined wrong photograph is a more confidently wrong photograph.">'+
-    (s.refined.improved ? '+'+(100*s.refined.gain/Math.max(Math.abs(
-      s.refined.was),1e-9)).toFixed(1)+'%' : 'nothing left')+'</span>';
+    (!s.refined.improved ? 'nothing left'
+     /* ⛔ A PERCENTAGE ONLY FROM THE ONE-EYED JUDGE, the rule `refine`
+        already keeps for its own sentence. The two-eyed score and the deep
+        search's are standardised SUMS that pass through zero, and a gain over
+        a near-zero "was" printed as "+1500.0%" of nothing (the 45th pass's
+        sweep, `align.py:12158`). How far the heading turned is honest either
+        way. */
+     : (Array.isArray(s.refined.judged) && s.refined.judged.length
+        && s.refined.judged.indexOf('mi')<0)
+       ? '+'+(100*s.refined.gain/Math.max(Math.abs(
+           s.refined.was),1e-9)).toFixed(1)+'%'
+       : 'turned '+(+s.refined.turned_deg||0).toFixed(2)+'\u00b0')+'</span>';
   /* ⭐ THE LEAN. A camera goes on a tripod by hand and neither it nor the
      tripod is exactly level, so the horizon in the picture sits at a small
      angle to the horizon in the cloud -- and no heading can take that out,
@@ -14034,8 +14077,10 @@ async function askFolder(what){
    never describe the same move differently. `extra` is what the pressed
    button will do BEYOND the sort, spelled out before "Go ahead?". */
 function sortPitch(plan, extra){
+  /* A capture with no photograph has no number: it is filed under "no
+     photos", and a number here would name a folder that is not made. */
   const lines=plan.scans.slice(0,8).map(r=>
-    '  '+r.number+'. '+r.name+' \u2192 '+
+    '  '+(r.number!=null ? r.number+'. ' : '\u2013  ')+r.name+' \u2192 '+
     (r.photos.length ? r.photos[0].name+' ('+
      (r.photos[0].gap_s>=0?'+':'')+Math.round(r.photos[0].gap_s)+'s)'
      : 'no photograph')).join('\n');
