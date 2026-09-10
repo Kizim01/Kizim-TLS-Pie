@@ -170,6 +170,66 @@ for key, p in BY_ORDER:
     check("%s overlaps the seam rather than butting up to it" % key,
           p["sweep_deg"] % 180.0 > 1.0, p["sweep_deg"] % 180.0)
 
+# --- 3b. where the head is left ----------------------------------------------
+#
+# "i would like the pi head to move back to a 180 position after a fast
+# capture" (operator, 2026-09-10). The Quick 360 sweeps 378 and walks back 198,
+# which lands it on exactly 180 from where the sweep began.
+#
+# ⛔ THE POINT OF THESE CHECKS IS THE ARITHMETIC BETWEEN TWO NUMBERS, NOT
+# EITHER NUMBER. Nothing stops someone editing `sweep_deg` for a good reason
+# and leaving `return_deg` alone, and the head would then quietly park
+# somewhere else entirely while both values still looked reasonable on their
+# own and every other check in this file went on passing.
+print("\nthe head is left where it was asked to be")
+check("the Quick 360 finishes at 180 deg from where it started",
+      abs(tls_scan.park_deg(PROFILES["fast"]) - 180.0) < 1e-9,
+      tls_scan.park_deg(PROFILES["fast"]))
+check("...and it gets there by walking BACK, not by sweeping further",
+      PROFILES["fast"]["return_deg"] > 0.0
+      and PROFILES["fast"]["sweep_deg"] > 180.0,
+      PROFILES["fast"]["return_deg"])
+# ⭐ AND THE WALK IS PAID FOR IN THE ESTIMATE. The progress bar is built from
+# `estimate_duration`, so a return leg the planner did not know about would
+# leave the bar full while the head was still moving -- which reads as a hung
+# rig, and the rig is the thing the operator is standing in front of.
+_sweep_only = dict(PROFILES["fast"], return_deg=0.0)
+check("the walk back is inside the duration the progress bar is drawn from",
+      tls_scan.estimate_duration(PROFILES["fast"])
+      - tls_scan.estimate_duration(_sweep_only) > 20.0,
+      "%.1f s"
+      % (tls_scan.estimate_duration(PROFILES["fast"])
+         - tls_scan.estimate_duration(_sweep_only)))
+# The two profiles that were NOT asked for must be untouched: a change to the
+# rig's motion that quietly widened to every profile would be a surprise the
+# operator finds by watching the head, not by reading anything.
+for _k in ("slow", "rapid"):
+    check("the %s profile still stops where it finishes" % _k,
+          PROFILES[_k]["return_deg"] == 0.0
+          and abs(tls_scan.park_deg(PROFILES[_k])
+                  - PROFILES[_k]["sweep_deg"]) < 1e-9,
+          PROFILES[_k]["return_deg"])
+
+# ⛔⛔ AND THE STATUS LINE MAY NOT SAY "START" WHEN IT MEANS 180. A phase called
+# RETURNING while the head does not move was already named in tls_scan.py as
+# the kind of small lie that sends someone looking for a fault in the motor.
+# "Returning to start" while the head parks half a turn away is the same lie
+# wearing the other shoe -- and this one would have survived every check in
+# this file, because it is a string.
+check("the message names the place the head is really going",
+      "Returning to start" not in _SCAN_SRC
+      and "— parking the head at %g" in _SCAN_SRC,
+      "the old wording is still on a live path")
+# ⛔ THE DEFINITION LINE CARRIES THE SAME TEXT AS A CALL, so counting the
+# substring alone finds three and calls two of them uses. A source-text check
+# cannot tell a definition from a use unless it is told -- the 49th pass met
+# the same shape when a check counted its own explanatory comment.
+_calls = (_SCAN_SRC.count("park_deg(profile)")
+          - _SCAN_SRC.count("def park_deg(profile)"))
+check("...and both messages compute it rather than writing it down",
+      _calls == 2 and _SCAN_SRC.count("def park_deg") == 1, _calls)
+
+
 # --- 4. the button tells the truth -------------------------------------------
 # `label` and `detail` are what the operator reads with a thumb over the button.
 # Nothing else checks them against the dict they sit in.
@@ -186,14 +246,24 @@ for key, p in BY_ORDER:
 
     # The promised minutes against what the planner actually produces, ramps
     # and return leg included. Generous, because the string is deliberately
-    # rounded -- but a profile that grows a minute and keeps its old detail is
-    # caught, and so is a detail copied from the profile above it.
+    # rounded -- but a profile that grows and keeps its old detail is caught,
+    # and so is a detail copied from the profile above it.
+    #
+    # ⛔ THE TOLERANCE WAS 0.4 min AND A REAL DRIFT WENT UNDER IT BY FOUR
+    # TENTHS OF A SECOND. Giving the Quick 360 its 198 degree walk back to 180
+    # (2026-09-10) added 28 s, so the button promising "3¼" was describing a
+    # 3.64 minute scan -- and this check passed, at 0.393 against a limit of
+    # 0.4. A guard that a genuine regression squeaks under is barely a guard:
+    # the detail strings are quarter-minutes, so half a quarter is the widest
+    # it can be and still mean anything. 0.13 min refuses the very case that
+    # got through, and still permits any honest rounding to the nearest
+    # quarter, which is the only thing the string is allowed to be.
     word = p["detail"].split("about ")[1].split(" min")[0]
     minutes = (float(word) if word[-1].isdigit()
                else float(word[:-1]) + FRACTIONS[word[-1]])
     real = tls_scan.estimate_duration(p) / 60.0
     check("%s says about %g min and the planner says %.2f" % (key, minutes, real),
-          abs(real - minutes) < 0.4, "%.2f vs %g" % (real, minutes))
+          abs(real - minutes) <= 0.13, "%.2f vs %g" % (real, minutes))
 
 # --- 5. the panel builds a button for each -----------------------------------
 print("\nthe panel offers every profile")

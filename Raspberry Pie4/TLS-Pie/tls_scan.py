@@ -147,6 +147,17 @@ TCPDUMP_SETTLE_S = float(os.environ.get("TLSPIE_TCPDUMP_SETTLE_S", "0.3"))
 # The head simply stays where the sweep ended. `position_steps` still tracks
 # it -- the panel's Restart still walks it back on demand, and that is the one
 # place in the program that ever read it.
+#
+# ⭐ AND IT CAME BACK FOR ONE PROFILE -- 2026-09-10: "i would like the pi head
+# to move back to a 180 position after a fast capture" (operator). The Quick
+# 360 sweeps 378 and now walks back 198, which puts it at exactly 180 from
+# where it started. ⛔ THAT WALK COSTS ABOUT 28 s AT 7 deg/s, WHICH IS THE
+# VERY COST THAT HAD THE LEG REMOVED IN AUGUST -- 198/7.0 on a scan of about
+# 195 s. It is worth paying here only because it was asked for by name, and it
+# is one number to undo if the wait turns out to matter more than the parking.
+# The Slow 360 ends in the same place as the Quick and could have the same
+# number; it was left alone because it was not asked for. The 180 Rapid already
+# finishes at 190.8, a sliver past the same facing.
 RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 
 # Three scans. The 180 came back on 2026-08-19, asked for by name: the quick
@@ -175,16 +186,17 @@ RETURN_DEG_PER_S = float(os.environ.get("TLSPIE_RETURN_DEG_PER_S", "7.0"))
 # `degrees_to_steps` ROUNDS, so an angle that is not exact never raises -- the
 # head just stops a sliver short on every scan.
 #
-# `return_deg` is kept at 0.0 rather than deleted: the field is written into
-# every sidecar, so removing it would change the shape of a record that older
-# captures already carry, and a zero is the honest value for what now happens.
+# `return_deg` is kept rather than deleted: the field is written into every
+# sidecar, so removing it would change the shape of a record that older
+# captures already carry. Zero is the honest value for the two profiles that
+# do not walk back; the Quick 360's 198 is what puts it on 180.
 SCAN_PROFILES = {
-    "slow": {"label": "360° Slow", "detail": "1°/s · about 6½ min",
+    "slow": {"label": "360° Slow", "detail": "1°/s · about 6¼ min",
              "order": 1, "sweep_deg": 378.0, "deg_per_s": 1.0,
              "return_deg": 0.0},
-    "fast": {"label": "360° Quick", "detail": "2°/s · about 3¼ min",
+    "fast": {"label": "360° Quick", "detail": "2°/s · about 3¾ min",
              "order": 2, "sweep_deg": 378.0, "deg_per_s": 2.0,
-             "return_deg": 0.0},
+             "return_deg": 198.0},
     "rapid": {"label": "180° Rapid", "detail": "2°/s · about 1½ min · one pass",
               "order": 3, "sweep_deg": 190.8, "deg_per_s": 2.0,
               "return_deg": 0.0},
@@ -218,6 +230,20 @@ def status_update(state_name, message):
     print("%s: [%s] %s" % (datetime.now(), state_name, message), flush=True)
     if _state is not None:
         _state.set(phase=state_name, message=message)
+
+
+def park_deg(profile):
+    """Where the head finishes, in degrees from where the sweep began.
+
+    ⛔ THE MESSAGE HAS TO NAME THE PLACE THE HEAD IS ACTUALLY GOING. The
+    status line said "returning to start" for as long as the return leg was a
+    full walk back, and it would have gone on saying it now that the Quick 360
+    stops at 180 instead -- which is the same class of small lie as a phase
+    called RETURNING while the head does not move, and sends the same person
+    looking for the same imaginary fault. Computed from the two numbers rather
+    than written down, so a message cannot drift away from the motion.
+    """
+    return profile["sweep_deg"] - profile["return_deg"]
 
 
 def estimate_duration(profile):
@@ -648,12 +674,14 @@ def run_scan(pi, stepper, profile_name, record=True):
                             capture_started, start_steps=start_steps)
             _state.set(last_capture=capture_file)
             status_update("RETURNING",
-                          ("Captured %s — returning to start"
-                           % os.path.basename(capture_file))
+                          ("Captured %s — parking the head at %g°"
+                           % (os.path.basename(capture_file),
+                              park_deg(profile)))
                           if profile["return_deg"] else
                           ("Captured %s" % os.path.basename(capture_file)))
         elif profile["return_deg"]:
-            status_update("RETURNING", "Returning to start")
+            status_update("RETURNING",
+                          "Parking the head at %g°" % park_deg(profile))
 
         # ⛔ SAY WHAT IS HAPPENING, OR NOTHING AT ALL. A phase called
         # RETURNING while the head does not move is the kind of small lie that

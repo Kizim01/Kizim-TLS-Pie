@@ -6558,7 +6558,64 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fiftieth pass) — the current one
+### ⚠ LIVE STATE (2026-09-10, fifty-first pass) — the current one
+
+**⭐ THE QUICK 360 PARKS THE HEAD AT 180.** *"i would like the pi head to
+move back to a 180 position after a fast capture"* (operator, 2026-09-10). The
+Quick profile sweeps 378, so a 198° walk back leaves it at exactly 180 from
+where the sweep began — and 198° is **88,000 steps exactly** at 160,000
+steps/rev, which is the property the whole profile table is built around.
+
+⭐ **THE MACHINERY WAS ALREADY THERE AND MERELY ZEROED.** `return_deg` was
+set to 0.0 on 2026-08-20 at the operator's own instruction, not deleted — the
+comment kept it because sidecars carry the field. So this is one number and an
+honest message, not a new motion path: the walk is already planned into
+`estimate_duration`, already written into the sidecar, already abortable
+through `should_abort`, and already relative, so it needs no known position.
+⛔ **AND IT COSTS THE 28 SECONDS THAT HAD THE LEG REMOVED IN THE FIRST
+PLACE** — 198/7.0 on a scan of about 195 s, a 14% longer wait. That is worth
+saying out loud because it is the same trade the operator rejected in August;
+they asked for it back by name, and it is one number to undo. **The Slow 360
+ends in the same place and could take the same number** — left alone because
+it was not asked for, and a rig that starts moving in ways nobody requested is
+worse than one that needs asking twice.
+
+**⛔ THE MESSAGE WOULD HAVE GONE ON SAYING "RETURNING TO START".** The status
+line was written when the return leg WAS a full walk back; with the head now
+stopping half a turn away it would have been the same class of small lie this
+file already names — a phase called RETURNING while the head does not move.
+`park_deg(profile)` is `sweep_deg - return_deg`, computed rather than written
+down, so a message cannot drift away from the motion that follows it.
+
+**⭐⭐ AND THE BUTTON'S OWN PROMISE HAD GONE STALE — TWICE, ONE OF THEM
+BEFORE TODAY.** The detail strings are checked against the planner, and the
+tolerance was 0.4 min. Adding 28 s made the Quick's "about 3¼" describe a
+3.64-minute scan, and **that check passed, at 0.393 against a limit of 0.4**.
+⛔ **A GUARD A GENUINE REGRESSION SQUEAKS UNDER BY FOUR TENTHS OF A SECOND IS
+BARELY A GUARD** — the same shape as the 46th pass's threshold that sat
+outside its subject's range. The strings are quarter-minutes, so half a quarter
+(0.13) is the widest the tolerance can be and still mean anything. Tightened,
+it immediately caught a label that had been **wrong before this pass started**:
+the Slow 360 promised 6½ minutes for a 6.32-minute scan. Both corrected —
+Quick to 3¾, Slow to 6¼.
+
+**✅ Audited — five cuts, each firing the check that names it**, including
+the one that matters most: a sweep edited with the return left alone. ⭐ **THE
+CLAIM IS THE ARITHMETIC BETWEEN TWO NUMBERS, NOT EITHER NUMBER** — 396° is
+also step-exact, so that break moves only the destination and every other check
+goes on passing. Pi suites **61 / 18 / 38 / 80 / 49 / 26, all green**. Driver:
+`scratchpad\mos\revert_park.py`.
+⚠ One small repair on the way: a source check counted `park_deg(profile)` and
+found three, because **the definition line carries the same text as a call**.
+Same shape as the 49th pass's check that counted its own comment.
+
+⛔⛔ **AND IT IS NOT ON THE BOX. `tlspie.local` still does not resolve**, so
+this joins the 46th pass's capture-guard fix in `tls_scan.py` waiting to be
+copied over. **Both are in the same file.** Nothing on the Pi has changed for
+the operator until that copy happens, and a report that the head now parks at
+180 would be false until it does.
+
+### ⚠ LIVE STATE (2026-09-10, fiftieth pass)
 
 **⭐ "I WOULD LIKE THE INTENSITY COLORING TO BE THESE SHADES OF COLOR"**
 (operator, 2026-09-10) with a reference picture: weak returns near-black, the
@@ -7159,15 +7216,15 @@ nothing further should be changed until it is clear what the operator is actuall
 screen. Also ask whether they SAVED after that open: unsaved, the slow re-solve is paid again
 every time, and the poses never reach the file.
 
-⛔ **AND THE ONE FROM THE 46TH PASS IS STILL OPEN: item 12 is unproven on
-the machine.** The suite is green and the exes are built, but nobody has turned a scan on the
-23:57 Studio. Do not report the freeze as fixed on the strength of a green suite — the same
-sentence has now had two different causes, and the first fix was proven while the symptom stood.
-What settles it is the operator turning a cloud that has cuts. No freeze and no new line in
-`%LOCALAPPDATA%\TLS-Pie\studio.log` is the ordinary outcome. A `page replay: N ms ... because
-cut K has no frame for it` line is the legacy case working as designed, and the next lever is to
-time-slice that replay the way the draw was sliced. A freeze with NEITHER a `replay:` nor a
-`gl-slow:` line is a third cause and none of this session's reasoning applies to it.
+✅ **ITEM 12 IS CLOSED — THE OPERATOR TURNED A CLOUD AND IT TURNED.**
+*"yeah the cloud turns good now"* (2026-09-10). That watch item had been open since the 46th
+pass and outlived two different causes: the per-app GPU preference keyed on an auto-updating
+WebView2 path (item 11), and every scan move replaying every cut against every point on the main
+thread (item 12 proper, `03fcf88`). It was deliberately NOT reported as fixed on a green suite,
+because the first of those two fixes was proven while the symptom stood — and that patience was
+right. **The freeze-on-rotate thread is done.** If it ever returns, a freeze with NEITHER a
+`page replay:` nor a `gl-slow:` line in `%LOCALAPPDATA%\TLS-Pie\studio.log` is a THIRD cause
+and none of that reasoning applies to it.
 
 The next sweep item chosen is
 **`align.py:11817` — saved point pairs are never restored on open**: the server writes them into
