@@ -6562,26 +6562,42 @@ when the two names disagree.
 
 **▶ RESUME HERE (saved for compaction, 2026-09-10 evening).** In order:
 
-1. **⛔⛔ DELIVER TO THE PI — BLOCKED ON ITS CURRENT ADDRESS.** Three passes of
-   Pi work are committed and green but NOT on the box: the 46th pass's capture
-   guard, the Rapid's park at 180, and stop = delete + turn back, across
-   `tls_scan.py`, `tls_stepper.py` and `tls_web.py`. The operator said "pi is
-   connected" twice, and the laptop still cannot see it. Every address the
-   record holds is stale or not on WiFi: `10.153.229.165` and
-   `10.89.212.165` are earlier hotspot sessions and time out; `192.168.1.100`
-   is the Pi's `eth0` to the lidar and `192.168.1.201` the lidar itself, so
-   neither is reachable over WiFi. Today's hotspot range is `10.222.41.0/24`
-   (laptop `.8`, phone `.164`); `.165` timed out, and a ping sweep plus a
-   connection sweep on 22 and 8080 across the whole range, run twice, found
-   only the phone. **Ask the operator for the address the Pi shows on its own
-   screen at startup, or the one in the phone's connected-devices list.** Then:
-   `python scratchpad\mos\deploy53.py <address>` (add `--dry` to list only).
-   It pins the connection to the host key known for `tlspie.local`, refuses
-   while a scan runs, backs up to `~/TLS-Pie/.deploy-backup/<stamp>`, copies
-   only files whose checksum differs, re-verifies, runs every suite ON THE
-   PI, and restarts `tls-scan` only if all are green and the scanner is idle.
-   If an address in `10.222.41.x` still does not answer, the phone is isolating
-   its clients: put both on another WiFi network, or cable the laptop to the Pi.
+1. **✅ DELIVERED TO THE PI — 2026-09-10, 20:29-20:30 BST.** The 46th pass's
+   capture guard, the Rapid's park at 180, and stop = delete + turn back are on
+   the box and running: `tls_scan.py`, `tls_stepper.py`, `tls_web.py`, plus
+   `test_capture_guards.py` (new), `test_scan_profiles.py`,
+   `test_stepper_watchdog.py` and `test_splash.py` (a comment only).
+   `deploy53.py 10.222.41.165` backed the six replaced files up to
+   `~/TLS-Pie/.deploy-backup/20260910-202914`, copied seven, and re-read
+   matching checksums. On the Pi, 11 of 12 suites green: blankcursor 42,
+   capture_guards 36, cloud_registration 78, intro 54, power 33, scan_profiles
+   61, shutdown 48, stepper_watchdog 47, storage 26, viewer 79, web_install 49.
+   `tls-scan` was restarted BY HAND at 20:30:31 (pid 2887) with the scanner
+   IDLE, because the script refuses to restart on any red suite and one was red
+   (below). After the restart: the three sources match the repo by md5, the
+   panel serves the new STOP text ("deletes this scan and turns the head
+   back") and the new labels (Quick "about 3¼ min", Rapid "about 1¾ min · one
+   pass"), `positionKnown: true`, and the journal holds no error.
+   ⛔ **NOT YET EXERCISED ON THE RIG**: nobody has pressed STOP mid-sweep or run
+   a Rapid on the new code. A green suite is not production evidence. The
+   first real STOP should delete the capture and bring the head back; the
+   first Rapid should end facing 180.
+   ⛔ **`test_splash.py` HAS NEVER RUN ON THE PI.** The Pi has no Pillow
+   (`ModuleNotFoundError: No module named 'PIL'`), and the pre-delivery copy
+   fails the same way. The scanner never loads Pillow: `tls_splash.py` imports
+   it inside a function, and nothing the service runs imports `tls_splash`. So
+   it is a gap in the test environment, not a runtime fault. But it makes
+   `deploy53.py` refuse every restart. Fix one side: make the test skip with a
+   message when PIL is missing, or install `python3-pil` on the Pi. The 53rd
+   pass's "Pi suites all green … splash 55" was counted on the LAPTOP.
+   ⭐ **THE ADDRESS WAS NEVER STALE — THE PI WAS OFF.** It booted at 20:22:06,
+   after the evening's sweeps. It holds `10.222.41.165` on this hotspot, and
+   `tlspie.local` RESOLVED over mDNS tonight, so the 2026-08-13 "mDNS dead on
+   the hotspot" is not a fixed property of the hotspot. `ssh tlspie` works as
+   configured. ⭐ A timeout means "not answering now", not "wrong address":
+   check the box is powered and booted before re-deriving where it lives.
+   ⚠ Power: `throttled 0x50000` — under-voltage and throttling have occurred
+   since boot, though not at the moment of reading (SoC 57.9 °C).
 
 2. **⭐⭐ THE REMATCHED PROJECT WAS OPENED AND SAVED — AND IT SHOWS A GRADING
    FAULT.** `Desktop\ministry of sound\scan project (photos rematched).tlspie`
