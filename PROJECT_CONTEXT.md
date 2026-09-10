@@ -7111,6 +7111,21 @@ the colours the operator asked for on 2026-09-10 **and the curve that lets a
 real cloud reach them** — are all in what the operator runs. The Studio was
 confirmed closed first: **a build packs the WORKING TREE.**
 
+⭐⭐ **AND THE BUILD WAS ASKED WHAT IT CARRIES, NOT TRUSTED TO CARRY IT** —
+`windows-converter\check_build_carries.py` (new). *"It is in the source and not
+on the machine"* is this project's most expensive recurring mistake: a build
+packs the working tree, can be skipped, or can be run with the Studio open, and
+every one of those looks identical afterwards — green suite, clean tree,
+confident report, operator still running last week's behaviour. ⛔ **GREPPING
+THE EXE DOES NOT ANSWER IT**: PyInstaller compresses the modules, so a plain
+search finds neither the new string NOR the old one, and `0 hits` reads like a
+failure when it is only the wrong question. This walks the CArchive, then the
+PYZ inside it, then the module's marshalled constants. It takes strings that
+must be PRESENT and, with `--absent`, strings that must be GONE — because a
+stale bundle can carry both at once. Proved able to fail before being believed.
+Run for this pass: `strength()`, the curve and the blue stop all present, the
+old navy mix absent, in `dist\TLS-Pie-Studio.exe`.
+
 ⚠ **WHAT TO ASK THEM FIRST IS WHETHER THE RAMP LOOKS RIGHT ON A REAL JOB.**
 It was measured, audited and rendered against their own cloud, but the
 judgement is theirs and it is a matter of taste as much as of correctness. Two
