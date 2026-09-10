@@ -3341,6 +3341,294 @@ console.log(JSON.stringify(out));
           _sout == [[1, True], [1, True], [3, False], [4, True]], _sout)
 
 
+# --- the intensity ramp the operator asked for ------------------------------
+#
+# "i would like the intensity coloring to be these shades of color" (operator,
+# 2026-09-10) with a reference picture: weak returns near-black, the middle a
+# saturated blue, strong returns white. Two things had to change -- the ramp
+# itself, and the fact that there were TWO of them: the strength mode mixed
+# navy to white inline while the "Photo / intensity" fallback painted the very
+# same byte flat grey, so one measurement had two appearances.
+#
+# These checks read the stops out of the shipped shader instead of restating
+# them, because a check carrying its own copy of the numbers goes on passing
+# after somebody edits the ones that actually draw.
+
+
+def _strength_body():
+    """The shader's ramp function, or "" if it is not there any more.
+
+    ⛔⛔ NOTHING BELOW MAY RAISE. A parser that throws when its anchor moves
+    ends the run in a traceback, and a run that ends in a traceback never
+    prints the names of the checks it was carrying -- so a reversion audit
+    reports "SUITE DIED" instead of naming the claim that broke. That was
+    written down in the 48th pass and met again in the 49th, in code authored
+    after it. Every miss here yields NaN instead, which loses every comparison
+    it touches, so the checks fail BY NAME and the run still accounts for all
+    of them.
+    """
+    head = "vec3 strength(float t)"
+    i = align.PAGE.find(head)
+    return "" if i < 0 else align.PAGE[i + len(head):].split("}", 1)[0]
+
+
+def _strength_ramp():
+    """The shipped ramp: (lo, mid_lo, mid_hi, hi, knee), from the shader.
+
+    ⛔⛔ THE MIDDLE STOP IS READ TWICE BECAUSE THE SHADER WRITES IT TWICE --
+    once as the top of the lower segment and once as the bottom of the upper
+    one -- and the first version of this parser read only the first copy. That
+    made "the two halves agree at the knee" compare a value with ITSELF: a
+    check that could not fail, which the reversion audit duly reported NOT
+    CAUGHT against a claim that was perfectly true. Both copies, therefore,
+    and each segment built from its own.
+    """
+    body = _strength_body()
+    stops = [tuple(float(c) for c in m)
+             for m in re.findall(r"vec3\(\s*([\d.]+)\s*,\s*([\d.]+)"
+                                 r"\s*,\s*([\d.]+)\s*\)", body)]
+    while len(stops) < 4:
+        stops.append((float("nan"),) * 3)
+    # The knee is read off the comparison the shader branches on and the
+    # exponent off the pow itself, because the two carry the same number and
+    # a looser pattern would hand back whichever happened to come first.
+    m = re.search(r"u\s*<\s*([\d.]+)", body)
+    knee = float(m.group(1)) if m else float("nan")
+    return stops[0], stops[1], stops[2], stops[3], knee
+
+
+def _strength_gamma():
+    """The curve applied BEFORE the ramp, lifted from the shader."""
+    m = re.search(r"pow\(clamp\(t,0\.0,1\.0\),\s*([\d.]+)\)",
+                  _strength_body())
+    return float(m.group(1)) if m else float("nan")
+
+
+def _strength_at(u, ramp):
+    """The ramp, on a parameter that has already been through the curve."""
+    lo, mid_lo, mid_hi, hi, knee = ramp
+    a, b, f = ((lo, mid_lo, u / knee) if u < knee
+               else (mid_hi, hi, (u - knee) / (1.0 - knee)))
+    return tuple(p + (q - p) * f for p, q in zip(a, b))
+
+
+def _strength_of(byte, ramp, gamma):
+    """End to end: a reflectivity byte to the colour drawn for it."""
+    return _strength_at((byte / 255.0) ** gamma, ramp)
+
+
+def _lum(c):
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+_ramp = _strength_ramp()
+_lo, _mid, _mid_hi, _hi, _knee = _ramp
+_gamma = _strength_gamma()
+
+# The two segments must meet, or the ramp has a step in it and the operator
+# reads a change of surface where there is only a change of formula.
+check("the ramp's two halves agree at the knee",
+      _mid == _mid_hi
+      and all(abs(a - b) < 1e-9 for a, b in
+              zip(_strength_at(_knee, _ramp),
+                  _strength_at(_knee - 1e-12, _ramp))),
+      (_mid, _mid_hi))
+
+# ⛔⛔ THE FAILURE MODE OF A BLACK LOW END IS NOT "TOO DARK", IT IS "GONE". The
+# viewport clears to a charcoal, so a weak return painted black is a HOLE in
+# the cloud exactly where the softest returns were -- and a hole reads as data
+# that was never captured, not as data that came back weak. The clear colour
+# is read from the same file rather than written down here, so moving the
+# background can never quietly swallow the ramp's floor.
+#
+# ⭐⭐ THIS CHECK WAS FIRST WRITTEN AGAINST LUMINANCE AND WAS WRONG, AND IT
+# FAILED THE RAMP THAT HAD ALREADY SHIPPED -- which is the only reason the
+# measure got questioned instead of the colour. A saturated dark blue has a
+# LOW luminance by construction: blue carries 0.0722 of the weight, so
+# (0.03,0.03,0.22) computes dimmer than the neutral charcoal behind it while
+# being plainly visible on it, and the previous (0.02,0.06,0.24) was dimmer
+# still. What makes a dark blue readable on a grey is HUE, not brightness.
+# ⛔ Had the ramp been "fixed" to satisfy the check, the floor would have been
+# forced lighter and the near-black low end the operator asked for would have
+# been washed out BY ITS OWN TEST. Separation plus real blue, therefore --
+# and the blue clause is load-bearing on its own, because pure black sits a
+# perfectly respectable distance from the charcoal too and must still fail.
+_bgm = re.search(r"gl\.clearColor\(([\d.]+),([\d.]+),([\d.]+)", align.PAGE)
+_bg = (tuple(float(c) for c in _bgm.groups()) if _bgm
+       else (float("nan"),) * 3)
+_sep = sum((a - b) ** 2 for a, b in zip(_lo, _bg)) ** 0.5
+check("the weakest return is still visible against the background it is "
+      "drawn on",
+      _sep > 0.1 and _lo[2] > _bg[2] * 2.0,
+      (_lo, _bg, round(_sep, 4)))
+# The clause above that black must fail, stated as its own case rather than
+# trusted: the check is only worth having if it refuses the thing it names.
+check("...and it is the blue that carries it, so a black floor would be "
+      "refused",
+      not ((sum((a - b) ** 2 for a, b in zip((0.0, 0.0, 0.0), _bg)) ** 0.5
+            > 0.1) and 0.0 > _bg[2] * 2.0))
+
+# The message on the mode button tells the operator to read brightness as
+# strength. That is a promise about the whole mapping -- curve and ramp
+# together, which is what a point is actually drawn through -- and it is false
+# the moment any stretch of it grows darker as the return grows stronger.
+_steps = [_lum(_strength_of(b, _ramp, _gamma)) for b in range(256)]
+check("brightness rises the whole way, so \"weak is dark, strong is pale\" "
+      "is true of every byte and not only of the ends",
+      all(b > a for a, b in zip(_steps, _steps[1:])),
+      [i for i, (a, b) in enumerate(zip(_steps, _steps[1:])) if b <= a])
+
+# ⛔⛔ THE STOPS WERE HALF THE FIX, AND THE HALF THAT DOES NOT SHOW ON ITS OWN.
+# Measured over the operator's own job on 2026-09-10 -- 1.3M points sampled
+# across "scan project (photos rematched).laz", 41,259,809 points, whose LAS
+# intensity steps by exactly 257 and so IS the 8-bit reflectivity the viewer
+# is handed rather than a rescaling of it. The byte is 1 at the first
+# quartile, 3 at the median, 63 at the ninth decile. Mapped straight, 1.86% of
+# that cloud gets past the middle of the ramp and NOTHING reaches the top
+# fifth -- so the white end, which is the part the operator actually asked
+# for, is drawn by no point in the survey at all.
+_MEASURED = {25: 1, 50: 3, 75: 20, 90: 63, 95: 92, 99: 125}
+_pos = lambda b: (b / 255.0) ** _gamma
+check("a real cloud's median return lands ON the ramp rather than in its "
+      "floor",
+      _pos(_MEASURED[50]) > 0.10
+      and _pos(_MEASURED[50]) > 5.0 * (_MEASURED[50] / 255.0),
+      (round(_pos(_MEASURED[50]), 3), round(_MEASURED[50] / 255.0, 4)))
+check("...and nine tenths of it reaches past the middle of the ramp, so the "
+      "pale end is a colour the survey actually gets to",
+      _pos(_MEASURED[90]) > _knee, round(_pos(_MEASURED[90]), 3))
+# ⭐ AND THE CURVE MAY NOT BE FITTED TO THAT HISTOGRAM. A per-cloud stretch
+# would spread any job beautifully and would also mean one colour named a
+# different return strength in every cloud -- so the ramp is allowed to read
+# the point's own strength and nothing else: no uniform, no measured bound.
+check("the curve is a fixed exponent, so one colour means one return "
+      "strength in every cloud and every session",
+      0.3 <= _gamma <= 0.8
+      and align.PAGE.count("pow(clamp(t,0.0,1.0)") == 1
+      and not any(w in _strength_body() for w in ("uniform", "uLo", "uHi")),
+      _gamma)
+
+# ⭐ THE CHECK THAT GUARDS THE REQUEST ITSELF. A two-stop mix from dark to
+# white satisfies both checks above and still produces the washed-out slate the
+# operator was shown and did not want: a straight line between a navy and a
+# white passes through no saturated blue anywhere. So the middle stop is
+# required to BE blue, and to sit a real distance off the straight line its own
+# ends describe -- which is the whole reason there are three stops and not two.
+_line = tuple(p + (q - p) * _knee for p, q in zip(_lo, _hi))
+_off = sum((a - b) ** 2 for a, b in zip(_mid, _line)) ** 0.5
+check("the middle of the ramp is a saturated blue, not the slate a two-stop "
+      "mix would give",
+      _mid[2] > 3.0 * max(_mid[0], _mid[1]) and _off > 0.25,
+      (_mid, _line, round(_off, 3)))
+
+# ⛔ AND ONE RAMP, NOT TWO. The fault being fixed was not only the colour: the
+# strength mode and the "Photo / intensity" fallback painted the same byte two
+# different ways, so the same measurement changed appearance with the mode you
+# happened to have cycled to. One definition, and every reader through it.
+check("the intensity ramp is defined once",
+      align.PAGE.count("vec3 strength(float t)") == 1,
+      align.PAGE.count("vec3 strength(float t)"))
+check("...and both intensity branches go through it, neither mixing its own",
+      align.PAGE.count("strength(") == 3
+      and "vCol = (uGrey>0.5) ? strength(aCol.r) : base;" in align.PAGE
+      and "? strength((uGrey>0.5) ? aCol.r : aCol.a)" in align.PAGE,
+      align.PAGE.count("strength("))
+
+# A cloud that cannot answer the question is still refused rather than painted
+# from the attribute default -- the new ramp must not have quietly revived the
+# confident picture drawn from no data at all.
+check("a cloud carrying no return strength is still drawn flat, not ramped",
+      "       : vec3(0.13,0.14,0.17);" in align.PAGE
+      and "(uRef > 0.5)" in align.PAGE)
+
+
+# --- and the shaders are handed to an actual GLSL compiler -------------------
+#
+# ⛔⛔ THE SHADERS WERE THE ONE PART OF THE PAGE NOTHING COULD CHECK. The suite
+# pins their source and node parses the JavaScript around them, but GLSL is a
+# second language inside a template literal: no reader in this repository has
+# ever compiled it, so until an operator opened a cloud on the machine a typo
+# in it was invisible. `shader()` throws the info log, which is loud -- but it
+# is loud on THEIR screen, days later, on a build already shipped.
+#
+# Edge ships with Windows and compiles GLSL in software, so the shipped vertex
+# and fragment shaders can be compiled and LINKED here for the cost of a few
+# seconds. Linking matters separately: a vertex shader can compile perfectly
+# and still fail to hand its varyings to the fragment shader.
+#
+# Skipped, loudly, where there is no Edge or no software GL -- the suite must
+# not fail on a machine that simply cannot answer the question.
+_edge = next((p for p in
+              (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+               r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
+              if os.path.exists(p)), None)
+
+
+def _page_literal(name):
+    """The body of `const NAME = `...`;` out of the shipped page.
+
+    Returns a deliberately invalid shader if the declaration has moved, so the
+    check below FAILS with the compiler's complaint rather than the suite
+    ending on an index error.
+    """
+    head = "const %s = `" % name
+    i = align.PAGE.find(head)
+    if i < 0:
+        return "#error no %s in the page" % name
+    j = align.PAGE.find("`;", i + len(head))
+    return (align.PAGE[i + len(head):j] if j > 0
+            else "#error %s never closes" % name)
+
+
+if _edge:
+    _glsl_html = """<!doctype html><meta charset="utf-8"><body><pre id="o">-</pre>
+<script>
+const VS = `%s`;
+const FS = `%s`;
+function go(){
+  const gl = document.createElement('canvas').getContext('webgl')
+          || document.createElement('canvas').getContext('experimental-webgl');
+  if(!gl) return 'NOGL';
+  const bad = [], p = gl.createProgram();
+  for(const [t,src,n] of [[gl.VERTEX_SHADER,VS,'vertex'],
+                          [gl.FRAGMENT_SHADER,FS,'fragment']]){
+    const s = gl.createShader(t);
+    gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+      bad.push(n+' FAILED: '+gl.getShaderInfoLog(s));
+    else gl.attachShader(p,s);
+  }
+  if(bad.length) return bad.join(' | ');
+  gl.linkProgram(p);
+  return gl.getProgramParameter(p,gl.LINK_STATUS)
+       ? 'OK' : 'LINK FAILED: '+gl.getProgramInfoLog(p);
+}
+let r; try { r = go(); } catch(e) { r = 'THREW: '+e.message; }
+document.getElementById('o').textContent = 'RESULT<<'+r+'>>';
+</script></body>""" % (_page_literal("VS"), _page_literal("FS"))
+    _gd = tempfile.mkdtemp(prefix="tlsglsl")
+    _gp = os.path.join(_gd, "c.html")
+    with open(_gp, "w", encoding="utf-8") as fh:
+        fh.write(_glsl_html)
+    try:
+        _go = subprocess.run(
+            [_edge, "--headless=new", "--no-sandbox", "--disable-gpu-sandbox",
+             "--enable-unsafe-swiftshader", "--use-angle=swiftshader",
+             "--virtual-time-budget=6000", "--dump-dom",
+             "--user-data-dir=" + os.path.join(_gd, "u"), _gp],
+            capture_output=True, text=True, timeout=240,
+            encoding="utf-8", errors="replace").stdout or ""
+    except Exception as _ge:                       # noqa: BLE001
+        _go = "RESULT<<edge would not run: %s>>" % _ge
+    _gm = re.search(r"RESULT(?:&lt;&lt;|<<)(.*?)(?:&gt;&gt;|>>)", _go, re.S)
+    _gv = (_gm.group(1).strip() if _gm else "no result in the page")
+    if _gv == "NOGL":
+        print("  skip the shaders compile -- this Edge has no software GL")
+    else:
+        check("the page's own vertex and fragment shaders compile AND link "
+              "in a real GL", _gv == "OK", _gv)
+
+
 # --- the pairs an operator picked come back with the project ------------------
 #
 # ⭐⭐ FOUND BY A READ-ONLY SWEEP, AND THE COMMENT WAS THE EVIDENCE. Three

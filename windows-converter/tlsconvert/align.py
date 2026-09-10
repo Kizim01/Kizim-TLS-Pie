@@ -7400,13 +7400,59 @@ varying vec3 vCol; varying float vKill;
 vec3 ramp(float t){ t=clamp(t,0.0,1.0);
   return clamp(vec3(1.5-abs(4.0*t-3.0),1.5-abs(4.0*t-2.0),
                     1.5-abs(4.0*t-1.0)),0.0,1.0); }
+/* ONE RAMP FOR THE RETURN STRENGTH, AND BOTH READERS GO THROUGH IT.
+   Asked for by the operator, 2026-09-10, against a reference picture:
+   the weak returns near-black, the middle a saturated blue, the strong
+   ones white. The old two-stop mix ran navy STRAIGHT to white, and a
+   straight line between those two never passes through a saturated blue
+   at all -- every midpoint of it is a slate grey, which is exactly why
+   the picture read washed out. Three stops, so the blue is a place the
+   ramp actually goes rather than a colour it is named after.
+   ⛔ THE DARK END IS NOT BLACK AND MAY NOT BECOME IT. The viewport
+   clears to 0.067 charcoal, so a black weak return is not "dark", it is
+   INVISIBLE -- a hole in the cloud exactly where the softest returns
+   were, which an operator reads as missing data rather than as weak
+   data. The floor sits above the ground it is drawn on, and a test holds
+   it there against the clear colour itself, not against a copy of it. */
+vec3 strength(float t){
+  /* ⛔⛔ THE STOPS ALONE DO NOT DELIVER THE PICTURE, BECAUSE THE
+     MEASUREMENT NEVER REACHES THEIR TOP END. Sampled across the
+     operator's own job (41,259,809 points, 2026-09-10) the reflectivity
+     byte is 1 at the first quartile, 3 at the median and 63 at the ninth
+     decile -- out of a nominal 0..255. Mapped straight onto the ramp
+     that means 1.86% of the cloud gets past the middle of it and NOTHING
+     AT ALL reaches the top fifth: the white end the operator asked for is
+     not drawn by a single point in the survey, and the ramp's whole upper
+     half is spent on the couple of per cent of returns that come off
+     retroreflective targets. The colours were never the only thing wrong
+     with the picture, and re-colouring the ends alone would have shipped
+     a ramp whose best half nothing ever lands in.
+     ⭐ A FIXED CURVE, AND DELIBERATELY NOT ONE FITTED TO THAT
+     HISTOGRAM. A per-cloud stretch would spread any job beautifully and
+     would also mean the same colour named a different return strength in
+     every cloud and every session -- and saying how strong the return was
+     is this mode's whole promise. 0.45 is the display encode exponent: it
+     belongs to the screen rather than to this building, so a colour goes
+     on meaning one thing across a job, a scanner and a year. It takes the
+     same job to 15.15% past the middle. */
+  float u = pow(clamp(t,0.0,1.0), 0.45);
+  return (u < 0.45)
+    ? mix(vec3(0.03,0.03,0.22), vec3(0.15,0.10,0.92), u/0.45)
+    : mix(vec3(0.15,0.10,0.92), vec3(1.00,1.00,1.00), (u-0.45)/0.55); }
 void main(){
   vec3 p = (uModel * vec4(aPos*uScale + uOffset, 1.0)).xyz;
   gl_Position = uVP * vec4(p,1.0);
   vec3 base = (uGrey>0.5) ? vec3(aCol.r) : aCol.rgb;
   if(uMode < 0.5)      vCol = uTint * (0.45 + 0.75*base.r);
   else if(uMode < 1.5) vCol = ramp((p.z-uZlo)/max(uZhi-uZlo,1e-4));
-  else if(uMode < 2.5) vCol = base;
+  /* A CLOUD WITH NO PHOTOGRAPH *IS* AN INTENSITY PICTURE, SO IT GETS
+     THE INTENSITY RAMP. This mode is called "Photo / intensity" and the
+     fallback half of it is what the operator sees on every job before
+     anything has been coloured. Painting that flat grey while the mode
+     NAMED for strength paints the very same byte blue would be two
+     answers to one question. The photograph's own colour is untouched:
+     uGrey is set only where there is no photograph to show. */
+  else if(uMode < 2.5) vCol = (uGrey>0.5) ? strength(aCol.r) : base;
   /* ⛔⛔ RETURN STRENGTH, AND IT IS READ FROM A DIFFERENT PLACE ON A COLOURED
      CLOUD -- WHICH IS THE WHOLE REASON THIS MODE NEEDED A WIRE CHANGE. On a
      grey cloud the one colour byte IS the reflectivity, so aCol.r is it. On
@@ -7418,8 +7464,7 @@ void main(){
      the bright end of the ramp -- the most confident possible picture drawn
      from no data at all. Flat and dull instead, and the legend names it. */
   else vCol = (uRef > 0.5)
-       ? mix(vec3(0.02,0.06,0.24), vec3(0.82,0.92,1.00),
-             (uGrey>0.5) ? aCol.r : aCol.a)
+       ? strength((uGrey>0.5) ? aCol.r : aCol.a)
        : vec3(0.13,0.14,0.17);
   /* ⭐⭐ ONE CLOUD LIT AND THE REST TURNED DOWN -- "a button that highlights
      that point cloud" (operator, 2026-09-01). A survey of nineteen tripods in
@@ -15693,7 +15738,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
        that causes it. */
     if(V.mode===3){
       const mute=V.scans.filter(s=>!hasRef(s));
-      say('Return strength — dark is a weak return, pale a strong one. '+
+      say('Return strength — a weak return reads near-black, a middling '+
+          'one blue, a strong one white. '+
           (mute.length
             ? mute.length+' cloud'+(mute.length===1?'':'s')+' carr'+
               (mute.length===1?'ies':'y')+' no return strength and '+

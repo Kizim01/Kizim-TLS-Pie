@@ -6558,7 +6558,102 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-09, forty-ninth pass) — the current one
+### ⚠ LIVE STATE (2026-09-10, fiftieth pass) — the current one
+
+**⭐ "I WOULD LIKE THE INTENSITY COLORING TO BE THESE SHADES OF COLOR"**
+(operator, 2026-09-10) with a reference picture: weak returns near-black, the
+middle a saturated blue, strong returns white. Suites **2004 → 2016**.
+
+**⭐⭐ THE COLOURS WERE HALF THE ANSWER AND THE HALF THAT DOES NOT SHOW ON
+ITS OWN.** Before changing anything the operator's own job was measured —
+1.3M points sampled across `scan project (photos rematched).laz`, 41,259,809
+points, whose LAS intensity steps by exactly **257** and so IS the 8-bit
+reflectivity the viewer is handed rather than a rescaling of it. The byte is
+**1 at the first quartile, 3 at the median, 63 at the ninth decile**, out of a
+nominal 0..255. ⛔ **MAPPED STRAIGHT ONTO THE RAMP THAT IS 1.86% OF THE CLOUD
+PAST ITS MIDDLE AND 0.00% INTO ITS TOP FIFTH** — the white end, the part the
+operator actually asked for, was drawn by **no point in the survey at all**,
+and the ramp's whole upper half belonged to the couple of per cent of returns
+that come off retroreflective targets. Re-colouring the two ends alone would
+have shipped a ramp whose best half nothing ever lands in, and it would have
+looked like the request had been done.
+⭐ **A FIXED CURVE, DELIBERATELY NOT ONE FITTED TO THAT HISTOGRAM.** A
+per-cloud percentile stretch spreads any job beautifully and also means the
+same colour names a different return strength in every cloud and every
+session — and saying how strong the return was is this mode's whole promise.
+`pow(t, 0.45)`, the display encode exponent: it belongs to the screen rather
+than to this building. It takes the same job to **15.15%** past the middle.
+
+**⭐⭐ AND THERE WERE TWO RAMPS FOR ONE MEASUREMENT.** The strength mode
+mixed navy straight to white inline, while `Photo / intensity` — the DEFAULT
+mode, and the one an operator sees on every job before anything is coloured —
+painted the very same reflectivity byte flat grey. One measurement with two
+appearances depending on which mode you had last cycled to. ⛔ A straight
+two-stop mix also **passes through no saturated blue anywhere**: every midpoint
+of a line from navy to white is a slate grey, which is exactly why the picture
+read washed out. Three stops now, one `strength()` function, both readers
+through it, and the dark end deliberately **NOT** black — the viewport clears
+to a 0.067 charcoal, so a black weak return is not "dark", it is a HOLE in the
+cloud where the softest returns were, and a hole reads as data never captured.
+
+**⭐⭐ THE SHADERS NOW MEET A REAL GLSL COMPILER, WHICH THEY NEVER HAD.**
+GLSL is a second language living inside a JavaScript template literal: the
+suite pinned its source and node parsed the JavaScript around it, but nothing
+in this repository had ever compiled it — a typo surfaced only as
+`shader()`'s thrown info log, on the OPERATOR's screen, days later, on a build
+already shipped. Edge ships with Windows and compiles GLSL in software, so the
+shipped vertex and fragment shaders are compiled **and linked** in the suite
+now, gated on Edge being present and skipped loudly where it is not. It was
+proved able to fail before it was believed: a `clamp` given two arguments
+comes back `ERROR: 0:8: 'clamp' : no matching overloaded function found`.
+⛔ It earned its keep the same day — the first version of the ramp put
+**backticks inside a shader comment**, which ended the template literal and
+stopped the page parsing.
+
+**⛔⛔ TWO OF THIS PASS'S OWN CHECKS WERE WRONG, AND BOTH WERE CAUGHT BY THE
+PROCESS RATHER THAN BY READING.**
+⭐ **The first measured the wrong quantity and FAILED THE RAMP THAT HAD
+ALREADY SHIPPED** — which is the only reason the measure got questioned
+instead of the colour. "Visible against the background" was written as
+luminance, and a saturated dark blue has a low luminance by construction:
+blue carries 0.0722 of the weight, so the new floor computes dimmer than the
+charcoal behind it while being plainly visible on it, and the OLD floor was
+dimmer still. What makes a dark blue readable on a grey is **hue, not
+brightness**. ⛔ **Had the ramp been "fixed" to satisfy the check, the floor
+would have been forced lighter and the near-black end the operator asked for
+would have been washed out BY ITS OWN TEST.** Separation plus real blue now,
+and the blue clause is load-bearing on its own because pure black sits a
+perfectly respectable distance from the charcoal too.
+⭐ **The second could not fail at all**, and the reversion audit reported it
+NOT CAUGHT against a claim that was perfectly true. "The two halves agree at
+the knee" compared the middle stop **with itself**: the shader writes that
+stop twice, once per segment, and the parser read only the first copy. Both
+copies are read now and each segment is built from its own. ⛔ That is the
+second fixture in two passes that could not have failed — after the 49th
+pass's refusal written last, where `continue` and `break` do the same thing.
+**A CHECK IS NOT EVIDENCE UNTIL SOMETHING HAS MADE IT GO RED.**
+
+**⛔ AND THE PARSERS WERE ONE EDIT AWAY FROM MAKING IT THREE.** They read the
+ramp out of the shipped shader by regex, and a miss called `.group(1)` on
+`None` — which ends the run in a traceback, so no check prints its name and
+an audit reports SUITE DIED instead of naming the claim. That is the 48th
+pass's lesson, met in the 49th, and now pre-empted in the 50th: every miss
+yields NaN, which loses every comparison it touches, so the checks fail BY
+NAME and the run still accounts for all of them. **A break that removes the
+ramp entirely is now one of the audited cuts, precisely to hold that.**
+
+**✅ AUDITED — eight cuts, each firing the check that names it.** The
+discriminators are the faults themselves. Driver: `scratchpad\mos\revert50.py`,
+substring filter as `sys.argv[1]`; results in `audit50.txt`.
+
+**⭐ THE OPERATOR WAS SHOWN THE ANSWER, NOT TOLD IT.** Their own cloud
+rendered three ways — what ships today, the new colours mapped straight, and
+the new colours through the curve — from `scratchpad\mos\preview50.py`. The
+middle panel is the one that matters: it is the requested colours with the
+mapping the viewer actually uses, and it is why the curve is part of the
+request rather than a liberty taken with it.
+
+### ⚠ LIVE STATE (2026-09-09, forty-ninth pass)
 
 **✅ THE EXES ARE REBUILT AND THE 48TH PASS IS ON THE MACHINE** — Studio,
 Converter and tlsconvert all **2026-09-09 12:41-12:42**, selftest 0 (native
@@ -7009,10 +7104,18 @@ the log) and **`03fcf88`** (item 12, a move re-tests only what it can change). T
 clean but for the standing untracked `windows-converter/cutjs_tmp.js`, and **no audit debt is
 outstanding**.
 
-✅ **THE EXES ARE REBUILT — 2026-09-09 12:41-12:42, selftest 0.** The
-48th pass's `Return strength` mode and all nine of the 49th pass's fixes are in
-what the operator runs. This line led the restart pointer for a day; it is
-closed, and the entry above it is the current one.
+✅ **THE EXES ARE REBUILT — 2026-09-10 14:45-14:46, selftest 0** (native
+window, RTX 3050 Ti, cuda engine found). The 48th pass's `Return strength`
+mode, all nine of the 49th pass's fixes, and the 50th pass's intensity ramp —
+the colours the operator asked for on 2026-09-10 **and the curve that lets a
+real cloud reach them** — are all in what the operator runs. The Studio was
+confirmed closed first: **a build packs the WORKING TREE.**
+
+⚠ **WHAT TO ASK THEM FIRST IS WHETHER THE RAMP LOOKS RIGHT ON A REAL JOB.**
+It was measured, audited and rendered against their own cloud, but the
+judgement is theirs and it is a matter of taste as much as of correctness. Two
+knobs, both one line in `strength()`: the exponent (0.45 — lower lifts the
+weak returns further) and the middle stop's colour.
 
 ⛔ **BUT FOUR REVERSION BREAKS WERE NEVER RUN.** The operator asked for
 testing to stop part way through the audit (nine of thirteen, all CAUGHT). The
