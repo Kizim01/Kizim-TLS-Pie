@@ -6571,16 +6571,18 @@ when the two names disagree.
 The operator asked whether anything was left, was given the list, and said
 *"yeah work throught them"*.
 
-**▶ RESUME HERE (2026-09-11 ~01:35).** Everything below is committed and pushed.
-✅ **The exes are REBUILT (2026-09-11 01:27-01:28)** with every fix of this pass
-inside, the held-pose fix below included: the Studio's selftest returned 0 ("native window backend
-available: True (edgechromium)", the RTX 3050 Ti and the CUDA
-engine named) and `tlsconvert.exe --gpu` returned 0, the card
-agreeing with the processor at 9.3x. (The 23:05 build
-before it had every fix but that one.) The two things the 23:40 record left
-open are CLOSED -- see SESSION END just below. Next, in order:
+**▶ RESUME HERE (2026-09-11 ~02:00).** Everything below is committed and pushed.
+✅ **The exes are REBUILT (2026-09-11 01:49-01:50)** with every fix of this pass
+inside, the held-pose fix and the BLAS-independent edge norm below
+included: the Studio's selftest returned 0 ("native window backend
+available: True (edgechromium)", the RTX 3050 Ti named) and
+`tlsconvert.exe --gpu` returned 0, the card agreeing with the
+processor at 9.4x. (The 01:27 build before it lacked only the norm;
+the 23:05 one lacked the held pose too.) The two things the 23:40 record
+left open are CLOSED, and the one intermittent the audits met is traced
+and fixed -- see SESSION END just below. Next, in order:
 
-✅ **SESSION END, CLOSED (2026-09-11 ~01:35).** Both things the 23:40 record left
+✅ **SESSION END, CLOSED (2026-09-11 ~02:00).** Both things the 23:40 record left
 open are settled.
 1. **The grey reopen was memory, and the open hiding it.** Traced with
    `scratchpad\mos\realopen55b.py`, which wraps `colour_scan` inside the
@@ -6609,7 +6611,7 @@ open are settled.
    open 63 s, `unpainted_photos` [], both captures graded as above
    (the matched one 2.0 s, the fresh solve 57.8 s).
    **The repaired project is safe to open** in the Studio rebuilt at
-   2026-09-11 01:27-01:28. The operator's own files were never written by any of this.
+   2026-09-11 01:49-01:50 (the 01:27 build was already safe for it). The operator's own files were never written by any of this.
 2. **The Studio reversion audit finished**: CONTROL 2063 passed, 0 failed, about 21 min per copy; 13 of 16
    breaks caught by the check that names them (B2-B4, B6, B7,
    B9-B14, B16, B17), finished 00:14. Three were not, for three different reasons,
@@ -6644,11 +6646,35 @@ open are settled.
    slice equals the wrapped gather EXACTLY (through the seam)`, printing
    identical values on both sides. The check calls `paint_drift` twice,
    so two calls on one input disagreed. Once in 34 suite runs this pass
-   (17 + 13 copies, 4 real-tree suites). colour.py has no thread pool;
-   the likely source is an accumulation on the card (every copy shared
-   the CUDA engine), unproven, and not this pass's code. Next: run that
-   check 50 times on the card and 50 on the processor.
-   **Suite** on the final tree (the follow-up's CONTROL copy): 2074 passed, 0 failed (2063 plus the 11 held-pose checks).
+   (17 + 13 copies, 4 real-tree suites). ✅ **Traced and fixed**: item 3.
+   **Suite** after the held-pose fix (the follow-up's CONTROL copy): 2074 passed, 0 failed (2063 plus the 11 held-pose checks).
+3. **The seam check's one failure was BLAS's thread count.** Four suspects
+   were measured and refused, in order: memory alignment (NumPy 2.5.2 sums
+   the same values identically at every offset), repeated calls (60 calls,
+   one answer), the card (`paint_drift` never touches it; forced onto the
+   processor it gave the same bits), and CPU load (200 calls beside 14
+   burners, one answer). The fifth held. `_drift_edges` took its norm with
+   `np.linalg.norm`, a 518,400-cell OpenBLAS reduction whose summation
+   order follows the thread count: at one thread against the default the
+   resampled image was bit-identical, the edge field differed in 388,348
+   cells (up to 1.4e-17), and `paint_drift`'s answer moved by 2.2e-16. Two
+   calls that see different effective thread counts disagree in the last
+   bit, which is all an EXACT check needs; another thread calling BLAS at
+   the same moment is the likely trigger (the Studio runs thread pools,
+   `align.py:2133`, `drawing.py:1505`), not proven. **Fix** (`colour.py`
+   `_drift_edges`): the norm is NumPy's own pairwise sum,
+   `math.sqrt(float((e * e).sum()))`; field and answer are identical at 1,
+   3 and the default thread count. New check: the field computed in fresh
+   processes pinned to one and three BLAS threads must equal this
+   process's to the last bit. Audit (`scratchpad\mos\audit55n.py`):
+   ALL CAUGHT, CONTROL CLEAN, finished 01:48. The break
+   (the norm back through BLAS) failed the new check, the field off
+   by 2.1e-16 at one thread and 1.0e-17 at three; the CONTROL copy
+   passed **2075, 0 failed** (2074 plus this check), and the real tree
+   was unchanged while it ran.
+   ⚠ `np.linalg.norm` and `@` appear elsewhere in colour.py. Any other
+   check that demands bit-equality between two calls could meet the same
+   thing; none has failed yet.
 
 - **(a) The operator opens `Desktop\ministry of sound\scan project (grades
   repaired).tlspie` IN THE REBUILT STUDIO ONLY.** 19 of its photographs carry
@@ -6663,7 +6689,9 @@ open are settled.
   `tls_scan`, `tls_web`, `tls_storage`, `tls_cloudbuild`) and six test files.
   The Pi was off all evening, so NOTHING of this pass is on it. The splash test
   now skips without Pillow, so the deploy should restart the scanner by itself
-  for the first time.
+  for the first time. At 01:40 on 09-11 the laptop was on `192.168.1.107`
+  (a router, not the phone's hotspot) and nothing answered at the Pi's last
+  address: join the hotspot first, then look.
 - **(c) Watch on the rig**: the first real STOP and the first 180 Rapid (both
   still unexercised), and a scan started soon after boot -- the watchdog no
   longer trips on the network clock's first sync, and the sidecar now records

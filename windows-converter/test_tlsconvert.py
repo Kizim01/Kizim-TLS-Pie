@@ -14615,6 +14615,46 @@ for _fv_lum, _fv_yaw, _fv_name in ((_sd_lum, 25.0, "true pose"),
           % _fv_name, _surf_of(_fv_lum, _fv_yaw) == _fv_expect,
           (_surf_of(_fv_lum, _fv_yaw), _fv_expect))
 
+
+# ⛔⛔ AND THE EDGE FIELD MUST NOT DEPEND ON HOW MANY THREADS BLAS WAS GIVEN.
+# The check above failed ONCE in 34 suite runs (the 55th pass's audit),
+# printing the same numbers on both sides: `_drift_edges` took its norm
+# through OpenBLAS, whose sum splits across its threads, and two calls that
+# saw different thread counts disagreed in the last bit. Asked here with the
+# count pinned, in fresh processes, so the answer does not depend on what
+# else this process happens to be doing.
+_bt_dir = tempfile.mkdtemp(prefix="tlsblas")
+_bt_img = colour.image_at_pose(
+    np.asarray(_sd_lum, dtype=np.float64),
+    colour._grid_dirs(colour.DRIFT_LON_BINS, colour.DRIFT_LAT_BINS),
+    25.0, 0.0, 0.0)
+np.save(os.path.join(_bt_dir, "img.npy"), _bt_img)
+_bt_root = os.path.dirname(os.path.dirname(os.path.abspath(colour.__file__)))
+_bt_code = ("import sys, numpy as np; sys.path.insert(0, sys.argv[1]); "
+            "from tlsconvert import colour; "
+            "np.save(sys.argv[3], colour._drift_edges(np.load(sys.argv[2])))")
+_bt_got, _bt_why = {}, []
+for _bt_n in ("1", "3"):
+    _bt_out = os.path.join(_bt_dir, "es%s.npy" % _bt_n)
+    _bt_r = subprocess.run(
+        [sys.executable, "-c", _bt_code, _bt_root,
+         os.path.join(_bt_dir, "img.npy"), _bt_out],
+        env=dict(os.environ, OPENBLAS_NUM_THREADS=_bt_n,
+                 OMP_NUM_THREADS=_bt_n, MKL_NUM_THREADS=_bt_n),
+        capture_output=True, text=True, timeout=300)
+    if _bt_r.returncode == 0 and os.path.exists(_bt_out):
+        _bt_got[_bt_n] = np.load(_bt_out)
+    else:
+        _bt_why.append((_bt_n, _bt_r.returncode, (_bt_r.stderr or "")[-300:]))
+_bt_here = colour._drift_edges(_bt_img)
+check("THE EDGE FIELD IS THE SAME TO THE LAST BIT WITH ONE BLAS THREAD, WITH "
+      "THREE, AND WITH THIS PROCESS'S OWN",
+      len(_bt_got) == 2 and all(np.array_equal(_g, _bt_here)
+                                for _g in _bt_got.values()),
+      _bt_why or dict((_n, float(np.abs(_g - _bt_here).max()))
+                      for _n, _g in _bt_got.items()))
+shutil.rmtree(_bt_dir, ignore_errors=True)
+
 _pc_sc = colour.PoseScorer(_te_pts, _te_lum, refl=_te_refl)
 _pc_hits = []
 _real_iap = colour.image_at_pose

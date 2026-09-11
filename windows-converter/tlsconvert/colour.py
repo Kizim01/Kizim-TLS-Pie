@@ -2663,13 +2663,25 @@ def _peak_frac(line, at):
 
 
 def _drift_edges(img):
-    """`paint_drift`'s edge field -- kept verbatim from the inner `_e` it
-    used to close over, zero-norm guard included, so the split that let the
-    laser half be built once changed no number anywhere."""
+    """`paint_drift`'s edge field -- kept from the inner `_e` it used to
+    close over, zero-norm guard included, so the split that let the laser
+    half be built once changed no number anywhere.
+
+    ⛔ THE NORM IS NUMPY'S OWN SUM, NOT BLAS'S. `np.linalg.norm` hands a
+    518,400-cell vector to OpenBLAS, which splits the sum across however
+    many threads it has at that moment, and the answer's last bit follows
+    the split: measured 2026-09-11, one thread against the default changed
+    388,348 of the cells (by up to 1.4e-17) and moved `paint_drift`'s
+    answer by 2.2e-16. A check that holds the padded windows to the old
+    gather EXACTLY failed once in 34 suite runs that way, printing the same
+    numbers on both sides. NumPy's pairwise sum runs on this thread alone
+    and gave the same bits at every memory offset tried, so the field is
+    now the same on any machine, however many cores it has.
+    """
     gy, gx = np.gradient(img)
     e = np.hypot(gx, gy)
     e -= e.mean()
-    n = np.linalg.norm(e)
+    n = math.sqrt(float((e * e).sum()))
     return e / (n if n > 0 else 1.0)
 
 
