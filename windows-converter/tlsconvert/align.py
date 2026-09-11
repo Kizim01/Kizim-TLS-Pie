@@ -384,6 +384,11 @@ class Scan(object):
         self.camera_x = 0.0
         self.camera_y = 0.0
         self.colour_info = None        # {yaw, confidence, reason} from the solve
+        # The FILE'S pose, held while it could not be painted back -- see
+        # `AlignServer._carry_colour`. Never painted and never exported; it
+        # exists so a save does not write the photograph out of the project
+        # because one open could not repaint it.
+        self.unrestored_pose = None
         # Where the HEAD was standing when this sweep began, from the
         # sidecar. ⭐ It is the only thing that ties two clouds' azimuth
         # zeros together, and so the only thing that lets one solved
@@ -5443,22 +5448,30 @@ class AlignServer(object):
         # removed and re-solved every heading from the sibling image. That is
         # the 2026-08-22 rebuild bug -- `loadScan` fills every live flag with 1
         # -- one door further out, on the server's own copy this time.
-        lost = []
+        lost, unpainted = [], []
         for scan, old in zip(fresh, was):
             scan.setup = old.setup
             scan.rung = getattr(old, "rung", None)
             scan.lean = old.lean
             if not self._carry_clean(scan, getattr(old, "clean", None)):
                 lost.append(scan.name)
-            pose = self.colour_pose(old)
+            # ⛔ A POSE HELD FROM AN OPEN THAT COULD NOT PAINT IT GOES ACROSS
+            # TOO, and is tried again -- see `_carry_colour`. Without it a
+            # change of detail was a second door out of the project for a
+            # photograph the open had already failed to show.
+            pose = (self.colour_pose(old)
+                    or getattr(old, "unrestored_pose", None))
             if pose:
-                self._carry_colour(scan, pose)
+                why = self._carry_colour(scan, pose)
+                if why:
+                    unpainted.append("%s (%s)" % (
+                        os.path.basename(pose.get("photo") or "?"), why))
             else:
                 self._first_attach(scan)
         self.scans = fresh
         self.align_voxel = voxel
         return {"ok": True, "scans": self._rebuild(), "voxel": voxel,
-                "uncleaned": lost}
+                "uncleaned": lost, "unpainted_photos": unpainted}
 
     def _carry_clean(self, scan, spec):
         """
@@ -5504,9 +5517,26 @@ class AlignServer(object):
         cannot reproduce -- it re-solves from the SIBLING image and calls that
         the answer. Two paths restoring a photograph two different ways is how
         one of them ends up restoring less than the other, quietly.
+
+        Returns None when the photograph is back on the cloud, otherwise why
+        it is not -- and then the file's pose stays on the scan as
+        `unrestored_pose` until something paints it.
         """
-        if not pose or not os.path.exists(pose.get("photo") or ""):
-            return
+        if not pose or not pose.get("photo"):
+            return None
+        # ⛔⛔ A POSE THAT COULD NOT BE PAINTED BACK IS HELD, AND SAID. Found
+        # on 2026-09-10 opening the operator's repaired project beside a
+        # five-suite audit: both captures came back GREY, the open answered
+        # `ok`, and nothing said why -- `colour_scan`'s refusal was dropped
+        # on the floor right here. Worse, a grey scan wears no pose, so the
+        # NEXT SAVE wrote the photograph out of the project: heading, seat,
+        # grade and match record, minutes of solving per scan. The scan stays
+        # grey (the screen must not show a paint it does not have) but the
+        # file's pose rides along until a repaint succeeds, and
+        # `save_project` writes it back as it came.
+        scan.unrestored_pose = dict(pose)
+        if not os.path.exists(pose["photo"]):
+            return "the photograph is not at %s" % pose["photo"]
         scan.camera_z = float(pose.get("camera_z") or 0.0)
         scan.camera_x = float(pose.get("camera_x") or 0.0)
         scan.camera_y = float(pose.get("camera_y") or 0.0)
@@ -5517,10 +5547,19 @@ class AlignServer(object):
         # because the door only honours a lift for the image it belongs to.
         scan.colour_info = {"image_up_px": int(pose.get("image_up_px") or 0),
                             "photo": pose.get("photo")}
-        colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
-                    camera_x=scan.camera_x, camera_y=scan.camera_y,
-                    yaw=pose.get("yaw_deg"), pitch=pose.get("pitch_deg"),
-                    roll=pose.get("roll_deg"))
+        # ⛔ AND ONE SCAN'S FAILURE IS THAT SCAN'S. `colour_scan` promises not
+        # to raise, but only its photograph read is guarded, and a
+        # MemoryError anywhere after it would end the whole open over one
+        # photograph -- the run that found this had already died of one once.
+        try:
+            got = colour_scan(scan, pose["photo"], camera_z=scan.camera_z,
+                              camera_x=scan.camera_x, camera_y=scan.camera_y,
+                              yaw=pose.get("yaw_deg"),
+                              pitch=pose.get("pitch_deg"),
+                              roll=pose.get("roll_deg"))
+        except Exception as exc:                          # noqa: BLE001
+            got = {"ok": False,
+                   "reason": "%s: %s" % (type(exc).__name__, exc)}
         # ⛔ A FAILED RESTORE LOOKS LIKE NO COLOUR, exactly as before this
         # seed existed. colour_scan assigns colour_info only on success, so
         # on a refusal the seed dict would survive -- and stamping a grade
@@ -5528,6 +5567,7 @@ class AlignServer(object):
         # photograph and no reason. The pose dict in the project still holds
         # the lift for the next successful repaint.
         if (scan.colour_info or {}).get("ok"):
+            scan.unrestored_pose = None
             # ⛔⛔ A POSE THAT CARRIES NO HEADING WAS SOLVED JUST NOW, AND THE
             # SOLVE HAS ALREADY GRADED ITSELF. Everything below restores what
             # the FILE knew about a heading the file supplied. With no heading
@@ -5540,7 +5580,7 @@ class AlignServer(object):
             # (2026-09-10): all 38 photographs graded "given" were solved, not
             # one typed, and Deep align would have skipped every one.
             if pose.get("yaw_deg") is None:
-                return
+                return None
             saved_grade = pose.get("grade")
             scan.colour_info["grade"] = saved_grade or "given"
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
@@ -5566,8 +5606,10 @@ class AlignServer(object):
             # a file saved before it existed simply has none.
             if isinstance(pose.get("matched"), dict):
                 scan.colour_info["matched"] = dict(pose["matched"])
-        else:
-            scan.colour_info = None
+            return None
+        scan.colour_info = None
+        return str((got or {}).get("reason")
+                   or "the photograph could not be painted back")
 
     def _first_attach(self, scan):
         """
@@ -5631,7 +5673,12 @@ class AlignServer(object):
             # sibling image -- and a session is reopened precisely because the
             # aligning took a while. Written only when there is one, so a
             # project with no photographs reads back byte for byte as before.
-            pose = self.colour_pose(scan)
+            # ⛔⛔ OR THE POSE THE OPEN COULD NOT PAINT BACK, AS IT CAME -- see
+            # `_carry_colour`. Only the SAVE falls back on it: the exporter
+            # still paints what the screen shows, which for that scan is
+            # nothing, and a repaint that succeeds replaces it.
+            pose = (self.colour_pose(scan)
+                    or getattr(scan, "unrestored_pose", None))
             if pose:
                 # ⛔⛔ A FALSY VALUE IS DROPPED ON PURPOSE -- `given=False`,
                 # `rung=0`, `image_up_px=0` and `matched=None` are all
@@ -5749,7 +5796,7 @@ class AlignServer(object):
         finally:
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
-        lost, refound = [], []
+        lost, refound, unpainted = [], [], []
         entries = body.get("scans") or []
         for i, (scan, entry) in enumerate(zip(fresh, entries)):
             # The repaints used to happen after the bar had already closed,
@@ -5791,6 +5838,11 @@ class AlignServer(object):
                           if os.path.exists(p)), None)
             if not found:
                 lost.append(os.path.basename(pose.get("photo") or "?"))
+                # ⛔ Held, not dropped: a save must not write the photograph
+                # out of the project while it is only missing -- see
+                # `_carry_colour`.
+                if pose.get("photo"):
+                    scan.unrestored_pose = dict(pose)
                 continue
             if (os.path.normcase(os.path.abspath(found))
                     != os.path.normcase(os.path.abspath(
@@ -5801,13 +5853,16 @@ class AlignServer(object):
                 # `rel`, rather than carrying the old drive's path forward
                 # for every later open to re-derive.
                 pose = dict(pose, photo=found)
-            self._carry_colour(scan, pose)
+            why = self._carry_colour(scan, pose)
+            if why:
+                unpainted.append("%s (%s)" % (os.path.basename(found), why))
         self._progress = {"stage": "done", "n": 1, "total": 1, "busy": False}
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
         return {"ok": True, "scans": self._rebuild(), "path": path,
                 "lost_photos": lost, "refound_photos": refound,
+                "unpainted_photos": unpainted,
                 "edits": body.get("edits") or [], "box": body.get("box"),
                 "pairs": body.get("pairs") or [],
                 "level": body.get("level"),
@@ -12429,7 +12484,8 @@ async function openProject(path){
        The 2026-09-06 report ("the images lose match") was this, from the
        outside. Found-again ones are said too: a photograph the open had to
        go looking for is a path the next save will rewrite. */
-    const gone=j.lost_photos||[], moved=j.refound_photos||[];
+    const gone=j.lost_photos||[], moved=j.refound_photos||[],
+          failed=j.unpainted_photos||[];
     let photos='';
     if(moved.length) photos+=' '+moved.length+' photograph'+
       (moved.length===1?' was':'s were')+' found again under the new folder.';
@@ -12438,10 +12494,18 @@ async function openProject(path){
       (gone.length===1?'it':'them')+': '+gone.join(', ')+' — '+
       (gone.length===1?'that scan is':'those scans are')+
       ' grey until attached again from This scan’s photograph.';
+    /* ⛔ AND ONE THAT WAS FOUND BUT COULD NOT BE PAINTED BACK, which used to
+       open grey with nothing said (2026-09-10). Its saved heading is held,
+       so a save does not lose it and the next open tries again. */
+    if(failed.length) photos+=' ⚠ '+failed.length+' photograph'+
+      (failed.length===1?' was':'s were')+
+      ' found but could not be painted back: '+failed.join('; ')+
+      ' — grey for now. The saved heading is kept, a save writes it '+
+      'back unchanged, and opening the project again tries once more.';
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
         (j.saved?' (saved '+j.saved+')':'')+' — '+V.scans.length+
         ' scan'+(V.scans.length===1?'':'s')+' back where you left them.'+
-        photos, gone.length?'warn':null);
+        photos, (gone.length||failed.length)?'warn':null);
   }catch(e){ watch(false); say('Could not open it: '+e.message, 'bad'); }
 }
 
@@ -12487,13 +12551,18 @@ async function applyDetail(){
        drops it rather than hold a rule it cannot show, and a rule that went
        from applied to off without a word is exactly the silence that made
        "Remove strays put everything back" so hard to see. */
+    const grey=(j.unpainted_photos||[]).length
+      ? ' ⚠ '+j.unpainted_photos.join('; ')+' could not be painted back'+
+        ' — grey for now, and the saved heading is kept for the next save.'
+      : '';
     if(j.uncleaned && j.uncleaned.length)
       say('now showing at '+step.t+', but the stray removal could not be '+
           'measured again on '+j.uncleaned.join(', ')+
           ' — it is OFF rather than applied where you cannot see it. '+
-          'Set it again if you still want it.', 'warn');
+          'Set it again if you still want it.'+grey, 'warn');
     else
-      say('now showing at '+step.t+'. Your alignment and edits were kept.');
+      say('now showing at '+step.t+'. Your alignment and edits were kept.'+
+          grey, grey?'warn':null);
   }catch(e){
     watch(false);
     say('Could not re-read at that detail: '+e.message+

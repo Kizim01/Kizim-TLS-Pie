@@ -10469,6 +10469,146 @@ check("AND THE PAGE SAYS IT: lost photographs are read out of the answer, "
       "j.lost_photos" in _op_js and "j.refound_photos" in _op_js
       and "grey until attached again" in _op_js)
 
+# --- a photograph that could not be painted back is held, and named ----------
+# ⛔⛔ Found 2026-09-10 opening the operator's repaired project beside a
+# five-suite audit: both captures reopened GREY, the open answered `ok`, and
+# nothing said why. `_carry_colour` dropped `colour_scan`'s refusal and left
+# no pose on the scan, so the NEXT SAVE wrote the photograph out of the
+# project -- heading, seat, grade and match record -- and a lost photograph's
+# pose went the same way.
+# ⚠ Every lookup below is by name and guarded: on the unfixed code the
+# open raises and leaves nothing open, and an index into an empty list would
+# end the suite instead of failing these checks.
+print("\nprojects: a photograph that could not be painted back is held")
+_udir = tempfile.mkdtemp(prefix="tlsunpainted")
+_ua, _ub, _uc, _ud = [os.path.join(_udir, _n + ".pcap") for _n in "abcd"]
+_uja, _ujb, _ujd = [os.path.join(_udir, _n + ".jpg")
+                    for _n in ("pa", "pb", "pd")]
+for _p in (_ua, _ub, _uc, _ud, _uja, _ujb, _ujd):
+    io.open(_p, "wb").close()
+_umatch = {"belongs": True, "yaw_deg": 104.5, "inliers": 88}
+_uposes = {
+    # refused, as a photograph read that ran out of memory is
+    "a.pcap": {"photo": _uja, "yaw_deg": 104.5, "grade": "matched",
+               "rung": 4, "matched": _umatch, "camera_x": 0.02},
+    # raises, as a MemoryError past the guarded read does
+    "b.pcap": {"photo": _ujb, "yaw_deg": -34.9, "grade": "doubtful"},
+    # lost
+    "c.pcap": {"photo": os.path.join(_udir, "GONE.jpg"), "yaw_deg": 7.0,
+               "grade": "sure"},
+    # paints
+    "d.pcap": {"photo": _ujd, "yaw_deg": 12.0, "grade": "sure"}}
+_uproj = os.path.join(_udir, "u" + align.PROJECT_EXT)
+with io.open(_uproj, "w", encoding="utf-8") as _fh:
+    json.dump({"format": "TLS-Pie project", "version": align.PROJECT_VERSION,
+               "scans": [{"path": _p, "rel": os.path.basename(_p),
+                          "name": os.path.basename(_p),
+                          "colour": _uposes[os.path.basename(_p)]}
+                         for _p in (_ua, _ub, _uc, _ud)]}, _fh)
+
+
+def _u_paint(scan, photo, **kw):
+    """Refuses a, raises on b, paints the rest as the real door does."""
+    if scan.name == "a.pcap":
+        return {"ok": False, "photo": photo,
+                "reason": "could not read pa.jpg (MemoryError)"}
+    if scan.name == "b.pcap":
+        raise MemoryError("Unable to allocate 449. MiB")
+    return _mv_paint(scan, photo, **kw)
+
+
+def _u_info(scan):
+    return getattr(scan, "colour_info", None) or {}
+
+
+_usrv = align.AlignServer([], out_path=None)
+try:
+    align.load = _spy_load
+    align.colour_scan = _u_paint
+    pipeline.find_photo = lambda _p: None
+    try:
+        _uo = _usrv.open_project(_uproj)
+    except Exception as _exc:                             # noqa: BLE001
+        _uo = {"ok": False, "error": "raised %r" % (_exc,)}
+    check("A REPAINT THAT RAISES DOES NOT TAKE THE WHOLE OPEN WITH IT",
+          _uo.get("ok") is True, _uo.get("error"))
+    _ufail = " | ".join(_uo.get("unpainted_photos") or [])
+    check("⭐ A PHOTOGRAPH FOUND BUT NOT PAINTED BACK IS NAMED, WITH WHY -- "
+          "the grey reopen said nothing",
+          "pa.jpg" in _ufail and "could not read pa.jpg" in _ufail
+          and "pb.jpg" in _ufail and "MemoryError" in _ufail
+          and "pd.jpg" not in _ufail, _ufail)
+    check("...and a lost one is named lost, and only once",
+          _uo.get("lost_photos") == ["GONE.jpg"] and "GONE" not in _ufail,
+          (_uo.get("lost_photos"), _ufail))
+    _uby = dict((s.name, s) for s in _usrv.scans)
+    check("...the unpainted ones stay honestly grey, the painted one is not",
+          sorted(_uby) == ["a.pcap", "b.pcap", "c.pcap", "d.pcap"]
+          and not _u_info(_uby["a.pcap"]) and not _u_info(_uby["b.pcap"])
+          and not _u_info(_uby["c.pcap"])
+          and _u_info(_uby["d.pcap"]).get("ok") is True,
+          dict((n, _u_info(s).get("ok")) for n, s in _uby.items()))
+    check("...and the export still paints only what the screen shows",
+          sorted(_uby) == ["a.pcap", "b.pcap", "c.pcap", "d.pcap"]
+          and _usrv.colour_pose(_uby["a.pcap"]) is None
+          and _usrv.colour_pose(_uby["c.pcap"]) is None
+          and _usrv.colour_pose(_uby["d.pcap"]) is not None)
+
+    _usave = os.path.join(_udir, "u2" + align.PROJECT_EXT)
+    _uss = _usrv.save_project(_usave, {"setups": []})
+    _ubody = {"scans": []}
+    if os.path.exists(_usave):
+        with io.open(_usave, "r", encoding="utf-8") as _fh:
+            _ubody = json.load(_fh)
+    _ucol = dict((s.get("name"), s.get("colour") or {})
+                 for s in _ubody.get("scans") or [])
+    _uca = _ucol.get("a.pcap", {})
+    check("⭐⭐ A SAVE AFTER A GREY OPEN WRITES THE SAVED POSE BACK -- it "
+          "wrote the photograph out of the project",
+          _uss.get("ok") and _uca.get("yaw_deg") == 104.5
+          and _uca.get("grade") == "matched" and _uca.get("rung") == 4
+          and _uca.get("matched") == _umatch
+          and _uca.get("camera_x") == 0.02 and _samep(_uca.get("photo"), _uja)
+          and _ucol.get("b.pcap", {}).get("yaw_deg") == -34.9
+          and _ucol.get("b.pcap", {}).get("grade") == "doubtful",
+          (_uss.get("error"), _ucol))
+    check("...and so does a LOST photograph's, so putting the picture back "
+          "later still finds its heading",
+          _ucol.get("c.pcap", {}).get("yaw_deg") == 7.0
+          and os.path.basename(_ucol.get("c.pcap", {}).get("photo") or "")
+          == "GONE.jpg", _ucol.get("c.pcap"))
+
+    # The memory is back: a re-read at another detail tries the held poses.
+    align.colour_scan = _mv_paint
+    _ur = _usrv.density(0.05)
+    _uby = dict((s.name, s) for s in _usrv.scans)
+    _uia = _u_info(_uby.get("a.pcap"))
+    check("A RE-READ TRIES A HELD POSE AGAIN, at the saved heading and grade",
+          _ur.get("ok") is True and _uia.get("yaw_deg") == 104.5
+          and _uia.get("grade") == "matched"
+          and _u_info(_uby.get("b.pcap")).get("yaw_deg") == -34.9,
+          (_ur.get("error"), _uia.get("yaw_deg"), _uia.get("grade")))
+    _uleft = _ur.get("unpainted_photos") or []
+    check("...once painted the held copy is let go, and only the lost one "
+          "is still named",
+          "a.pcap" in _uby
+          and getattr(_uby["a.pcap"], "unrestored_pose", 1) is None
+          and len(_uleft) == 1 and "GONE.jpg" in _uleft[0],
+          (getattr(_uby.get("a.pcap"), "unrestored_pose", 1), _uleft))
+    check("...and the lost one's pose is still held across the re-read",
+          (getattr(_uby.get("c.pcap"), "unrestored_pose", None) or {})
+          .get("yaw_deg") == 7.0)
+finally:
+    align.load = _real_load
+    align.colour_scan = _real_paint
+    pipeline.find_photo = _real_find
+    _usrv.stop()
+    shutil.rmtree(_udir, ignore_errors=True)
+check("AND THE PAGE SAYS IT, on an open and on a re-read at another detail",
+      "j.unpainted_photos" in _js_func("openProject")
+      and "could not be painted back" in _js_func("openProject")
+      and "j.unpainted_photos" in _js_func("applyDetail"))
+
 # --- the cut history is a fold ----------------------------------------------
 # ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in
 # a drop down tab I can expand or shrink so it doesn't take up tons of space".
@@ -12373,11 +12513,18 @@ _fsrv.scans.pop()
 # ⛔⛔ AND A FLOOR LEANING FAR ENOUGH TO MOVE THE AVERAGE IS JUDGED AGAINST THE
 # OTHERS, NOT AGAINST THE AVERAGE IT MOVED -- the leave-one-out rule the walls
 # already keep. Judged the old way, a capture 12° off three agreeing floors
-# drags the joint normal about 3° toward itself and then sits about 9° off it,
-# inside the 10° bar: not flagged, and averaged into the survey's level (the
-# 45th pass's sweep, `align.py:2700`).
-_fsrv.scans.append(_mscan("leaner", _floored(tip_deg=14.0, seed=15,
-                                             yaw_deg=10.0),
+# drags the joint normal toward itself and then sits inside the 10° bar off
+# it: not flagged, and averaged into the survey's level (the 45th pass's
+# sweep, `align.py:2700`).
+# ⛔ THE LEANER'S FLOOR IS DENSELY SEEN, OR THIS PROVES NOTHING. At the
+# default density the 55th pass's reversion audit found this check passing
+# WITH THE FIX TAKEN OUT: a 14° floor fits on ~2,000 points against ~12,000
+# for each agreeing one, barely moves the average, and the old rule flagged
+# it anyway (11.4° off). Measured at n=600,000 (~19,000 points): 12.0° off
+# the others, 7.8° off the joint average -- caught by the rule, missed by
+# the old one, two degrees of margin each way.
+_fsrv.scans.append(_mscan("leaner", _floored(tip_deg=14.0, n=600_000,
+                                             seed=15, yaw_deg=10.0),
                           registration.Setup(2.0, -2.0, 0.0, 10.0)))
 _lv3 = _fsrv.level_from_floor()
 _lv3off = dict((_f["name"], round(_f["off_deg"], 2))
@@ -16481,7 +16628,17 @@ try:
         _mlock = {"raised": repr(_exc)}
 finally:
     _mheld.close()
-_mafter = dict((k, open(_mfiles[k], "rb").read()) for k in _mbefore)
+# ⚠ READ WITHOUT TRUSTING THE FILE TO BE THERE. The 55th pass's reversion
+# audit took `_part` out (the CSV written in place), the clean-up then deleted
+# the real CSV, and a bare `open` here ended the whole suite instead of
+# failing the check below -- the one that names the fault.
+
+
+def _mread(p):
+    return open(p, "rb").read() if p and os.path.exists(p) else None
+
+
+_mafter = dict((k, _mread(_mfiles[k])) for k in _mbefore)
 _mparts = [n for n in os.listdir(os.path.dirname(_mcloud)) if ".part" in n]
 check("⭐ A MANIFEST THAT CANNOT BE REPLACED CHANGES NOTHING BESIDE THE CLOUD",
       _mafter == _mbefore and not _mparts,
@@ -16493,7 +16650,7 @@ _mfree = _mf.write_beside(_mcloud, _mst2, level=_mlevel, project="p.tlspie",
                           points_written=len(_mroom))
 check("the fixture can tell: the same export, unhindered, DOES change the CSV",
       _mfree.get("ok")
-      and open(_mfiles["csv"], "rb").read() != _mbefore["csv"], _mfree)
+      and _mread(_mfiles["csv"]) not in (None, _mbefore["csv"]), _mfree)
 # ⛔ AND THE OTHER ORDER'S FAILURE IS SAID BY THE MANIFEST. Once the manifest
 # is in, a CSV held open (a spreadsheet has it) cannot follow; the manifest is
 # the file a downstream program trusts, so it is the one that names the CSV
@@ -16505,12 +16662,12 @@ try:
                                  points_written=len(_mroom))
 finally:
     _mheld.close()
-_mm3 = json.load(open(_mfiles["manifest"], encoding="utf-8"))
+_mm3 = json.loads((_mread(_mfiles["manifest"]) or b"{}").decode("utf-8"))
 check("...and a CSV that cannot be replaced is written into the manifest as "
       "STALE, not left to disagree silently",
-      _mcsvlock.get("ok") and "csv" not in _mm3["files"]
+      _mcsvlock.get("ok") and "csv" not in _mm3.get("files", {})
       and any(v["level"] == "fail" and "EARLIER export" in v["text"]
-              for v in _mm3["validation"]),
+              for v in _mm3.get("validation", [])),
       (_mcsvlock.get("ok"), _mm3.get("files"),
        [v["text"] for v in _mm3.get("validation", []) if v["level"] == "fail"]))
 _mf.write_beside(_mcloud, _mst, level=_mlevel, project="p.tlspie",

@@ -5,13 +5,13 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-10 ~23:10):** search this file for
+> **▶ WHERE THE WORK IS NOW (2026-09-11 ~01:35):** search this file for
 > `LIVE STATE (2026-09-10, fifty-fifth pass)` and read its **RESUME HERE**
 > first. The restart pointer's opening entries are older than it; the newest
 > LIVE STATE is the current one, and each older one below it is history. The
-> 45th pass's sweep list is fixed but for DXF. The Pi does NOT carry the 55th
-> pass's Pi changes (it was off), and the operator must open the repaired
-> project only in the rebuilt Studio.
+> 45th pass's sweep list is fixed but for DXF. The grey reopen is traced and
+> fixed, the Studio audits are finished, and the exes were rebuilt after both.
+> The Pi does NOT carry the 55th pass's Pi changes (it was off).
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
@@ -6571,49 +6571,93 @@ when the two names disagree.
 The operator asked whether anything was left, was given the list, and said
 *"yeah work throught them"*.
 
-**▶ RESUME HERE (2026-09-10 ~23:10).** Everything below is committed and
-pushed. ✅ **The exes are REBUILT (2026-09-10 23:05-23:07)** with every fix
-of this pass inside: the Studio's selftest returned 0 and, for the first time,
-says what it actually loaded -- "native window backend available: True
-(edgechromium)" -- and `tlsconvert.exe --gpu` returned 0, the card agreeing
-with the processor at 6.6x. One thing was still running when this was
-written, and the commit after this one records how it ended: the Studio's
-reversion audit (16 breaks, each in its own copy of the tree, five at a time,
-beside a CONTROL copy with no break). Next, in order:
+**▶ RESUME HERE (2026-09-11 ~01:35).** Everything below is committed and pushed.
+✅ **The exes are REBUILT (2026-09-11 01:27-01:28)** with every fix of this pass
+inside, the held-pose fix below included: the Studio's selftest returned 0 ("native window backend
+available: True (edgechromium)", the RTX 3050 Ti and the CUDA
+engine named) and `tlsconvert.exe --gpu` returned 0, the card
+agreeing with the processor at 9.3x. (The 23:05 build
+before it had every fix but that one.) The two things the 23:40 record left
+open are CLOSED -- see SESSION END just below. Next, in order:
 
-⛔⛔ **SESSION END (2026-09-10 ~23:40): TWO THINGS OPEN. READ BEFORE (a).**
-1. **The real-data check of the repaired project came back GREY, and it is
-   not explained.** `scratchpad\mos\realopen55.py` cuts two captures out of
-   `scan project (grades repaired).tlspie` -- `TLS_26_09_02_12_08_38` (saved
-   `matched`, rung 4) and `TLS_26_09_02_13_01_04` (heading dropped) -- and
-   opens them headlessly through `AlignServer.open_project`: `ok`, no lost and
-   no refound photographs, and BOTH scans came back with `colour_info` None,
-   so a save would write no pose at all. Called directly on the same opened
-   scans a moment later, `colour_scan` coloured both: the first "given" at
-   104.514 (a heading handed in), the second solved, "doubtful", given False,
-   yaw -34.92. `colour_scan` does assign `scan.colour_info` on success
-   (align.py ~798), so the suite's stand-in is not the explanation. Something
-   between the colouring inside `_carry_colour` and the end of the open loses
-   the colour, or the colouring fails inside the open and not outside it. NOT
-   YET KNOWN whether it is this pass's change, older than it, or the headless
-   check itself (the first run died of memory beside the audit; the second ran
-   at `max_points` 1.5M). **Until it is traced the operator should NOT rely on
-   the repaired copy**; the rematched project they saved at 11:15 is
-   untouched. Next: instrument `_carry_colour` inside the open (print what
-   `colour_scan` returned and `scan.colour_info` after it) on these two
-   captures, before anything else.
-2. **The Studio reversion audit was still running** (`audit55_par.py`: 16
-   breaks plus a CONTROL, five at a time; output in
-   `scratchpad\mos\audit55_studio.txt`, results in
-   `scratchpad\mos\aud55_results.json`). No job had finished when the session
-   ended. Read it; if the copies are gone and no result was written, run it
-   again.
+✅ **SESSION END, CLOSED (2026-09-11 ~01:35).** Both things the 23:40 record left
+open are settled.
+1. **The grey reopen was memory, and the open hiding it.** Traced with
+   `scratchpad\mos\realopen55b.py`, which wraps `colour_scan` inside the
+   open and prints what it returned. With memory to spare, the repaired
+   project's two captures open exactly as they should:
+   `TLS_26_09_02_12_08_38` `matched`, rung 4, given False;
+   `TLS_26_09_02_13_01_04` solved fresh on open, "doubtful", given False
+   (197 s beside four audit suites, 58 s with the machine to itself). The
+   23:40 run shared the machine with five audit suites and finished in
+   28 s, far too fast for that solve, so both repaints failed early. The photograph read catches a MemoryError and returns a refusal,
+   and `_carry_colour` threw the refusal away. Its reason is gone, so
+   "memory" is the measured circumstance, not a logged cause.
+   ⭐⭐ **The silence was the smaller half.** A scan whose repaint failed
+   wears no pose, so the NEXT SAVE wrote the photograph out of the project:
+   heading, seat, grade and match record. A photograph that was merely
+   missing on open, a shoot moved to another drive, went the same way.
+   **Fix** (`align.py`: `_carry_colour`, `open_project`, `density`,
+   `save_project`, and the page): a pose that could not be painted back is
+   HELD on the scan as `unrestored_pose`; the save writes it back as it
+   came; a re-read at another detail tries it again; the open and the
+   re-read name each failure with its reason (`unpainted_photos`), and the
+   page says so. A repaint that raises no longer ends the whole open. The
+   export still paints only what the screen shows. 11 new checks, seen
+   passing in isolation before the suite ran them.
+   Real data, new code: `realopen55b.py` again at 00:15, with the machine to itself:
+   open 63 s, `unpainted_photos` [], both captures graded as above
+   (the matched one 2.0 s, the fresh solve 57.8 s).
+   **The repaired project is safe to open** in the Studio rebuilt at
+   2026-09-11 01:27-01:28. The operator's own files were never written by any of this.
+2. **The Studio reversion audit finished**: CONTROL 2063 passed, 0 failed, about 21 min per copy; 13 of 16
+   breaks caught by the check that names them (B2-B4, B6, B7,
+   B9-B14, B16, B17), finished 00:14. Three were not, for three different reasons,
+   and all three are settled by the follow-up audit below: B1's suite
+   died of memory with five running at once (`_ArrayMemoryError`,
+   26 MiB); B8's check passed with the fix taken out; B15's check
+   crashed the suite on a bare `open` of a CSV the break had deleted,
+   instead of failing (the manifest block now reads through `_mread`).
+   The hash of the real tree flagged `align.py` and `test_tlsconvert.py`:
+   this session's own edits, made while it ran; every copy was taken
+   before any suite started.
+   ⭐ **It found a check that could not fail.** B8 took the floor rule's
+   leave-one-out out and the check still passed. Measured with
+   `scratchpad\mos\floordiag55.py`: the fixture's 14° floor fits on about
+   2,000 points against about 12,000 for each agreeing one, so it barely
+   moves the average, and the old rule flagged it too, at 11.4° against a
+   10° bar. The comment's "drags the average about 3°" was never
+   measured. The leaner is now densely seen (n=600,000, about 19,000
+   points): 12.0° off the others, 7.8° off the joint average, so the rule
+   catches it and the old one misses it, two degrees of margin each way.
+   B1 was reported NOT CAUGHT only because its suite died of memory with
+   five running at once.
+   **The follow-up audit** (`scratchpad\mos\audit55g.py`, four at a time,
+   each break in its own copy): ALL 12 breaks caught by the check that names them, finished
+   01:26, the real tree unchanged while it ran. U0 (the whole fix out)
+   failed 8 of the 11 new checks and crashed nothing: the guarded
+   lookups did their job. B1g, B8 (the new leaner 7.82° off the average,
+   not flagged, the level 6.18° instead of 2.0) and B15 (now a clean
+   FAIL naming the CSV and the preview) all caught. N5's suite died of
+   memory after its three named checks had failed.
+   ⚠ **One unrelated check failed once**, in N6's copy: `the padded
+   slice equals the wrapped gather EXACTLY (through the seam)`, printing
+   identical values on both sides. The check calls `paint_drift` twice,
+   so two calls on one input disagreed. Once in 34 suite runs this pass
+   (17 + 13 copies, 4 real-tree suites). colour.py has no thread pool;
+   the likely source is an accumulation on the card (every copy shared
+   the CUDA engine), unproven, and not this pass's code. Next: run that
+   check 50 times on the card and 50 on the processor.
+   **Suite** on the final tree (the follow-up's CONTROL copy): 2074 passed, 0 failed (2063 plus the 11 held-pose checks).
 
 - **(a) The operator opens `Desktop\ministry of sound\scan project (grades
   repaired).tlspie` IN THE REBUILT STUDIO ONLY.** 19 of its photographs carry
   no heading on purpose and are solved on open; a Studio built before this
   pass would stamp every one of them "given" all over again. Slow once (19
-  solves); a save writes the grades back.
+  solves, about a minute each -- 58 s measured for one); a save writes the
+  grades back. Close other heavy work first: a photograph that cannot be
+  painted back now says so on open and keeps its saved pose, but it still
+  opens grey.
 - **(b) Deliver the Pi changes when the Pi is next on**: `python
   scratchpad\mos\deploy53.py <address>` -- five source files (`tls_stepper`,
   `tls_scan`, `tls_web`, `tls_storage`, `tls_cloudbuild`) and six test files.
@@ -6727,7 +6771,7 @@ the 54th pass).
 SKIPPED where there is no Pillow.
 **Audit**: splash 1 of 1; Pi 10 of 10 (`scratchpad\mos\revert55.py pi`), each
 caught by the check that names it and restored byte for byte, then all 12 Pi
-suites clean. Studio: 16 breaks RUNNING when this was written
+suites clean. Studio: see SESSION END above
 (`scratchpad\mos\audit55_par.py`: each break in its own copy of
 windows-converter and the Pi folder, the real CUDA engine named through
 `TLSPIE_CUDA_ENGINE`, a CONTROL copy with no break, and the real tree hashed
@@ -6744,6 +6788,16 @@ each other's key.
   pass was seen failing before its fix existed, which is the cheapest audit
   there is and caught one test that could not fail cleanly (a missing function
   ended the storage suite instead of failing it).
+- **A restore that fails must hold what it could not restore.** The screen
+  may go grey; the file may not lose the pose. "Show only what you have" and
+  "save only what you show" were one rule, and together they let one bad
+  open delete a solved photograph at the next save.
+- **A check whose fixture cannot tell the two rules apart passes either
+  way.** B8's did. Only taking the fix out showed it, which is what the
+  reversion audit is for; measure the fixture, never the comment about it.
+- **A memory-starved audit reports false misses.** Five suites at once
+  killed B1's run; four at a time, and read a NOT CAUGHT's own log before
+  believing it.
 - **The Pi's clock is not a clock until it syncs.** Anything that times a move
   uses the monotonic clock; the one thing that cannot -- the pan track, tied to
   tcpdump's wall-clock stamps -- has the jump measured and carried instead.
