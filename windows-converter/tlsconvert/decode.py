@@ -192,6 +192,14 @@ def decode_chunk(stamps, raw, per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
         delta = xp.clip(delta, 0.0, 1.0)
         frac = (T_SEQ_US * (k // 16) + T_LASER_US * (k % 16)) / T_BLOCK_US
         alpha = az_deg[:, :, None] + delta[:, :, None] * frac[None, None, :]
+        # ⭐ THE PUCK'S OWN AZIMUTH IS OFF BY A ONCE-PER-TURN COSINE (see
+        # rig.FAN_ANGLE_CORRECTION_DEG): on this sideways puck that is a
+        # height error growing with distance, opposite on the two halves of
+        # the fan, and it is what made the halves not land on each other.
+        cb, cs = rig.FAN_ANGLE_CORRECTION_DEG
+        if cb or cs:
+            ar = xp.radians(alpha)
+            alpha = alpha + cb * xp.cos(ar) + cs * xp.sin(ar)
         alpha = xp.mod(alpha, 360.0)
     else:
         frac = xp.zeros(CHANNELS_PER_BLOCK)

@@ -97,7 +97,10 @@ print("\nlegacy sidecars")
 
 legacy = rig.frame_for({"mount": {"roll_deg": 90.0, "pitch_deg": 0.0,
                                   "lever_m": [0, 0, 0]}})
-check("an old scan's pitch of 0.0 is discarded", close(legacy.pitch_deg, 8.4),
+# the calibrated pitch under the DEFAULT decode: 8.4 plus the corrected
+# decode's delta, since frame_for now defaults to the corrected decode
+check("an old scan's pitch of 0.0 is discarded",
+      close(legacy.pitch_deg, 8.4 + rig.PER_LASER_AZIMUTH_PITCH_DELTA),
       legacy.pitch_deg)
 check("and the substitution is flagged for the operator",
       legacy.pitch_is_legacy)
@@ -213,8 +216,12 @@ a2, _, _, _, _ = decode.decode_chunk(stamps, payload.reshape(1, -1),
 check("per-laser azimuth spreads the channels out",
       len(np.unique(np.round(a2, 6))) > 12 * 12,
       len(np.unique(np.round(a2, 6))))
-check("and the spread stays inside one block's rotation",
-      float(np.abs(a2 - a).max()) < 0.5, float(np.abs(a2 - a).max()))
+_b56, _c56 = rig.FAN_ANGLE_CORRECTION_DEG
+_a2_plain = a2 - (_b56 * np.cos(np.radians(a2)) + _c56 * np.sin(np.radians(a2)))
+check("and the spread stays inside one block's rotation, once the puck's own "
+      "azimuth curve is taken back off",
+      float(np.abs(_a2_plain - a).max()) < 0.5,
+      float(np.abs(_a2_plain - a).max()))
 
 short = decode.decode_chunk(stamps, payload.reshape(1, -1),
                             min_range=50.0)[2]
@@ -244,11 +251,34 @@ check("every door defaults to that one name",
 _cd_pipe = open(pipeline.__file__, encoding="utf-8").read()
 check("merge reads the same name when no flag is passed",
       "\"per_laser_azimuth\", rig.DEFAULT_PER_LASER_AZIMUTH" in _cd_pipe)
-check("the pitch delta was re-measured on the full-360 captures and is zero",
-      rig.PER_LASER_AZIMUTH_PITCH_DELTA == 0.0
+check("the pitch delta is the constant of the puck's azimuth curve, measured "
+      "on the full-360 captures",
+      rig.PER_LASER_AZIMUTH_PITCH_DELTA == 0.27
       and close(rig.frame_for({"mount": rig.tls_geometry.Frame().as_dict()},
-                              per_laser_azimuth=True).pitch_deg, 8.4),
+                              per_laser_azimuth=True).pitch_deg, 8.67),
       rig.PER_LASER_AZIMUTH_PITCH_DELTA)
+
+# ⭐ THE ONCE-PER-TURN COSINE IN THE PUCK'S OWN AZIMUTH. The operator saw the
+# two halves of the fan not landing on each other; a plane's thickness had
+# been blind to it. The correction is a cosine of the fan angle applied only
+# under the corrected decode: a packet at azimuth 0 and one at 180 shift by
+# 2b between them, and block azimuth is untouched.
+check("the fan-angle curve is the measured one",
+      rig.FAN_ANGLE_CORRECTION_DEG == (-0.46, 0.09))
+_fc_lo = np.frombuffer(make_packet(0.0, 10.0), dtype=np.uint8).reshape(1, -1)
+_fc_hi = np.frombuffer(make_packet(180.0, 10.0), dtype=np.uint8).reshape(1, -1)
+_fc = {}
+for _az, _raw in (("0", _fc_lo), ("180", _fc_hi)):
+    _plain = decode.decode_chunk(stamps, _raw, per_laser_azimuth=False)[0]
+    _corr = decode.decode_chunk(stamps, _raw, per_laser_azimuth=True)[0]
+    _fc[_az] = float(np.mean(((_corr - _plain) + 180.0) % 360.0 - 180.0))
+check("the curve shifts a packet at the top of the circle and one at the "
+      "bottom by 2b between them",
+      abs((_fc["0"] - _fc["180"]) - 2 * rig.FAN_ANGLE_CORRECTION_DEG[0]) < 0.01,
+      _fc)
+check("...and block azimuth carries none of it",
+      np.allclose(decode.decode_chunk(stamps, _fc_lo, per_laser_azimuth=False)[0]
+                  [:32], 0.0))
 
 _cd_om = np.asarray(decode._vertical_angles(np))
 _cd_off = decode.vertical_offsets_for(_cd_om) * 1000.0
@@ -329,8 +359,9 @@ check("stream_world_points applies the laser origins under the corrected "
 check("...and leaves them out under block azimuth",
       np.allclose(_cd_got[False], _cd_want2[False], atol=1e-6)
       and not np.allclose(_cd_got[False], _cd_got[True], atol=1e-4))
-check("the two decodes differ by about the origin shift, not by metres",
-      0.002 < float(np.abs(_cd_got[True] - _cd_got[False]).max()) < 0.08,
+check("the two decodes differ by the origin shift, the per-laser spread and "
+      "the fan-angle curve at 10 m, not by metres",
+      0.002 < float(np.abs(_cd_got[True] - _cd_got[False]).max()) < 0.15,
       float(np.abs(_cd_got[True] - _cd_got[False]).max()))
 
 _cd_args = _cli56.build_parser().parse_args(["a.pcap"])

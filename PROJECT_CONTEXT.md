@@ -5,27 +5,19 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13 ~20:18-20:19):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-13 ~21:37-21:38):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the FIFTH PART first. Five things shipped on 09-13 and are in the exes
-> rebuilt 20:18-20:19: **the corrected decode is the DEFAULT** (per-laser
-> azimuth + the manual's laser origins, pitch delta re-measured to ZERO on
-> two full-360 captures; walls 5-23% thinner; `--block-azimuth` opts out),
-> **Smooth surfaces**, **Keep within N m** with its on-import switch, **the
-> point budget follows the SHOWN clouds**, and the measurement behind them.
-> A 52-parameter self-calibration was tried and did NOT ship: its gain is
-> per-laser range offsets that differ by room. Suite 2141 passed, 0 failed. Nothing is
-> in flight. The Pi carries the 55th pass's changes since 18:53. The restart
-> pointer's opening entries are older than all of this.
-> ### ⛔ `captures/driveway.pcap` IS FROM A DIFFERENT RIG
->
-> Established 2026-08-09 by the user, **after** a full day of conclusions had been drawn from it.
-> That capture was made with an earlier machine. It is **not evidence about the drivetrain or the
-> geometry of the rig on the bench now**, and every finding derived from it has to be re-earned on a
-> capture from this rig. Two "SETTLED BY MEASUREMENT" conclusions fall with it — `STEPS_PER_REV`
-> and the mount roll sign / instrument height. The *methods* are still good; only their subject was
-> wrong. Details in "Scan geometry".
-
+> the SIXTH PART first. Six things shipped on 09-13 and are in the exes
+> rebuilt 21:37-21:38: **the puck's once-per-turn azimuth curve corrected**
+> (the operator saw the two halves of the fan not landing on each other;
+> floors split 55 mm at 3 m; a cosine in the fan angle, fitted on the
+> full-360 captures and held out on the door captures, takes it to under
+> 4 mm there), **the corrected decode as the DEFAULT** (per-laser azimuth +
+> laser origins, effective pitch 8.67), **Smooth surfaces**, **Keep within
+> N m**, **the point budget follows the SHOWN clouds**, and the measurement
+> behind them. Suite 2144 passed, 0 failed. Nothing is in flight. The Pi carries the
+> 55th pass's changes. The restart pointer's opening entries are older than
+> all of this.
 It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
 handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
 entirely** and the Pi takes over motion and capture in a single process, operated from the phone.
@@ -6562,6 +6554,73 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ SIXTH PART, SHIPPED (2026-09-13 ~21:37-21:38): the two halves of the
+fan now land on each other.** The operator, looking at the full-360 scans:
+*"when one fan scans over the other the points do not line up, check
+that"*. They were right, and every thickness measure of the day had been
+blind to it. Scripts `scratchpad\mos\fan56*.py`; results `fan56*_*.txt`.
+
+- **Why the thickness measures missed it.** A plane residual is taken
+  ACROSS the plane. On a wall the fan angle moves a point ALONG the wall,
+  invisible; on a floor or ceiling it moves the point THROUGH the plane,
+  but a 190° sweep sees each floor cell from ONE half of the fan only, so
+  the cell's own plane fit swallowed the slip. Only a full rotation shows
+  it, and only on horizontal surfaces, and only as a front-half against
+  back-half comparison inside the same cell (`fan56f.py`).
+- **What it is.** Front half (alpha < 180) minus back half, median height,
+  same cells, capture a / b agree to the millimetre: floor +16 / +24 / +47
+  / +55 mm at H = 0.75 / 1.5 / 2.25 / 3 m from the axis (20 mm per metre,
+  a line through the origin, i.e. a fan-zero error of 0.57°); ceiling
+  -5 / +1 / +13 / +29 (the same slope, 30 mm lower). Walls agree (±2 mm).
+  Roll, yaw, the lever and the laser origins move none of it (`fan56g.py`);
+  pitch 9.0 flattens the FLOOR and leaves the ceiling split by a constant
+  30 mm. Binned by the puck's own azimuth the height residual is a smooth
+  ramp through the 0/360 wrap: **the fan-angle error is a once-per-turn
+  cosine**, e(alpha) = a + b cos(alpha) + c sin(alpha), fitted on a / b as
+  (0.263 / 0.285, -0.449 / -0.471, +0.087 / +0.091) deg (`fan56i.py`,
+  10° bins of the front-minus-back residual per metre of H). The
+  clocks are clean (packet clock against the puck's own: 2.5 ms over 189 s),
+  so it is not timing. A once-per-turn azimuth error is the signature of
+  encoder eccentricity; 0.46° is 0.24 mm on a 30 mm disc. Cause not
+  proven; the curve is measured and it transfers.
+- **Held out.** The mean curve applied blind to the 09-02 door captures:
+  capture 10 floor +9 / +9 / +7 / +11 → +1 / -3 / -2 / +1, ceiling to
+  within 3 mm, plane sigma 6.84 → 6.27; capture 30 floor +8 / +9 / +22 /
+  +29 → +1 / -3 / -4 / -3, sigma 10.27 → 10.16. On the full-360 captures
+  floor 55 → 17 at 3 m, ceiling 29 → 19, sigma 10.5 → 9.6; a second
+  iteration of the fit (0.33, -0.54, 0.115) takes the 360s to +7 / +16 but
+  over-corrects the door captures (-4 / -10), so the FIRST fit ships:
+  `FAN_ANGLE_CORRECTION_DEG = (-0.46, 0.09)` and its constant as
+  `PER_LASER_AZIMUTH_PITCH_DELTA = 0.27` (effective pitch 8.67, which is
+  where every earlier hint -- 8.6 from the self-calibration, 8.7 as the
+  compromise -- was pointing). What remains at 3 m on a full rotation
+  (+17 floor, +19 ceiling) is the part the cosine does not fit; a 2/turn
+  term or a per-laser fan-angle offset is the next look, on a full-360
+  capture.
+- **Shipped:** `decode_chunk` adds `b cos(alpha) + c sin(alpha)` to the
+  per-laser azimuth under the corrected decode only (block azimuth
+  untouched); `rig.py` carries the two constants and the measurement.
+  Three new checks (the constants, a packet at 0 against one at 180 shifts
+  by 2b, block azimuth carries none), two old checks widened (the per-laser
+  spread bound takes the curve back off first; the 10 m decode difference
+  bound). Reversion audit (`revert56b.py`): four breaks, each caught.
+  Suite 2141 → **2144 passed, 0 failed**. ✅ **Exes REBUILT 2026-09-13 21:37-21:38**
+  with the Studio closed: selftest rc 0 (edgechromium, RTX 3050 Ti),
+  `--gpu` rc 0 at 9.4x.
+- **Also measured and NOT acted on:** a rigid fit of the back half onto
+  the front (`fan56.py`, 2 cm occupancy correlation) finds 0.05-0.13°
+  about the pan axis, shrinking with range, i.e. a 3-4 mm tangential
+  offset (lever), and the last 18° of the 378° sweep against the first
+  18° gives -0.22° on both fan sides of capture b (-0.44 / -0.02 on a,
+  one of them a bad fit): a full turn of pan may come up 0.2° short
+  (0.06% of steps per rev, 9 mm at 5 m between the halves). Worth a
+  measured check with a target before touching `STEPS_PER_REV`.
+- **For the operator:** open the two full-360 captures again; the floor
+  and ceiling now coincide to within a centimetre at 3 m instead of 5.
+  Projects saved earlier re-decode on opening and move by up to a few
+  centimetres on far floors against an earlier export.
+
 
 **▶ FIFTH PART, SHIPPED (2026-09-13 ~20:18-20:19): the corrected decode is
 the default, measured on two full-360 captures.** The operator asked *"need

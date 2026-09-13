@@ -87,12 +87,36 @@ SCANNER_MODULE_DIR = _ROOT
 # 8.4 is within 1% of the best on every capture and the only value whose
 # 4-12 m band does not worsen (capture 10: 9.2 / 9.9 / 10.7). The old -0.20
 # (effective 8.2) was WORSE than block azimuth on the full-360 captures
-# (11.64 against 11.58). So the delta is ZERO: the corrected decode uses the
-# sidecar's calibrated pitch as it is. (scratchpad mos\calib56b.txt.)
+# (11.64 against 11.58). (scratchpad mos\calib56b.txt.)
+#
+# ⭐⭐ THEN THE OPERATOR SAW THE TWO HALVES OF THE FAN NOT LANDING ON EACH
+# OTHER, AND THEY WERE RIGHT (2026-09-13, evening). A plane's thickness
+# cannot see a slip ALONG the plane, and on a wall the fan angle moves a
+# point along the wall -- so every thickness measure above was blind to it.
+# On the floors and ceilings, where the fan angle moves a point THROUGH the
+# plane, the front half of the fan (alpha < 180) and the back half disagree
+# in height by 20 mm per metre from the axis on the floor (55 mm at 3 m),
+# and by the same slope but 30 mm less on the ceiling. No single pitch
+# flattens both: the puck's fan-angle error is a ONCE-PER-TURN COSINE,
+# largest at the top of its own circle, and a cosine in the fan angle is
+# what FAN_ANGLE_CORRECTION_DEG takes out. Its constant term IS this delta.
+# Fitted on the two full-360 captures (0.263 / 0.285, -0.449 / -0.471,
+# +0.087 / +0.091 deg), held out on the 09-02 door captures 10 and 30, whose
+# floors went from +7..+29 mm split to within 4 mm and whose planes thinned
+# 8% / 1% (scratchpad mos\fan56i2_*.txt). Effective pitch 8.67.
 #
 # Kept as a DELTA rather than a second absolute value, so re-measuring the
 # calibration means editing tls_geometry.py and nothing else.
-PER_LASER_AZIMUTH_PITCH_DELTA = 0.0
+PER_LASER_AZIMUTH_PITCH_DELTA = 0.27
+
+# The rest of that curve: alpha' = alpha + b cos(alpha) + c sin(alpha), in
+# degrees of the puck's own azimuth, applied by decode.decode_chunk under the
+# corrected decode. On a sideways puck alpha is the vertical fan angle, so
+# 0.46 deg at 3 m is 24 mm of height -- which is what was being seen.
+# Re-measure with scratchpad mos\fan56i.py on any full-360 capture with a
+# floor and a ceiling; a 190-degree sweep cannot measure it (each surface is
+# then seen by one half only, and its plane fit hides the slip).
+FAN_ANGLE_CORRECTION_DEG = (-0.46, 0.09)
 
 # ⭐ THE CORRECTED DECODE IS THE DEFAULT EVERYWHERE (2026-09-13): per-laser
 # azimuth, the manual's per-laser origins along the spin axis, and the pitch
