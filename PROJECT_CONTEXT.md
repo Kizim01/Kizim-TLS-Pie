@@ -5,9 +5,12 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13 ~22:07-22:08):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-13, late):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the SEVENTH PART first. Shipped on 09-13, all in the exes rebuilt
+> the EIGHTH PART first. Latest: **the rush twin's points are a third of
+> the size** (fourth root of the stride, not the square root; the operator:
+> "i would like the lod points to be much smaller"). NOT yet in the exes: the Studio was open when it was made, and a build with the Studio open is refused; close it and the rebuild runs, then this line changes. Shipped
+> earlier on 09-13, in the exes rebuilt
 > 22:07-22:08: **the puck's once-per-turn azimuth curve corrected** (the fan
 > halves land on each other on floors and ceilings), **every beam's
 > common elevation offset corrected** (the halves land on each other along
@@ -15,12 +18,12 @@
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
 > SHOWN clouds**, and the measurement behind them. Suite 2147 passed, 0 failed. Nothing
-> is in flight; the last commit is the elevation offset. **OFFERED, NOT
+> is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
 > `scratchpad\mos\full360\` by the front-minus-back method of `fan56i.py`
 > per laser, held out on door captures 10 and 30; (2) per-session range
-> offsets fitted at import (`calib56.py`'s range terms carried 20%% within
+> offsets fitted at import (`calib56.py`'s range terms carried 20% within
 > an evening, not across days); (3) warm the puck 45 min, scan a station
 > twice, slow profile. The Pi carries the 55th pass's changes. The restart
 > pointer's opening entries are older than all of this.
@@ -6554,6 +6557,33 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
 
+**▶ EIGHTH PART (2026-09-13, late): the rush twin's points shrunk.** The
+operator, after the evening's work: *"i would like the lod points to be
+much smaller"*. Script `lod57.py` (byte patch on the CRLF `align.py`).
+
+- **Why they had grown.** The rush twin (tenth pass, 08-27) draws one
+  point in K while the hand moves and grows each one by sqrt(K) so the
+  surface keeps its coverage (Potree's adaptive point size; at equal size
+  the far cloud shows through the holes of the near one and two clouds of
+  one wall look misaligned). K was 4-5 when every cloud shared the 60 M
+  budget. **The fourth part of this pass made the budget follow the SHOWN
+  clouds**, so isolating a few captures hands each of them tens of
+  millions of points, K climbs to 60 and beyond, and sqrt(60) is EIGHT
+  ordinary diameters: blobs. The growth was right; its input changed.
+- **Shipped:** `grow:Math.sqrt(Math.sqrt(K))` in `makeCoarse`, the fourth
+  root. Same direction (a bigger stride still means a bigger point), a
+  third of the size where it hurt: K 5 → 1.5 (was 2.2), K 60 → 2.8 (was
+  7.7), K 240 → 3.9 (was 15.5). A rushing surface is a little more open
+  than it was; the hand is moving and the full cloud returns when it
+  stops. Everything else about the twin stands: grown only while rushing
+  (the fat-rim bug of 08-28), the refinement frames put the size back.
+  One check re-pinned. Suite 2147 → **2147 passed, 0 failed**. NOT yet in the exes: the Studio was open when it was made, and a build with the Studio open is refused; close it and the rebuild runs, then this line changes.
+- If it is still too big, the next notch is the point-size slider (it
+  scales the twin too) or a flat cap on the growth; if surfaces look
+  porous while rotating, the square root was the reason and this is the
+  trade.
+
+
 **▶ SEVENTH PART, SHIPPED (2026-09-13 ~22:07-22:08): the pan-scale check,
 and the halves landing on each other along the walls too.** The operator:
 *"do that"* to the measured check of the full turn of pan coming up
@@ -6607,7 +6637,7 @@ linearised, four rounds) and `fan56k.py`; results `fan56j*_*.txt`,
   residual -- same captures, `fan56i.py` per laser, held out on 10 and
   30; **(2) per-session range offsets at import** (Glennie: each laser's
   range bias drifts over hours, lasers 12 and 13 worst; `calib56.py`'s
-  range terms carried -20%% within the evening and failed across days);
+  range terms carried -20% within the evening and failed across days);
   **(3) operational:** 45 min warm-up (Glennie's protocol), scan a station
   twice, slow profile. Not worth doing, all measured null tonight: pan
   scale, mount roll and yaw, lever (1-3 mm), return mode.

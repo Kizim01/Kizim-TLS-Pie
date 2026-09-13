@@ -9463,8 +9463,17 @@ function makeCoarse(pos,col,live,comps,name){
      on a pair whose fit measured 3.7 cm and had not changed at all. A point
      covers area, so keeping the coverage means sqrt(K) on the diameter --
      Potree calls this adaptive point size and it is why its LOD levels do
-     not look porous. */
-  return {step:K, grow:Math.sqrt(K), live:l,
+     not look porous.
+     ⚠ BUT NOT THE FULL sqrt(K) ANY MORE: "i would like the lod points to
+     be much smaller" (operator, 2026-09-13). The day the point budget began
+     to follow the SHOWN clouds, isolating a few captures handed each of them
+     a share of tens of millions, K climbed to 60 and beyond, and a twin point
+     at sqrt(60) is eight times the ordinary diameter: blobs, not a picture.
+     The fourth root keeps the growth going the same way (a bigger stride
+     still means a bigger point) at a third of the size where it hurt: K 5
+     -> 1.5 (was 2.2), K 60 -> 2.8 (was 7.7), K 240 -> 3.9 (was 15.5). A
+     rushing surface is a little more open than it was; the hand is moving. */
+  return {step:K, grow:Math.sqrt(Math.sqrt(K)), live:l,
           chunks:makeChunks(p,c,l,comps,name+' rush')};
 }
 

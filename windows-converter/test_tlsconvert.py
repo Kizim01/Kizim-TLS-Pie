@@ -2397,9 +2397,15 @@ try:
     # speckle patterns, which is indistinguishable from them not lining up.
     # Reported 2026-08-27 as "scan 2 doesn't align perfectly like it used
     # to", on a pair whose fit measured 3.7 cm and had not changed at all.
-    # Area, so sqrt(K) on the diameter (Potree's adaptive point size).
-    check("a rush twin's points grow to cover the K they stand in for",
-          "grow:Math.sqrt(K)" in _page
+    # Area, so sqrt(K) on the diameter (Potree's adaptive point size) -- until
+    # the budget followed the SHOWN clouds (2026-09-13) and isolating a few
+    # captures pushed K past 60, where sqrt(K) is eight ordinary diameters:
+    # "i would like the lod points to be much smaller". The fourth root grows
+    # the same way at a third of the size where it hurt (K 60: 2.8, was 7.7).
+    check("a rush twin's points grow with the K they stand in for, by its "
+          "fourth root",
+          "grow:Math.sqrt(Math.sqrt(K))" in _page
+          and "grow:Math.sqrt(K)" not in _page
           and "const grow = (V.rush && s.coarse) ? s.coarse.grow : 1.0;"
           in _page)
     # ⛔⛔ AND ONLY WHILE THE HAND MOVES, because of what covers what. A GROWN
