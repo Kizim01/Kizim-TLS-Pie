@@ -258,6 +258,28 @@ def _take_placement(scan, data):
     scan.lean = registration.Lean.from_dict(data)
 
 
+def _stamp_pose(scan):
+    """
+    This placement was just made on the points as the running decode draws
+    them, and the project will say so.
+
+    ⭐⭐ A DECODE CHANGE IS A POSE CHANGE IN DISGUISE (2026-09-13). The
+    corrected decode moved every point of a capture by a rigid half-degree
+    tilt in the capture's own frame (scratchpad mos/fan57b.py: 0.43 / 0.48
+    deg on captures 10 and 30) plus the fan halves' own correction. Poses
+    solved on the old points then sat 37 mm out at 5 m against the new
+    ones, which the operator saw as "scan still not lining up" the same
+    evening -- on a project whose file had no way to say which points its
+    poses were fitted to. Now every solve stamps the pose it writes with
+    `rig.decode_stamp()`, the save writes the stamp beside the placement,
+    and `open_project` names the placed captures whose stamp is not the
+    running decode's, so the page sends the operator to Close the loop
+    rather than back to the calibration. A hand nudge is not stamped: it
+    is not a measurement.
+    """
+    scan.pose_decode = pipeline.rig.decode_stamp()
+
+
 def _seat_of(scan):
     """Where this scan's camera stands, as the tuple every solver takes."""
     return (float(getattr(scan, "camera_x", 0.0) or 0.0),
@@ -357,6 +379,12 @@ class Scan(object):
         # -- so the button that tidies an alignment would quietly undo the one
         # correction that had to be made by eye. See `registration.Lean`.
         self.lean = registration.Lean()
+        # ⭐ THE DECODE THIS PLACEMENT WAS MADE ON. A fresh capture's points
+        # are the running decode's, so the pose it arrives with (the
+        # sidecar's, or none) was made on them; a project open replaces this
+        # with what the file says and a solve stamps it afresh. See
+        # `_stamp_pose` and `open_project`.
+        self.pose_decode = pipeline.rig.decode_stamp()
         # "capture" (a .pcap, re-decodable) or "cloud" (already exported).
         # ⛔ The difference is not cosmetic: a cloud cannot be re-read at
         # another density and has no pan track, so the detail slider and the
@@ -1962,6 +1990,7 @@ class AlignServer(object):
                                  "standing tripod can hold; nothing was "
                                  "moved. Check these scans by eye."}
             scan.setup, scan.lean = new_setup, new_lean
+            _stamp_pose(scan)
             # ⛔ A MULTI FIT IS NEW INFORMATION FOR THE PAIR LADDER. Auto-align
             # spends a rung per press and refuses once it bottoms out; the
             # scan has just moved, so that count is about a placement which no
@@ -2296,6 +2325,10 @@ class AlignServer(object):
         # score, and reporting that as "0 captures moved, the largest by
         # 0.00 m" is a claim of work that did not happen.
         if after_m >= before_m - 1e-6 or not moved:
+            # ⭐ Measured on the running decode and found to agree: that IS
+            # a placement made on these points, whether or not it moved.
+            for k in nodes:
+                _stamp_pose(self.scans[k])
             text = ("measured %d pairs across %d captures — the survey "
                     "already agrees with itself as well as these "
                     "measurements can make it (%.3f m), so nothing was "
@@ -2314,6 +2347,7 @@ class AlignServer(object):
         for k, (su, le) in takes.items():
             was_lean = getattr(self.scans[k], "lean", None)
             self.scans[k].setup, self.scans[k].lean = su, le
+            _stamp_pose(self.scans[k])
             # A moved scan restarts the pair ladder: its placement is new.
             self.scans[k].rung = None
             # ⛔⛔ THE PHOTOGRAPH FOLLOWS THE FRAME IT WAS SOLVED IN, through
@@ -2527,6 +2561,7 @@ class AlignServer(object):
                                  "standing tripod can hold; nothing was "
                                  "moved. Check this pair by eye."}
             scan.setup, scan.lean = new_setup, new_lean
+            _stamp_pose(scan)
 
         # ⛔⛔ THE PHOTOGRAPH FOLLOWS THE FRAME IT WAS SOLVED IN. This is the
         # door through which a scan "gets correctly levelled" in practice --
@@ -2632,6 +2667,7 @@ class AlignServer(object):
         fit = registration.pairs_setup(ref, mov)
         scan = self.scans[index]
         scan.setup = fit.setup
+        _stamp_pose(scan)              # picked by eye on these points
         # ⛔ AND THE LADDER STARTS OVER. Auto-align steps down GICP_LADDER on
         # each press and remembers the rung; leaving it alone would let the very
         # next press refine at 1 cm a placement that has just moved by metres,
@@ -5627,6 +5663,7 @@ class AlignServer(object):
         scan.setup = old.setup
         scan.rung = getattr(old, "rung", None)
         scan.lean = old.lean
+        scan.pose_decode = getattr(old, "pose_decode", None)
         if not self._carry_clean(scan, getattr(old, "clean", None)):
             lost.append(scan.name)
         # ⛔ A POSE HELD FROM AN OPEN THAT COULD NOT PAINT IT GOES ACROSS
@@ -5956,6 +5993,10 @@ class AlignServer(object):
                      else scan.setup.as_dict())
             entry = {"path": full, "rel": rel, "name": scan.name,
                      "setup": setup}
+            # ⭐ WHICH POINTS THIS PLACEMENT WAS MADE ON -- see `_stamp_pose`.
+            # Written only when known, so older files read back byte for byte.
+            if getattr(scan, "pose_decode", None):
+                entry["decode"] = scan.pose_decode
             if getattr(scan, "clean", None):
                 entry["clean"] = scan.clean
             # ⛔⛔ AND THE PHOTOGRAPH'S POSE, WHICH THE SECOND DOOR ON THE SAME
@@ -5999,6 +6040,9 @@ class AlignServer(object):
             scans.append(entry)
         body = {"format": "TLS-Pie project", "version": PROJECT_VERSION,
                 "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+                # the decode this program draws with; each scan carries the
+                # one its own placement was made on
+                "decode": pipeline.rig.decode_stamp(),
                 "scans": scans,
                 "edits": (state or {}).get("edits") or [],
                 # Half-picked pairs are scaffolding, not a result -- but they
@@ -6098,6 +6142,7 @@ class AlignServer(object):
                               % os.path.basename(scan.path),
                               "n": i, "total": len(fresh), "busy": True}
             _take_placement(scan, entry.get("setup"))
+            scan.pose_decode = entry.get("decode")      # None: before stamps
             # ⛔⛔ THIS USED TO CLEAN THE WRONG LIST, AND SO CLEANED NOTHING.
             # It called `self.clean_scan(fresh.index(scan), ...)` -- an index
             # into `fresh`, handed to a method that reads `self.scans[index]`,
@@ -6154,7 +6199,15 @@ class AlignServer(object):
         self.project_path = path
         self.hidden = set()
         self.default_clean = body.get("default_clean") or None
+        # ⭐ PLACED ON OTHER POINTS THAN THESE. A file from before the stamp
+        # existed carries None, which is exactly as unknown as a different
+        # decode. The reference is never "placed" (`sited`, as the solvers
+        # read it) and is not named.
+        now = pipeline.rig.decode_stamp()
+        stale = [sc.name for sc in fresh
+                 if sc.setup.sited and getattr(sc, "pose_decode", None) != now]
         return {"ok": True, "scans": self._rebuild(), "path": path,
+                "stale_decode": stale, "decode": now,
                 "lost_photos": lost, "refound_photos": refound,
                 "unpainted_photos": unpainted,
                 "default_clean": self.default_clean,
@@ -12871,10 +12924,25 @@ async function openProject(path){
       ' found but could not be painted back: '+failed.join('; ')+
       ' — grey for now. The saved heading is kept, a save writes it '+
       'back unchanged, and opening the project again tries once more.';
+    /* ⭐⭐ PLACED ON OTHER POINTS THAN THESE. The corrected decode (2026-09-13)
+       moved every point of a capture by a rigid half-degree tilt in its own
+       frame; a pose solved on the old points sits 37 mm out at 5 m against
+       the new ones, which was seen as "scan still not lining up" on a
+       project that had no way to say which points its poses were fitted
+       to. The file says now, and the answer is a re-solve, not a trip back
+       to the calibration. */
+    const staleDecode=j.stale_decode||[];
+    if(staleDecode.length) photos+=' ⚠ '+staleDecode.length+' capture'+
+      (staleDecode.length===1?' was':'s were')+
+      ' placed on an earlier decode of this program, and the corrected '+
+      'decode has since moved every point of a capture by up to half a '+
+      'degree — so scans that lined up when this was saved can sit a few '+
+      'centimetres apart now. Press Close the loop to re-solve the whole '+
+      'survey on the new points, then save.';
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
         (j.saved?' (saved '+j.saved+')':'')+' — '+V.scans.length+
         ' scan'+(V.scans.length===1?'':'s')+' back where you left them.'+
-        photos, (gone.length||failed.length)?'warn':null);
+        photos, (gone.length||failed.length||staleDecode.length)?'warn':null);
   }catch(e){ watch(false); say('Could not open it: '+e.message, 'bad'); }
 }
 

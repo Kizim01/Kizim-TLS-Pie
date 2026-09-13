@@ -17445,6 +17445,120 @@ check("the smoothing re-read and the pitch check take the same default, "
       "frame = pipeline.rig.frame_for(meta)\n" in _ALIGN_SRC
       and "per_laser_azimuth=False" not in _ALIGN_SRC)
 
+# ⭐⭐ A DECODE CHANGE IS A POSE CHANGE IN DISGUISE (2026-09-13). The corrected
+# decode tilted every capture a rigid half degree in its own frame; poses
+# solved the day before sat 37 mm out at 5 m, seen as "scan still not
+# lining up" on a project that could not say which points its poses were
+# fitted to. Now the placement carries the decode's name, the save writes
+# it, and the open names the placed captures whose name is not the running
+# one so the page can send the operator to Close the loop.
+print("\nthe project knows which points its poses were fitted to")
+check("rig.decode_stamp names the block decode plainly",
+      rig.decode_stamp(False) == "block")
+_stamp = rig.decode_stamp()
+check("...and the corrected decode by every number that moves a point",
+      _stamp.startswith("corrected")
+      and "%+.2f" % rig.PER_LASER_AZIMUTH_PITCH_DELTA in _stamp
+      and "%+.2f" % rig.FAN_ANGLE_CORRECTION_DEG[0] in _stamp
+      and "%+.2f" % rig.FAN_ANGLE_CORRECTION_DEG[1] in _stamp
+      and "%+.2f" % rig.ELEVATION_OFFSET_DEG in _stamp, _stamp)
+_was_delta = rig.PER_LASER_AZIMUTH_PITCH_DELTA
+rig.PER_LASER_AZIMUTH_PITCH_DELTA = _was_delta + 0.5
+try:
+    check("re-measuring a constant retires every pose fitted before it",
+          rig.decode_stamp() != _stamp)
+finally:
+    rig.PER_LASER_AZIMUTH_PITCH_DELTA = _was_delta
+check("a fresh capture is born stamped with the running decode",
+      align.Scan("x.pcap", np.zeros((1, 3), np.float32),
+                 np.zeros((1, 3), np.uint8),
+                 np.zeros((1, 3), np.float32)).pose_decode == _stamp)
+# The door itself plus the three per-scan solves (pair, multi, pairs by
+# hand); the survey stamps twice (moved, and measured-and-agreeing).
+check("every solve stamps the pose it writes, through one door",
+      _ALIGN_SRC.count("_stamp_pose(scan)") == 4
+      and _ALIGN_SRC.count("_stamp_pose(self.scans[k])") == 2
+      and "def _stamp_pose(scan):" in _ALIGN_SRC)
+check("a re-read at another detail carries the stamp across",
+      'scan.pose_decode = getattr(old, "pose_decode", None)' in _ALIGN_SRC)
+
+_stdir = tempfile.mkdtemp(prefix="tlspie_stamp_")
+_stsrv = align.AlignServer([], out_path=None)
+try:
+    _sp = [os.path.join(_stdir, n) for n in ("A.pcap", "B.pcap", "C.pcap")]
+    for _p in _sp:
+        io.open(_p, "wb").close()
+    _sa, _sb, _sc = [_detail_scan(p, 70 + i, n=200) for i, p in enumerate(_sp)]
+    _sb.setup = registration.Setup(1.0, 2.0, 0.0, 10.0)
+    _sb.pose_decode = "block"                 # solved on the old points
+    _sc.setup = registration.Setup(-1.0, 0.5, 0.0, -5.0)   # born stamped
+    _stsrv.scans = [_sa, _sb, _sc]
+    _stp = os.path.join(_stdir, "stamped.tlspie")
+    _w = _stsrv.save_project(
+        _stp, {"setups": [align._placement(s) for s in _stsrv.scans]})
+    with io.open(_stp, encoding="utf-8") as _h:
+        _body = json.load(_h)
+    check("the save writes the decode each placement was made on, and the "
+          "running one beside them",
+          _w["ok"] and _body["decode"] == _stamp
+          and _body["scans"][1]["decode"] == "block"
+          and _body["scans"][2]["decode"] == _stamp,
+          [s.get("decode") for s in _body["scans"]])
+    _sb.pose_decode = None
+    _stsrv.save_project(
+        _stp, {"setups": [align._placement(s) for s in _stsrv.scans]})
+    with io.open(_stp, encoding="utf-8") as _h:
+        _body = json.load(_h)
+    check("...and nothing when it is not known, so older files read back "
+          "byte for byte", "decode" not in _body["scans"][1])
+    _body["scans"][1]["decode"] = "block"
+    _stp2 = os.path.join(_stdir, "before stamps.tlspie")
+    with io.open(_stp, "w", encoding="utf-8") as _h:
+        json.dump(_body, _h)
+    for _s in _body["scans"]:
+        _s.pop("decode", None)
+    _body.pop("decode", None)
+    with io.open(_stp2, "w", encoding="utf-8") as _h:
+        json.dump(_body, _h)
+    align.load = lambda paths, **kw: [_detail_scan(p, 80 + i, n=200)
+                                      for i, p in enumerate(paths)]
+    try:
+        _o = _stsrv.open_project(_stp)
+        check("opening names the placed captures whose placement was made "
+              "on other points, and only those",
+              _o["ok"] and _o["stale_decode"] == ["B.pcap"]
+              and _o["decode"] == _stamp, _o.get("stale_decode") or _o)
+        check("...the scans carry what the file said, not the running stamp",
+              _stsrv.scans[1].pose_decode == "block"
+              and _stsrv.scans[2].pose_decode == _stamp)
+        _o2 = _stsrv.open_project(_stp2)
+        check("a project from before the stamp existed is unknown, which is "
+              "stale; the unplaced reference is never named",
+              _o2["ok"] and _o2["stale_decode"] == ["B.pcap", "C.pcap"],
+              _o2.get("stale_decode") or _o2)
+        align._stamp_pose(_stsrv.scans[1])
+        _stsrv.save_project(
+            _stp, {"setups": [align._placement(s) for s in _stsrv.scans]})
+        _o3 = _stsrv.open_project(_stp)
+        check("a solve on these points clears it for that capture",
+              _o3["ok"] and _o3["stale_decode"] == ["C.pcap"],
+              _o3.get("stale_decode") or _o3)
+    finally:
+        align.load = _real_load
+finally:
+    _stsrv.stop()
+_page57 = align.AlignServer([], out_path=None)
+try:
+    _p57 = _page57.page.decode("utf-8")
+finally:
+    _page57.stop()
+check("the page sends the operator to Close the loop, not back to the "
+      "calibration",
+      "placed on an earlier decode of this program" in _p57
+      and "Press Close the loop to re-solve the whole " in _p57
+      and "survey on the new points, then save." in _p57
+      and "staleDecode.length)?'warn'" in _p57)
+
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

@@ -7,9 +7,13 @@
 
 > **▶ WHERE THE WORK IS NOW (2026-09-13, late):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the EIGHTH PART first. Latest: **the rush twin's points are a third of
+> the NINTH PART first. Latest: **the project records which decode its
+> poses were fitted to, and the Studio names the stale ones on open and
+> sends the operator to Close the loop** ("scan still not ligning up" was
+> the 09-10 poses sitting half a degree off the corrected points, not the
+> decode); before that **the rush twin's points are a third of
 > the size** (fourth root of the stride, not the square root; the operator:
-> "i would like the lod points to be much smaller"). NOT yet in the exes: the Studio was open when it was made, and a build with the Studio open is refused; close it and the rebuild runs, then this line changes. Shipped
+> "i would like the lod points to be much smaller"). In the exes rebuilt 23:51-23:52, with the ninth part. Shipped
 > earlier on 09-13, in the exes rebuilt
 > 22:07-22:08: **the puck's once-per-turn azimuth curve corrected** (the fan
 > halves land on each other on floors and ceilings), **every beam's
@@ -17,7 +21,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2147 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2160 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6557,6 +6561,47 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
 
+**▶ NINTH PART (2026-09-13, late): the project knows which points its
+poses were fitted to.** The operator: *"do it"* to the offer at the end of
+the eighth part. Script `decode57.py` (byte patch on the CRLF `rig.py` and
+`align.py`).
+
+- **`rig.decode_stamp(per_laser_azimuth)`**: one short name for the
+  geometry every point of a decode carries -- `block`, or `corrected
+  pitch+0.27 fan(-0.46,+0.09) elev-0.06 origins T9-1`. Every number that
+  moves a point is in it, so re-measuring any of them retires every pose
+  fitted before it; the origins table is named by its source (change the
+  table, change the name).
+- **One door, `align._stamp_pose(scan)`**, called by the pair solve, the
+  multi fit, pairs picked by hand, and the survey (both when it moves and
+  when it measures the walk and finds it already agrees -- that too is a
+  placement made on these points). A fresh `Scan` is born stamped with the
+  running decode (its sidecar pose was made on these points); a re-read
+  at another detail carries the stamp across (`_carry_over`); a hand nudge
+  is not stamped, it is not a measurement.
+- **The save** writes `decode` beside each scan's placement when known
+  (older files read back byte for byte) and the running decode at the top
+  of the file. **The open** takes each scan's stamp from the file (None for
+  a file from before stamps existed, which is exactly as unknown as a
+  different decode) and returns `stale_decode`: the placed captures
+  (`Setup.sited`, as the solvers read it; the reference is never named)
+  whose stamp is not the running one.
+- **The page**, on open: *"N captures were placed on an earlier decode of
+  this program, and the corrected decode has since moved every point of a
+  capture by up to half a degree -- so scans that lined up when this was
+  saved can sit a few centimetres apart now. Press Close the loop to
+  re-solve the whole survey on the new points, then save."* Orange, with
+  the photograph notices.
+- Twelve checks (the stamp's content and that it changes with a constant;
+  born stamped; the source doors; save writes / omits; open names only the
+  placed stale ones, a pre-stamp file counts as stale, a solve clears it;
+  the page's words). Suite 2147 → **2160 passed, 0 failed**. Reversion audit (revert57b.py): two breaks at once, four named checks fired. ✅ **Exes REBUILT 2026-09-13 23:51-23:52** with the Studio closed: selftest rc 0 (edgechromium, RTX 3050 Ti), `--gpu` rc 0.
+- **On the live job:** open `scan project (grades repaired).tlspie` in the
+  rebuilt Studio and it will name all 55 placed captures (a 09-10 file has
+  no stamps); press Close the loop, then save, and the file carries the
+  corrected decode's name from then on.
+
+
 **▶ EIGHTH PART (2026-09-13, late): the rush twin's points shrunk.** The
 operator, after the evening's work: *"i would like the lod points to be
 much smaller"*. Script `lod57.py` (byte patch on the CRLF `align.py`).
@@ -6577,7 +6622,7 @@ much smaller"*. Script `lod57.py` (byte patch on the CRLF `align.py`).
   than it was; the hand is moving and the full cloud returns when it
   stops. Everything else about the twin stands: grown only while rushing
   (the fat-rim bug of 08-28), the refinement frames put the size back.
-  One check re-pinned. Suite 2147 → **2147 passed, 0 failed**. NOT yet in the exes: the Studio was open when it was made, and a build with the Studio open is refused; close it and the rebuild runs, then this line changes.
+  One check re-pinned. Suite 2147 → **2147 passed, 0 failed**. In the exes rebuilt 23:51-23:52, with the ninth part.
 - If it is still too big, the next notch is the point-size slider (it
   scales the twin too) or a flat cap on the growth; if surfaces look
   porous while rotating, the square root was the reason and this is the

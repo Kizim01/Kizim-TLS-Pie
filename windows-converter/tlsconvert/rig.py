@@ -138,6 +138,30 @@ ELEVATION_OFFSET_DEG = -0.06
 DEFAULT_PER_LASER_AZIMUTH = True
 
 
+def decode_stamp(per_laser_azimuth=DEFAULT_PER_LASER_AZIMUTH):
+    """
+    One short name for the geometry every point of a decode carries.
+
+    ⭐ A PROJECT'S POSES ARE FITTED TO POINTS, AND THE POINTS MOVE WHEN THE
+    DECODE DOES (2026-09-13): the corrected decode tilted every capture a
+    rigid 0.43-0.48 deg in its own frame against the block decode
+    (scratchpad mos/fan57b.py), and poses solved the day before sat 37 mm
+    out at 5 m -- "scan still not lining up", on a project that had no way
+    to say which points its poses were fitted to. The Studio stamps each
+    placement with this name (align._stamp_pose), writes it into the
+    project, and on open names the placed captures whose stamp is not this
+    one (AlignServer.open_project). Every number that moves a point is in
+    it, so re-measuring any of them retires every pose fitted before it.
+    The per-laser origins (decode.VERTICAL_OFFSET_MM_BY_LASER) are named by
+    their source, Table 9-1: change the table, change the name.
+    """
+    if not per_laser_azimuth:
+        return "block"
+    return "corrected pitch%+.2f fan(%+.2f,%+.2f) elev%+.2f origins T9-1" % (
+        PER_LASER_AZIMUTH_PITCH_DELTA, FAN_ANGLE_CORRECTION_DEG[0],
+        FAN_ANGLE_CORRECTION_DEG[1], ELEVATION_OFFSET_DEG)
+
+
 def frame_for(meta, per_laser_azimuth=DEFAULT_PER_LASER_AZIMUTH):
     """
     The Frame to render a scan with.
