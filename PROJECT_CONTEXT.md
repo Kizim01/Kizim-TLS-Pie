@@ -6583,6 +6583,27 @@ much smaller"*. Script `lod57.py` (byte patch on the CRLF `align.py`).
   porous while rotating, the square root was the reason and this is the
   trade.
 
+**▶ THEN: "scan still not ligning up" (operator, 2026-09-13 late) --
+THE POSES, NOT THE DECODE.** Checked first that the running Studio was the
+22:08 exe (started 23:21, yes) and that no decode cache exists (none).
+Then measured (`fan57_job.txt`, `fan56i.py ... 0 0 0` = the product path):
+on five job captures (10, 20, 30, 40, 50) the two fan halves land within
+1-6 mm on floors, ceilings and walls (capture 40 walls +9.7 mm at 1.5 m,
+the one outlier). So what the operator sees is scan against scan. Cause
+(`fan57b.py`, captures 10 and 30): **today's decode moves a capture's
+points by a RIGID rotation of 0.43 / 0.48° about a horizontal axis in the
+scanner's own frame** (the pitch delta and the curve's mean, seen as a
+tilt), plus the halves' own correction (median 11 mm after the rigid part
+is removed). Every pose in `scan project (grades repaired).tlspie` was
+solved on 2026-09-10 under the OLD decode, so each capture now sits half
+a degree tilted against its saved pose: 37 mm at 5 m, which is what "not
+lining up" looks like. **The fix is to re-solve, not to re-correct:**
+Close the loop (`/solve/survey`) refits every placed pair fresh from the
+current poses, tilt included (`registration` keeps the whole GICP answer,
+tilt limit 8°, well over 0.5°), then save. Worth building next: stamp the
+project with the decode it was solved under and offer the re-solve on
+open, so a decode change never shows up as a bad survey again.
+
 
 **▶ SEVENTH PART, SHIPPED (2026-09-13 ~22:07-22:08): the pan-scale check,
 and the halves landing on each other along the walls too.** The operator:
