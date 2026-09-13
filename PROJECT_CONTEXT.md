@@ -15,7 +15,14 @@
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
 > SHOWN clouds**, and the measurement behind them. Suite 2147 passed, 0 failed. Nothing
-> is in flight. The Pi carries the 55th pass's changes. The restart
+> is in flight; the last commit is the elevation offset. **OFFERED, NOT
+> STARTED (the operator asked "what else"):** (1) per-laser fan-angle
+> offsets plus a twice-per-turn term, fitted on the full-360 captures in
+> `scratchpad\mos\full360\` by the front-minus-back method of `fan56i.py`
+> per laser, held out on door captures 10 and 30; (2) per-session range
+> offsets fitted at import (`calib56.py`'s range terms carried 20%% within
+> an evening, not across days); (3) warm the puck 45 min, scan a station
+> twice, slow profile. The Pi carries the 55th pass's changes. The restart
 > pointer's opening entries are older than all of this.
 **⭐ TWO COMPONENTS ARE BEING ADDED, SPECIFIED 2026-08-17 AND NOT YET BOUGHT: a gravity
 sensor for levelling (with a bubble display on the panel) and an integrated camera for
@@ -6588,6 +6595,22 @@ linearised, four rounds) and `fan56k.py`; results `fan56j*_*.txt`,
   block decode). The residual on the far floor is the next look, on a
   full-360 capture: a 2/turn term in the fan angle, or per-laser
   fan-angle offsets.
+- **Offered at the end of the pass, none started** (the operator: *"what
+  else can we do? look online and on git"*). Glennie 2016 puts the
+  VLP-16's raw range noise near 10 mm and its planar residual under the
+  factory calibration at 22-27 mm; a full rotation here now reads 9.6 mm
+  plane sigma, so planes are at the sensor's floor and what is left is
+  geometry a thickness cannot see. Ranked: **(1) per-laser fan-angle
+  offsets** (Glennie's "horizontal rotation correction" per laser; the
+  per-laser front-minus-back table in `fan56e_a.txt` shows lasers 13, 15,
+  11 off by their own few mm/m) **plus a 2/turn term** for the far-floor
+  residual -- same captures, `fan56i.py` per laser, held out on 10 and
+  30; **(2) per-session range offsets at import** (Glennie: each laser's
+  range bias drifts over hours, lasers 12 and 13 worst; `calib56.py`'s
+  range terms carried -20%% within the evening and failed across days);
+  **(3) operational:** 45 min warm-up (Glennie's protocol), scan a station
+  twice, slow profile. Not worth doing, all measured null tonight: pan
+  scale, mount roll and yaw, lever (1-3 mm), return mode.
 
 
 **▶ SIXTH PART, SHIPPED (2026-09-13 ~21:37-21:38): the two halves of the
