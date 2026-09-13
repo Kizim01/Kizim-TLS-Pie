@@ -12,9 +12,9 @@
 > measurement behind them, and **the point budget follows the SHOWN
 > clouds** (hide a cloud and the rest are re-read at the larger share).
 > Suite 2123 passed, 0 failed. Nothing is in flight. The restart pointer's opening
-> entries are older than all of this. The Pi does NOT carry the 55th
-> pass's Pi changes (it was off, and the laptop was last on a router, not
-> the phone's hotspot).
+> entries are older than all of this. The Pi CARRIES the 55th pass's
+> changes since 18:53 (delivered by `deploy53.py tlspie.local`, all
+> eleven Pi suites green on the Pi, scanner restarted and idle).
 **The VLP-16 is mounted on its SIDE**, spin axis horizontal, so its own rotation sweeps a vertical
 fan and the pan axis swings that fan around — giving full dome coverage rather than the ±15° band an
 upright puck is limited to. *That the puck is on its side is confirmed by the user directly.*
@@ -6883,14 +6883,17 @@ open are settled.
   grades back. Close other heavy work first: a photograph that cannot be
   painted back now says so on open and keeps its saved pose, but it still
   opens grey.
-- **(b) Deliver the Pi changes when the Pi is next on**: `python
-  scratchpad\mos\deploy53.py <address>` -- five source files (`tls_stepper`,
-  `tls_scan`, `tls_web`, `tls_storage`, `tls_cloudbuild`) and six test files.
-  The Pi was off all evening, so NOTHING of this pass is on it. The splash test
-  now skips without Pillow, so the deploy should restart the scanner by itself
-  for the first time. At 01:40 on 09-11 the laptop was on `192.168.1.107`
-  (a router, not the phone's hotspot) and nothing answered at the Pi's last
-  address: join the hotspot first, then look.
+- **(b) ✅ DELIVERED 2026-09-13 18:53** (`scratchpad\mos\deploy56.txt`):
+  the operator said *"pi is connected to the network"*; `tlspie.local`
+  answered by name this time (link-local IPv6, so mDNS worked on this
+  network), `deploy53.py tlspie.local` found ten files differing (the five
+  sources `tls_stepper`, `tls_scan`, `tls_web`, `tls_storage`,
+  `tls_cloudbuild` and five tests; the sixth test already matched), backed
+  them up to `~/TLS-Pie/.deploy-backup/20260913-185334`, copied and
+  verified all ten, ran the twelve Pi suites ON the Pi (578 passed, 0
+  failed; `test_splash` SKIPPED without Pillow, as designed), and
+  **restarted the scanner by itself for the first time**: `rc=0 active`,
+  panel IDLE after. Nothing of the 55th pass is outstanding on the Pi.
 - **(c) Watch on the rig**: the first real STOP and the first 180 Rapid (both
   still unexercised), and a scan started soon after boot -- the watchdog no
   longer trips on the network clock's first sync, and the sidecar now records
