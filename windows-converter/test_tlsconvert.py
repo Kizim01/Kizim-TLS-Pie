@@ -10303,9 +10303,12 @@ for _mname in ("open_project", "density"):
     _msrc = "\n".join(
         _l for _l in _ALIGN_SRC.split("def %s" % _mname)[1]
         .split("    def ")[0].splitlines() if not _l.lstrip().startswith("#"))
+    # `density` hands the whole carry to `_carry_over` (shared with `refit`
+    # since 2026-09-13), and that is where its `_first_attach` now lives.
     check("%s loads with colour off and hands strays to _first_attach"
           % _mname,
-          "colour=False" in _msrc and "_first_attach" in _msrc,
+          "colour=False" in _msrc
+          and ("_first_attach" in _msrc or "self._carry_over(" in _msrc),
           _msrc[:200])
 
 
@@ -11016,6 +11019,82 @@ check("...and the page ticks it, posts it, re-posts it when the slider "
       in _js_func("setDefaultReach")
       and "showDefaultReach(j.default_clean);" in _js_func("openProject")
       and 'path == "/clean/default"' in _ALIGN_SRC)
+
+# --- the point budget follows the shown clouds ------------------------------
+#
+# "does hiding other scans mean there's more points to see on the couple that
+# are not hidden?" (operator, 2026-09-13). It did not: the share was divided
+# by the clouds OPEN, and a cloud holds the points it was decoded with. Now a
+# hide re-reads the shown captures that gained a share, and nothing else.
+print("\nthe point budget follows the shown clouds")
+_rf_srv = align.AlignServer([], out_path=None, max_points=4000)
+_rf_a = _detail_scan(os.path.join(_ca_dir, "ra.pcap"), 5, n=1000)
+_rf_b = _detail_scan(os.path.join(_ca_dir, "rb.pcap"), 6, n=1000)
+_rf_a.total = _rf_b.total = 100000                # each holds far more
+_rf_a.setup = registration.Setup(1.0, 2.0, 0.0, 10.0)
+_rf_a.clean = {"max_range": 4.0}
+_rf_a.keep = np.ones(1000, dtype=bool)
+_rf_srv.scans = [_rf_a, _rf_b]
+_rf_calls = []
+
+
+def _rf_load(paths, **kw):
+    _rf_calls.append((list(paths), kw.get("max_points")))
+    return [_detail_scan(p, 20, n=3000) for p in paths]
+
+
+align.load = _rf_load
+try:
+    _rf = _rf_srv.refit([1])
+    _rf_meta = _rf.get("scans") or []
+    check("⭐ HIDING ONE CLOUD RE-READS THE SHOWN ONE AT THE LARGER SHARE, "
+          "and only that one",
+          _rf.get("ok") and _rf_srv.hidden == {1}
+          and len(_rf_calls) == 1
+          and [os.path.basename(p) for p in _rf_calls[0][0]] == ["ra.pcap"]
+          and _rf_calls[0][1] >= 3000
+          and len(_rf_srv.scans[0].xyz) == 3000
+          and _rf_srv.scans[1] is _rf_b
+          and _rf.get("reread") == ["ra.pcap"],
+          (_rf.get("error"), _rf_calls, _rf.get("reread")))
+    check("...carrying its placement and its cleaning rule across",
+          abs(_rf_srv.scans[0].setup.dx - 1.0) < 1e-9
+          and _rf_srv.scans[0].clean == {"max_range": 4.0}
+          and _rf_srv.scans[0].keep is not None
+          and len(_rf_srv.scans[0].keep) == 3000,
+          (_rf_srv.scans[0].setup.as_dict(), _rf_srv.scans[0].clean))
+    # The shown cloud draws its KEPT points -- the reach carried across hides
+    # the far ones -- and all of them, since 3000 is under its share.
+    check("...and the hidden cloud keeps a token share on the card, the "
+          "shown one the rest",
+          len(_rf_meta) == 2 and _rf_meta[1]["points"] <= 250
+          and _rf_meta[0]["points"] == int(_rf_srv.scans[0].keep.sum())
+          and 0 < _rf_meta[0]["points"] < 3000,
+          [m["points"] for m in _rf_meta])
+    _rf2 = _rf_srv.refit([])
+    check("showing it again re-reads IT and leaves the one that already "
+          "holds its share alone",
+          _rf2.get("ok") and _rf_srv.hidden == set() and len(_rf_calls) == 2
+          and [os.path.basename(p) for p in _rf_calls[1][0]] == ["rb.pcap"],
+          (_rf2.get("error"), _rf_calls))
+    check("...and a press that changes no share reads nothing",
+          _rf_srv.refit([]).get("ok") and len(_rf_calls) == 2)
+    _rf_srv.refit([1])
+    _rf_srv.remove(0)
+    check("the hidden set is re-keyed when a cloud is removed, as the page's is",
+          _rf_srv.hidden == {0}, _rf_srv.hidden)
+finally:
+    align.load = _real_load
+check("the page re-shares on hide, on show all and on the isolate button, "
+      "debounced, and the detail re-read sends the hidden list too",
+      "scheduleRefit();" in _js_func("toggleHidden")
+      and "scheduleRefit();" in _js_func("showAll")
+      and align.PAGE.count("scheduleRefit();") == 3
+      and "await post('refit', {hidden:hiddenList()})" in _js_func("refitNow")
+      and "setTimeout(()=>{ REFIT_T=null; refitNow(); }, 1200)"
+      in _js_func("scheduleRefit")
+      and "{voxel:step.v, hidden:hiddenList()}" in _js_func("applyDetail")
+      and 'path == "/refit"' in _ALIGN_SRC)
 
 # --- the cut history is a fold ----------------------------------------------
 # ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in

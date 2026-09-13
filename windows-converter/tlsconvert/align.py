@@ -1208,7 +1208,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/remove":
                 return self._json(srv.remove(body.get("index")))
             if path == "/density":
-                return self._json(srv.density(body.get("voxel")))
+                return self._json(srv.density(body.get("voxel"),
+                                              body.get("hidden")))
+            if path == "/refit":
+                return self._json(srv.refit(body.get("hidden")))
             if path == "/project/save":
                 return self._json(srv.save_project(body.get("path"),
                                                    body.get("state")))
@@ -1308,6 +1311,13 @@ class AlignServer(object):
         # picture is the clean one from the first frame, and the same rule
         # the export reads from the scan. Saved with the project.
         self.default_clean = None
+        # ⭐ WHICH CLOUDS THE PAGE IS NOT DRAWING, by index. The point budget
+        # is shared among the clouds that are SHOWN: a hidden cloud keeps a
+        # token share so it is still there to show again, and the others
+        # are re-read at the larger share (`refit`). Asked for 2026-09-13:
+        # "does hiding other scans mean there's more points to see on the
+        # couple that are not hidden?" -- it did not; now it does.
+        self.hidden = set()
         self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
         # When the page last said it was alive; None until it first does.
@@ -1347,13 +1357,27 @@ class AlignServer(object):
                                        daemon=True)
         self.thread.start()
 
+    def _shares(self):
+        """(points per SHOWN cloud, points per hidden one).
+
+        A hidden cloud keeps an eighth of an even share so it is still on the
+        card to show again without a round trip; what it gives up goes to
+        the clouds on screen.
+        """
+        n = max(len(self.scans), 1)
+        hidden = [i for i in self.hidden if 0 <= i < len(self.scans)]
+        token = max(1, self.max_points // (8 * n))
+        shown = max(1, len(self.scans) - len(hidden))
+        per = max(1, (self.max_points - token * len(hidden)) // shown)
+        return per, min(per, token)
+
     def _rebuild(self):
         """Re-encode every open scan for the page, and describe them."""
         self.blobs = []
         meta = []
-        per = max(1, self.max_points // max(len(self.scans), 1))
+        per, token = self._shares()
         for i, scan in enumerate(self.scans):
-            buf = scan.buffer(max_points=per)
+            buf = scan.buffer(max_points=token if i in self.hidden else per)
             blob = buf.encode()
             self.blobs.append(blob)
             info = scan.colour_info or {}
@@ -3287,6 +3311,9 @@ class AlignServer(object):
             return {"ok": False,
                     "error": "there is no cloud %d open" % (i + 1)}
         gone = self.scans.pop(i)
+        # The hidden set is keyed on the index, as the page's is, and is
+        # re-keyed the same way.
+        self.hidden = {(k - 1 if k > i else k) for k in self.hidden if k != i}
         # ⛔ THE PLACEMENTS OF THE OTHERS ARE LEFT ALONE, ON PURPOSE. Each one
         # is expressed in the FIRST scan's frame, and so are the clip box, the
         # level and every edit. Re-basing them onto the new first cloud so that
@@ -5590,7 +5617,77 @@ class AlignServer(object):
         return {"ok": True, "info": info, "remembered": saved,
                 "scans": self._rebuild()}
 
-    def density(self, voxel):
+    def _take_hidden(self, hidden):
+        self.hidden = {int(i) for i in (hidden or [])
+                       if 0 <= int(i) < len(self.scans)}
+
+    def _carry_over(self, scan, old, lost, unpainted):
+        """Everything a re-decoded cloud inherits from the one it replaces."""
+        scan.setup = old.setup
+        scan.rung = getattr(old, "rung", None)
+        scan.lean = old.lean
+        if not self._carry_clean(scan, getattr(old, "clean", None)):
+            lost.append(scan.name)
+        # ⛔ A POSE HELD FROM AN OPEN THAT COULD NOT PAINT IT GOES ACROSS
+        # TOO, and is tried again -- see `_carry_colour`. Without it a
+        # change of detail was a second door out of the project for a
+        # photograph the open had already failed to show.
+        pose = (self.colour_pose(old)
+                or getattr(old, "unrestored_pose", None))
+        if pose:
+            why = self._carry_colour(scan, pose)
+            if why:
+                unpainted.append("%s (%s)" % (
+                    os.path.basename(pose.get("photo") or "?"), why))
+        else:
+            self._first_attach(scan)
+
+    def refit(self, hidden=None):
+        """
+        The budget follows the shown clouds: re-read the ones that gained.
+
+        ⭐ HIDING A CLOUD GIVES ITS SHARE TO THE OTHERS, and a share is only
+        worth having if the capture is read again for it -- a cloud holds
+        the points it was decoded with, and no re-encode can grow that. So
+        each shown capture that holds fewer points than its new share (and
+        has more to give) is decoded again, through the same carry a change
+        of detail uses; the rest are left exactly as they are, which is what
+        keeps a press cheap when the share barely moved.
+        """
+        self._take_hidden(hidden)
+        if not self.scans:
+            return {"ok": True, "scans": [], "reread": []}
+        per, _token = self._shares()
+        need = [i for i, s in enumerate(self.scans)
+                if i not in self.hidden
+                and getattr(s, "source", "capture") == "capture"
+                and len(s.xyz) < 0.9 * min(int(s.total or 0), per)]
+        lost, unpainted, done = [], [], []
+        if need:
+            self._progress = {"stage": "re-reading %d shown cloud%s at the "
+                                       "larger share"
+                                       % (len(need), "" if len(need) == 1
+                                          else "s"),
+                              "n": 0, "total": 1, "busy": True}
+            try:
+                fresh = load([self.scans[i].path for i in need],
+                             voxel_m=self.align_voxel or None,
+                             progress=self._note,
+                             max_points=per * len(need), colour=False)
+            except Exception as exc:                      # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            finally:
+                self._progress = {"stage": "done", "n": 1, "total": 1,
+                                  "busy": False}
+            for i, scan in zip(need, fresh):
+                self._carry_over(scan, self.scans[i], lost, unpainted)
+                self.scans[i] = scan
+                done.append(scan.name)
+        return {"ok": True, "scans": self._rebuild(), "reread": done,
+                "shown": len(self.scans) - len(self.hidden),
+                "per": per, "uncleaned": lost, "unpainted_photos": unpainted}
+
+    def density(self, voxel, hidden=None):
         """
         Re-decode every open scan for the picture at a new preview density.
 
@@ -5601,6 +5698,8 @@ class AlignServer(object):
         lose their placement to a change of detail.
         """
         voxel = max(0.0, float(voxel or 0.0))
+        if hidden is not None:
+            self._take_hidden(hidden)
         if not self.scans:
             self.align_voxel = voxel
             return {"ok": True, "scans": [], "voxel": voxel}
@@ -5647,24 +5746,7 @@ class AlignServer(object):
         # -- one door further out, on the server's own copy this time.
         lost, unpainted = [], []
         for scan, old in zip(fresh, was):
-            scan.setup = old.setup
-            scan.rung = getattr(old, "rung", None)
-            scan.lean = old.lean
-            if not self._carry_clean(scan, getattr(old, "clean", None)):
-                lost.append(scan.name)
-            # ⛔ A POSE HELD FROM AN OPEN THAT COULD NOT PAINT IT GOES ACROSS
-            # TOO, and is tried again -- see `_carry_colour`. Without it a
-            # change of detail was a second door out of the project for a
-            # photograph the open had already failed to show.
-            pose = (self.colour_pose(old)
-                    or getattr(old, "unrestored_pose", None))
-            if pose:
-                why = self._carry_colour(scan, pose)
-                if why:
-                    unpainted.append("%s (%s)" % (
-                        os.path.basename(pose.get("photo") or "?"), why))
-            else:
-                self._first_attach(scan)
+            self._carry_over(scan, old, lost, unpainted)
         self.scans = fresh
         self.align_voxel = voxel
         return {"ok": True, "scans": self._rebuild(), "voxel": voxel,
@@ -6069,6 +6151,7 @@ class AlignServer(object):
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
+        self.hidden = set()
         self.default_clean = body.get("default_clean") or None
         return {"ok": True, "scans": self._rebuild(), "path": path,
                 "lost_photos": lost, "refound_photos": refound,
@@ -9822,13 +9905,42 @@ function active(){ return V.scans.find(s=>s.index===V.active); }
    photographs apply to it exactly as they do to any other, and refusing to
    select it would mean the one cloud you cannot aim a cut at is the one you
    are aligning everything against. It is said out loud instead. */
+/* ⭐ THE POINT BUDGET FOLLOWS THE SHOWN CLOUDS. Hiding gives a cloud's
+   share to the others, and the server reads the captures that gained again
+   so the share is real points, not a bigger allowance for points it never
+   held. Debounced: hiding ten clouds in a row is one re-read, after the last
+   press, not ten. The list goes by index, the way the export's does. */
+function hiddenList(){ return V.scans.filter(s=>!shown(s.index)).map(s=>s.index); }
+let REFIT_T=null;
+function scheduleRefit(){
+  if(REFIT_T) clearTimeout(REFIT_T);
+  REFIT_T=setTimeout(()=>{ REFIT_T=null; refitNow(); }, 1200);
+}
+async function refitNow(){
+  if(!V.scans.length) return;
+  watch(true);
+  try{
+    const j=await post('refit', {hidden:hiddenList()});
+    if(!j || !j.ok) throw new Error((j&&j.error)||'no answer');
+    await rebuildFrom(j.scans);
+    measure(); refreshLists(); showDensity(); syncSliders(); recomputeLive();
+    if((j.reread||[]).length)
+      say(j.reread.length+' shown cloud'+(j.reread.length===1?'':'s')+
+          ' re-read at the larger share: '+j.reread.join(', ')+'.'+
+          ((j.uncleaned||[]).length
+            ? ' ⚠ the cleaning rule could not be measured again on '+
+              j.uncleaned.join(', ')+' and is OFF there.' : ''),
+          (j.uncleaned||[]).length ? 'warn' : null);
+  }catch(e){ say('Could not re-share the points: '+e.message, 'bad'); }
+  finally{ watch(false); }
+}
 function toggleHidden(i){
   if(V.hidden[i]) delete V.hidden[i]; else V.hidden[i]=1;
   /* ⛔ THE OLD SHOW-ONE CONTROL IS RELEASED THE MOMENT THIS IS USED. Two
      mechanisms deciding what is on screen is how a cloud goes missing with
      neither control admitting to it. */
   if(V.only>=0){ V.only=-1; const b=$('showb'); if(b) b.textContent='All'; }
-  refreshLists(); invalidate(); showHidden();
+  refreshLists(); invalidate(); showHidden(); scheduleRefit();
   say(V.hidden[i]
       ? whoName(i)+' hidden. New cuts leave it alone and it will NOT be '+
         'written to the exported cloud — it is still in the job, so showing '+
@@ -9842,7 +9954,7 @@ function showAll(){
     return say('Nothing is hidden.');
   V.hidden={}; V.only=-1;
   const b=$('showb'); if(b) b.textContent='All';
-  refreshLists(); invalidate(); showHidden();
+  refreshLists(); invalidate(); showHidden(); scheduleRefit();
   say('Every cloud is showing again, so cuts go through all of them.');
 }
 /* ⛔ A PERSISTENT LINE, NOT A ONE-OFF MESSAGE. "Where has my cloud gone" is
@@ -12778,7 +12890,7 @@ async function applyDetail(){
   try{
     const r=await fetch('density',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({voxel:step.v})});
+      body:JSON.stringify({voxel:step.v, hidden:hiddenList()})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'could not re-read');
     /* ⭐ THE SAME REBUILD EVERY OTHER PATH USES. This had its own copy of
@@ -16280,7 +16392,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
        releases the other rather than letting them disagree about what is on
        screen. */
     if(V.only>=0) V.hidden={};
-    refreshLists(); showHidden(); invalidate(); };
+    refreshLists(); showHidden(); invalidate(); scheduleRefit(); };
   $('showall').onclick=showAll;
   $('ps').oninput=e=>{ V.psize=parseFloat(e.target.value);
     $('psv').textContent=V.psize.toFixed(2); invalidate(); };

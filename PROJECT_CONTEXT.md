@@ -5,25 +5,16 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13 ~13:30, IN FLIGHT):** search this
-> file for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read its
-> **FOURTH PART** first. Three things shipped and are in the exes rebuilt
-> 13:02-13:04: **Smooth surfaces**, **Keep within N m** with its on-import
-> switch, and the measurement behind them. A fourth -- **the point budget
-> follows the SHOWN clouds** (hide a cloud and the rest are re-read at the
-> larger share) -- is PATCHED INTO THE TREE BUT NOT COMMITTED: `align.py`
-> and `test_tlsconvert.py` are modified in the working copy, the suite was
-> running when this was written (two checks had been fixed, see the fourth
-> part), and the exes do NOT carry it. Finish: read the suite result,
-> rebuild the exes with the Studio closed, record, scan, commit, push.
-> The restart pointer's opening entries are older than all of this. The Pi
-> does NOT carry the 55th pass's Pi changes (it was off, and the laptop was
-> last on a router, not the phone's hotspot).
-## Project summary
-TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
-system: a pan stepper on a harmonic drive sweeping a Velodyne VLP-16, with a Raspberry Pi 4
-capturing the packet stream to `.pcap`.
-
+> **▶ WHERE THE WORK IS NOW (2026-09-13 ~18:32-18:33):** search this file
+> for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down.
+> Four things shipped on 09-13 and are in the exes rebuilt 18:32-18:33:
+> **Smooth surfaces**, **Keep within N m** with its on-import switch, the
+> measurement behind them, and **the point budget follows the SHOWN
+> clouds** (hide a cloud and the rest are re-read at the larger share).
+> Suite 2123 passed, 0 failed. Nothing is in flight. The restart pointer's opening
+> entries are older than all of this. The Pi does NOT carry the 55th
+> pass's Pi changes (it was off, and the laptop was last on a router, not
+> the phone's hotspot).
 **The VLP-16 is mounted on its SIDE**, spin axis horizontal, so its own rotation sweeps a vertical
 fan and the pan axis swings that fan around — giving full dome coverage rather than the ±15° band an
 upright puck is limited to. *That the puck is on its side is confirmed by the user directly.*
@@ -6574,7 +6565,7 @@ when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
 
-**▶ FOURTH PART, IN FLIGHT (2026-09-13 ~13:30).** The operator: *"I would
+**▶ FOURTH PART, SHIPPED (2026-09-13 ~18:32-18:33).** The operator: *"I would
 like to see every return in the viewer, there is a slider that does that
 right?"* (yes: Load detail at Full, capped at 60 M points shared by the
 OPEN clouds), then *"does hiding other scans mean there's more points to
@@ -6582,7 +6573,7 @@ see on the couple that are not hidden?"* (it did not: the share divided by
 the clouds open, and a cloud holds only the points it was decoded with),
 then *"do that"*.
 
-- **Built, in the working copy (`scratchpad\mos\refit56.py`, backup
+- **Built (`scratchpad\mos\refit56.py`, backup
   `align.py.before_refit56`):** `AlignServer.hidden` (indices the page is
   not drawing); `_shares()` gives each SHOWN cloud
   `(max_points - token x hidden) / shown` and each hidden one a token
@@ -6596,15 +6587,26 @@ then *"do that"*.
   called from `toggleHidden`, `showAll` and the isolate button; the
   detail re-read sends the hidden list. Seven checks in the block "the
   point budget follows the shown clouds".
-- **Suite, first run (`suite56e.txt`): two failures, both fixed in the
-  test file, not yet re-run.** (1) The source pin "density loads with
-  colour off and hands strays to _first_attach" looked for
-  `_first_attach` inside `density`, which now calls `_carry_over`; the pin
-  accepts either. (2) My check expected the shown cloud to draw 3000
-  points; the reach carried across hides the far ones, so it draws its
-  KEPT count (1108) -- the check now asks for that.
-- **Not done:** the re-run, the exes (13:02 build lacks this), the record's
-  final numbers, the commit.
+- **Suite: first run (`suite56e.txt`) 2121 passed, 2 failed, both in
+  the test file, not the code; re-run (`suite56f.txt`) 2123 passed, 0 failed.** (1) The
+  source pin "density loads with colour off and hands strays to
+  _first_attach" looked for `_first_attach` inside `density`, which now
+  calls `_carry_over`; the pin accepts either. (2) My check expected the
+  shown cloud to draw 3000 points; the reach carried across hides the far
+  ones, so it draws its KEPT count (1108) -- the check asks for that.
+  Reversion audit: both checks failed against the tree before the refit
+  (the route, `scheduleRefit();` and `refit` itself did not exist).
+- ✅ **Exes REBUILT 2026-09-13 18:32-18:33** with the Studio closed
+  (`build56c.txt`): selftest rc 0 (edgechromium, RTX 3050 Ti), `--gpu`
+  rc 0 at 9.1x.
+- **What the operator sees:** hide clouds in the list (or isolate one, or
+  show all) and 1.2 s after the last press the status line says which
+  captures were re-read and at what share; a hidden cloud keeps a token
+  eighth of a share so un-hiding it draws something at once, then its own
+  re-read follows. Time is the decode of the re-read captures only.
+- **Not done, on purpose:** un-hiding does not shrink the others back
+  (they keep the points they hold; the budget only matters for what is
+  read next), and the token share is not a slider.
 
 
 **▶ THIRD PART, SHIPPED (2026-09-13 ~13:00).** The operator: *"can you get
