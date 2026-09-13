@@ -161,6 +161,11 @@ def describe(spec):
                     "dropped" % (int(st.get("neighbours", DEFAULT_NEIGHBOURS)),
                                  100.0 * float(st.get("voxel_m",
                                                       DEFAULT_VOXEL_M))))
+    cell = smooth_cell(spec)
+    if cell:
+        bits.append("surfaces smoothed onto the plane of their own %.0f cm "
+                    "cell (a corner is rounded within one cell; clutter is "
+                    "left as it was)" % (100.0 * cell))
     return "; ".join(bits) or None
 
 
@@ -182,4 +187,249 @@ def apply_spec(xyz, refl, spec, occupied=None):
                        int(st.get("neighbours", DEFAULT_NEIGHBOURS)),
                        occupied=occupied)
         keep = m if keep is None else (keep & m)
+    # "smooth" is not a keep-mask: it MOVES points, see `PlaneField`, and
+    # the two callers apply it after this mask, from planes fitted over the
+    # whole capture.
     return keep
+
+
+# --- surfaces smoothed onto their own planes ---------------------------------
+#
+# ⭐⭐ WHAT A WALL'S THICKNESS IS MADE OF, measured 2026-09-13 on the 09-02 job
+# (PROJECT_CONTEXT, fifty-sixth pass). A single return scatters 5 mm in range
+# -- that is the instrument, and no return mode or decoder choice changes it
+# on a plain wall. But a 5 cm square of wall holds a dozen or more returns,
+# and their plane is known to better than 2 mm. So every return in a cell
+# that IS a plane is moved onto the plane fitted to that cell, along the
+# normal, by its own residual: a wall that was 7-12 mm thick reads 1.5-2.3 mm.
+# A cell that is not a plane -- a corner, an edge, a cable, a chair leg --
+# fails the scatter gate and is left exactly as it was, so corners are not
+# rounded; the last cell before one is flattened to its own plane. Nothing
+# is thrown away and nothing is invented.
+#
+# ⛔ NOT A VOXEL AVERAGE, AND NOT DONE ON THE PREVIEW. The Studio's 2 cm
+# voxel mean left the same wall 12.5 mm thick: the scatter is wider than the
+# cell, so the grid froze it in (pipeline.VoxelAccumulator says so). And the
+# preview is a decimated share of the returns -- three points in a far cell
+# that holds thirty in the file, and three points fit any plane -- so the
+# planes are fitted from EVERY return of the capture, in chunks, and the
+# preview and the export are both moved onto those same planes.
+DEFAULT_SMOOTH_M = 0.05
+SMOOTH_MIN_POINTS = 12
+# A cell is a plane when its returns scatter no more than this FRACTION OF
+# THE CELL'S WIDTH about the best plane through them.
+#
+# ⛔ NO GATE KEEPS A CORNER AT 5 cm, AND THIS ONE DOES NOT PRETEND TO. A
+# right-angle corner through the middle of a cell of width L is two legs of
+# L/2, and the best plane through them (the eigen-line at the mean, not the
+# diagonal through the corner) leaves 0.204 L: 10 mm at 5 cm -- the same as
+# a far wall's noise, and twice a near wall's. Random clutter filling a cell
+# leaves L/sqrt(12) = 0.289 L. The gate sits between the two: a corner is
+# FOLDED onto the cell's plane, rounded by up to half a cell, and clutter is
+# refused. The panel says the corner is rounded within one cell; the fixture
+# in test_tlsconvert.py pins that the wall a cell away from it is not. (The
+# first cut gated at 10 mm and the corners of the fixture passed or failed
+# on their noise -- a ragged corner is worse than a rounded one.)
+SMOOTH_GATE_FRACTION = 0.25
+# And no point is carried further than this, whatever the plane says.
+SMOOTH_MAX_MOVE_M = 0.03
+
+
+def smooth_cell(spec):
+    """The smoothing cell in metres, or None when the spec has none."""
+    if not spec or "smooth" not in spec:
+        return None
+    return float((spec["smooth"] or {}).get("cell_m", DEFAULT_SMOOTH_M))
+
+
+class _Grid(object):
+    """One grid of cells: the running sums, then the planes."""
+
+    _PAIRS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+
+    def __init__(self, cell_m, shift_m):
+        self.cell_m = float(cell_m)
+        self.shift_m = float(shift_m)
+        self.keys = np.empty(0, dtype=np.int64)
+        self.n = np.empty(0, dtype=np.int64)
+        self.s = np.empty((0, 3), dtype=np.float64)
+        self.q = np.empty((0, 6), dtype=np.float64)
+        self.mean = self.normal = self.sigma = self.ok = None
+
+    def local(self, xyz):
+        p = np.asarray(xyz, dtype=np.float64) + self.shift_m
+        keys, g = _keys(p, self.cell_m)
+        return keys, p - (g - _BIAS + 0.5) * self.cell_m
+
+    def add(self, xyz):
+        keys, loc = self.local(xyz)
+        uniq, inv = np.unique(keys, return_inverse=True)
+        inv = inv.ravel()
+        m = uniq.size
+        n = np.bincount(inv, minlength=m).astype(np.int64)
+        s = np.column_stack([np.bincount(inv, weights=loc[:, a], minlength=m)
+                             for a in range(3)])
+        q = np.column_stack([np.bincount(inv, weights=loc[:, a] * loc[:, b],
+                                         minlength=m)
+                             for a, b in self._PAIRS])
+        self.mean = self.normal = self.sigma = self.ok = None
+        if self.keys.size == 0:
+            self.keys, self.n, self.s, self.q = uniq, n, s, q
+            return
+        pos = np.clip(np.searchsorted(self.keys, uniq), 0, self.keys.size - 1)
+        hit = self.keys[pos] == uniq
+        if hit.any():
+            at = pos[hit]
+            self.n[at] += n[hit]
+            self.s[at] += s[hit]
+            self.q[at] += q[hit]
+        if (~hit).any():
+            self.keys = np.concatenate([self.keys, uniq[~hit]])
+            self.n = np.concatenate([self.n, n[~hit]])
+            self.s = np.concatenate([self.s, s[~hit]])
+            self.q = np.concatenate([self.q, q[~hit]])
+            order = np.argsort(self.keys, kind="stable")
+            self.keys = self.keys[order]
+            self.n = self.n[order]
+            self.s = self.s[order]
+            self.q = self.q[order]
+
+    def finish(self, min_points, max_sigma_m):
+        m = self.keys.size
+        if m == 0:
+            self.mean = np.empty((0, 3))
+            self.normal = np.empty((0, 3))
+            self.sigma = np.empty(0)
+            self.ok = np.zeros(0, dtype=bool)
+            return
+        nn = np.maximum(self.n, 1).astype(np.float64)
+        mean = self.s / nn[:, None]
+        cov = np.empty((m, 3, 3))
+        for c, (a, b) in enumerate(self._PAIRS):
+            v = self.q[:, c] / nn - mean[:, a] * mean[:, b]
+            cov[:, a, b] = v
+            cov[:, b, a] = v
+        ev, evec = np.linalg.eigh(cov)
+        self.mean = mean
+        self.normal = evec[:, :, 0]
+        self.sigma = np.sqrt(np.clip(ev[:, 0], 0.0, None))
+        full = self.n >= int(min_points)
+        self.ok = full & (self.sigma <= max_sigma_m)
+        # A cell with enough returns that is NOT a plane says so; a cell
+        # short of returns has no opinion either way.
+        self.veto = full & ~self.ok
+
+    def lookup(self, xyz):
+        """(cell index, found-and-planar, count, offset, found-and-vetoed)."""
+        keys, loc = self.local(xyz)
+        if self.keys.size == 0:
+            z = np.zeros(len(keys), dtype=np.int64)
+            no = np.zeros(len(keys), dtype=bool)
+            return z, no, z, np.zeros(len(keys)), no
+        at = np.clip(np.searchsorted(self.keys, keys), 0, self.keys.size - 1)
+        found = self.keys[at] == keys
+        hit = found & self.ok[at]
+        d = np.einsum("ij,ij->i", loc - self.mean[at], self.normal[at])
+        return at, hit, np.where(hit, self.n[at], 0), d, found & self.veto[at]
+
+
+class PlaneField(object):
+    """
+    Per-cell plane statistics over a whole capture, fed in chunks.
+
+    Ten numbers a cell -- the count and the first and second moments about
+    the cell's own centre -- merged the way `pipeline.VoxelAccumulator`
+    merges, so the cost is in occupied cells and never in returns. `finish`
+    turns the sums into planes, `project` moves points onto them.
+
+    ⛔ TWO GRIDS, THE SECOND SHIFTED BY HALF A CELL, AND A POINT TAKES THE
+    CELL WITH MORE COMPANY. A wall lying across a cell boundary is cut into
+    two half-bands, one each side, and each half fits its own plane 4 mm
+    off the wall -- the first cut of this flattened such a wall onto TWO
+    planes, 8 mm apart, and measured 5.6 mm where it should have measured
+    under 1 (the fixture in test_tlsconvert.py had its wall on z = 0, which
+    is a boundary, and found it). A wall cut by one grid's boundary sits
+    inside the other grid's cell; the cell holding the whole band holds the
+    most points, so counting company picks the uncut one.
+
+    ⛔ AND A CELL THAT IS NOT A PLANE VETOES, IN EITHER GRID. The shifted
+    grid quarters a cell of clutter into eight smaller blocks, and a
+    quarter of a mess scatters half as much as the whole and passes the
+    gate on its own -- the fixture's cell of clutter was refused by the
+    first grid and smoothed by the second. So a point is moved only when
+    some grid's cell is a plane and NO grid's cell, given enough returns to
+    judge, says otherwise. A cell short of returns has no opinion, so a
+    thin sliver a boundary leaves does not hold its points back.
+
+    ⛔ THE MOMENTS ARE TAKEN ABOUT THE CELL'S CENTRE, NOT THE ORIGIN. A
+    covariance formed from sums of squares of coordinates 20 m from the
+    tripod loses the millimetres it is meant to measure to cancellation;
+    about the centre every term is under a cell's width.
+    """
+
+    def __init__(self, cell_m=DEFAULT_SMOOTH_M, min_points=SMOOTH_MIN_POINTS,
+                 max_sigma_m=None, max_move_m=SMOOTH_MAX_MOVE_M):
+        self.cell_m = float(cell_m)
+        self.min_points = int(min_points)
+        # The gate follows the cell unless a caller pins it (the tests do).
+        self.max_sigma_m = (SMOOTH_GATE_FRACTION * self.cell_m
+                            if max_sigma_m is None else float(max_sigma_m))
+        self.max_move_m = float(max_move_m)
+        self.grids = [_Grid(self.cell_m, 0.0), _Grid(self.cell_m,
+                                                     0.5 * self.cell_m)]
+        self._done = False
+
+    def add(self, xyz):
+        if xyz is None or len(xyz) == 0:
+            return
+        self._done = False
+        for g in self.grids:
+            g.add(xyz)
+
+    @property
+    def cells(self):
+        return int(self.grids[0].keys.size)
+
+    @property
+    def planar_cells(self):
+        if not self._done:
+            self.finish()
+        return int(self.grids[0].ok.sum())
+
+    def finish(self):
+        """Sums -> a plane per cell, and whether the cell IS a plane."""
+        for g in self.grids:
+            g.finish(self.min_points, self.max_sigma_m)
+        self._done = True
+        return self
+
+    def project(self, xyz):
+        """
+        The points moved onto their cells' planes: (xyz, how many moved).
+
+        A point in no planar cell of either grid, or further from its plane
+        than `max_move_m`, comes back exactly as it went in. The dtype is
+        kept, so a float32 preview stays float32.
+        """
+        if not self._done:
+            self.finish()
+        xyz = np.asarray(xyz)
+        if len(xyz) == 0 or self.cells == 0:
+            return xyz, 0
+        best_n = np.zeros(len(xyz), dtype=np.int64)
+        best_d = np.zeros(len(xyz))
+        best_nrm = np.zeros((len(xyz), 3))
+        vetoed = np.zeros(len(xyz), dtype=bool)
+        for g in self.grids:
+            at, hit, n, d, veto = g.lookup(xyz)
+            vetoed |= veto
+            take = hit & (n > best_n)
+            best_n = np.where(take, n, best_n)
+            best_d = np.where(take, d, best_d)
+            if g.keys.size:
+                best_nrm = np.where(take[:, None], g.normal[at], best_nrm)
+        d = np.where((best_n > 0) & ~vetoed
+                     & (np.abs(best_d) <= self.max_move_m), best_d, 0.0)
+        out = np.asarray(xyz, dtype=np.float64) - d[:, None] * best_nrm
+        dtype = xyz.dtype if xyz.dtype.kind == "f" else np.float32
+        return out.astype(dtype), int(np.count_nonzero(d))

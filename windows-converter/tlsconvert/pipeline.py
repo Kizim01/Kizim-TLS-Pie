@@ -1087,6 +1087,12 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     started = time.time()
     decoded = 0
     dropped = 0
+    smoothed = 0
+    # The planes a "smooth" rule moves points onto, fitted over the WHOLE
+    # capture in the first pass below, for the reason the occupancy grid is:
+    # a cell's returns arrive across chunks, and from both sides of the fan.
+    # See clean.PlaneField.
+    field = [None]
     # The cell set the stray test is measured against. ⛔ IT HAS TO COVER THE
     # WHOLE CLOUD, NOT THE CHUNK IN HAND: a point at the edge of one chunk has
     # its neighbours in the next, and testing chunk by chunk would carve a
@@ -1096,7 +1102,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     hi = np.array([-np.inf] * 3)
 
     def emit(xyz, refl):
-        nonlocal lo, hi, dropped
+        nonlocal lo, hi, dropped, smoothed
         if xyz.shape[0] == 0:
             return
         # ⛔⛔ THE CLEAN COMES FIRST, BEFORE COLOUR AND BEFORE THE TRANSFORM.
@@ -1114,6 +1120,15 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
                 xyz, refl = xyz[keep], refl[keep]
                 if xyz.shape[0] == 0:
                     return
+        # ⭐ AND THE SMOOTHING RIGHT AFTER IT, STILL IN THE SCAN'S OWN FRAME:
+        # the planes were fitted to the returns as the instrument measured
+        # them, before the lean, the setup or the level moved anything, and
+        # a point is moved onto its plane in that same frame. The cut boxes
+        # further down were drawn on the smoothed picture, so they meet the
+        # smoothed points.
+        if field[0] is not None:
+            xyz, n_moved = field[0].project(xyz)
+            smoothed += n_moved
         # ⛔⛔ THE SCAN'S OWN LEAN COMES FIRST, IN ITS OWN FRAME, AND THE
         # ORDER IS THE MEANING. A `Lean` says the tripod was not level, so the
         # instrument measured the room turned a little about its OWN centre --
@@ -1180,19 +1195,37 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         # and no second read of the capture. Only an un-voxelised export
         # streams, and there the capture genuinely has to be walked twice; that
         # costs another decode and is worth saying rather than hiding.
-        if clean_spec and "stray" in clean_spec and voxels is None:
+        want_grid = bool(clean_spec and "stray" in clean_spec
+                         and voxels is None)
+        # ⭐ THE PLANES ARE FITTED FROM THE RAW RETURNS EVEN WHEN A VOXEL IS
+        # SET: a voxel mean is a point on the noise, not on the surface, and
+        # the surface is what the planes are for. So a smoothed export walks
+        # the capture twice whatever else it does, and shares that walk with
+        # the occupancy grid when both are wanted.
+        want_field = bool(clean_spec and "smooth" in clean_spec)
+        if want_grid or want_field:
             if progress:
                 progress(0, 0)
             cells = []
+            if want_field:
+                field[0] = clean_mod.PlaneField(
+                    clean_mod.smooth_cell(clean_spec))
             for xyz, _r in decode.stream_world_points(
                     pcap_path, meta, frame, stride=stride,
                     per_laser_azimuth=per_laser_azimuth,
                     min_range=min_range, max_range=max_range):
-                cells.append(clean_mod.occupancy(
-                    xyz, float((clean_spec["stray"] or {})
-                               .get("voxel_m", clean_mod.DEFAULT_VOXEL_M))))
-            occupied[0] = (np.unique(np.concatenate(cells)) if cells
-                           else np.zeros(0, dtype=np.int64))
+                if want_grid:
+                    cells.append(clean_mod.occupancy(
+                        xyz, float((clean_spec["stray"] or {})
+                                   .get("voxel_m",
+                                        clean_mod.DEFAULT_VOXEL_M))))
+                if want_field:
+                    field[0].add(xyz)
+            if want_grid:
+                occupied[0] = (np.unique(np.concatenate(cells)) if cells
+                               else np.zeros(0, dtype=np.int64))
+            if want_field:
+                field[0].finish()
         for xyz, refl in decode.stream_world_points(
                 pcap_path, meta, frame, stride=stride,
                 per_laser_azimuth=per_laser_azimuth,
@@ -1237,6 +1270,7 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
         "photo": photo,
         "cleaned": clean_mod.describe(clean_spec),
         "cleaned_points": dropped,
+        "smoothed_points": smoothed,
         "coloured": colouriser is not None,
         "colour": colour_info,
         "over_budget": over,

@@ -5,16 +5,17 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13):** search this file for
-> `LIVE STATE (2026-09-13, fifty-sixth pass)` -- a MEASUREMENT pass, nothing
-> shipped: the operator asked how to make a wall less noisy, and the answer
-> is below it. The code is exactly the 55th pass's: read
-> `LIVE STATE (2026-09-10, fifty-fifth pass)` and its **RESUME HERE** for
-> the state of the code and the exes (rebuilt 09-11 01:49-01:50). The
-> restart pointer's opening entries are older than both; the newest LIVE
-> STATE is the current one, and each older one below it is history. Nothing
-> is running. The Pi does NOT carry the 55th pass's Pi changes (it was off,
-> and the laptop was last on a router, not the phone's hotspot).
+> **▶ WHERE THE WORK IS NOW (2026-09-13 ~12:40):** search this file for
+> `LIVE STATE (2026-09-13, fifty-sixth pass)`. The operator asked how to
+> make a wall less noisy; the pass MEASURED where a wall's thickness comes
+> from (first half) and then SHIPPED **Smooth surfaces** -- a third cleaning
+> rule in the Strays tray that moves every return onto the plane of its
+> own cell (second half). Exes rebuilt 2026-09-13 12:33-12:35 (Studio selftest 0, edgechromium, RTX 3050 Ti named; `tlsconvert.exe --gpu` 0, card agreeing with the processor). The Studio's code is
+> otherwise the 55th pass's; its RESUME HERE still describes the exes'
+> other contents. The restart pointer's opening entries are older than
+> both; the newest LIVE STATE is the current one. Nothing is running. The
+> Pi does NOT carry the 55th pass's Pi changes (it was off, and the laptop
+> was last on a router, not the phone's hotspot).
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
@@ -6569,7 +6570,58 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, nothing shipped
+### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces SHIPPED
+
+**▶ SECOND HALF, SHIPPED (2026-09-13, by 12:40).** The operator: *"do it"*,
+on the first recommendation below. **Smooth surfaces** is the third rule in
+the Strays and weak returns tray (`clean.py PlaneField`, `align.py
+_smooth_scan`, `pipeline.convert`), off by default, one cloud or the whole
+job, with its own cell slider (3-15 cm, default 5).
+
+- **What it does.** Every return of the capture feeds ten sums for its
+  cell (count, first and second moments about the cell's centre); each
+  cell is a plane if it holds 12+ returns and scatters less than 0.25 of
+  the cell's width about the best plane; a return in a planar cell is
+  moved along the normal by its own residual, never more than 3 cm. The
+  planes are fitted from EVERY return, in a re-read of the capture, never
+  from the decimated picture (three points at the far wall fit any plane).
+  The preview keeps the raw `xyz` and draws a `smooth_xyz` beside it; the
+  export fits the same planes in a first pass and moves every point before
+  the lean, the setup, the level and the cuts.
+- **⛔ TWO GRIDS, THE SECOND SHIFTED HALF A CELL, A POINT TAKES THE CELL
+  WITH MORE COMPANY.** The first cut had one grid, and the fixture's wall
+  lay on z = 0 -- a cell boundary -- and measured 5.6 mm where the claim
+  said under 1: the wall was cut into two half-bands, each fitted 4 mm off
+  and flattened onto its own plane. Real walls straddle a boundary two
+  times in three at 5 cm. The second grid holds whole what the first cuts.
+- **⛔ NO GATE KEEPS A CORNER AT 5 cm.** A right-angle corner through a
+  cell's middle scatters 0.204 of the width about its best plane (two legs
+  of L/2, the eigen-line at the mean): 10 mm at 5 cm, the same as a far
+  wall's noise. So a corner is FOLDED, rounded by up to half a cell, and
+  the panel says so; clutter (0.289 L) is refused. The first cut gated at
+  a flat 10 mm and the fixture's corners passed or failed on their noise.
+- **Measured** (`scratchpad\mos\smoke56.py`, the real door, walls as a
+  25 cm plane residual, mm, capture 10 / capture 30):
+
+  | cell | walls before | walls after | floors | 4-12 m | seconds |
+  |---|---|---|---|---|---|
+  | 5 cm | 8.6 / 12.9 | **1.6 / 3.6** | 1.2 / 2.4 | 6.6 / 21 | 13 / 15 |
+  | 10 cm | | **0.9 / 1.7** | 0.9 / 1.4 | 3.0 / 12.7 | 12 / 15 |
+  | 15 cm | | 1.0 / 2.0 | 0.9 / 1.2 | 2.5 / 13.7 | 12 / 14 |
+
+  The far band on capture 30 stays: its 24 mm is the block-azimuth smear
+  and the outer lasers' elevation bias (first half), which no plane fitted
+  to those same points removes -- the decoder correction is still the
+  lever there.
+- **Checks:** 2105 passed, 0 failed (2075 plus 30 for the smoothing). The smoothing block's claims each failed on the
+  first cut before they passed on the second (the boundary wall, the
+  corner, the cap), which is the reversion audit for this feature. Undo,
+  the whole-job door, the re-read carry, the project save and the exported
+  cloud's refusal are all pinned.
+- **Not done:** the CLI has no `--smooth` flag (it has no clean flags at
+  all); the Pi's preview knows nothing of it. Both deliberate.
+
+**FIRST HALF, THE MEASUREMENT (2026-09-13, morning).**
 
 The operator: *"look deep into git and the web, I would like to find a
 solution for the data coming out of the velodyne vlp 16 to be less noisy,

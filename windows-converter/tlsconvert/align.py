@@ -413,6 +413,12 @@ class Scan(object):
         self.view_refl = None
         self.clean = None              # the spec, or None
         self.keep = None               # bool mask over xyz, or None for all
+        # ⭐ THE SMOOTHED COPY SITS BESIDE `xyz`, NEVER OVER IT. A "smooth"
+        # rule moves points onto the planes of their own cells (clean.py); the
+        # solver, the floor fit and the photograph go on seeing what the
+        # instrument measured, the page draws this when it is here, and
+        # turning the rule off is dropping it. Same length as `xyz`, or None.
+        self.smooth_xyz = None
         # Returns the capture actually holds, so the panel can report
         # shown-of-total rather than quietly implying the picture is all of it.
         self.total = int(total or len(xyz))
@@ -437,11 +443,17 @@ class Scan(object):
         refl = self.view_refl
         if refl is not None and len(refl) != len(self.xyz):
             refl = None
+        # The smoothed copy is drawn when there is one; the mask, the colour
+        # and the return strength line up with it exactly as with `xyz`.
+        pts = self.xyz
+        if (self.smooth_xyz is not None
+                and len(self.smooth_xyz) == len(self.xyz)):
+            pts = self.smooth_xyz
         if self.keep is not None and len(self.keep) == len(self.xyz):
-            buf.add(self.xyz[self.keep], self.rgb[self.keep],
+            buf.add(pts[self.keep], self.rgb[self.keep],
                     None if refl is None else refl[self.keep])
         else:
-            buf.add(self.xyz, self.rgb, refl)
+            buf.add(pts, self.rgb, refl)
         return buf
 
 
@@ -1118,7 +1130,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.clean_scan(
                     body.get("index"), body.get("stray"),
                     body.get("drop_weakest"), body.get("voxel_m"),
-                    body.get("neighbours"), body.get("min_refl")))
+                    body.get("neighbours"), body.get("min_refl"),
+                    smooth=body.get("smooth")))
             if path == "/clean/levels":
                 return self._json(srv.strength_of(body.get("index")))
             # ⛔ ONE DOOR FOR THE WHOLE-JOB CLEAN AND ITS UNDO. `specs` sends
@@ -1128,7 +1141,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.clean_all(
                     body.get("stray"), body.get("drop_weakest"),
                     body.get("voxel_m"), body.get("neighbours"),
-                    body.get("specs")))
+                    body.get("specs"), smooth=body.get("smooth")))
             # ⭐ EVERY PHOTOGRAPH DOOR FIRST HEARS WHAT HAS BEEN CUT, from
             # this one line, so no solve behind any of them can read a point
             # the operator deleted. The page attaches the list in ITS one
@@ -4009,7 +4022,8 @@ class AlignServer(object):
                               "busy": False}
 
     def clean_scan(self, index, stray=None, drop_weakest=None,
-                   voxel_m=None, neighbours=None, min_refl=None):
+                   voxel_m=None, neighbours=None, min_refl=None,
+                   smooth=None):
         """One cloud cleaned, with the page's new scan list attached.
 
         ⛔ THE REBUILD IS THE ONLY THING THIS ADDS, and it is split out
@@ -4020,7 +4034,7 @@ class AlignServer(object):
         """
         out = self._clean_one(index, stray=stray, drop_weakest=drop_weakest,
                               voxel_m=voxel_m, neighbours=neighbours,
-                              min_refl=min_refl)
+                              min_refl=min_refl, smooth=smooth)
         if out.get("ok"):
             out["scans"] = self._rebuild()
         return out
@@ -4042,10 +4056,11 @@ class AlignServer(object):
                 "voxel_m": stray.get("voxel_m"),
                 "neighbours": stray.get("neighbours"),
                 "min_refl": spec.get("min_refl"),
-                "drop_weakest": None}
+                "drop_weakest": None,
+                "smooth": (spec.get("smooth") or {}).get("cell_m")}
 
     def clean_all(self, stray=None, drop_weakest=None, voxel_m=None,
-                  neighbours=None, specs=None):
+                  neighbours=None, specs=None, smooth=None):
         """
         One cleaning rule applied to every open cloud, in one press.
 
@@ -4084,12 +4099,24 @@ class AlignServer(object):
             jobs = [(int(e.get("index", -1)), self._spec_args(e.get("spec")))
                     for e in (specs or [])]
         else:
-            jobs = [(i, {"stray": stray, "drop_weakest": drop_weakest,
-                         "voxel_m": voxel_m, "neighbours": neighbours,
-                         "min_refl": None})
-                    for i in range(len(self.scans))]
+            # ⭐ SMOOTHING AND CLEANING ARE TWO RULES, AND A WHOLE-JOB PRESS
+            # OF ONE IS NOT A PRESS OF "OFF" FOR THE OTHER. A smooth sweep
+            # keeps each cloud's own stray and weak-return rule and adds the
+            # planes (`smooth` > 0) or takes them away (0); a stray sweep
+            # keeps whatever smoothing each cloud already wears.
+            jobs = []
+            for i in range(len(self.scans)):
+                had = self._spec_args(getattr(self.scans[i], "clean", None))
+                if smooth is not None:
+                    args = dict(had)
+                    args["smooth"] = float(smooth) if smooth else None
+                else:
+                    args = {"stray": stray, "drop_weakest": drop_weakest,
+                            "voxel_m": voxel_m, "neighbours": neighbours,
+                            "min_refl": None, "smooth": had.get("smooth")}
+                jobs.append((i, args))
         done, refused = [], []
-        gone = shown = 0
+        gone = shown = moved = 0
         try:
             for n, (i, args) in enumerate(jobs):
                 if not 0 <= i < len(self.scans):
@@ -4112,9 +4139,11 @@ class AlignServer(object):
                                     "error": out.get("error") or "refused"})
                     continue
                 done.append({"index": i, "name": scan.name,
-                             "dropped": out.get("dropped") or 0})
+                             "dropped": out.get("dropped") or 0,
+                             "moved": out.get("moved") or 0})
                 gone += out.get("dropped") or 0
                 shown += out.get("shown") or 0
+                moved += out.get("moved") or 0
         finally:
             self._progress = {"stage": "done", "n": len(jobs),
                               "total": len(jobs), "busy": False}
@@ -4122,6 +4151,17 @@ class AlignServer(object):
             text = ("%d cloud%s put back the way %s were"
                     % (len(done), "" if len(done) == 1 else "s",
                        "it" if len(done) == 1 else "they"))
+        elif smooth:
+            text = ("%d of %d clouds smoothed: %s of %s preview points moved "
+                    "onto the plane of their own %.0f cm cell. The export "
+                    "fits the same planes and moves every point in each "
+                    "capture."
+                    % (len(done), len(jobs), "{:,}".format(moved),
+                       "{:,}".format(shown), 100.0 * float(smooth)))
+        elif smooth is not None:
+            text = ("%d of %d clouds back on the points the instrument "
+                    "measured; their stray and weak-return rules are kept."
+                    % (len(done), len(jobs)))
         else:
             text = ("%d of %d clouds cleaned: %d of %d preview points hidden "
                     "(%.2f%%). The export applies the same rule to every "
@@ -4129,12 +4169,12 @@ class AlignServer(object):
                     % (len(done), len(jobs), gone, shown,
                        100.0 * gone / max(shown, 1)))
         return {"ok": True, "cleaned": done, "refused": refused,
-                "dropped": gone, "shown": shown, "text": text,
-                "scans": self._rebuild()}
+                "dropped": gone, "shown": shown, "moved": moved,
+                "text": text, "scans": self._rebuild()}
 
     def _clean_one(self, index, stray=None, drop_weakest=None,
                    voxel_m=None, neighbours=None, min_refl=None,
-                   progress=True):
+                   smooth=None, progress=True):
         """
         Take the rubbish out of one cloud: strays, weak returns, or both.
 
@@ -4199,9 +4239,16 @@ class AlignServer(object):
             # it had before the thing being undone. One extra way in, used only
             # by the two undos, and it never re-measures anything.
             spec["min_refl"] = float(min_refl)
+        # ⭐ SMOOTHING IS A THIRD RULE ON THE SAME CARRIERS -- the project,
+        # the re-read, the export -- and unlike the other two it MOVES
+        # points rather than hiding them. What it moves onto is fitted from
+        # the whole capture, see `_smooth_scan`; a cell that is not a plane
+        # is left alone, which is the whole of what it costs.
+        if smooth:
+            spec["smooth"] = {"cell_m": float(smooth)}
 
         if not spec:
-            scan.clean, scan.keep = None, None
+            scan.clean, scan.keep, scan.smooth_xyz = None, None, None
             return {"ok": True, "cleared": True, "clean": None,
                     "kept": len(scan.xyz), "dropped": 0,
                     "shown": len(scan.xyz),
@@ -4220,8 +4267,8 @@ class AlignServer(object):
             if progress:
                 self._progress = {"stage": "done", "n": 1, "total": 1,
                                   "busy": False}
-        if mask is None:
-            scan.clean, scan.keep = None, None
+        if mask is None and "smooth" not in spec:
+            scan.clean, scan.keep, scan.smooth_xyz = None, None, None
             return {"ok": True, "cleared": True, "clean": None,
                     "kept": len(scan.xyz), "dropped": 0,
                     "shown": len(scan.xyz),
@@ -4229,21 +4276,104 @@ class AlignServer(object):
         # ⛔ A RULE THAT WOULD EMPTY THE CLOUD IS REFUSED RATHER THAN OBEYED.
         # An empty preview looks exactly like a crash, and the operator's next
         # move would be to reload rather than to relax the setting.
-        if not mask.any():
+        if mask is not None and not mask.any():
             return {"ok": False,
                     "error": "that would remove every point in %s. Loosen it: "
                              "fewer neighbours needed, a larger cell, or a "
                              "smaller share of weak returns." % scan.name}
+        # ⛔ THE PLANES ARE FITTED AFTER THE REFUSAL ABOVE AND BEFORE THE RULE
+        # IS WRITTEN ON THE SCAN, so a refused press leaves the cloud exactly
+        # as it was -- no half-applied rule, in either direction.
+        moved = None
+        if "smooth" in spec:
+            moved = self._smooth_scan(scan, spec["smooth"]["cell_m"],
+                                      progress=progress)
+            if not moved.get("ok"):
+                return moved
+        else:
+            scan.smooth_xyz = None
         scan.clean, scan.keep = spec, mask
-        gone = int((~mask).sum())
-        return {"ok": True, "clean": spec, "kept": int(mask.sum()),
+        gone = 0 if mask is None else int((~mask).sum())
+        kept = len(scan.xyz) if mask is None else int(mask.sum())
+        bits = []
+        if mask is not None:
+            bits.append("%d of %d preview points hidden (%.2f%%)"
+                        % (gone, len(scan.xyz),
+                           100.0 * gone / max(len(scan.xyz), 1)))
+        if moved:
+            bits.append("%s of %s points moved onto the plane of their own "
+                        "%.0f cm cell, a typical move of %.1f mm; %s cells "
+                        "were planes and %s were not and are untouched"
+                        % ("{:,}".format(moved["moved"]),
+                           "{:,}".format(len(scan.xyz)),
+                           100.0 * spec["smooth"]["cell_m"],
+                           1000.0 * moved["typical_move_m"],
+                           "{:,}".format(moved["planar"]),
+                           "{:,}".format(moved["cells"] - moved["planar"])))
+        return {"ok": True, "clean": spec, "kept": kept,
                 "dropped": gone, "shown": len(scan.xyz),
-                "text": "%s: %d of %d preview points hidden (%.2f%%). The "
-                        "export applies the same rule to every point in the "
-                        "capture."
-                        % (scan.name, gone, len(scan.xyz),
-                           100.0 * gone / max(len(scan.xyz), 1)),
+                "moved": 0 if not moved else moved["moved"],
+                "text": "%s: %s. The export applies the same rule to every "
+                        "point in the capture." % (scan.name, "; ".join(bits)),
                 "describe": clean_mod.describe(spec)}
+
+    def _smooth_scan(self, scan, cell_m, progress=True):
+        """
+        Fit the planes at FULL density and move the preview onto them.
+
+        ⛔ THE PLANES COME FROM THE CAPTURE, NOT FROM THE PICTURE. The preview
+        is a decimated share of the returns: a 5 cm cell of far wall holds
+        three of them on screen and thirty in the file, and three points fit
+        any plane at all. So the capture is walked once more, every return
+        feeding its cell's ten sums (`clean.PlaneField`), and only then are
+        the points on screen moved -- onto the same planes the export fits
+        for itself. A few seconds a cloud on this laptop.
+
+        ⛔ AN EXPORTED CLOUD CANNOT BE SMOOTHED, and is refused by name: it
+        has no capture to re-read, and planes fitted to the decimated picture
+        would rest on three points at the far wall.
+        """
+        from . import clean as clean_mod
+        if getattr(scan, "source", "capture") != "capture":
+            return {"ok": False,
+                    "error": "%s is an exported cloud, not a capture: there "
+                             "is no .pcap to re-read at full density, and "
+                             "planes fitted to the picture alone would rest "
+                             "on three points at the far wall. Open the "
+                             "capture instead." % scan.name}
+        meta, meta_path = pipeline.load_meta(scan.path)
+        if meta is None:
+            return {"ok": False,
+                    "error": "%s has no sidecar (%s), so it cannot be "
+                             "re-read to fit its surfaces"
+                             % (scan.name, os.path.basename(meta_path))}
+        frame = pipeline.rig.frame_for(meta)
+        field = clean_mod.PlaneField(float(cell_m))
+        if progress:
+            self._progress = {"stage": "fitting the surfaces of %s"
+                                       % scan.name,
+                              "n": 0, "total": 1, "busy": True}
+        try:
+            for xyz, _refl in pipeline.decode.stream_world_points(
+                    scan.path, meta, frame):
+                field.add(xyz)
+        except Exception as exc:                          # noqa: BLE001
+            return {"ok": False,
+                    "error": "could not re-read %s to fit its surfaces (%s)"
+                             % (scan.name, exc)}
+        finally:
+            if progress:
+                self._progress = {"stage": "done", "n": 1, "total": 1,
+                                  "busy": False}
+        field.finish()
+        moved_xyz, moved = field.project(scan.xyz)
+        scan.smooth_xyz = moved_xyz
+        shift = np.linalg.norm(np.asarray(moved_xyz, dtype=np.float64)
+                               - np.asarray(scan.xyz, dtype=np.float64),
+                               axis=1)
+        typical = float(np.median(shift[shift > 0])) if moved else 0.0
+        return {"ok": True, "moved": int(moved), "cells": field.cells,
+                "planar": field.planar_cells, "typical_move_m": typical}
 
     def strength_of(self, index):
         """What each share of weak returns would cost, for this cloud."""
@@ -5501,9 +5631,20 @@ class AlignServer(object):
             mask = clean_mod.apply_spec(scan.xyz, refl, spec)
         except Exception:                                 # noqa: BLE001
             mask = None
-        if mask is None or not mask.any():
-            scan.clean, scan.keep = None, None
+        cell = clean_mod.smooth_cell(spec)
+        if (mask is None and not cell) or (mask is not None
+                                           and not mask.any()):
+            scan.clean, scan.keep, scan.smooth_xyz = None, None, None
             return False
+        # ⭐ THE PLANES ARE FITTED AGAIN ON THE RE-DECODED CLOUD, from the
+        # capture, exactly as the press did -- the rule carries, the moved
+        # coordinates cannot, for the reason the mask cannot.
+        if cell:
+            if not self._smooth_scan(scan, cell, progress=False).get("ok"):
+                scan.clean, scan.keep, scan.smooth_xyz = None, None, None
+                return False
+        else:
+            scan.smooth_xyz = None
         scan.clean, scan.keep = spec, mask
         return True
 
@@ -6914,6 +7055,20 @@ PAGE = r"""<!doctype html>
   <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
     A share of THIS cloud's returns, not a number off the instrument's scale
     — a dark restaurant and a white office do not share a threshold.</div>
+  <label>Smooth surfaces <span class="num" id="clnsmv">5 cm</span></label>
+  <input id="clnsm" type="range" min="3" max="15" step="1" value="5">
+  <div class="row"><button id="clnsmooth" class="go">Smooth surfaces</button>
+    <button id="clnsmoothall">Smooth everywhere</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    Every return in a cell that is a plane is moved onto that plane: a wall
+    the instrument spreads over 7–12 mm reads 2–3 mm. <b>A corner is
+    rounded within one cell</b> — up to half the cell — so the cell is a
+    choice: 5 cm keeps corners tight and leaves the far walls (beyond about
+    4 m) as they are; 10 cm reaches them and rounds corners by up to 5 cm.
+    Clutter and thin things are left as they were. The capture is re-read at
+    full density to fit the planes — a few seconds a cloud — and the export
+    moves every point onto the same planes. <b>Put them back</b> takes it off
+    with the rest.</div>
   <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
 <div class="tray" id="ty_clip"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
@@ -10726,7 +10881,8 @@ async function sendCleanSpec(index, spec){
                        voxel_m:(spec.stray||{}).voxel_m,
                        neighbours:(spec.stray||{}).neighbours,
                        min_refl:(spec.min_refl==null ? null : spec.min_refl),
-                       drop_weakest:null} : {};
+                       drop_weakest:null,
+                       smooth:(spec.smooth ? spec.smooth.cell_m : null)} : {};
   const j = await post('clean', Object.assign({index:index}, body));
   if(j && j.ok) await refreshScans(j);
   return j;
@@ -14007,6 +14163,7 @@ function showClean(){
   if(pb) pb.textContent = s ? s.name : '\u2014 pick a scan first';
   $('clnvv').textContent = $('clnv').value+' cm';
   $('clnnv').textContent = $('clnn').value;
+  $('clnsmv').textContent = $('clnsm').value+' cm';
   const w=+$('clnw').value;
   $('clnwv').textContent = w ? ('weakest '+w+'%') : 'off';
 }
@@ -14024,17 +14181,37 @@ async function sendClean(body, what){
   }catch(e){ say('Could not clean it: '+e.message, 'bad'); }
   finally{ watch(false); }
 }
+/* The smoothing this cloud already wears, so a stray or weak-return press
+   carries it rather than switching it off: the body is the whole rule. */
+function smoothOf(s){
+  return (s&&s.clean&&s.clean.smooth) ? s.clean.smooth.cell_m : null;
+}
 function cleanStray(){
   const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
   return sendClean({stray:true, voxel_m:(+$('clnv').value)/100,
                     neighbours:+$('clnn').value,
-                    drop_weakest:(+$('clnw').value)||null},
+                    drop_weakest:(+$('clnw').value)||null,
+                    smooth:smoothOf(s)},
                    'looking for strays');
 }
 function cleanWeak(){
   const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
-  return sendClean({drop_weakest:(+$('clnw').value)||null},
+  return sendClean({drop_weakest:(+$('clnw').value)||null,
+                    smooth:smoothOf(s)},
                    'sorting by return strength');
+}
+/* ⭐ SMOOTH SURFACES: every return in a cell that is a plane goes onto that
+   plane, fitted from the WHOLE capture (a few seconds a cloud). The stray and
+   weak-return rule this cloud wears is sent back with it, so the press adds
+   the planes rather than replacing the rule. */
+function cleanSmooth(){
+  const s=cleanWho(); if(s) remember('smoothing '+s.name, undoClean(s.index));
+  const c=(s&&s.clean)||{};
+  return sendClean({stray:!!c.stray, voxel_m:(c.stray||{}).voxel_m,
+                    neighbours:(c.stray||{}).neighbours,
+                    min_refl:(c.min_refl==null ? null : c.min_refl),
+                    drop_weakest:null, smooth:(+$('clnsm').value)/100},
+                   'fitting the surfaces');
 }
 function cleanOff(){
   const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
@@ -14074,6 +14251,51 @@ function undoClean(i){
    Not "clear the cleaning everywhere": a cloud that already had its own rule
    before this press must get THAT rule back, or the undo hands the operator
    more points than they had, which is the fault `undoClean` was fixed for. */
+/* ⭐ THE WHOLE JOB ONTO ITS SURFACES IN ONE PRESS, through the same door as
+   the whole-job clean: the server keeps each cloud's own stray and
+   weak-return rule and adds the planes, and the undo sends each cloud's rule
+   back as it was. Armed on the setting, like the stray sweep. */
+let SMOOTH_ARM=null;
+async function smoothEverywhere(){
+  if(!V.scans.length) return say('Add a scan first.', 'warn');
+  const body={smooth:(+$('clnsm').value)/100};
+  const sig=JSON.stringify(body)+' x '+V.scans.length;
+  if(SMOOTH_ARM!==sig){
+    SMOOTH_ARM=sig;
+    return say('This fits the surfaces of ALL '+V.scans.length+' clouds in '+
+               $('clnsm').value+' cm cells. Each capture is re-read at full '+
+               'density — a few seconds a cloud, so a shoot of fifty takes '+
+               'some minutes, and the bar names each one. A corner is '+
+               'rounded within one cell. Press again to go ahead.',
+               'warn');
+  }
+  SMOOTH_ARM=null;
+  const was=V.scans.map(s=>({index:s.index, spec:s.clean||null}));
+  remember('smoothing every cloud', async()=>{
+    watch(true);
+    try{
+      const b=await post('clean/all', {specs:was});
+      if(b && b.ok) await refreshScans(b);
+      else say('The rules would not go back: '+((b&&b.error)||'no answer'),
+               'bad');
+    }finally{ watch(false); }
+  });
+  say('fitting the surfaces of every cloud…'); watch(true);
+  try{
+    const j=await post('clean/all', body);
+    if(!j.ok) throw new Error(j.error||'could not smooth the job');
+    await refreshScans(j);
+    const bad=j.refused||[];
+    $('clnsay').textContent=j.text||'';
+    say((j.text||'Done.')+
+        (bad.length ? ' ⚠ '+bad.length+' left alone: '+
+           bad.slice(0,3).map(r=>r.name+' — '+r.error).join('; ')+
+           (bad.length>3 ? ' …and '+(bad.length-3)+' more' : '') : '')+
+        ' Ctrl-Z puts every rule back exactly as it was.',
+        bad.length ? 'warn' : null);
+  }catch(e){ say('Could not smooth the job: '+e.message, 'bad'); }
+  finally{ watch(false); }
+}
 let CLEAN_ARM=null;
 async function cleanEverywhere(){
   if(!V.scans.length) return say('Add a scan first.', 'warn');
@@ -15769,7 +15991,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('clnweak').onclick=cleanWeak;
   $('clnoff').onclick=cleanOff;
   $('clnall').onclick=cleanEverywhere;
-  ['clnv','clnn','clnw'].forEach(id=>{ $(id).oninput=showClean; });
+  $('clnsmooth').onclick=cleanSmooth;
+  $('clnsmoothall').onclick=smoothEverywhere;
+  ['clnv','clnn','clnw','clnsm'].forEach(id=>{ $(id).oninput=showClean; });
   showClean();
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
   $('north').onclick=()=>setTool(V.tool==='north'?'':'north');

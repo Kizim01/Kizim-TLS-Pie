@@ -10609,6 +10609,311 @@ check("AND THE PAGE SAYS IT, on an open and on a re-read at another detail",
       and "could not be painted back" in _js_func("openProject")
       and "j.unpainted_photos" in _js_func("applyDetail"))
 
+# --- surfaces smoothed onto their own planes ---------------------------------
+#
+# ⭐⭐ "WHEN I LOOK AT A WALL THE NOISE AND ACCURACY..." (operator, 2026-09-13).
+# Measured first, on the 09-02 job: one return scatters 5 mm, a wall on
+# screen 7-12 mm, and the plane of a 5 cm cell of it is known to 2 mm. The
+# rule moves each return onto the plane of its own cell, leaves a cell that
+# is not a plane exactly alone, and rides the carriers the other two cleaning
+# rules ride: the project, the re-read, the export.
+print("\nsurfaces smoothed onto their own planes")
+_sm_rs = np.random.RandomState(56)
+_sm_g = np.arange(120) * 0.005                     # a 60 cm square of wall
+_sm_xx, _sm_yy = np.meshgrid(_sm_g, _sm_g)
+# ⛔ THE WALL LIES ON z = 0, WHICH IS A CELL BOUNDARY, ON PURPOSE. The first
+# cut of the rule cut such a wall into two half-bands and flattened each onto
+# its own plane, 8 mm apart; the fixture measured 5.6 mm where the claim said
+# under 1. A second grid shifted by half a cell is what fixed it, and a wall
+# on a boundary is what keeps it fixed.
+_sm_wall = np.stack([_sm_xx.ravel() + 3.0, _sm_yy.ravel() + 1.0,
+                     _sm_rs.normal(0.0, 0.005, _sm_xx.size)], axis=1)
+# A second wall meets it at a right angle along x = 3, z = 0.
+_sm_side = np.stack([3.0 + _sm_rs.normal(0.0, 0.005, _sm_xx.size),
+                     _sm_yy.ravel() + 1.0, _sm_xx.ravel() + 0.005], axis=1)
+# One return well off the wall in a cell that is otherwise a plane: the cap
+# on how far a point may be carried is what keeps it where it is.
+_sm_far = np.array([[3.30, 1.30, 0.045]])
+# And a cell of clutter -- foliage, a plant -- that is no plane at all.
+_sm_mess = np.column_stack([_sm_rs.uniform(3.4, 3.45, 300),
+                            _sm_rs.uniform(1.4, 1.45, 300),
+                            _sm_rs.uniform(0.3, 0.35, 300)])
+_sm_pts = np.vstack([_sm_wall, _sm_side, _sm_far,
+                     _sm_mess]).astype(np.float32)
+_sm_f = cleanmod.PlaneField(0.05)
+_sm_f.add(_sm_pts[:5000])
+_sm_f.add(_sm_pts[5000:])                          # fed in two chunks
+_sm_f.finish()
+_sm_out, _sm_moved = _sm_f.project(_sm_pts)
+_sm_is_wall = np.arange(len(_sm_pts)) < _sm_xx.size
+_sm_is_side = (np.arange(len(_sm_pts)) >= _sm_xx.size) & (
+    np.arange(len(_sm_pts)) < 2 * _sm_xx.size)
+_sm_flat = _sm_is_wall & (_sm_pts[:, 0] >= 3.10)
+_sm_next = _sm_is_wall & (_sm_pts[:, 0] >= 3.05) & (_sm_pts[:, 0] < 3.10)
+_sm_up = _sm_is_side & (_sm_pts[:, 2] >= 0.06)
+_sm_corner = (_sm_pts[:, 0] < 3.05) & (np.abs(_sm_pts[:, 2]) < 0.05) & (
+    _sm_is_wall | _sm_is_side)
+_sm_clutter = np.arange(len(_sm_pts)) >= 2 * _sm_xx.size + 1
+
+
+def _sm_sig(v):
+    return 1.4826 * float(np.median(np.abs(v - np.median(v))))
+
+
+# ⚠ 1.5 mm, not 1: a plane fitted to a hundred returns at 5 mm carries half a
+# millimetre of its own estimation error, and the fixture is a hundred to the
+# cell. The single-grid cut measured 5.6 mm here; that is the gap that counts.
+check("⭐ A WALL THAT SCATTERED 5 mm IS UNDER 1.5 mm ONCE EACH RETURN IS ON "
+      "THE PLANE OF ITS OWN CELL -- with the wall lying on a cell boundary",
+      _sm_sig(_sm_pts[_sm_flat, 2]) > 0.004
+      and _sm_sig(_sm_out[_sm_flat, 2]) < 0.0015,
+      (_sm_sig(_sm_pts[_sm_flat, 2]), _sm_sig(_sm_out[_sm_flat, 2])))
+check("...and it is flat, not tiled: the wall's mean is where it was, to a "
+      "millimetre", abs(float(_sm_out[_sm_flat, 2].mean())) < 0.001
+      and abs(float(np.percentile(_sm_out[_sm_flat, 2], 90))) < 0.002,
+      (float(_sm_out[_sm_flat, 2].mean()),
+       float(np.percentile(_sm_out[_sm_flat, 2], 90))))
+check("...and nothing was thrown away: same count, same dtype, the moves "
+      "counted", _sm_out.shape == _sm_pts.shape
+      and _sm_out.dtype == _sm_pts.dtype and _sm_moved > 0.8 * _sm_flat.sum(),
+      (_sm_out.shape, _sm_out.dtype, _sm_moved))
+check("⭐ A CORNER IS ROUNDED WITHIN ONE CELL AND NO FURTHER: the wall one "
+      "cell from it, and the wall above it, are flat where they were",
+      _sm_sig(_sm_out[_sm_next, 2]) < 0.0015
+      and abs(float(_sm_out[_sm_next, 2].mean())) < 0.0015
+      and _sm_sig(_sm_out[_sm_up, 0] - 3.0) < 0.0015
+      and abs(float(_sm_out[_sm_up, 0].mean()) - 3.0) < 0.0015,
+      (_sm_sig(_sm_out[_sm_next, 2]), float(_sm_out[_sm_next, 2].mean()),
+       _sm_sig(_sm_out[_sm_up, 0] - 3.0), float(_sm_out[_sm_up, 0].mean())))
+check("...and inside the corner's cell no point is carried past the cap",
+      _sm_corner.sum() > 100
+      and float(np.abs(_sm_out[_sm_corner] - _sm_pts[_sm_corner]).max())
+      <= cleanmod.SMOOTH_MAX_MOVE_M + 1e-6,
+      float(np.abs(_sm_out[_sm_corner] - _sm_pts[_sm_corner]).max()))
+# ⛔ THE CLUTTER FILLS ONE CELL OF THE FIRST GRID EXACTLY, so the shifted grid
+# quarters it into eight blocks that each pass the gate on their own. The
+# first two-grid cut smoothed it; the veto is what refuses it.
+check("a cell of clutter is no plane and is left exactly as it was -- even "
+      "though the shifted grid's quarters of it would pass",
+      np.array_equal(_sm_out[_sm_clutter], _sm_pts[_sm_clutter]))
+check("a return further from its plane than the cap is not dragged onto it",
+      np.array_equal(_sm_out[2 * _sm_xx.size], _sm_pts[2 * _sm_xx.size]),
+      (_sm_out[2 * _sm_xx.size], _sm_pts[2 * _sm_xx.size]))
+_sm_one = cleanmod.PlaneField(0.05)
+_sm_one.add(_sm_pts)
+check("the planes fitted in chunks are the planes fitted in one go",
+      np.allclose(_sm_one.project(_sm_pts)[0], _sm_out, atol=1e-6)
+      and _sm_one.cells == _sm_f.cells and _sm_one.planar_cells
+      == _sm_f.planar_cells)
+check("a cell short of returns is not a plane either",
+      cleanmod.PlaneField(0.05, min_points=10 ** 6).project(_sm_pts)[1] == 0)
+check("the gate follows the cell, and a centred corner sits under it while "
+      "clutter sits over it",
+      0.204 < cleanmod.SMOOTH_GATE_FRACTION < 0.289
+      and close(cleanmod.PlaneField(0.10).max_sigma_m,
+                0.10 * cleanmod.SMOOTH_GATE_FRACTION))
+check("the spec names its cell, the description says what it costs, and "
+      "the keep-mask has no opinion about it",
+      cleanmod.smooth_cell({"smooth": {"cell_m": 0.05}}) == 0.05
+      and cleanmod.smooth_cell({"stray": {}}) is None
+      and "5 cm" in cleanmod.describe({"smooth": {"cell_m": 0.05}})
+      and "corner" in cleanmod.describe({"smooth": {"cell_m": 0.05}})
+      and cleanmod.apply_spec(_sm_pts, None, {"smooth": {"cell_m": 0.05}})
+      is None)
+
+# The export: the planes are fitted in a first pass over the WHOLE capture
+# and every point written is on them, before the lean and the placement.
+
+
+class _SmWriter(object):
+    def __init__(self):
+        self.count = 0
+        self.got = []
+
+    def write(self, xyz, rgb, intensity=None):
+        self.count += len(xyz)
+        self.got.append(np.asarray(xyz, dtype=np.float64))
+
+    def close(self, keep=True):
+        pass
+
+
+class _SmFrame(object):
+    pitch_deg = 0.0
+
+    def describe(self):
+        return "smooth test frame"
+
+
+_sm_real = (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+            pipeline.choose_stride)
+_sm_walks = [0]
+
+
+def _sm_stream(path, meta, frame, **kw):
+    _sm_walks[0] += 1
+    half = len(_sm_pts) // 2
+    for chunk in (_sm_pts[:half], _sm_pts[half:]):
+        yield (np.asarray(chunk, dtype=np.float32),
+               np.full(len(chunk), 90, np.uint8))
+
+
+_sm_w = _SmWriter()
+try:
+    pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+    rig.frame_for = lambda meta, **kw: _SmFrame()
+    pipeline.choose_stride = lambda path, budget: 1
+    decode.stream_world_points = _sm_stream
+    _sm_info = pipeline.convert("ghost.pcap", "ghost.laz", writer=_sm_w,
+                                colour=False, photo=None,
+                                clean_spec={"smooth": {"cell_m": 0.05}})
+finally:
+    (pipeline.load_meta, rig.frame_for, decode.stream_world_points,
+     pipeline.choose_stride) = _sm_real
+_sm_written = np.vstack(_sm_w.got) if _sm_w.got else np.zeros((0, 3))
+check("⭐ THE EXPORT WRITES EVERY POINT ON THE PLANES",
+      _sm_written.shape == _sm_pts.shape
+      and np.allclose(_sm_written, _sm_out, atol=1e-5),
+      (_sm_written.shape,
+       None if not len(_sm_written) else float(np.abs(
+           _sm_written - _sm_out).max())))
+check("...the planes came from a first walk over the whole capture, so a "
+      "cell split across chunks is one cell",
+      _sm_walks[0] == 2 and _sm_info.get("smoothed_points") == _sm_moved
+      and "5 cm" in (_sm_info.get("cleaned") or ""),
+      (_sm_walks[0], _sm_info.get("smoothed_points"), _sm_info.get("cleaned")))
+_sm_pipe = open(pipeline.__file__, encoding="utf-8").read()
+check("...in the order the exporter promises: mask, then planes, then lean",
+      0 < _sm_pipe.find("if clean_spec:")
+      < _sm_pipe.find("if field[0] is not None:")
+      < _sm_pipe.find("seen = xyz if"))
+
+# The Studio door: the planes are fitted from the capture, the moved copy
+# sits beside the raw points, the page draws it, and the rule carries.
+_sm_srv = align.AlignServer([], out_path=None)
+_sm_scan = align.Scan("S.pcap", _sm_pts.copy(),
+                      np.full((len(_sm_pts), 3), 128, np.uint8), _sm_pts)
+_sm_scan.view_refl = (np.arange(len(_sm_pts)) % 200).astype(np.uint8)
+_sm_cloud = align.Scan("C.cloud", _sm_pts.copy(),
+                       np.full((len(_sm_pts), 3), 128, np.uint8), _sm_pts,
+                       source="cloud")
+_sm_srv.scans = [_sm_scan, _sm_cloud]
+_sm_real2 = (align.pipeline.load_meta, align.pipeline.rig.frame_for,
+             align.pipeline.decode.stream_world_points)
+try:
+    align.pipeline.load_meta = lambda p: ({"zero": {}}, p + ".json")
+    align.pipeline.rig.frame_for = lambda meta, **kw: _SmFrame()
+    align.pipeline.decode.stream_world_points = _sm_stream
+    _sm_walks[0] = 0
+    _sm_got = _sm_srv.clean_scan(0, smooth=0.05)
+    _sm_buf = _sm_scan.buffer().arrays()[0]
+    check("⭐ THE STUDIO FITS THE PLANES FROM THE CAPTURE AND DRAWS THE MOVED "
+          "POINTS, WITH THE RAW ONES KEPT BESIDE THEM",
+          _sm_got.get("ok") and _sm_walks[0] == 1
+          and _sm_scan.clean == {"smooth": {"cell_m": 0.05}}
+          and np.array_equal(_sm_scan.xyz, _sm_pts)
+          and _sm_scan.smooth_xyz is not None
+          and np.allclose(_sm_buf, _sm_out, atol=1e-6)
+          and _sm_got.get("moved") == _sm_moved,
+          (_sm_got.get("error"), _sm_walks[0], _sm_scan.clean,
+           _sm_got.get("moved")))
+    check("...and it says what it did, with the cells it left alone counted",
+          "moved onto the plane" in (_sm_got.get("text") or "")
+          and "untouched" in (_sm_got.get("text") or "")
+          and "scans" in _sm_got, _sm_got.get("text"))
+    _sm_both = _sm_srv.clean_scan(0, stray=True, voxel_m=0.20, neighbours=1,
+                                  smooth=0.05)
+    check("smoothing and a stray rule wear together, and one cleared press "
+          "takes both off",
+          _sm_both.get("ok") and "stray" in (_sm_scan.clean or {})
+          and "smooth" in (_sm_scan.clean or {})
+          and _sm_scan.keep is not None and _sm_scan.smooth_xyz is not None
+          and _sm_srv.clean_scan(0).get("cleared")
+          and _sm_scan.clean is None and _sm_scan.smooth_xyz is None,
+          (_sm_both.get("error"), _sm_scan.clean))
+    _sm_no = _sm_srv.clean_scan(1, smooth=0.05)
+    check("an exported cloud is refused by name -- there is no capture to "
+          "fit the planes from",
+          not _sm_no.get("ok") and "exported cloud" in _sm_no.get("error", "")
+          and _sm_cloud.smooth_xyz is None, _sm_no)
+    check("the stored rule comes back as the arguments that made it, "
+          "smoothing included",
+          _sm_srv._spec_args({"smooth": {"cell_m": 0.07}}).get("smooth")
+          == 0.07 and _sm_srv._spec_args({"stray": {}}).get("smooth") is None)
+    _sm_srv.clean_scan(0, stray=True, voxel_m=0.20, neighbours=1)
+    _sm_all = _sm_srv.clean_all(smooth=0.05)
+    check("⭐ A WHOLE-JOB SMOOTH KEEPS EACH CLOUD'S OWN STRAY RULE, and names "
+          "the cloud it could not smooth without stopping",
+          _sm_all.get("ok") and "stray" in (_sm_scan.clean or {})
+          and "smooth" in (_sm_scan.clean or {})
+          and [r["name"] for r in _sm_all["refused"]] == ["C.cloud"]
+          and "smoothed" in _sm_all.get("text", ""),
+          (_sm_all.get("refused"), _sm_scan.clean, _sm_all.get("text")))
+    _sm_off = _sm_srv.clean_all(smooth=0)
+    check("...and a whole-job smooth OFF takes the planes away and keeps the "
+          "stray rule",
+          _sm_off.get("ok") and "stray" in (_sm_scan.clean or {})
+          and "smooth" not in (_sm_scan.clean or {})
+          and _sm_scan.smooth_xyz is None, (_sm_off.get("error"),
+                                             _sm_scan.clean))
+    _sm_sweep = _sm_srv.clean_all(stray=True, voxel_m=0.20, neighbours=1,
+                                  specs=None)
+    _sm_srv.clean_scan(0, stray=True, voxel_m=0.20, neighbours=1, smooth=0.05)
+    _sm_sweep = _sm_srv.clean_all(stray=True, voxel_m=0.20, neighbours=1)
+    check("...and a whole-job stray sweep keeps the smoothing a cloud wears",
+          _sm_sweep.get("ok") and "smooth" in (_sm_scan.clean or {})
+          and _sm_scan.smooth_xyz is not None, _sm_scan.clean)
+    # The re-read: the rule carries and the planes are fitted again on the
+    # fresh cloud, because the moved coordinates cannot carry any more than
+    # the mask can.
+    _sm_fresh = align.Scan("S.pcap", _sm_pts.copy(),
+                           np.full((len(_sm_pts), 3), 128, np.uint8), _sm_pts)
+    _sm_fresh.view_refl = _sm_scan.view_refl
+    _sm_walks[0] = 0
+    check("a re-read carries the rule and fits the planes again on the new "
+          "cloud",
+          _sm_srv._carry_clean(_sm_fresh, {"smooth": {"cell_m": 0.05}})
+          is True and _sm_walks[0] == 1 and _sm_fresh.smooth_xyz is not None
+          and np.allclose(_sm_fresh.smooth_xyz, _sm_out, atol=1e-6)
+          and _sm_fresh.clean == {"smooth": {"cell_m": 0.05}},
+          (_sm_walks[0], _sm_fresh.clean))
+    _sm_gone = align.Scan("C.cloud", _sm_pts.copy(),
+                          np.full((len(_sm_pts), 3), 128, np.uint8), _sm_pts,
+                          source="cloud")
+    check("...and one that cannot be shown is dropped and said, not kept "
+          "quietly for the export",
+          _sm_srv._carry_clean(_sm_gone, {"smooth": {"cell_m": 0.05}})
+          is False and _sm_gone.clean is None)
+finally:
+    (align.pipeline.load_meta, align.pipeline.rig.frame_for,
+     align.pipeline.decode.stream_world_points) = _sm_real2
+# The page: the button, the whole-job button, and every body that carries a
+# rule carries the smoothing with it -- an undo that forgot it would hand the
+# operator a rougher wall than the one before the thing being undone.
+check("the page has the two buttons wired to the two doors",
+      "$('clnsmooth').onclick=cleanSmooth;" in align.PAGE
+      and "$('clnsmoothall').onclick=smoothEverywhere;" in align.PAGE
+      and 'id="clnsm"' in align.PAGE)
+check("...the undo re-sends the smoothing with the rest of the rule",
+      "smooth:(spec.smooth ? spec.smooth.cell_m : null)"
+      in _js_func("sendCleanSpec"))
+check("...a stray or weak-return press carries the smoothing the cloud "
+      "wears rather than switching it off",
+      "smooth:smoothOf(s)" in _js_func("cleanStray")
+      and "smooth:smoothOf(s)" in _js_func("cleanWeak"))
+check("...the smooth press carries the cloud's stray and weak-return rule",
+      "min_refl:(c.min_refl==null ? null : c.min_refl)"
+      in _js_func("cleanSmooth"))
+_sm_se = re.sub(r"/\*.*?\*/", "", _js_func("smoothEverywhere"), flags=re.S)
+check("...and the whole-job press goes through the whole-job door, armed on "
+      "the setting, with its undo registered before the work",
+      "await post('clean/all', body)" in _sm_se
+      and "if(SMOOTH_ARM!==sig)" in _sm_se
+      and 0 <= _sm_se.find("remember('smoothing every cloud'")
+      < _sm_se.find("await post('clean/all', body)"))
+check("...through the routes the page posts to",
+      _ALIGN_SRC.count('smooth=body.get("smooth")') == 2)
+
 # --- the cut history is a fold ----------------------------------------------
 # ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in
 # a drop down tab I can expand or shrink so it doesn't take up tons of space".
