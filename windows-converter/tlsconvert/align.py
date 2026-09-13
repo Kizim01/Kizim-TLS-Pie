@@ -1131,9 +1131,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     body.get("index"), body.get("stray"),
                     body.get("drop_weakest"), body.get("voxel_m"),
                     body.get("neighbours"), body.get("min_refl"),
-                    smooth=body.get("smooth")))
+                    smooth=body.get("smooth"),
+                    max_range=body.get("max_range")))
             if path == "/clean/levels":
                 return self._json(srv.strength_of(body.get("index")))
+            if path == "/clean/default":
+                return self._json(srv.set_default_clean(
+                    body.get("max_range")))
             # ⛔ ONE DOOR FOR THE WHOLE-JOB CLEAN AND ITS UNDO. `specs` sends
             # a stored rule back to each cloud, so the press and the press
             # that takes it back cannot describe the rule differently.
@@ -1141,7 +1145,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.clean_all(
                     body.get("stray"), body.get("drop_weakest"),
                     body.get("voxel_m"), body.get("neighbours"),
-                    body.get("specs"), smooth=body.get("smooth")))
+                    body.get("specs"), smooth=body.get("smooth"),
+                    max_range=body.get("max_range")))
             # ⭐ EVERY PHOTOGRAPH DOOR FIRST HEARS WHAT HAS BEEN CUT, from
             # this one line, so no solve behind any of them can read a point
             # the operator deleted. The page attaches the list in ITS one
@@ -1296,6 +1301,13 @@ class AlignServer(object):
         self.max_points = max_points
         self.align_voxel = align_voxel
         self.project_path = None
+        # ⭐ THE RULE EVERY NEW CAPTURE GETS AS IT ARRIVES, or None. Asked
+        # for as "on import so I can see the quality of the data, and on
+        # export exactly what I see" (2026-09-13): a reach ("keep within
+        # 4 m") applied by `add` the moment a capture is decoded, so the
+        # picture is the clean one from the first frame, and the same rule
+        # the export reads from the scan. Saved with the project.
+        self.default_clean = None
         self._progress = {"stage": "", "n": 0, "total": 0, "busy": False}
         self.blobs = []
         # When the page last said it was alive; None until it first does.
@@ -3218,13 +3230,38 @@ class AlignServer(object):
 
         first = len(self.scans)
         self.scans.extend(fresh)
+        # ⭐ THE DEFAULT RULE GOES ON AS THE CAPTURE ARRIVES, through the
+        # same carrier a re-read and a project open use, so the first frame
+        # the operator sees is the clean one and the export reads the same
+        # rule off the scan. A capture it cannot go on is named, not skipped.
+        unruled = []
+        if self.default_clean:
+            for scan in fresh:
+                if not self._carry_clean(scan, dict(self.default_clean)):
+                    unruled.append(scan.name)
         # ⛔ EVERY scan is re-encoded, not just the new one. The per-scan share
         # of the point budget shrinks as scans arrive, so encoding only the
         # newcomer leaves the earlier ones over budget -- which is precisely the
         # case where a card refuses the upload.
         meta = self._rebuild()
         return {"ok": True, "added": meta[first:], "scans": meta,
-                "folder_clash": clash}
+                "folder_clash": clash,
+                "default_clean": self.default_clean, "unruled": unruled}
+
+    def set_default_clean(self, max_range=None):
+        """The rule every capture gets as it is added: a reach, or nothing."""
+        try:
+            reach = float(max_range) if max_range else 0.0
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "the reach must be a number of metres"}
+        self.default_clean = {"max_range": reach} if reach > 0 else None
+        return {"ok": True, "default_clean": self.default_clean,
+                "text": ("every capture opened from now on keeps only the "
+                         "returns within %g m of its tripod; the ones "
+                         "already open are as they were" % reach
+                         if reach > 0 else
+                         "captures opened from now on arrive as the "
+                         "instrument measured them")}
 
     def remove(self, index):
         """
@@ -4023,7 +4060,7 @@ class AlignServer(object):
 
     def clean_scan(self, index, stray=None, drop_weakest=None,
                    voxel_m=None, neighbours=None, min_refl=None,
-                   smooth=None):
+                   smooth=None, max_range=None):
         """One cloud cleaned, with the page's new scan list attached.
 
         ⛔ THE REBUILD IS THE ONLY THING THIS ADDS, and it is split out
@@ -4034,7 +4071,8 @@ class AlignServer(object):
         """
         out = self._clean_one(index, stray=stray, drop_weakest=drop_weakest,
                               voxel_m=voxel_m, neighbours=neighbours,
-                              min_refl=min_refl, smooth=smooth)
+                              min_refl=min_refl, smooth=smooth,
+                              max_range=max_range)
         if out.get("ok"):
             out["scans"] = self._rebuild()
         return out
@@ -4057,10 +4095,12 @@ class AlignServer(object):
                 "neighbours": stray.get("neighbours"),
                 "min_refl": spec.get("min_refl"),
                 "drop_weakest": None,
-                "smooth": (spec.get("smooth") or {}).get("cell_m")}
+                "smooth": (spec.get("smooth") or {}).get("cell_m"),
+                "max_range": spec.get("max_range")}
 
     def clean_all(self, stray=None, drop_weakest=None, voxel_m=None,
-                  neighbours=None, specs=None, smooth=None):
+                  neighbours=None, specs=None, smooth=None,
+                  max_range=None):
         """
         One cleaning rule applied to every open cloud, in one press.
 
@@ -4104,16 +4144,24 @@ class AlignServer(object):
             # keeps each cloud's own stray and weak-return rule and adds the
             # planes (`smooth` > 0) or takes them away (0); a stray sweep
             # keeps whatever smoothing each cloud already wears.
+            # The reach ("keep within N m") rides the same way: a reach sweep
+            # keeps every other rule a cloud wears, and every other sweep
+            # keeps the reach.
             jobs = []
             for i in range(len(self.scans)):
                 had = self._spec_args(getattr(self.scans[i], "clean", None))
-                if smooth is not None:
+                if smooth is not None or max_range is not None:
                     args = dict(had)
-                    args["smooth"] = float(smooth) if smooth else None
+                    if smooth is not None:
+                        args["smooth"] = float(smooth) if smooth else None
+                    if max_range is not None:
+                        args["max_range"] = (float(max_range) if max_range
+                                             else None)
                 else:
                     args = {"stray": stray, "drop_weakest": drop_weakest,
                             "voxel_m": voxel_m, "neighbours": neighbours,
-                            "min_refl": None, "smooth": had.get("smooth")}
+                            "min_refl": None, "smooth": had.get("smooth"),
+                            "max_range": had.get("max_range")}
                 jobs.append((i, args))
         done, refused = [], []
         gone = shown = moved = 0
@@ -4162,6 +4210,16 @@ class AlignServer(object):
             text = ("%d of %d clouds back on the points the instrument "
                     "measured; their stray and weak-return rules are kept."
                     % (len(done), len(jobs)))
+        elif max_range:
+            text = ("%d of %d clouds kept within %g m of their tripod: %s of "
+                    "%s preview points hidden (%.2f%%). The export applies "
+                    "the same reach to every point in each capture."
+                    % (len(done), len(jobs), float(max_range),
+                       "{:,}".format(gone), "{:,}".format(shown),
+                       100.0 * gone / max(shown, 1)))
+        elif max_range is not None:
+            text = ("%d of %d clouds reach as far as they did; their other "
+                    "rules are kept." % (len(done), len(jobs)))
         else:
             text = ("%d of %d clouds cleaned: %d of %d preview points hidden "
                     "(%.2f%%). The export applies the same rule to every "
@@ -4174,7 +4232,7 @@ class AlignServer(object):
 
     def _clean_one(self, index, stray=None, drop_weakest=None,
                    voxel_m=None, neighbours=None, min_refl=None,
-                   smooth=None, progress=True):
+                   smooth=None, max_range=None, progress=True):
         """
         Take the rubbish out of one cloud: strays, weak returns, or both.
 
@@ -4246,6 +4304,14 @@ class AlignServer(object):
         # is left alone, which is the whole of what it costs.
         if smooth:
             spec["smooth"] = {"cell_m": float(smooth)}
+        # ⭐ A REACH: returns further than this from the tripod are hidden,
+        # in this cloud's own frame. Asked for on 2026-09-13 ("get rid of
+        # points further than 4 metres, I want the cleanest results"): the
+        # far wall is where the decoder's azimuth smear and the outer
+        # lasers' elevation bias live, and a walked shoot keeps every wall
+        # through whichever capture stood nearest it.
+        if max_range:
+            spec["max_range"] = float(max_range)
 
         if not spec:
             scan.clean, scan.keep, scan.smooth_xyz = None, None, None
@@ -4279,8 +4345,9 @@ class AlignServer(object):
         if mask is not None and not mask.any():
             return {"ok": False,
                     "error": "that would remove every point in %s. Loosen it: "
-                             "fewer neighbours needed, a larger cell, or a "
-                             "smaller share of weak returns." % scan.name}
+                             "fewer neighbours needed, a larger cell, a "
+                             "smaller share of weak returns, or a longer "
+                             "reach." % scan.name}
         # ⛔ THE PLANES ARE FITTED AFTER THE REFUSAL ABOVE AND BEFORE THE RULE
         # IS WRITTEN ON THE SCAN, so a refused press leaves the cloud exactly
         # as it was -- no half-applied rule, in either direction.
@@ -5863,6 +5930,7 @@ class AlignServer(object):
                 "box": (state or {}).get("box"),
                 "view": (state or {}).get("view"),
                 "align_voxel": self.align_voxel,
+                "default_clean": self.default_clean,
                 "out_path": self.out_path}
         tmp = path + ".part"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -6001,9 +6069,11 @@ class AlignServer(object):
         self.scans = fresh
         self.align_voxel = voxel
         self.project_path = path
+        self.default_clean = body.get("default_clean") or None
         return {"ok": True, "scans": self._rebuild(), "path": path,
                 "lost_photos": lost, "refound_photos": refound,
                 "unpainted_photos": unpainted,
+                "default_clean": self.default_clean,
                 "edits": body.get("edits") or [], "box": body.get("box"),
                 "pairs": body.get("pairs") or [],
                 "level": body.get("level"),
@@ -7069,6 +7139,24 @@ PAGE = r"""<!doctype html>
     full density to fit the planes — a few seconds a cloud — and the export
     moves every point onto the same planes. <b>Put them back</b> takes it off
     with the rest.</div>
+  <label>Keep within <span class="num" id="clnrv">4 m</span></label>
+  <input id="clnr" type="range" min="1" max="30" step="0.5" value="4">
+  <div class="row"><button id="clnrange" class="go">Keep within</button>
+    <button id="clnrangeall">Keep within, everywhere</button></div>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    Returns further than this from the tripod are hidden, measured in this
+    cloud's own frame, so the far wall's smear and the outer lasers' bias
+    never reach the file. On a walked shoot a wall is kept by whichever
+    capture stood nearest it. The other rules on the cloud stay as they
+    are; <b>Put them back</b> takes this off with the rest.</div>
+  <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+    <input type="checkbox" id="clnauto" style="margin:0">
+    <span>on every scan I open</span></label>
+  <div style="font-size:10.5px;color:var(--faint);margin:2px 0 4px">
+    Ticked, each capture arrives already kept within the reach above, so
+    the first picture is the clean one and the export is exactly what the
+    view shows. Saved with the project. The clouds already open are not
+    touched — use <b>Keep within, everywhere</b> for those.</div>
   <div id="clnsay" style="font-size:10.5px;color:var(--faint)"></div>
   </div></div>
 <div class="tray" id="ty_clip"><div class="trayhead" title="Drag to move this tray above or below another. Click to fold it." onpointerdown="trayGrab(event,'clip')"><span class="fold">▾</span><b class="grow">Clip box</b><button class="x" title="Shut this tray. It is still in the menu at the top — nothing is lost by closing it." onclick="event.stopPropagation();closeTray('clip')">✕</button></div><div class="traybody">
@@ -10882,7 +10970,9 @@ async function sendCleanSpec(index, spec){
                        neighbours:(spec.stray||{}).neighbours,
                        min_refl:(spec.min_refl==null ? null : spec.min_refl),
                        drop_weakest:null,
-                       smooth:(spec.smooth ? spec.smooth.cell_m : null)} : {};
+                       smooth:(spec.smooth ? spec.smooth.cell_m : null),
+                       max_range:(spec.max_range==null ? null
+                                                       : spec.max_range)} : {};
   const j = await post('clean', Object.assign({index:index}, body));
   if(j && j.ok) await refreshScans(j);
   return j;
@@ -12640,6 +12730,7 @@ async function openProject(path){
        The 2026-09-06 report ("the images lose match") was this, from the
        outside. Found-again ones are said too: a photograph the open had to
        go looking for is a path the next save will rewrite. */
+    showDefaultReach(j.default_clean);
     const gone=j.lost_photos||[], moved=j.refound_photos||[],
           failed=j.unpainted_photos||[];
     let photos='';
@@ -14164,6 +14255,7 @@ function showClean(){
   $('clnvv').textContent = $('clnv').value+' cm';
   $('clnnv').textContent = $('clnn').value;
   $('clnsmv').textContent = $('clnsm').value+' cm';
+  $('clnrv').textContent = $('clnr').value+' m';
   const w=+$('clnw').value;
   $('clnwv').textContent = w ? ('weakest '+w+'%') : 'off';
 }
@@ -14186,19 +14278,36 @@ async function sendClean(body, what){
 function smoothOf(s){
   return (s&&s.clean&&s.clean.smooth) ? s.clean.smooth.cell_m : null;
 }
+/* And the reach it wears, for the same reason. */
+function reachOf(s){
+  return (s&&s.clean&&s.clean.max_range!=null) ? s.clean.max_range : null;
+}
 function cleanStray(){
   const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
   return sendClean({stray:true, voxel_m:(+$('clnv').value)/100,
                     neighbours:+$('clnn').value,
                     drop_weakest:(+$('clnw').value)||null,
-                    smooth:smoothOf(s)},
+                    smooth:smoothOf(s), max_range:reachOf(s)},
                    'looking for strays');
 }
 function cleanWeak(){
   const s=cleanWho(); if(s) remember('cleaning '+s.name, undoClean(s.index));
   return sendClean({drop_weakest:(+$('clnw').value)||null,
-                    smooth:smoothOf(s)},
+                    smooth:smoothOf(s), max_range:reachOf(s)},
                    'sorting by return strength');
+}
+/* ⭐ KEEP WITHIN: returns further than the slider from the tripod are
+   hidden, in this cloud's own frame; every other rule the cloud wears is sent
+   back with it. */
+function cleanRange(){
+  const s=cleanWho(); if(s) remember('reaching '+s.name, undoClean(s.index));
+  const c=(s&&s.clean)||{};
+  return sendClean({stray:!!c.stray, voxel_m:(c.stray||{}).voxel_m,
+                    neighbours:(c.stray||{}).neighbours,
+                    min_refl:(c.min_refl==null ? null : c.min_refl),
+                    drop_weakest:null, smooth:smoothOf(s),
+                    max_range:+$('clnr').value},
+                   'measuring the reach');
 }
 /* ⭐ SMOOTH SURFACES: every return in a cell that is a plane goes onto that
    plane, fitted from the WHOLE capture (a few seconds a cloud). The stray and
@@ -14210,7 +14319,8 @@ function cleanSmooth(){
   return sendClean({stray:!!c.stray, voxel_m:(c.stray||{}).voxel_m,
                     neighbours:(c.stray||{}).neighbours,
                     min_refl:(c.min_refl==null ? null : c.min_refl),
-                    drop_weakest:null, smooth:(+$('clnsm').value)/100},
+                    drop_weakest:null, smooth:(+$('clnsm').value)/100,
+                    max_range:reachOf(s)},
                    'fitting the surfaces');
 }
 function cleanOff(){
@@ -14294,6 +14404,64 @@ async function smoothEverywhere(){
         ' Ctrl-Z puts every rule back exactly as it was.',
         bad.length ? 'warn' : null);
   }catch(e){ say('Could not smooth the job: '+e.message, 'bad'); }
+  finally{ watch(false); }
+}
+/* ⭐ ON EVERY SCAN I OPEN: the server keeps the reach as a default and
+   puts it on each capture as it is added, so the first frame is the clean
+   one. Sent on the tick, and again when the slider moves while ticked, so
+   the number on screen is always the number the next import gets. */
+async function setDefaultReach(){
+  const on=$('clnauto').checked;
+  const j=await post('clean/default', {max_range:on ? +$('clnr').value : null});
+  if(!j || !j.ok) return say('Could not set the reach for new scans: '+
+                             ((j&&j.error)||'no answer'), 'bad');
+  say(j.text||'Done.'); dirty();
+}
+/* The project carries it: shown on open, cleared when there is none. */
+function showDefaultReach(d){
+  const on=!!(d && d.max_range!=null);
+  $('clnauto').checked=on;
+  if(on){ $('clnr').value=d.max_range; showClean(); }
+}
+/* ⭐ THE WHOLE JOB KEPT WITHIN ONE REACH OF ITS TRIPODS, through the
+   whole-job door, each cloud keeping its other rules. */
+let RANGE_ARM=null;
+async function rangeEverywhere(){
+  if(!V.scans.length) return say('Add a scan first.', 'warn');
+  const body={max_range:+$('clnr').value};
+  const sig=JSON.stringify(body)+' x '+V.scans.length;
+  if(RANGE_ARM!==sig){
+    RANGE_ARM=sig;
+    return say('This hides every return further than '+$('clnr').value+
+               ' m from its own tripod, in ALL '+V.scans.length+' clouds. '+
+               'A wall further than that from every tripod disappears from '+
+               'the job. Press again to go ahead.', 'warn');
+  }
+  RANGE_ARM=null;
+  const was=V.scans.map(s=>({index:s.index, spec:s.clean||null}));
+  remember('reaching every cloud', async()=>{
+    watch(true);
+    try{
+      const b=await post('clean/all', {specs:was});
+      if(b && b.ok) await refreshScans(b);
+      else say('The rules would not go back: '+((b&&b.error)||'no answer'),
+               'bad');
+    }finally{ watch(false); }
+  });
+  say('measuring the reach of every cloud…'); watch(true);
+  try{
+    const j=await post('clean/all', body);
+    if(!j.ok) throw new Error(j.error||'could not set the reach');
+    await refreshScans(j);
+    const bad=j.refused||[];
+    $('clnsay').textContent=j.text||'';
+    say((j.text||'Done.')+
+        (bad.length ? ' ⚠ '+bad.length+' left alone: '+
+           bad.slice(0,3).map(r=>r.name+' — '+r.error).join('; ')+
+           (bad.length>3 ? ' …and '+(bad.length-3)+' more' : '') : '')+
+        ' Ctrl-Z puts every rule back exactly as it was.',
+        bad.length ? 'warn' : null);
+  }catch(e){ say('Could not set the reach: '+e.message, 'bad'); }
   finally{ watch(false); }
 }
 let CLEAN_ARM=null;
@@ -15993,7 +16161,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('clnall').onclick=cleanEverywhere;
   $('clnsmooth').onclick=cleanSmooth;
   $('clnsmoothall').onclick=smoothEverywhere;
-  ['clnv','clnn','clnw','clnsm'].forEach(id=>{ $(id).oninput=showClean; });
+  $('clnrange').onclick=cleanRange;
+  $('clnrangeall').onclick=rangeEverywhere;
+  $('clnauto').onchange=setDefaultReach;
+  $('clnr').onchange=()=>{ if($('clnauto').checked) setDefaultReach(); };
+  ['clnv','clnn','clnw','clnsm','clnr'].forEach(id=>{
+    $(id).oninput=showClean; });
   showClean();
   $('level').onclick=()=>setTool(V.tool==='level'?'':'level');
   $('north').onclick=()=>setTool(V.tool==='north'?'':'north');

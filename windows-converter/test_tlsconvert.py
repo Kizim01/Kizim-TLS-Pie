@@ -10914,6 +10914,109 @@ check("...and the whole-job press goes through the whole-job door, armed on "
 check("...through the routes the page posts to",
       _ALIGN_SRC.count('smooth=body.get("smooth")') == 2)
 
+# --- a reach: returns further than N m from the tripod are hidden -----------
+#
+# "can you get rid of points further than 4 meters cos i want the cleanest
+# results" (operator, 2026-09-13). The far wall is where the azimuth smear and
+# the outer lasers' bias live; a walked shoot keeps every wall through the
+# capture that stood nearest it. A fourth rule on the same carriers.
+print("\nkeep within a reach")
+_kr_pts = np.array([[1.0, 0.0, 0.0], [3.9, 0.0, 0.0], [4.1, 0.0, 0.0],
+                    [0.0, 0.0, 9.0]], dtype=np.float32)
+check("the reach is a keep-mask measured from the tripod in the cloud's own "
+      "frame, and the description says so",
+      cleanmod.apply_spec(_kr_pts, None, {"max_range": 4.0}).tolist()
+      == [True, True, False, False]
+      and "4 m" in cleanmod.describe({"max_range": 4.0}))
+_kr_srv = align.AlignServer([], out_path=None)
+_kr_srv.scans = [_dense_scan(os.path.join(_ca_dir, "R.pcap"), seed=3)]
+_kr_got = _kr_srv.clean_scan(0, max_range=4.0)
+check("⭐ KEEP WITHIN HIDES THE FAR RETURNS AND NOTHING ELSE, and the rule "
+      "is on the scan for the export",
+      _kr_got.get("ok") and _kr_got.get("dropped") == 5
+      and _kr_srv.scans[0].clean == {"max_range": 4.0}
+      and "scans" in _kr_got, _kr_got)
+_kr_both = _kr_srv.clean_scan(0, stray=True, voxel_m=0.20, neighbours=1,
+                              max_range=4.0)
+check("...and wears together with a stray rule, and comes back as the "
+      "arguments that made it",
+      _kr_both.get("ok") and "stray" in (_kr_srv.scans[0].clean or {})
+      and _kr_srv.scans[0].clean.get("max_range") == 4.0
+      and _kr_srv._spec_args({"max_range": 2.5}).get("max_range") == 2.5,
+      _kr_srv.scans[0].clean)
+_kr_all = _kr_srv.clean_all(max_range=3.0)
+check("a whole-job reach keeps each cloud's other rules and says what it "
+      "hid", _kr_all.get("ok") and "stray" in (_kr_srv.scans[0].clean or {})
+      and _kr_srv.scans[0].clean.get("max_range") == 3.0
+      and "kept within 3 m" in _kr_all.get("text", ""),
+      (_kr_srv.scans[0].clean, _kr_all.get("text")))
+check("...and a whole-job reach OFF takes only the reach away",
+      _kr_srv.clean_all(max_range=0).get("ok")
+      and "stray" in (_kr_srv.scans[0].clean or {})
+      and "max_range" not in (_kr_srv.scans[0].clean or {}),
+      _kr_srv.scans[0].clean)
+check("...and a whole-job stray sweep keeps the reach a cloud wears",
+      _kr_srv.clean_scan(0, max_range=4.0).get("ok")
+      and _kr_srv.clean_all(stray=True, voxel_m=0.20, neighbours=1).get("ok")
+      and _kr_srv.scans[0].clean.get("max_range") == 4.0,
+      _kr_srv.scans[0].clean)
+check("the page has the two buttons wired, every rule body carries the "
+      "reach, and the undo re-sends it",
+      "$('clnrange').onclick=cleanRange;" in align.PAGE
+      and "$('clnrangeall').onclick=rangeEverywhere;" in align.PAGE
+      and 'id="clnr"' in align.PAGE
+      and "max_range:reachOf(s)" in _js_func("cleanStray")
+      and "max_range:reachOf(s)" in _js_func("cleanWeak")
+      and "max_range:reachOf(s)" in _js_func("cleanSmooth")
+      and "smooth:smoothOf(s)" in _js_func("cleanRange")
+      and "max_range:(spec.max_range==null ? null" in _js_func("sendCleanSpec")
+      and "await post('clean/all', body)" in _js_func("rangeEverywhere")
+      and _ALIGN_SRC.count('max_range=body.get("max_range")') == 2)
+
+# ⭐ AND ON IMPORT: "i want it both on import so i can see the quality of the
+# data and on export to be exactly what i see in the program view". The server
+# keeps the reach as a default and puts it on each capture as `add` decodes
+# it, through the same carrier a re-read uses; the project saves it.
+_kd_srv = align.AlignServer([], out_path=None)
+_kd_set = _kd_srv.set_default_clean(4.0)
+_kd_path = os.path.join(_ca_dir, "D.pcap")
+io.open(_kd_path, "wb").close()
+_kd_real_load = align.load
+align.load = lambda paths, **kw: [_dense_scan(p, seed=4) for p in paths]
+try:
+    _kd_add = _kd_srv.add([_kd_path], colour=False)
+finally:
+    align.load = _kd_real_load
+check("⭐ A CAPTURE ADDED WITH THE REACH SWITCHED ON ARRIVES ALREADY KEPT "
+      "WITHIN IT, the rule on the scan for the export",
+      _kd_set.get("ok") and _kd_add.get("ok")
+      and _kd_srv.scans[0].clean == {"max_range": 4.0}
+      and _kd_srv.scans[0].keep is not None
+      and int((~_kd_srv.scans[0].keep).sum()) == 5
+      and _kd_add.get("default_clean") == {"max_range": 4.0}
+      and _kd_add.get("unruled") == [],
+      (_kd_set, _kd_add.get("error"), _kd_srv.scans[0].clean))
+_kd_tmp = os.path.join(_ca_dir, "reach.tlspie")
+_kd_srv.save_project(_kd_tmp, {"setups": []})
+check("...and the project carries the switch, so a reopened job imports "
+      "the same way",
+      json.load(open(_kd_tmp, encoding="utf-8")).get("default_clean")
+      == {"max_range": 4.0}
+      and 'self.default_clean = body.get("default_clean") or None'
+      in _ALIGN_SRC)
+check("...switched off, the next capture arrives as measured",
+      _kd_srv.set_default_clean(None).get("ok")
+      and _kd_srv.default_clean is None)
+check("...and the page ticks it, posts it, re-posts it when the slider "
+      "moves while ticked, and reads it back on open",
+      'id="clnauto"' in align.PAGE
+      and "$('clnauto').onchange=setDefaultReach;" in align.PAGE
+      and "if($('clnauto').checked) setDefaultReach();" in align.PAGE
+      and "await post('clean/default', {max_range:on ? +$('clnr').value : null})"
+      in _js_func("setDefaultReach")
+      and "showDefaultReach(j.default_clean);" in _js_func("openProject")
+      and 'path == "/clean/default"' in _ALIGN_SRC)
+
 # --- the cut history is a fold ----------------------------------------------
 # ⭐ Asked for by the operator, 2026-09-06: "the history of deleted points in
 # a drop down tab I can expand or shrink so it doesn't take up tons of space".

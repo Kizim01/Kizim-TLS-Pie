@@ -10,7 +10,8 @@
 > make a wall less noisy; the pass MEASURED where a wall's thickness comes
 > from (first half) and then SHIPPED **Smooth surfaces** -- a third cleaning
 > rule in the Strays tray that moves every return onto the plane of its
-> own cell (second half). Exes rebuilt 2026-09-13 12:33-12:35 (Studio selftest 0, edgechromium, RTX 3050 Ti named; `tlsconvert.exe --gpu` 0, card agreeing with the processor). The Studio's code is
+> own cell (second half), then **Keep within N m** with an on-import
+> switch (third part). Exes rebuilt 2026-09-13 13:02-13:04 (Studio selftest 0, `tlsconvert.exe --gpu` 0 at 8.9x; the 12:33 build lacked the reach). The Studio's code is
 > otherwise the 55th pass's; its RESUME HERE still describes the exes'
 > other contents. The restart pointer's opening entries are older than
 > both; the newest LIVE STATE is the current one. Nothing is running. The
@@ -6570,7 +6571,31 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces SHIPPED
+### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ THIRD PART, SHIPPED (2026-09-13 ~13:00).** The operator: *"can you get
+rid of point further than 4 meters cos i want the cleanest results"*, then
+*"i want it both on import so i can see the quality of the data and on
+export to be exactly what i see in the program view"*.
+
+- **Keep within N m** is a fourth cleaning rule (`clean.apply_spec`
+  `max_range`; `_clean_one(max_range=)`; the tray's reach slider 1-30 m,
+  default 4; one cloud or **Keep within, everywhere**). A keep-mask on the
+  norm in the cloud's OWN frame, which is where both the preview and the
+  exporter apply every rule -- so the export is the view's rule on every
+  return. Every rule body on the page carries the reach the cloud wears
+  (`reachOf`), the undo re-sends it, the whole-job doors keep it.
+- **On every scan I open** (a tick under the slider): the server holds
+  `default_clean` (`/clean/default`, `set_default_clean`); `add` puts it
+  on each capture through `_carry_clean` as it is decoded, so the first
+  frame is the clean one; the project saves and restores it
+  (`default_clean` in the file; `showDefaultReach` on open). The clouds
+  already open are not touched -- the everywhere button is for those.
+- Said to the operator: the view is a thinned share of the returns and the
+  file has all of them, under the same rule; that is the only difference.
+  A wall further than the reach from EVERY tripod leaves the job.
+- Suite 2105 → 2116, 0 failed.
+
 
 **▶ SECOND HALF, SHIPPED (2026-09-13, by 12:40).** The operator: *"do it"*,
 on the first recommendation below. **Smooth surfaces** is the third rule in

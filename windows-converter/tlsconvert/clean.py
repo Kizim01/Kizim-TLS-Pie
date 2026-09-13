@@ -151,6 +151,9 @@ def describe(spec):
     bits = []
     if spec.get("min_refl") is not None:
         bits.append("returns weaker than %g dropped" % spec["min_refl"])
+    if spec.get("max_range") is not None:
+        bits.append("returns further than %g m from the tripod dropped"
+                    % spec["max_range"])
     # ⛔ PRESENCE, NOT TRUTHINESS. `{"stray": {}}` means "strays, with the
     # defaults", and testing it for truth makes an empty dict mean the exact
     # opposite -- no filtering at all, silently, with the spec still on record
@@ -181,6 +184,17 @@ def apply_spec(xyz, refl, spec, occupied=None):
     keep = None
     if spec.get("min_refl") is not None:
         keep = weak_mask(refl, spec["min_refl"])
+    # ⭐ A REACH: returns further than this from the tripod are dropped, in
+    # the cloud's OWN frame, which is where both callers apply this -- the
+    # sensor sits at the origin, so the range is the norm. The far wall is
+    # where the block-azimuth smear and the outer lasers' bias live
+    # (PROJECT_CONTEXT, 56th pass); a walked shoot keeps every wall through
+    # whichever capture stood nearest it. Asked for as "get rid of points
+    # further than 4 metres, I want the cleanest results" (2026-09-13).
+    if spec.get("max_range") is not None:
+        p = np.asarray(xyz, dtype=np.float64)
+        m = np.sqrt((p * p).sum(axis=1)) <= float(spec["max_range"])
+        keep = m if keep is None else (keep & m)
     if "stray" in spec:
         st = spec["stray"] or {}
         m = stray_mask(xyz, float(st.get("voxel_m", DEFAULT_VOXEL_M)),
