@@ -51,6 +51,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from . import decode
 from . import export
 from . import gpu as gpu_mod
 from . import library, pipeline, registration, viewer
@@ -278,6 +279,135 @@ def _stamp_pose(scan):
     is not a measurement.
     """
     scan.pose_decode = pipeline.rig.decode_stamp()
+
+
+def _rigid_between(P, Q):
+    """The 4x4 that carries points P onto Q best (Kabsch), Q ~ T @ P."""
+    P = np.asarray(P, dtype=np.float64)
+    Q = np.asarray(Q, dtype=np.float64)
+    cp, cq = P.mean(0), Q.mean(0)
+    H = (P - cp).T @ (Q - cq)
+    U, _s, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T)) or 1.0
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = cq - R @ cp
+    return T
+
+
+def decode_shift(path, stride=100, max_range=12.0):
+    """
+    How the corrected decode moves this capture's points against the
+    block decode, as one rigid 4x4 (block -> corrected), or None.
+
+    ⭐⭐ MEASURED PER CAPTURE, NOT ASSUMED. The corrected decode (2026-09-13)
+    is not a rigid motion of a capture -- the fan halves move against each
+    other -- but its rigid PART is what a saved pose is off by, and that
+    part is nearly the same everywhere it was measured: a tilt of 0.43 /
+    0.48 / 0.45 deg about the capture's own x axis on two Ministry of Sound
+    captures and one restaurant capture, three weeks and two rooms apart
+    (scratchpad mos/fan57b.py). Nearly is not exactly, and a capture is
+    cheap to ask: every 100th packet chunk, decoded both ways and fitted,
+    gives the full-capture answer to 0.001 deg in 0.2 s (mos/shift57.py:
+    stride 100 vs stride 5, 0.429 vs 0.430 on capture 10).
+
+    Only the block decode is reproducible from here (`--block-azimuth` is
+    still a door), so this carries a pose from a file stamped `block` or
+    from before stamps existed; a pose fitted under some other corrected
+    decode is named stale instead. Never raises.
+    """
+    try:
+        meta, _p = pipeline.load_meta(path)
+        if meta is None:
+            return None
+        rig = pipeline.rig
+        fb = rig.frame_for(meta, per_laser_azimuth=False)
+        fc = rig.frame_for(meta, per_laser_azimuth=True)
+        track = rig.tls_geometry.track_from_meta(meta)
+        t0 = meta["sweep"]["started_epoch"]
+        XB, XC = [], []
+        for st, raw in decode.read_packet_chunks(path, stride=stride):
+            ab, wb, rb, _f, tb = decode.decode_chunk(
+                st, raw, min_range=0.8, max_range=max_range, xp=np,
+                per_laser_azimuth=False)
+            ac, wc, rc, _f, tc = decode.decode_chunk(
+                st, raw, min_range=0.8, max_range=max_range, xp=np,
+                per_laser_azimuth=True)
+            if ab.shape != ac.shape:
+                return None
+            XB.append(decode.to_world(
+                fb, ab, wb, rb, decode.pan_angles(track, tb, t0, xp=np),
+                xp=np))
+            XC.append(decode.to_world(
+                fc, ac, wc, rc, decode.pan_angles(track, tc, t0, xp=np),
+                xp=np, z_offset_m=decode.vertical_offsets_for(wc)))
+        if not XB:
+            return None
+        P, Q = np.concatenate(XB), np.concatenate(XC)
+        if len(P) < 5000:
+            return None
+        return _rigid_between(P, Q)
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def _carry_decode(scan, pose, now):
+    """
+    Carry a placement made on the earlier decode onto these points.
+
+    ⭐⭐ THE POINTS MOVED UNDER THE POSE, SO MOVE THE POSE WITH THEM. The
+    scan's placement is M = Rz(yaw) L on its raw points p; the corrected
+    decode gives p' = T p (rigid part, `decode_shift`), so the placement
+    that puts the same surfaces in the same place is M' = M T^-1,
+    decomposed back into a Setup and a Lean by `registration._decompose`.
+    The photograph was solved on the LEVELLED cloud L p (see `colour_scan`),
+    and the new levelled cloud L' p' is that same cloud turned by the yaw
+    the decomposition moved, delta = yaw - yaw', plus L' s -- so the camera
+    keeps its pitch and roll, turns by delta, and its seat rides along. The
+    2026-09-14 report, "some of the images are not aligned now to the
+    point cloud", was the lean sitting half a degree off the points the
+    photograph had been fitted against; carrying the lean is what puts the
+    picture back.
+
+    Returns "carried", "refused" (that decode cannot be reproduced, or the
+    answer is not one this program stores), or None (nothing to carry).
+    """
+    was = getattr(scan, "pose_decode", None)
+    if was == now:
+        return None
+    has_photo = bool(pose and pose.get("yaw_deg") is not None)
+    lean = getattr(scan, "lean", None) or registration.Lean()
+    if not (scan.setup.sited or has_photo or not lean.is_identity()):
+        scan.pose_decode = now          # nothing was fitted on the old points
+        return None
+    if (was not in (None, "block")
+            or getattr(scan, "source", "capture") != "capture"):
+        return "refused"
+    T = decode_shift(scan.path)
+    if T is None:
+        return "refused"
+    M = registration._pose_matrix(scan.setup, lean)
+    su, le, ok = registration._decompose(M @ np.linalg.inv(T))
+    if not ok:
+        return "refused"
+    delta = ((scan.setup.yaw_deg - su.yaw_deg + 180.0) % 360.0) - 180.0
+    scan.setup, scan.lean = su, le
+    if has_photo:
+        pose["yaw_deg"] = ((float(pose["yaw_deg"]) + delta + 180.0)
+                           % 360.0) - 180.0
+        a = np.radians(delta)
+        rz = np.array([[np.cos(a), -np.sin(a), 0.0],
+                       [np.sin(a), np.cos(a), 0.0], [0.0, 0.0, 1.0]])
+        seat = np.array([float(pose.get("camera_x") or 0.0),
+                         float(pose.get("camera_y") or 0.0),
+                         float(pose.get("camera_z") or 0.0)])
+        seat = rz @ seat + le.matrix() @ T[:3, 3]
+        pose["camera_x"], pose["camera_y"], pose["camera_z"] = (
+            float(seat[0]), float(seat[1]), float(seat[2]))
+        pose["decode"] = now
+    scan.pose_decode = now
+    return "carried"
 
 
 def _seat_of(scan):
@@ -569,6 +699,9 @@ def colour_scan(scan, photo, camera_z=0.0, yaw=None,
     info = {"photo": photo, "name": os.path.basename(photo) if photo else None,
             "yaw_deg": None, "confidence": None, "reason": None,
             "given": False, "ok": False, "camera_z": float(camera_z or 0.0),
+            # the points this pose was solved on -- see `_stamp_pose`; a
+            # restore from a file puts the file's own back (`_carry_colour`)
+            "decode": pipeline.rig.decode_stamp(),
             "camera_x": float(camera_x or 0.0),
             "camera_y": float(camera_y or 0.0),
             # ⭐ HOW THE CAMERA LEANED, WHICH A HEADING CANNOT ABSORB. Measured
@@ -5909,6 +6042,10 @@ class AlignServer(object):
             # one typed, and Deep align would have skipped every one.
             if pose.get("yaw_deg") is None:
                 return None
+            # a pose saved before photographs were stamped takes its scan's
+            # stamp: it was fitted on whatever points the scan was placed on
+            scan.colour_info["decode"] = (pose.get("decode")
+                                          or getattr(scan, "pose_decode", None))
             saved_grade = pose.get("grade")
             scan.colour_info["grade"] = saved_grade or "given"
             scan.colour_info["rung"] = int(pose.get("rung") or 0)
@@ -6133,6 +6270,8 @@ class AlignServer(object):
             self._progress = {"stage": "done", "n": 1, "total": 1,
                               "busy": False}
         lost, refound, unpainted = [], [], []
+        carried = []
+        now = pipeline.rig.decode_stamp()
         entries = body.get("scans") or []
         for i, (scan, entry) in enumerate(zip(fresh, entries)):
             # The repaints used to happen after the bar had already closed,
@@ -6143,6 +6282,11 @@ class AlignServer(object):
                               "n": i, "total": len(fresh), "busy": True}
             _take_placement(scan, entry.get("setup"))
             scan.pose_decode = entry.get("decode")      # None: before stamps
+            # ⭐ and carried onto these points if it was made on the earlier
+            # decode -- the photograph's pose dict is moved in place, before
+            # `_carry_colour` paints from it
+            if _carry_decode(scan, entry.get("colour"), now) == "carried":
+                carried.append(scan.name)
             # ⛔⛔ THIS USED TO CLEAN THE WRONG LIST, AND SO CLEANED NOTHING.
             # It called `self.clean_scan(fresh.index(scan), ...)` -- an index
             # into `fresh`, handed to a method that reads `self.scans[index]`,
@@ -6199,15 +6343,19 @@ class AlignServer(object):
         self.project_path = path
         self.hidden = set()
         self.default_clean = body.get("default_clean") or None
-        # ⭐ PLACED ON OTHER POINTS THAN THESE. A file from before the stamp
-        # existed carries None, which is exactly as unknown as a different
-        # decode. The reference is never "placed" (`sited`, as the solvers
-        # read it) and is not named.
-        now = pipeline.rig.decode_stamp()
+        # ⭐ PLACED ON OTHER POINTS THAN THESE AND NOT CARRIED ACROSS: a
+        # decode `_carry_decode` cannot reproduce, or an answer it will not
+        # store. A file from before the stamp existed carries None, which is
+        # exactly as unknown as a different decode. The reference is never
+        # "placed" (`sited`, as the solvers read it) but its photograph and
+        # lean are fitted like any other's, so those count.
         stale = [sc.name for sc in fresh
-                 if sc.setup.sited and getattr(sc, "pose_decode", None) != now]
+                 if (sc.setup.sited
+                     and getattr(sc, "pose_decode", None) != now)
+                 or ((getattr(sc, "colour_info", None) or {}).get("ok")
+                     and sc.colour_info.get("decode") != now)]
         return {"ok": True, "scans": self._rebuild(), "path": path,
-                "stale_decode": stale, "decode": now,
+                "stale_decode": stale, "decode": now, "carried": carried,
                 "lost_photos": lost, "refound_photos": refound,
                 "unpainted_photos": unpainted,
                 "default_clean": self.default_clean,
@@ -6262,6 +6410,7 @@ class AlignServer(object):
         cy = float(getattr(scan, "camera_y", 0.0) or 0.0)
         cz = float(getattr(scan, "camera_z", 0.0) or 0.0)
         return {"photo": photo, "yaw_deg": float(info["yaw_deg"]),
+                "decode": info.get("decode"),
                 "pitch_deg": float(info.get("pitch_deg") or 0.0),
                 "roll_deg": float(info.get("roll_deg") or 0.0),
                 "camera_z": cz, "camera_x": cx, "camera_y": cy,
@@ -12931,13 +13080,22 @@ async function openProject(path){
        project that had no way to say which points its poses were fitted
        to. The file says now, and the answer is a re-solve, not a trip back
        to the calibration. */
+    const carried=j.carried||[];
+    if(carried.length) photos+=' '+carried.length+' placement'+
+      (carried.length===1?' was':'s were')+
+      ' made on an earlier decode of this program and '+
+      (carried.length===1?'has':'have')+' been carried across by '+
+      (carried.length===1?'its capture\'s':'each capture\'s')+
+      ' own measured tilt (about half a degree), photographs included, so '+
+      'everything lines up as it was saved. Save to keep that; Close the '+
+      'loop and Deep align refine it further.';
     const staleDecode=j.stale_decode||[];
     if(staleDecode.length) photos+=' ⚠ '+staleDecode.length+' capture'+
       (staleDecode.length===1?' was':'s were')+
-      ' placed on an earlier decode of this program, and the corrected '+
-      'decode has since moved every point of a capture by up to half a '+
-      'degree — so scans that lined up when this was saved can sit a few '+
-      'centimetres apart now. Press Close the loop to re-solve the whole '+
+      ' placed on an earlier decode of this program that could not be '+
+      'carried across, so '+(staleDecode.length===1?'it':'they')+
+      ' can sit a few centimetres out: '+staleDecode.join(', ')+
+      '. Press Close the loop to re-solve the whole '+
       'survey on the new points, then save.';
     say('opened '+j.path.replace(/^.*[\\\/]/,'')+
         (j.saved?' (saved '+j.saved+')':'')+' — '+V.scans.length+

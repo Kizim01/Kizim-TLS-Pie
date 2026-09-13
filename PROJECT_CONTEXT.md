@@ -5,13 +5,17 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13, late):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-14, small hours):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the NINTH PART first. Latest: **the project records which decode its
-> poses were fitted to, and the Studio names the stale ones on open and
-> sends the operator to Close the loop** ("scan still not ligning up" was
-> the 09-10 poses sitting half a degree off the corrected points, not the
-> decode); before that **the rush twin's points are a third of
+> the TENTH PART first. Latest: **a placement made on the earlier decode
+> is CARRIED ACROSS on open, scan pose and photograph alike**, by the
+> capture's own measured rigid shift between the two decodes (0.2 s a
+> capture, exact to machine precision; "some of the images are not
+> aligned now to the point cloud" was the lean sitting half a degree off
+> the points the photograph had been fitted against); before that **the
+> project records which decode its poses were fitted to** and names what
+> it cannot carry ("scan still not ligning up" was the 09-10 poses sitting
+> half a degree off the corrected points, not the decode); before that **the rush twin's points are a third of
 > the size** (fourth root of the stride, not the square root; the operator:
 > "i would like the lod points to be much smaller"). In the exes rebuilt 23:51-23:52, with the ninth part. Shipped
 > earlier on 09-13, in the exes rebuilt
@@ -21,7 +25,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2160 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2174 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6560,6 +6564,67 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ TENTH PART (2026-09-14, small hours): a placement made on the earlier
+decode is carried across on open, photographs included.** The operator,
+on the restaurant job (`Desktop\RESTAURANT SCAN\06.09.26 placements
+restored.tlspie`, 18 captures, saved 09-07, no stamps): *"i opened this
+project and some of the images are not aligned now to the point cloud for
+some reason"*. Scripts `fan57b.py` (restaurant capture 1: the corrected
+decode is a rigid 0.450° tilt about the capture's own x, axis (0.993,
+-0.114, 0.042), the same as the two Ministry of Sound captures three weeks
+and a room apart), `shift57.py` (the strided measurement: stride 100 gives
+0.429° on capture 10 in 0.2 s against 0.430° at stride 5), `decode58.py`
+(the patch), `revert58.py` (the audit).
+
+- **Why the images were off.** The photograph is solved on the LEVELLED
+  cloud, `lean.apply(xyz)` (see `colour_scan`), and the lean in the file
+  was fitted on the old points. Under the corrected decode the raw points
+  sit 0.45° turned inside that lean, so the levelled cloud the picture is
+  painted onto is 0.45° from the one it was matched against: 24 mm at 3 m,
+  on every edge. The ninth part's answer (Close the loop, then Deep align
+  them all) would have cost 27 minutes here and 80 on the Ministry of
+  Sound job, and the deep search on ten `doubtful` photographs could have
+  changed basins the operator had checked by eye.
+- **Shipped instead: the open carries the placement.** `align.decode_shift`
+  decodes every 100th packet chunk of the capture both ways (block, which
+  `--block-azimuth` still reproduces, and corrected) and fits the rigid
+  4x4 between them (`_rigid_between`, Kabsch). `_carry_decode` then moves
+  the scan's placement with its points, M' = M T⁻¹, decomposed back into
+  Setup and Lean by `registration._decompose`; the photograph keeps its
+  pitch and roll and turns only by the yaw the decomposition moved (the
+  new levelled cloud is the old one turned by that yaw, plus L' s for the
+  millimetres of shift, which the seat rides along with). Exact: the
+  carried placement reproduces the old surfaces to 2e-16 and the camera
+  sees the same points from the same seat to 2e-15 (checked). A pose from
+  a file stamped `block` or from before stamps existed is carried; one
+  fitted under some other corrected decode cannot be reproduced and is
+  named stale as before; an unplaced capture with nothing fitted is
+  stamped without a measurement.
+- **Photographs are stamped too**: `colour_scan` writes the decode it was
+  solved on into its info, `colour_pose` saves it, `_carry_colour` puts
+  the file's own back (or the scan's, for a file saved before photographs
+  carried one, since it was fitted on whatever points the scan was placed
+  on). The stale list counts a photograph whose stamp is not the running
+  decode's.
+- **The page**, on open: *"N placements were made on an earlier decode of
+  this program and have been carried across by each capture's own
+  measured tilt (about half a degree), photographs included, so everything
+  lines up as it was saved. Save to keep that; Close the loop and Deep
+  align refine it further."* What could not be carried is named, in
+  orange, with the Close the loop advice.
+- Thirteen checks (the Kabsch fit recovers a known motion; no sidecar, no
+  shift, no raise; the placement carried exactly; the camera sees the same
+  points; pitch and roll kept, lean absorbed the tilt; both stamped;
+  refused / stamped-without-measuring / left alone; the open carries B
+  and names C; the photograph painted from the carried pose; the solved
+  photograph's stamp and the restore's fallback; the page's words). Suite
+  2160 → **2174 passed, 0 failed**. Reversion audit (revert58.py): the carry made to keep the old placement, four named checks fired. ✅ **Exes REBUILT 2026-09-14 00:41-00:42** with the Studio closed: selftest rc 0 (edgechromium, RTX 3050 Ti), `--gpu` rc 0.
+- **On the live jobs:** reopen either project in the rebuilt Studio and
+  the placements come back carried; save. The Ministry of Sound file, if
+  it was saved after Close the loop last night, already has current scan
+  stamps and its photographs inherit them.
+
 
 **▶ NINTH PART (2026-09-13, late): the project knows which points its
 poses were fitted to.** The operator: *"do it"* to the offer at the end of

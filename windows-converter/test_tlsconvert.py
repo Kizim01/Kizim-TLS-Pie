@@ -17440,10 +17440,16 @@ print("\nthe Studio's decode is the corrected one")
 check("align.load defaults to rig.DEFAULT_PER_LASER_AZIMUTH",
       _cinsp.signature(align.load).parameters["per_laser_azimuth"].default
       is rig.DEFAULT_PER_LASER_AZIMUTH)
+# The one place the Studio asks for the block decode by name is the shift
+# measurement (2026-09-14), which decodes a sample both ways to carry a
+# placement across; nothing that draws, solves or exports does.
+_shift_src = re.search(r"def decode_shift\(.*?\ndef _carry_decode\(",
+                       _ALIGN_SRC, re.S).group(0)
 check("the smoothing re-read and the pitch check take the same default, "
       "passing no flag of their own",
       "frame = pipeline.rig.frame_for(meta)\n" in _ALIGN_SRC
-      and "per_laser_azimuth=False" not in _ALIGN_SRC)
+      and _ALIGN_SRC.count("per_laser_azimuth=False")
+      == _shift_src.count("per_laser_azimuth=False") == 2)
 
 # ⭐⭐ A DECODE CHANGE IS A POSE CHANGE IN DISGUISE (2026-09-13). The corrected
 # decode tilted every capture a rigid half degree in its own frame; poses
@@ -17553,11 +17559,157 @@ try:
 finally:
     _page57.stop()
 check("the page sends the operator to Close the loop, not back to the "
-      "calibration",
+      "calibration, for what could not be carried",
       "placed on an earlier decode of this program" in _p57
       and "Press Close the loop to re-solve the whole " in _p57
       and "survey on the new points, then save." in _p57
       and "staleDecode.length)?'warn'" in _p57)
+
+# ⭐⭐ AND CARRIED ACROSS, NOT JUST NAMED (2026-09-14: "some of the images
+# are not aligned now to the point cloud"). The corrected decode's rigid
+# part is a tilt of about half a degree about each capture's own x axis
+# (0.43 / 0.48 / 0.45 on three captures, two rooms), measurable per capture
+# from every 100th packet chunk in 0.2 s. The scan's placement moves with
+# its points (M' = M T^-1); the photograph was solved on the LEVELLED cloud,
+# which the carried lean puts back where it was, so the camera keeps its
+# pitch and roll and turns only by the yaw the decomposition moved.
+print("\na placement made on the earlier decode is carried onto these points")
+_ca = np.radians(0.45)
+_cR = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(_ca), -np.sin(_ca)],
+                [0.0, np.sin(_ca), np.cos(_ca)]])
+_cs = np.array([0.001, 0.003, -0.002])
+_cT = np.eye(4)
+_cT[:3, :3] = _cR
+_cT[:3, 3] = _cs
+_cP = np.random.RandomState(7).uniform(-5.0, 5.0, (400, 3))
+check("the rigid fit between two decodes recovers a known motion",
+      np.allclose(align._rigid_between(_cP, _cP @ _cR.T + _cs), _cT,
+                  atol=1e-9))
+check("...and a capture with no sidecar gives no shift, without raising",
+      align.decode_shift(os.path.join(_stdir, "A.pcap")) is None)
+_real_shift = align.decode_shift
+_shift_calls = []
+align.decode_shift = lambda p: (_shift_calls.append(p), _cT)[1]
+_cpaint = []
+
+
+def _spy_paint57(scan, photo, **kw):
+    _cpaint.append((scan.name, dict(kw)))
+    return {"ok": False, "reason": "spy", "photo": photo}
+
+
+_csrv57 = align.AlignServer([], out_path=None)
+try:
+    _cd = _detail_scan(os.path.join(_stdir, "D.pcap"), 90, n=200)
+    _cd.setup = registration.Setup(1.5, -2.5, 0.25, 33.0)
+    _cd.lean = registration.Lean(2.0, -1.0)
+    _cd.pose_decode = None
+    _cpose = {"yaw_deg": 45.0, "pitch_deg": 2.5, "roll_deg": 0.6,
+              "camera_x": 0.01, "camera_y": -0.04, "camera_z": 0.07}
+    _old_M = registration._pose_matrix(_cd.setup, _cd.lean)
+    _old_lean, _old_pose = _cd.lean, dict(_cpose)
+    _got = align._carry_decode(_cd, _cpose, _stamp)
+    _new_M = registration._pose_matrix(_cd.setup, _cd.lean)
+    check("the placement is carried exactly: the same surfaces land in the "
+          "same place",
+          _got == "carried" and np.allclose(_new_M @ _cT, _old_M, atol=1e-9),
+          (_got, np.abs(_new_M @ _cT - _old_M).max()))
+    _Co = colour.camera_matrix(_old_pose["yaw_deg"], _old_pose["pitch_deg"],
+                               _old_pose["roll_deg"])
+    _Cn = colour.camera_matrix(_cpose["yaw_deg"], _cpose["pitch_deg"],
+                               _cpose["roll_deg"])
+    _to = np.array([_old_pose[k] for k in ("camera_x", "camera_y", "camera_z")])
+    _tn = np.array([_cpose[k] for k in ("camera_x", "camera_y", "camera_z")])
+    _qo = _old_lean.apply(_cP[:20])
+    _qn = _cd.lean.apply(_cP[:20] @ _cR.T + _cs)
+    check("the camera still sees the same points from the same seat",
+          np.abs(_Cn @ (_qn - _tn).T - _Co @ (_qo - _to).T).max() < 1e-9)
+    check("...keeping its pitch and roll, turned only by the yaw the "
+          "decomposition moved; the lean absorbed the tilt",
+          _cpose["pitch_deg"] == 2.5 and _cpose["roll_deg"] == 0.6
+          and abs(_cpose["yaw_deg"] - 45.0) < 0.05
+          and abs(_cd.lean.pitch_deg - 1.55) < 0.01,
+          (_cpose, _cd.lean.pitch_deg))
+    check("both are stamped with these points",
+          _cd.pose_decode == _stamp and _cpose["decode"] == _stamp)
+    _ce = _detail_scan(os.path.join(_stdir, "E.pcap"), 91, n=200)
+    _ce.setup = registration.Setup(1.0, 1.0, 0.0, 5.0)
+    _ce.pose_decode = "corrected some other numbers"
+    check("a pose fitted under a decode this program cannot reproduce is "
+          "refused, not guessed at",
+          align._carry_decode(_ce, None, _stamp) == "refused"
+          and _ce.pose_decode == "corrected some other numbers")
+    _n0 = len(_shift_calls)
+    _cf = _detail_scan(os.path.join(_stdir, "F.pcap"), 92, n=200)
+    _cf.pose_decode = None
+    check("an unplaced capture with nothing fitted is stamped without a "
+          "measurement",
+          align._carry_decode(_cf, None, _stamp) is None
+          and _cf.pose_decode == _stamp and len(_shift_calls) == _n0)
+    _cg = _detail_scan(os.path.join(_stdir, "G.pcap"), 93, n=200)
+    _cg.setup = registration.Setup(1.0, 1.0, 0.0, 5.0)
+    _cg.pose_decode = _stamp
+    check("a current placement is left alone",
+          align._carry_decode(_cg, None, _stamp) is None
+          and len(_shift_calls) == _n0)
+    _cj = os.path.join(_stdir, "b.jpg")
+    io.open(_cj, "wb").close()
+    _cproj = os.path.join(_stdir, "carried.tlspie")
+    with io.open(_cproj, "w", encoding="utf-8") as _h:
+        json.dump({"format": "TLS-Pie project", "version": align.PROJECT_VERSION,
+                   "scans": [{"path": _sp[0], "name": "A.pcap"},
+                             {"path": _sp[1], "name": "B.pcap",
+                              "setup": {"x_m": 1.0, "y_m": 2.0, "z_m": 0.0,
+                                        "yaw_deg": 10.0, "pitch_deg": 2.0,
+                                        "roll_deg": -1.0},
+                              "colour": dict(_old_pose, photo=_cj)},
+                             {"path": _sp[2], "name": "C.pcap",
+                              "setup": {"x_m": -1.0, "y_m": 0.5, "z_m": 0.0,
+                                        "yaw_deg": -5.0},
+                              "decode": "corrected some other numbers"}]},
+                  _h)
+    align.load = lambda paths, **kw: [_detail_scan(p, 80 + i, n=200)
+                                      for i, p in enumerate(paths)]
+    align.colour_scan = _spy_paint57
+    pipeline.find_photo = lambda _p: None
+    try:
+        _o = _csrv57.open_project(_cproj)
+    finally:
+        align.load = _real_load
+        align.colour_scan = _real_paint
+        pipeline.find_photo = _real_find
+    check("opening carries the placed captures made on the earlier decode "
+          "and names the one it could not",
+          _o.get("ok") and _o.get("carried") == ["B.pcap"]
+          and _o.get("stale_decode") == ["C.pcap"],
+          (_o.get("carried"), _o.get("stale_decode"), _o.get("error")))
+    _bkw = next((kw for n, kw in _cpaint if n == "B.pcap"), {})
+    check("...the photograph is painted from the carried pose: pitch and "
+          "roll as saved, heading turned with the scan",
+          _bkw.get("pitch") == 2.5 and _bkw.get("roll") == 0.6
+          and abs((_bkw.get("yaw") or 0.0) - 45.0) < 0.05, _bkw)
+    check("...and the carried lean absorbed the tilt",
+          abs(_csrv57.scans[1].lean.pitch_deg - 1.55) < 0.01
+          and _csrv57.scans[1].pose_decode == _stamp,
+          _csrv57.scans[1].lean.pitch_deg)
+finally:
+    align.decode_shift = _real_shift
+    _csrv57.stop()
+check("a solved photograph carries the decode it was solved on, and a "
+      "restore puts the file's own back or the scan's when the file has none",
+      align.colour_scan(align.Scan("x.pcap", np.zeros((1, 3), np.float32),
+                                   np.zeros((1, 3), np.uint8),
+                                   np.zeros((1, 3), np.float32)),
+                        os.path.join(_stdir, "nope.jpg")).get("decode")
+      == _stamp
+      and '"decode": info.get("decode"),' in _ALIGN_SRC
+      and 'scan.colour_info["decode"] = (pose.get("decode")' in _ALIGN_SRC
+      and 'or getattr(scan, "pose_decode", None))' in _ALIGN_SRC)
+check("the page says what was carried, and what could not be",
+      "carried across by" in _p57
+      and "own measured tilt (about half a degree), photographs included"
+      in _p57
+      and "could not be " in _p57 and "carried across, so " in _p57)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
