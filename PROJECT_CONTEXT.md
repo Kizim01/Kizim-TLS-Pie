@@ -5,16 +5,16 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-11 ~02:00):** search this file for
-> `LIVE STATE (2026-09-10, fifty-fifth pass)` and read its **RESUME HERE**
-> first. The restart pointer's opening entries are older than it; the newest
-> LIVE STATE is the current one, and each older one below it is history. The
-> 45th pass's sweep list is fixed but for DXF. The grey reopen is traced and
-> fixed, the Studio audits are finished, the one intermittent check (BLAS's
-> thread count) is fixed, and the exes were rebuilt after all of it
-> (01:49-01:50). Nothing is running. The Pi does NOT carry the 55th pass's
-> Pi changes (it was off, and the laptop was last on a router, not the
-> phone's hotspot).
+> **▶ WHERE THE WORK IS NOW (2026-09-13):** search this file for
+> `LIVE STATE (2026-09-13, fifty-sixth pass)` -- a MEASUREMENT pass, nothing
+> shipped: the operator asked how to make a wall less noisy, and the answer
+> is below it. The code is exactly the 55th pass's: read
+> `LIVE STATE (2026-09-10, fifty-fifth pass)` and its **RESUME HERE** for
+> the state of the code and the exes (rebuilt 09-11 01:49-01:50). The
+> restart pointer's opening entries are older than both; the newest LIVE
+> STATE is the current one, and each older one below it is history. Nothing
+> is running. The Pi does NOT carry the 55th pass's Pi changes (it was off,
+> and the laptop was last on a router, not the phone's hotspot).
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
@@ -6569,7 +6569,90 @@ The layout was deliberately LEFT ALONE (their open session references those path
 grows: **the sorter should read the NAME clocks first** and fall back to offset estimation only
 when the two names disagree.
 
-### ⚠ LIVE STATE (2026-09-10, fifty-fifth pass) — the current one
+### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, nothing shipped
+
+The operator: *"look deep into git and the web, I would like to find a
+solution for the data coming out of the velodyne vlp 16 to be less noisy,
+either only decoding first return and ignoring 2nd and 3rd returns or
+anything else so that when I look at a wall the noise and accuracy are
+greatly reduced."* Measured on the 09-02 job (captures 10 and 30 in full,
+all 56 for shot noise), scripts `scratchpad\mos\noise56*.py`, results
+`noise56*_10.json`, `noise56*_30.json`, `noise56c_all.json`. **No code was
+changed.** Two research agents read the manual (Rev E/F), Glennie 2016,
+Sánchez & Pany (UniBw), Kidd 2017 / NOAA, Bula 2020, and the ROS, valgur,
+Nebula and Apollo decoders; their reports are in the 09-13 transcript.
+
+**⭐ THE PREMISE: THERE IS NO FIRST RETURN TO DECODE.** The VLP-16 has
+Strongest, Last and Dual only (manual §6.2). Every capture of the job is
+Strongest (`0x37`, `decode.py:41`). On a plain wall there is one return,
+which the sensor reports as both strongest and last, so no mode and no
+decoder choice about returns changes a wall. Dual matters at edges, glass,
+foliage and dust, where the two blocks disagree and the disagreement is a
+free mixed-pixel flag. (Switch: `curl.exe --data "returns=Dual"
+http://192.168.1.201/cgi/setting`, then `--data "submit" .../cgi/save`.)
+
+**What a wall is made of (capture 10 / capture 30, mm, σ = 1.4826 MAD):**
+
+| measurement | 10 | 30 |
+|---|---|---|
+| per-shot range noise, second differences along one laser's firing sequence, no plane, no geometry | **5.1** | 5.1 |
+| the same across all 56 captures | 5.1-8.4, no warm-up trend, no drift inside a capture | |
+| returns with reflectivity < 5 (7% of them) | 11-17 | |
+| wall σ about a 25 cm plane, the Studio's decode (block azimuth, raw returns, no voxel) | **8.4** | 12.4 |
+| same, 4-6 m band | **14.1** | 17.7 |
+| one laser, one cell, one side of the fan | **5.05** | 6.2 |
+| per-laser azimuth + the manual's Table 9-1 vertical offsets | **6.5** | 12.2 |
+| same, 4-6 m band | **8.3** | 14.8 |
+| the offsets with the OPPOSITE sign (sign check) | 11.9 | |
+| the Studio's own 2 cm voxel average, measured as a plane residual | 12.5 | |
+| every return moved onto the plane of its own 5 cm cell | **1.5** (walls 2.3) | |
+| same, 10 cm cell | 1.0 (walls 1.5) | |
+| returns averaged in 2 cm squares along the surface (~12 each) | 1.5 | 2.0 |
+
+- **The sensor's randomness is 5 mm, and that is the floor for a single
+  point.** One laser in one cell from one side of the fan scatters 5.05 mm,
+  the shot noise exactly; the rest of a wall's 7-12 mm is geometry and
+  per-laser bias, and it differs by capture.
+- **Per-laser azimuth plus the vertical offsets is a real, small gain:**
+  22% on capture 10 (and 14 → 8 mm at 4-6 m), 2% on capture 30. The
+  offsets are the manual's Table 9-1 (laser 0 = +11.2 mm ... laser 15 =
+  -11.2 mm, along the puck's spin axis, `noise56.py:VERT_OFFSET_MM`); ROS's
+  VLP16db.yaml and VeloView's xml both ship ZEROS for it. The Studio decodes
+  at block azimuth with no switch (`align.py:870`); the CLI has
+  `--per-laser-azimuth`. ⚠ Under the corrected decode walls minimise at an
+  effective pitch of 8.4, not the 8.2 that `PER_LASER_AZIMUTH_PITCH_DELTA =
+  -0.20` gives, while the 4-12 m band wants 7.7: **re-measure the delta on a
+  full-360 capture before making this the default.** The fan-halves method
+  cannot do it on a 190° sweep, where only a 10° wedge of wall is seen
+  from both sides.
+- **The outer lasers carry an elevation-angle bias.** About the plane, in
+  one fan half, laser 0 sits at -9.7 mm and laser 13 at -7.2 mm on capture
+  30 (under 2 mm on capture 10, where the surfaces sit differently). UniBw
+  measured channel 1 at 14.70° against the nominal 15°; 0.3° is 16 mm at
+  3 m. A per-laser elevation self-calibration from the job's own planes is
+  the next lever after smoothing.
+- **A voxel average is not a surface average.** The 2 cm voxel makes a wall
+  no thinner (12.5 mm) because the scatter is wider than the cell, as
+  `pipeline.py:58` already says. A local plane projection at 5 cm takes the
+  same wall to 1.5 mm, at the price of rounding corners at that scale.
+- Dropping reflectivity < 5 buys 0.1 mm overall; not worth it. No warm-up
+  wait is needed (Glennie 2016 found none for the VLP-16 either; it found
+  a ±2 cm range walk over 3 h, not correlated with temperature).
+
+**Recommended, in order, none started:** (1) a "smooth surfaces" option
+on the export and the Studio view -- returns moved onto the plane of their
+5 cm neighbourhood, off by default, corners named as the cost; (2) the
+per-laser azimuth + vertical-offset decode as the default, after the pitch
+delta is re-measured on a full-360 capture; (3) a per-laser elevation
+self-calibration from the job's planes, checked on held-out captures. Not
+recommended: return-mode changes, a quieter Puck (none exists), warm-up.
+
+⭐ **Second differences along the firing sequence measure the sensor with
+nothing else in the way.** ⭐ **Measure the fixture the operator sees**:
+the raw Studio wall is 8-12 mm, not the ±3 cm this file has quoted as
+"range noise" since August; the datasheet figure is accuracy, not scatter.
+
+### ⚠ LIVE STATE (2026-09-10, fifty-fifth pass) — the code and the exes
 
 The operator asked whether anything was left, was given the list, and said
 *"yeah work throught them"*.
