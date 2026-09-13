@@ -5,26 +5,18 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13 ~21:37-21:38):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-13 ~22:07-22:08):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the SIXTH PART first. Six things shipped on 09-13 and are in the exes
-> rebuilt 21:37-21:38: **the puck's once-per-turn azimuth curve corrected**
-> (the operator saw the two halves of the fan not landing on each other;
-> floors split 55 mm at 3 m; a cosine in the fan angle, fitted on the
-> full-360 captures and held out on the door captures, takes it to under
-> 4 mm there), **the corrected decode as the DEFAULT** (per-laser azimuth +
-> laser origins, effective pitch 8.67), **Smooth surfaces**, **Keep within
-> N m**, **the point budget follows the SHOWN clouds**, and the measurement
-> behind them. Suite 2144 passed, 0 failed. Nothing is in flight. The Pi carries the
-> 55th pass's changes. The restart pointer's opening entries are older than
-> all of this.
-It was originally built around a SparkFun MicroView (ATmega328P) that drove the motor and an OLED,
-handshaking with the Pi over three GPIO lines. **As of 2026-08-09 the MicroView is being removed
-entirely** and the Pi takes over motion and capture in a single process, operated from the phone.
-The Pi was built and proven on 2026-08-09 — see "Restart pointer" for exactly what is and is not
-verified. **The motor first turned on 2026-08-09**, and the session that followed overturned four
-things this file used to assert; the restart pointer opens with them.
-
+> the SEVENTH PART first. Shipped on 09-13, all in the exes rebuilt
+> 22:07-22:08: **the puck's once-per-turn azimuth curve corrected** (the fan
+> halves land on each other on floors and ceilings), **every beam's
+> common elevation offset corrected** (the halves land on each other along
+> walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
+> stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
+> **Smooth surfaces**, **Keep within N m**, **the point budget follows the
+> SHOWN clouds**, and the measurement behind them. Suite 2147 passed, 0 failed. Nothing
+> is in flight. The Pi carries the 55th pass's changes. The restart
+> pointer's opening entries are older than all of this.
 **⭐ TWO COMPONENTS ARE BEING ADDED, SPECIFIED 2026-08-17 AND NOT YET BOUGHT: a gravity
 sensor for levelling (with a bubble display on the panel) and an integrated camera for
 colourisation.** Both sections are under "Two components being added" — read them before
@@ -6554,6 +6546,49 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ SEVENTH PART, SHIPPED (2026-09-13 ~22:07-22:08): the pan-scale check,
+and the halves landing on each other along the walls too.** The operator:
+*"do that"* to the measured check of the full turn of pan coming up
+0.22° short. Scripts `fan56j.py` (point-to-plane fit of one view onto
+another's 25 cm planes: rotation about the pan axis and a shift, Huber,
+linearised, four rounds) and `fan56k.py`; results `fan56j*_*.txt`,
+`fan56k*.txt`.
+
+- **The 0.22° was an artefact and STEPS_PER_REV stays.** The last 18°
+  of the 378° sweep against the first 18°, rotation only: +0.78 / +0.06
+  on the two fan sides of capture a, +0.36 / +0.18 on b. A pan-scale error
+  would give the same number on both sides; an 18° wedge of one room
+  cannot separate a rotation about the axis from a sideways shift, and
+  with the shift freed the signs flip between captures. Not measurable
+  from these scans; a real check needs a narrow target seen at the start
+  and again after a full turn. Nothing to act on.
+- **What IS there: the back half of the fan sits rotated -0.09 / -0.12°
+  about the pan axis against the front, whole sweep, 9.3 M points, both
+  captures, shift 1-2 mm.** Five millimetres along every wall at 3 m.
+  Not the pan (see above), not a lever. A common offset on every laser's
+  ELEVATION -- sideways on this puck, entering the two halves with
+  opposite sign -- is a rotation between the halves of exactly this kind:
+  -0.05° zeroes capture a (-0.002°), the response is linear (1.8° of
+  rotation per degree of offset), -0.06 is the mean. The 52-parameter fit
+  earlier today had found every laser's elevation at -0.03..-0.19 and
+  called it nothing, because a thickness cannot see it.
+- **Shipped:** `rig.ELEVATION_OFFSET_DEG = -0.06`, added to every
+  elevation in `decode_chunk` under the corrected decode only. Through
+  the product decode the rotation between the halves is now +0.017 /
+  -0.020°. Three checks (the constant; applied under the corrected
+  decode only, with the table still spanning ±15; a return still finds
+  its own laser's origin). Reversion audit (`revert56c.py`): three breaks,
+  each caught. Suite 2144 → **2147 passed, 0 failed**. ✅ **Exes REBUILT 2026-09-13
+  22:07-22:08** with the Studio closed: selftest rc 0 (edgechromium, RTX
+  3050 Ti), `--gpu` rc 0 at 9.1x.
+- **Where the geometry stands after today, on a full rotation at 3 m:**
+  floor and ceiling halves within 17-19 mm (were 55), walls within 2 mm
+  across and 1 mm along (were 5), plane sigma 9.6 mm (was 11.6 under the
+  block decode). The residual on the far floor is the next look, on a
+  full-360 capture: a 2/turn term in the fan angle, or per-laser
+  fan-angle offsets.
+
 
 **▶ SIXTH PART, SHIPPED (2026-09-13 ~21:37-21:38): the two halves of the
 fan now land on each other.** The operator, looking at the full-360 scans:

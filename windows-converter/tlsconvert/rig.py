@@ -118,6 +118,17 @@ PER_LASER_AZIMUTH_PITCH_DELTA = 0.27
 # then seen by one half only, and its plane fit hides the slip).
 FAN_ANGLE_CORRECTION_DEG = (-0.46, 0.09)
 
+# ⭐ AND EVERY BEAM IS BENT A LITTLE TOWARD THE SPIN AXIS. Fitting the back
+# half of the fan onto the front as a rigid body (point-to-plane over the
+# whole sweep, scratchpad mos\fan56j.py / fan56k.py) leaves a rotation about
+# the pan axis of -0.09 / -0.12 deg on the two full-360 captures, 5 mm at
+# 3 m along every wall. It is not a pan-scale error (a view one full turn
+# later shows nothing consistent), and a lever is 1-2 mm. A common offset on
+# every laser's elevation -- sideways on this puck, so it enters the two
+# halves with opposite sign -- takes it out: -0.05 deg zeroes capture a
+# (-0.002), -0.06 is the mean of both. Applied under the corrected decode.
+ELEVATION_OFFSET_DEG = -0.06
+
 # ⭐ THE CORRECTED DECODE IS THE DEFAULT EVERYWHERE (2026-09-13): per-laser
 # azimuth, the manual's per-laser origins along the spin axis, and the pitch
 # delta measured under both. One name, read by decode, pipeline, align, the

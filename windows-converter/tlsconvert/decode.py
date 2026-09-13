@@ -219,6 +219,11 @@ def decode_chunk(stamps, raw, per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
     lane = xp.broadcast_to((k % 16), (n, BLOCKS_PER_PACKET,
                                       CHANNELS_PER_BLOCK))
     omega = _vertical_angles(xp)[lane[good]]
+    if per_laser_azimuth and rig.ELEVATION_OFFSET_DEG:
+        # every beam bent toward the spin axis by the same small angle; see
+        # rig.ELEVATION_OFFSET_DEG. Small enough that vertical_offsets_for
+        # still finds the right laser from the elevation.
+        omega = omega + rig.ELEVATION_OFFSET_DEG
 
     t = (stamps[:, None, None]
          + (fire[:, :, None] * T_BLOCK_US

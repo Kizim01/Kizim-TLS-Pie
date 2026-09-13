@@ -280,6 +280,21 @@ check("...and block azimuth carries none of it",
       np.allclose(decode.decode_chunk(stamps, _fc_lo, per_laser_azimuth=False)[0]
                   [:32], 0.0))
 
+# ⭐ AND EVERY BEAM IS BENT A LITTLE TOWARD THE SPIN AXIS: the back half of
+# the fan sat 0.1 degrees rotated against the front about the pan axis on
+# both full-360 captures; a common elevation offset takes it out.
+check("the common elevation offset is the measured one",
+      rig.ELEVATION_OFFSET_DEG == -0.06)
+_eo_plain = decode.decode_chunk(stamps, _fc_lo, per_laser_azimuth=False)[1]
+_eo_corr = decode.decode_chunk(stamps, _fc_lo, per_laser_azimuth=True)[1]
+check("...applied to every elevation under the corrected decode only",
+      np.allclose(_eo_corr - _eo_plain, rig.ELEVATION_OFFSET_DEG)
+      and close(float(_eo_plain.min()), -15.0) and close(float(_eo_plain.max()),
+                                                          15.0))
+check("...and small enough that a return still finds its own laser's origin",
+      np.allclose(decode.vertical_offsets_for(_eo_corr),
+                  decode.vertical_offsets_for(_eo_plain)))
+
 _cd_om = np.asarray(decode._vertical_angles(np))
 _cd_off = decode.vertical_offsets_for(_cd_om) * 1000.0
 check("each laser's origin along the spin axis is the manual's, by laser id",
