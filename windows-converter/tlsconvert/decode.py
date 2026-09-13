@@ -52,6 +52,41 @@ T_LASER_US = 2.304
 T_SEQ_US = 55.296
 T_BLOCK_US = 110.592
 
+# ⭐ THE LASERS ARE STACKED, NOT AT ONE POINT. The VLP-16 manual (63-9243,
+# Table 9-1 "Vertical Correction") gives each laser's origin along the spin
+# axis, in mm, by laser ID: laser 0 (-15 deg) sits 11.2 mm up the axis, laser
+# 15 (+15 deg) 11.2 mm down. ROS's VLP16db.yaml and VeloView's xml both ship
+# ZEROS for it, so nothing downstream has ever applied it. On this sideways
+# puck the axis is horizontal, so the error is a per-laser sideways shift of
+# up to 11 mm, and it enters the two halves of the fan with opposite sign.
+# Sign verified 2026-09-13 on TLS_26_09_02_12_37_45 (noise56.py): walls 8.4
+# mm thick at block azimuth, 6.5 with these, 11.9 with the sign flipped.
+VERTICAL_OFFSET_MM_BY_LASER = (11.2, -0.7, 9.7, -2.2, 8.1, -3.7, 6.6, -5.1,
+                               5.1, -6.6, 3.7, -8.1, 2.2, -9.7, 0.7, -11.2)
+_voff_cache = {}
+
+
+def _vertical_offsets(xp=np):
+    """The offsets in metres, indexed by ANGLE RANK (round((omega+15)/2)),
+    so a point that only remembers its elevation can find its laser's."""
+    got = _voff_cache.get(xp)
+    if got is None:
+        angles = np.asarray(_vertical_angles(np))
+        rank = np.rint((angles + 15.0) / 2.0).astype(np.int64)
+        table = np.zeros(16, dtype=np.float64)
+        table[rank] = np.asarray(VERTICAL_OFFSET_MM_BY_LASER) / 1000.0
+        got = xp.asarray(table)
+        _voff_cache[xp] = got
+    return got
+
+
+def vertical_offsets_for(omega_deg, xp=np):
+    """Each return's laser origin along the spin axis, metres, from its
+    elevation angle."""
+    omega_deg = xp.asarray(omega_deg)
+    rank = xp.rint((omega_deg + 15.0) / 2.0).astype(xp.int64)
+    return _vertical_offsets(xp)[xp.clip(rank, 0, 15)]
+
 
 def _vertical_angles(xp=np):
     """The laser table, taken from the scanner rather than restated here."""
@@ -98,7 +133,7 @@ def read_packet_chunks(pcap_path, port=2368, stride=1, chunk_packets=20000):
         yield flush()
 
 
-def decode_chunk(stamps, raw, per_laser_azimuth=False,
+def decode_chunk(stamps, raw, per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
                  min_range=0.4, max_range=120.0, xp=np):
     """
     One chunk of packets -> flat (alpha_deg, omega_deg, range_m, refl, t_epoch).
@@ -200,7 +235,8 @@ def pan_angles(track, t_epoch, sweep_start, xp=np):
                      left=degs[0], right=degs[-1])
 
 
-def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np):
+def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np,
+             z_offset_m=None):
     """
     Sensor observation -> world xyz. Vectorised twin of Frame.rotator().
 
@@ -209,6 +245,10 @@ def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np):
     it once more, identically, for the card. The matrix itself stays a NumPy
     float64: nine scalars are not worth a transfer, and a NumPy scalar times
     a CuPy array already lands on the card.
+
+    `z_offset_m`, when given, is each return's laser origin along the puck's
+    own spin axis (see VERTICAL_OFFSET_MM_BY_LASER): added in the sensor
+    frame, before the mount, so it turns with the puck like the laser does.
     """
     alpha_deg = xp.asarray(alpha_deg)
     omega_deg = xp.asarray(omega_deg)
@@ -220,6 +260,8 @@ def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np):
     x = rng * cw * xp.sin(a)
     y = rng * cw * xp.cos(a)
     z = rng * xp.sin(w)
+    if z_offset_m is not None:
+        z = z + xp.asarray(z_offset_m)
 
     m = np.asarray(frame.matrix, dtype=np.float64).reshape(3, 3)
     lx, ly, lz = frame.lever
@@ -235,13 +277,20 @@ def to_world(frame, alpha_deg, omega_deg, rng, pan_deg, xp=np):
 
 
 def stream_world_points(pcap_path, meta, frame, port=2368, stride=1,
-                        chunk_packets=20000, per_laser_azimuth=False,
+                        chunk_packets=20000,
+                        per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
                         min_range=0.4, max_range=120.0):
     """
     Yield (xyz float32 [N,3], reflectivity uint8 [N]) chunks in world frame.
 
     Raises if the scan carries no pan track: without one every surface would be
     smeared around a circle, and inventing an angle is worse than refusing.
+
+    ⭐ `per_laser_azimuth` is the CORRECTED decode, and it is one switch for
+    three things that only make sense together: each laser's own azimuth
+    (decode_chunk), each laser's origin along the spin axis (to_world), and
+    the pitch that was calibrated under them (rig.frame_for -- the caller
+    builds `frame` with the same flag). The default is rig's.
     """
     track = rig.tls_geometry.track_from_meta(meta)
     sweep_start = ((meta or {}).get("sweep") or {}).get("started_epoch")
@@ -264,5 +313,8 @@ def stream_world_points(pcap_path, meta, frame, port=2368, stride=1,
         if rng.size == 0:
             continue
         pan = pan_angles(track, t, sweep_start, xp=xp)
-        yield (gpu.to_host(to_world(frame, alpha, omega, rng, pan, xp=xp)),
+        zoff = (vertical_offsets_for(omega, xp=xp) if per_laser_azimuth
+                else None)
+        yield (gpu.to_host(to_world(frame, alpha, omega, rng, pan, xp=xp,
+                                    z_offset_m=zoff)),
                gpu.to_host(refl))

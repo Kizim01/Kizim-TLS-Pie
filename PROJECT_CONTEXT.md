@@ -5,20 +5,18 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-13 ~18:32-18:33):** search this file
-> for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down.
-> Four things shipped on 09-13 and are in the exes rebuilt 18:32-18:33:
-> **Smooth surfaces**, **Keep within N m** with its on-import switch, the
-> measurement behind them, and **the point budget follows the SHOWN
-> clouds** (hide a cloud and the rest are re-read at the larger share).
-> Suite 2123 passed, 0 failed. Nothing is in flight. The restart pointer's opening
-> entries are older than all of this. The Pi CARRIES the 55th pass's
-> changes since 18:53 (delivered by `deploy53.py tlspie.local`, all
-> eleven Pi suites green on the Pi, scanner restarted and idle).
-**The VLP-16 is mounted on its SIDE**, spin axis horizontal, so its own rotation sweeps a vertical
-fan and the pan axis swings that fan around — giving full dome coverage rather than the ±15° band an
-upright puck is limited to. *That the puck is on its side is confirmed by the user directly.*
-
+> **▶ WHERE THE WORK IS NOW (2026-09-13 ~20:18-20:19):** search this file
+> for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
+> the FIFTH PART first. Five things shipped on 09-13 and are in the exes
+> rebuilt 20:18-20:19: **the corrected decode is the DEFAULT** (per-laser
+> azimuth + the manual's laser origins, pitch delta re-measured to ZERO on
+> two full-360 captures; walls 5-23% thinner; `--block-azimuth` opts out),
+> **Smooth surfaces**, **Keep within N m** with its on-import switch, **the
+> point budget follows the SHOWN clouds**, and the measurement behind them.
+> A 52-parameter self-calibration was tried and did NOT ship: its gain is
+> per-laser range offsets that differ by room. Suite 2141 passed, 0 failed. Nothing is
+> in flight. The Pi carries the 55th pass's changes since 18:53. The restart
+> pointer's opening entries are older than all of this.
 > ### ⛔ `captures/driveway.pcap` IS FROM A DIFFERENT RIG
 >
 > Established 2026-08-09 by the user, **after** a full day of conclusions had been drawn from it.
@@ -6564,6 +6562,72 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ FIFTH PART, SHIPPED (2026-09-13 ~20:18-20:19): the corrected decode is
+the default, measured on two full-360 captures.** The operator asked *"need
+me to do a full 360 scan?"* (yes: the fan-halves method needs every wall
+seen from both sides of the puck's circle), then *"two scans are on the
+thumb drive"*: `D:\TLS_26_09_13_19_02_13` and `_19_05_53`, 378° at
+2°/s from one spot, the second starting where the first ended, both
+copied to `scratchpad\mos\full360\`. Scripts `noise56d.py` (pitch sweep),
+`calib56.py` / `calib56b.py` (self-calibration and the delta evaluation);
+results `noise56d_360a/b.txt`, `noise56_360a.json`, `calib56_*.json/.txt`,
+`calib56b.txt`, `revert56.txt`.
+
+- **The pitch delta was wrong in sign.** Plane sigma over 25 cm cells, mm,
+  under per-laser azimuth + the laser origins, at effective pitch 8.3 /
+  8.4 / 8.5: full-360 a 11.22 / 10.97 / 10.88; b 11.34 / 11.01 / 10.89;
+  capture 10 7.04 / 7.01 / 7.06; capture 30 10.66 / 10.54 / 10.49. **8.4
+  is within 1% of the best everywhere and the only value whose 4-12 m
+  band never worsens** (capture 10: 9.2 / 9.9 / 10.7). The shipped -0.20
+  (effective 8.2) gave 11.64 on capture a, WORSE than block azimuth
+  (11.58). `PER_LASER_AZIMUTH_PITCH_DELTA = 0.0`, and the comment in
+  `rig.py` carries the table.
+- **Corrected decode against the Studio's block decode, "all" sigma:**
+  capture 10 8.25 → 7.01 (-15%; walls 8.42 → 6.50, -23%), capture 30
+  10.95 → 10.54 (-4%), full-360 a 11.58 → 10.97 (-5%). Small but real,
+  and on every capture. On a full rotation the walls are 11 mm thick
+  against 8 on a 190° door sweep, because every surface is seen from
+  both fan halves and the geometry error is fully exposed.
+- **⚠ A 52-parameter self-calibration was built and does NOT ship
+  (`calib56.py`):** mount pitch and roll, lever x/y, and per laser an
+  elevation delta, an origin along the axis and a range offset, fitted by
+  Gauss-Newton on the plane residuals (planes refitted each round, Huber
+  weights, a weak prior). In sample 11.6 → 9.0 (-23%); held out on the
+  same room -20%; on capture 30 -15%; **on capture 10 +8% WORSE**. Mount
+  alone gains nothing (10.88 → 11.03); mount + elevation nothing (10.90);
+  **the whole gain is the per-laser RANGE offsets, up to 19 mm, and they
+  disagree between rooms** (laser 0: -2 mm fitted on a, +22 on 30; laser 5:
+  -4 / +14) -- a room-shaped fit, not a sensor constant. The next lever is
+  a per-laser range correction by reflectivity band (the VLP-16's range
+  walk), held out ACROSS rooms before anything is believed. Laser 13 alone
+  is consistent (+19 mm in every fit; -14 mm at 2 m and +18 at 8 m in the
+  block decode's bias-by-band), the one per-laser fact worth carrying.
+- **Shipped:** `rig.DEFAULT_PER_LASER_AZIMUTH = True`, read as the default
+  by `frame_for`, `decode_chunk`, `stream_world_points`,
+  `sample_for_solve`, `prepare_colour`, `convert`, `solve_setups`,
+  `merge`, `align.load`; `decode.VERTICAL_OFFSET_MM_BY_LASER` (the manual's
+  Table 9-1, by laser id, sign verified 09-13) and `vertical_offsets_for`
+  (by elevation rank, so a return needs no laser id), applied in
+  `to_world(z_offset_m=...)` in the sensor frame before the mount; the CLI
+  gains `--block-azimuth` (`--per-laser-azimuth` still parses); the GUI's
+  tick starts on. **A bug the flip surfaced:** `frame_for` rebuilt the
+  Frame for the per-laser branch and DROPPED `pitch_is_legacy`, so an old
+  sidecar's substituted pitch stopped being announced -- the suite's
+  "substitution is flagged" check caught it on the first run; the flag
+  now travels. Two old checks assumed the block default and now ask for
+  it by name. Reversion audit (`revert56.py`): six breaks, each caught by
+  its named check. Suite 2123 → **2141 passed, 0 failed**. ✅ **Exes REBUILT
+  2026-09-13 20:18-20:19** with the Studio closed: selftest rc 0
+  (edgechromium, RTX 3050 Ti), `--gpu` rc 0 at 9.3x.
+- **What changes for the operator:** every capture opened or exported from
+  now on is decoded the corrected way, with no switch to find. A project
+  saved earlier reopens and re-decodes; its points move by up to about a
+  centimetre against an earlier export (the laser origins are up to 11 mm,
+  the azimuth spread up to 0.3°), and a placement solved on the old
+  decode stays valid to that same centimetre. The Pi's own `.cloud`
+  previews are untouched (the Pi decodes at block azimuth, as before).
+
 
 **▶ FOURTH PART, SHIPPED (2026-09-13 ~18:32-18:33).** The operator: *"I would
 like to see every return in the viewer, there is a slider that does that

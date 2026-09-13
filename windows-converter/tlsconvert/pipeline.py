@@ -810,7 +810,8 @@ def choose_stride(pcap_path, budget):
 
 
 def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
-                     per_laser_azimuth=False, with_refl=False):
+                     per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
+                     with_refl=False):
     """
     A cheap decimated pass, purely to work out where the camera was pointing.
 
@@ -842,7 +843,8 @@ def sample_for_solve(pcap_path, meta, frame, max_points=1_500_000,
 
 
 def prepare_colour(pcap_path, meta, frame, photo=None, yaw_deg=None,
-                   camera=(0.0, 0.0, 0.0), per_laser_azimuth=False,
+                   camera=(0.0, 0.0, 0.0),
+                   per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
                    pitch_deg=0.0, roll_deg=0.0, lean=None, image_up_px=0):
     """
     (colouriser or None, info). Never raises -- a colour problem is not a
@@ -1019,7 +1021,8 @@ LOOK_BESIDE = "look beside the capture"
 
 
 def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
-            per_laser_azimuth=False, min_range=0.4, max_range=120.0,
+            per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
+            min_range=0.4, max_range=120.0,
             colour=True, yaw_deg=None, camera=(0.0, 0.0, 0.0),
             colouriser=None, progress=None, viewer_sink=None,
             setup=None, writer=None, writer_kw=None, edit=None, level=None,
@@ -1280,7 +1283,8 @@ def convert(pcap_path, out_path, voxel_m=0.0, budget=None,
     }
 
 
-def solve_setups(captures, per_laser_azimuth=False, progress=None):
+def solve_setups(captures, per_laser_azimuth=rig.DEFAULT_PER_LASER_AZIMUTH,
+                 progress=None):
     """
     Where each tripod stood, relative to the FIRST capture's.
 
@@ -1355,7 +1359,8 @@ def merge(captures, out_path, setups=None, progress=None, edit=None, writer_kw=N
 
     if setups is None:
         solved = solve_setups(
-            captures, per_laser_azimuth=kwargs.get("per_laser_azimuth", False),
+            captures, per_laser_azimuth=kwargs.get(
+                "per_laser_azimuth", rig.DEFAULT_PER_LASER_AZIMUTH),
             progress=progress)
         setups = [s for s, _ in solved]
         solutions = [sol for _, sol in solved]

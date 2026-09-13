@@ -196,7 +196,10 @@ def make_packet(azimuth_deg, distance_m, refl=42):
 
 payload = np.frombuffer(make_packet(90.0, 10.0), dtype=np.uint8)
 stamps = np.array([1000.0])
-a, w, r, refl, t = decode.decode_chunk(stamps, payload.reshape(1, -1))
+# block azimuth ASKED FOR: the corrected decode is the default now, and this
+# section is about the two modes, not the default (which has its own checks)
+a, w, r, refl, t = decode.decode_chunk(stamps, payload.reshape(1, -1),
+                                       per_laser_azimuth=False)
 check("every channel of every block decodes", a.size == 12 * 32, a.size)
 check("range is recovered in metres", np.allclose(r, 10.0), r[:3])
 check("reflectivity survives", np.all(refl == 42))
@@ -216,6 +219,134 @@ check("and the spread stays inside one block's rotation",
 short = decode.decode_chunk(stamps, payload.reshape(1, -1),
                             min_range=50.0)[2]
 check("out-of-range returns are dropped", short.size == 0, short.size)
+
+# --- 5z. the corrected decode is the default, everywhere, as one name -------
+# ⭐ THE 56TH PASS'S MEASUREMENT (2026-09-13): per-laser azimuth plus the
+# manual's laser origins along the spin axis makes walls 5-23% thinner on
+# four real captures, and the pitch delta that came with per-laser azimuth
+# was wrong in sign. One name -- rig.DEFAULT_PER_LASER_AZIMUTH -- is the
+# default of every door, so the Studio's picture, its export, the CLI and the
+# GUI cannot decode the same capture two ways.
+print("\nthe corrected decode is the default")
+import inspect as _cinsp                                    # noqa: E402
+import tlsconvert_cli as _cli56                             # noqa: E402
+
+check("the corrected decode is the default", rig.DEFAULT_PER_LASER_AZIMUTH
+      is True)
+_cd_doors = (rig.frame_for, decode.decode_chunk, decode.stream_world_points,
+             pipeline.sample_for_solve, pipeline.prepare_colour,
+             pipeline.convert, pipeline.solve_setups)
+_cd_defaults = [_cinsp.signature(f).parameters["per_laser_azimuth"].default
+                for f in _cd_doors]
+check("every door defaults to that one name",
+      all(d is rig.DEFAULT_PER_LASER_AZIMUTH for d in _cd_defaults),
+      dict(zip([f.__name__ for f in _cd_doors], _cd_defaults)))
+_cd_pipe = open(pipeline.__file__, encoding="utf-8").read()
+check("merge reads the same name when no flag is passed",
+      "\"per_laser_azimuth\", rig.DEFAULT_PER_LASER_AZIMUTH" in _cd_pipe)
+check("the pitch delta was re-measured on the full-360 captures and is zero",
+      rig.PER_LASER_AZIMUTH_PITCH_DELTA == 0.0
+      and close(rig.frame_for({"mount": rig.tls_geometry.Frame().as_dict()},
+                              per_laser_azimuth=True).pitch_deg, 8.4),
+      rig.PER_LASER_AZIMUTH_PITCH_DELTA)
+
+_cd_om = np.asarray(decode._vertical_angles(np))
+_cd_off = decode.vertical_offsets_for(_cd_om) * 1000.0
+check("each laser's origin along the spin axis is the manual's, by laser id",
+      np.allclose(_cd_off, decode.VERTICAL_OFFSET_MM_BY_LASER)
+      and close(float(_cd_off[0]), 11.2) and close(float(_cd_off[15]), -11.2),
+      _cd_off.round(1).tolist())
+check("...found from the elevation alone, so a return needs no laser id",
+      np.allclose(decode.vertical_offsets_for(np.array([-15.0, 1.0, 15.0]))
+                  * 1000.0, [11.2, -0.7, -11.2]))
+
+# the offset is added in the SENSOR frame, before the mount, so in world it
+# lies along the puck's spin axis as the mount and the pan carry it
+_cd_fr = rig.tls_geometry.Frame()
+_cd_a = np.array([10.0, 200.0, 355.0])
+_cd_w = np.array([-15.0, 1.0, 15.0])
+_cd_r = np.array([2.0, 3.0, 4.0])
+_cd_p = np.array([0.0, 45.0, 300.0])
+_cd_d = np.array([0.0112, -0.0007, -0.0112])
+_cd_plain = decode.to_world(_cd_fr, _cd_a, _cd_w, _cd_r, _cd_p)
+_cd_moved = decode.to_world(_cd_fr, _cd_a, _cd_w, _cd_r, _cd_p,
+                            z_offset_m=_cd_d)
+_cd_m = np.asarray(_cd_fr.matrix).reshape(3, 3)
+_cd_axis = _cd_m[:, 2]                      # the spin axis, in the mount frame
+_cd_want = []
+for _i in range(3):
+    _pp = math.radians(_cd_p[_i] + _cd_fr.pan_zero_deg)
+    _v = _cd_axis * _cd_d[_i]
+    _cd_want.append([_v[0] * math.cos(_pp) + _v[1] * math.sin(_pp),
+                     _v[1] * math.cos(_pp) - _v[0] * math.sin(_pp), _v[2]])
+check("to_world carries a laser origin along the spin axis, through the mount "
+      "and the pan", np.allclose(_cd_moved - _cd_plain, _cd_want, atol=1e-6),
+      (_cd_moved - _cd_plain).round(5).tolist())
+check("...and moves nothing when none is given",
+      np.array_equal(_cd_plain,
+                     decode.to_world(_cd_fr, _cd_a, _cd_w, _cd_r, _cd_p,
+                                     z_offset_m=None)))
+check("on this sideways puck the origin shift is HORIZONTAL, not a height",
+      abs(float(_cd_want[0][2])) < 1e-4 and abs(float(_cd_want[0][0])
+                                                + float(_cd_want[0][1])) > 0.005,
+      _cd_want[0])
+
+
+# stream_world_points applies the origins exactly when the flag is on: the
+# output must equal an independent rebuild from decode_chunk + pan_angles +
+# to_world, with the offsets for True and without them for False
+class _CdTrack:
+    def as_breakpoints(self):
+        return [(0.0, 0.0), (100.0, 200.0)]
+
+
+_cd_meta = {"sweep": {"started_epoch": 1000.0}}
+_cd_raw = np.frombuffer(make_packet(90.0, 10.0), dtype=np.uint8).reshape(1, -1)
+_cd_real_chunks = decode.read_packet_chunks
+_cd_real_track = decode.rig.tls_geometry.track_from_meta
+decode.read_packet_chunks = lambda *a, **k: iter([(np.array([1010.0]),
+                                                   _cd_raw)])
+decode.rig.tls_geometry.track_from_meta = lambda meta: _CdTrack()
+try:
+    _cd_got = {}
+    _cd_want2 = {}
+    for _flag in (True, False):
+        _cd_got[_flag] = np.concatenate(
+            [x for x, _r in decode.stream_world_points(
+                "x.pcap", _cd_meta, _cd_fr, per_laser_azimuth=_flag)])
+        _al, _om, _rn, _rf, _tt = decode.decode_chunk(
+            np.array([1010.0]), _cd_raw, per_laser_azimuth=_flag)
+        _pn = decode.pan_angles(_CdTrack(), _tt, 1000.0)
+        _cd_want2[_flag] = decode.to_world(
+            _cd_fr, _al, _om, _rn, _pn,
+            z_offset_m=decode.vertical_offsets_for(_om) if _flag else None)
+finally:
+    decode.read_packet_chunks = _cd_real_chunks
+    decode.rig.tls_geometry.track_from_meta = _cd_real_track
+check("stream_world_points applies the laser origins under the corrected "
+      "decode", np.allclose(_cd_got[True], _cd_want2[True], atol=1e-6)
+      and _cd_got[True].shape == (384, 3))
+check("...and leaves them out under block azimuth",
+      np.allclose(_cd_got[False], _cd_want2[False], atol=1e-6)
+      and not np.allclose(_cd_got[False], _cd_got[True], atol=1e-4))
+check("the two decodes differ by about the origin shift, not by metres",
+      0.002 < float(np.abs(_cd_got[True] - _cd_got[False]).max()) < 0.08,
+      float(np.abs(_cd_got[True] - _cd_got[False]).max()))
+
+_cd_args = _cli56.build_parser().parse_args(["a.pcap"])
+_cd_args2 = _cli56.build_parser().parse_args(["a.pcap", "--block-azimuth"])
+check("the CLI decodes corrected by default and --block-azimuth opts out",
+      not _cd_args.block_azimuth and _cd_args2.block_azimuth)
+_cd_cli = open(_cli56.__file__, encoding="utf-8").read()
+check("...and both the convert and the align doors read that flag",
+      _cd_cli.count("per_laser_azimuth=not args.block_azimuth") == 2)
+check("--per-laser-azimuth still parses, so old command lines run",
+      _cli56.build_parser().parse_args(["a.pcap", "--per-laser-azimuth"])
+      .per_laser_azimuth)
+_cd_gui = open(os.path.join(os.path.dirname(_cli56.__file__),
+                            "tlsconvert_gui.py"), encoding="utf-8").read()
+check("the GUI's tick starts on",
+      "self.per_laser = tk.BooleanVar(value=True)" in _cd_gui)
 
 # --- 5a. a dual-return packet is six firings reported twice ----------------------
 # ⛔ THE SWEEP'S decode.py:109 FINDING. The factory byte at 1204 says which
@@ -330,8 +461,9 @@ else:
 _sw_src = _dinsp.getsource(decode.stream_world_points)
 check("the stream picks its backend once, from gpu.xp()",
       "xp = gpu.xp()" in _sw_src, _sw_src[-400:])
-check("...hands it to all three stages of the chunk pipeline",
-      _sw_src.count("xp=xp") == 3, _sw_src.count("xp=xp"))
+check("...hands it to all four stages of the chunk pipeline (decode, pan, "
+      "the laser origins, world)",
+      _sw_src.count("xp=xp") == 4, _sw_src.count("xp=xp"))
 check("...and brings only the finished arrays home",
       _sw_src.count("gpu.to_host") == 2, _sw_src.count("gpu.to_host"))
 
@@ -17250,6 +17382,16 @@ check("...and the page says what was written, or why nothing was",
       "camera manifest beside it: '" in _js_func("saveMerged")
       and "camera manifest NOT written: '" in _js_func("saveMerged"))
 shutil.rmtree(_mdir, ignore_errors=True)
+
+# --- the Studio decodes corrected too, through the same one name ------------
+print("\nthe Studio's decode is the corrected one")
+check("align.load defaults to rig.DEFAULT_PER_LASER_AZIMUTH",
+      _cinsp.signature(align.load).parameters["per_laser_azimuth"].default
+      is rig.DEFAULT_PER_LASER_AZIMUTH)
+check("the smoothing re-read and the pitch check take the same default, "
+      "passing no flag of their own",
+      "frame = pipeline.rig.frame_for(meta)\n" in _ALIGN_SRC
+      and "per_laser_azimuth=False" not in _ALIGN_SRC)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

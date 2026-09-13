@@ -168,8 +168,9 @@ class App:
                      values=[d[0] for d in DETAIL_LEVELS]).grid(
                          row=0, column=3, columnspan=3, sticky="w")
 
-        self.per_laser = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts, text="Per-laser azimuth (slightly finer)",
+        self.per_laser = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts, text="Corrected decode (per-laser azimuth "
+                        "and origins; untick for the scanner's own)",
                         variable=self.per_laser).grid(row=1, column=0,
                                                       columnspan=3, sticky="w",
                                                       padx=6, pady=(0, 6))

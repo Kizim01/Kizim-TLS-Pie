@@ -90,8 +90,15 @@ def build_parser():
     p.add_argument("--full", action="store_true",
                    help="every return, no voxel and no budget. Large.")
     p.add_argument("--per-laser-azimuth", action="store_true",
-                   help="decode each laser's own azimuth. ~4%% thinner "
-                        "surfaces; shifts pitch by the calibrated delta.")
+                   help="the corrected decode: each laser's own azimuth "
+                        "and origin, with the pitch calibrated under "
+                        "them. THE DEFAULT since 2026-09-13; kept so "
+                        "old command lines still run.")
+    p.add_argument("--block-azimuth", action="store_true",
+                   help="the scanner's own cheap decode instead: every "
+                        "channel at its block's azimuth, no laser "
+                        "origins. Surfaces 6-22%% thicker; for "
+                        "comparison only.")
     p.add_argument("--align", action="store_true",
                    help="open two or more captures together in the alignment "
                         "workbench: drag them into place or press Auto-align, "
@@ -126,7 +133,7 @@ def run_align(args, paths):
     voxel = (align.DEFAULT_ALIGN_VOXEL if args.align_voxel is None
              else args.align_voxel)
     scans = align.load(paths, voxel_m=voxel, colour=args.colour,
-                       per_laser_azimuth=args.per_laser_azimuth,
+                       per_laser_azimuth=not args.block_azimuth,
                        progress=None if args.quiet
                        else lambda m: print("  %s" % m))
     server = align.AlignServer(scans, out_path=out, merge_voxel=args.voxel)
@@ -305,7 +312,7 @@ def main(argv=None):
         try:
             info = pipeline.convert(
                 path, out, voxel_m=voxel, budget=budget,
-                per_laser_azimuth=args.per_laser_azimuth,
+                per_laser_azimuth=not args.block_azimuth,
                 min_range=args.min_range, max_range=args.max_range,
                 colour=args.colour, yaw_deg=args.yaw,
                 camera=(0.0, 0.0, args.camera_z),

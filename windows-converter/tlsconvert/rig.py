@@ -71,17 +71,39 @@ SCANNER_MODULE_DIR = _ROOT
 # them across 110.592 us, spreading them up to 0.32 degrees further round -- and
 # on a sideways puck that spread is VERTICAL, so it is not a rounding detail.
 #
-# Decoding the same scan with per-laser azimuths moves the best-fit pitch by
-# this much. Measured 2026-08-13 on TLS_26_08_13_02_05_15: block azimuth gave
-# +8.40 (thickness 18.9 mm), per-laser gave +8.20 (18.1 mm). Only 4% thinner,
-# which is why the cheap decode remains the default.
+# Decoding the same scan with per-laser azimuths CAN move the best-fit pitch.
+# Measured 2026-08-13 on TLS_26_08_13_02_05_15 it seemed to: block azimuth
+# gave +8.40 (thickness 18.9 mm), per-laser +8.20 (18.1 mm), and -0.20 lived
+# here for a month. ⭐ RE-MEASURED 2026-09-13 ON TWO FULL-360 CAPTURES
+# (TLS_26_09_13_19_02_13 / _19_05_53, where every wall is seen from both
+# halves of the fan, which a 190-degree sweep cannot give) and two 190-degree
+# ones (job captures 10 and 30), with the laser origins applied as well
+# (decode.VERTICAL_OFFSET_MM_BY_LASER). Plane sigma over 25 cm cells, mm, at
+# effective pitch 8.3 / 8.4 / 8.5:
+#
+#     full-360 a   11.22  10.97  10.88        capture 10   7.04  7.01  7.06
+#     full-360 b   11.34  11.01  10.89        capture 30  10.66 10.54 10.49
+#
+# 8.4 is within 1% of the best on every capture and the only value whose
+# 4-12 m band does not worsen (capture 10: 9.2 / 9.9 / 10.7). The old -0.20
+# (effective 8.2) was WORSE than block azimuth on the full-360 captures
+# (11.64 against 11.58). So the delta is ZERO: the corrected decode uses the
+# sidecar's calibrated pitch as it is. (scratchpad mos\calib56b.txt.)
 #
 # Kept as a DELTA rather than a second absolute value, so re-measuring the
 # calibration means editing tls_geometry.py and nothing else.
-PER_LASER_AZIMUTH_PITCH_DELTA = -0.20
+PER_LASER_AZIMUTH_PITCH_DELTA = 0.0
+
+# ⭐ THE CORRECTED DECODE IS THE DEFAULT EVERYWHERE (2026-09-13): per-laser
+# azimuth, the manual's per-laser origins along the spin axis, and the pitch
+# delta measured under both. One name, read by decode, pipeline, align, the
+# CLI and the GUI, so the Studio's picture, its export and the command line
+# cannot drift apart on a flag. `--block-azimuth` on the CLI, or the GUI's
+# tick, is the scanner's own cheap decode for comparison.
+DEFAULT_PER_LASER_AZIMUTH = True
 
 
-def frame_for(meta, per_laser_azimuth=False):
+def frame_for(meta, per_laser_azimuth=DEFAULT_PER_LASER_AZIMUTH):
     """
     The Frame to render a scan with.
 
@@ -91,13 +113,19 @@ def frame_for(meta, per_laser_azimuth=False):
     frame = tls_geometry.Frame.from_dict((meta or {}).get("mount"))
     if not per_laser_azimuth:
         return frame
-    return tls_geometry.Frame(
+    shifted = tls_geometry.Frame(
         roll_deg=frame.roll_deg,
         pitch_deg=frame.pitch_deg + PER_LASER_AZIMUTH_PITCH_DELTA,
         yaw_deg=frame.yaw_deg,
         lever=frame.lever,
         pan_zero_deg=frame.pan_zero_deg,
     )
+    # ⛔ THE LEGACY FLAG TRAVELS WITH THE PITCH IT DESCRIBES. Rebuilding the
+    # Frame dropped it, which nobody saw while this branch was opt-in; the
+    # day it became the default, an old sidecar's substituted pitch stopped
+    # being announced in describe(). The suite caught it.
+    shifted.pitch_is_legacy = frame.pitch_is_legacy
+    return shifted
 
 
 def describe_geometry(frame):

@@ -879,7 +879,8 @@ def stand_up(scan):
 
 
 def load(paths, voxel_m=DEFAULT_ALIGN_VOXEL, colour=True, progress=None,
-         per_laser_azimuth=False, max_points=viewer.DEFAULT_VIEW_MAX,
+         per_laser_azimuth=pipeline.rig.DEFAULT_PER_LASER_AZIMUTH,
+         max_points=viewer.DEFAULT_VIEW_MAX,
          level=False):
     """
     Decode every capture once, into memory, at a chosen preview density.
