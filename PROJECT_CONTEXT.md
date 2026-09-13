@@ -5,13 +5,16 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-11 ~01:35):** search this file for
+> **▶ WHERE THE WORK IS NOW (2026-09-11 ~02:00):** search this file for
 > `LIVE STATE (2026-09-10, fifty-fifth pass)` and read its **RESUME HERE**
 > first. The restart pointer's opening entries are older than it; the newest
 > LIVE STATE is the current one, and each older one below it is history. The
 > 45th pass's sweep list is fixed but for DXF. The grey reopen is traced and
-> fixed, the Studio audits are finished, and the exes were rebuilt after both.
-> The Pi does NOT carry the 55th pass's Pi changes (it was off).
+> fixed, the Studio audits are finished, the one intermittent check (BLAS's
+> thread count) is fixed, and the exes were rebuilt after all of it
+> (01:49-01:50). Nothing is running. The Pi does NOT carry the 55th pass's
+> Pi changes (it was off, and the laptop was last on a router, not the
+> phone's hotspot).
 
 ## Project summary
 TLS_Pie is a hardware and software prototype for a lidar-based terrestrial scanning and capture
