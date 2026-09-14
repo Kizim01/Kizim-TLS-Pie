@@ -5,17 +5,23 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-14, small hours):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-14, morning):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the TENTH PART first. Latest: **a placement made on the earlier decode
-> is CARRIED ACROSS on open, scan pose and photograph alike**, by the
-> capture's own measured rigid shift between the two decodes (0.2 s a
-> capture, exact to machine precision; "some of the images are not
-> aligned now to the point cloud" was the lean sitting half a degree off
-> the points the photograph had been fitted against); before that **the
-> project records which decode its poses were fitted to** and names what
-> it cannot carry ("scan still not ligning up" was the 09-10 poses sitting
-> half a degree off the corrected points, not the decode); before that **the rush twin's points are a third of
+> the ELEVENTH PART first. Latest: **Deep align settles the HEADING at the
+> rig's own bolted geometry before tilt, height and seat go free, and then
+> folds the content's sideways reading in until it settles** ("deep align
+> not working on scan 21", the restaurant's capture 21 again: with the
+> operator's cuts in force the free screening let a heading 140° out dress
+> itself in a lean and a 0.40 m camera and win; and one fold of a ±2.5°
+> content window had left every right-basin answer 2° out); before that
+> **a placement made on the earlier decode is CARRIED ACROSS on open**,
+> scan pose and photograph alike, by the capture's own measured rigid
+> shift between the two decodes (0.2 s a capture, exact; "some of the
+> images are not aligned now" was the lean half a degree off the points
+> the photograph had been fitted against); before that **the project
+> records which decode its poses were fitted to** and names what it cannot
+> carry ("scan still not ligning up" was the 09-10 poses sitting half a
+> degree off the corrected points, not the decode); before that **the rush twin's points are a third of
 > the size** (fourth root of the stride, not the square root; the operator:
 > "i would like the lod points to be much smaller"). In the exes rebuilt 23:51-23:52, with the ninth part. Shipped
 > earlier on 09-13, in the exes rebuilt
@@ -25,7 +31,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2174 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2187 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6564,6 +6570,77 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ ELEVENTH PART (2026-09-14, morning): Deep align settles the heading at
+the rig's stack, then on the content.** The operator: *"deep align not
+working on scan 21"* → *"restaurant"* → (asked what the screen showed)
+*"Finishes, image still wrong"* → *"deep align should be using the 360
+image from the lidar intensity map to align the color 360 image using
+shapes and similar color tones, if you make the 360 image monocrome it
+should be easy to align"*. The restaurant's capture 21 again (the 190.8°
+half-arc scan of the 22nd pass), saved 09-07 at yaw 215.1 / camera 0.37 m
+/ lift −22 px, grade doubtful; the rig's stack from four confirmed
+siblings is pitch 2.43 / roll 0.76 / camera 0.088. Scripts `deep59.py`
+(the press headless, no cuts), `deep60.py` (with the project's 81 lassos
+sent the way the page sends them), `dump61.py` + `render62.py` (laser
+intensity panorama against the photograph at a pose, overlaid, judged by
+eye), `exp63.py` (both basins scored at both stacks), `drift64.py`
+(content readings at three headings), `deep61.py` / `deep62.py` (the
+patches), `revert61.py` (the audit).
+
+- **Reproduced, both ways.** Without the cuts the press landed 74.6° on
+  the rig's stack in 33 s. WITH the cuts (7% of the points gone, the sofa
+  among them) it landed −139.4° / pitch −2.2 / roll −2.6 / camera 0.40 m
+  and said *"the content check kept it"* — the operator's screen exactly.
+  The renders settle which is right: at 74.6° the cabinet, bar and sofa sit
+  on their laser shapes; at −139° the photograph's bar lies over the
+  laser's cabinet.
+- **Fault one: the basin was chosen with the tilt free.** The reflectivity
+  sweep at the STORED stack read the true heading 3.4 against the false
+  2.3 — and the screening then freed pitch and roll, so the false basin
+  dressed itself in a lean and a raised camera and won the fine judge 5.2
+  to 3.9. On a half-arc scan a tilt acts nearly uniform, so any wrong
+  heading can be dressed to fit. At the RIG'S stack (`exp63.py`) the same
+  sweep reads 5.0 against 2.7 and the fine judge 4.4 against 1.7 with the
+  heading alone free; free polish from there 5.4 against 3.0. **The camera
+  is bolted: where the rig sits is the one number a wrong basin cannot
+  fake** — the 22nd pass's own sentence, now applied to the CHOICE OF BASIN
+  and not only to the tilt afterwards.
+- **Fault two: one fold of a ±2.5° window.** With the basin right, the
+  press still sat 2° out either way (70.6 with the cuts, 74.6 without); the
+  content reads 72.8 from both (`drift64.py`; the 22nd pass's hand answer
+  was 72.755). `paint_drift` sees ±2.5° sideways, the content check folded
+  its reading in once, and a rail reading stood — 10 cm at three metres.
+- **Shipped.** `colour.deep_align(..., stack=)`: with a rig stack the sweep,
+  the scale and the screening are all taken at it, the screening moves the
+  heading ONLY (yaw-only axes), and the single best basin goes on to the
+  free polish; `was` still judges the incumbent last. `align.deep` reads
+  `_rig_stack` BEFORE the search and hands it over; then, whichever stack
+  the content preferred, **the content's sideways reading is folded in
+  until it settles** (`CONTENT_SETTLE_ROUNDS = 4`, settle line
+  `DRIFT_SETTLE_DEG`), the lift taken from the reading that settled, in the
+  ADOPTED and the KEPT branch alike (the kept branch folded nothing before,
+  and it is the branch a healthy capture now takes). The note says both:
+  *"The heading was settled at the rig's own bolted geometry (read from 4
+  confirmed siblings) before the tilt and height were freed"* and *"The
+  photograph's content then settled the heading, moving it +2.2°"*.
+- **On the capture, after both:** the press lands 72.83° with the cuts and 72.73° without (the 22nd pass's hand answer: 72.755°), pitch 2.43 / roll 0.76 / camera 0.088 m / lift −5 and −2 px, in 34 and 48 s; the renders (`rest21_final.png`) put the cabinet, bar, sofa and tree on their laser shapes.
+- Checks: six on the search (a synthetic objective where the stored tilt
+  hands the false basin the win and the rig's stack the true one; every
+  sweep at the stack; screening moved the heading alone; polish still
+  free; incumbent judged last), four on the press (the stack handed over,
+  none without siblings, the note, read before the search), the settle
+  in both branches. Suite 2174 → **2187 passed, 0 failed**. ✅ Exes rebuilt 02:09-02:10 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0) carry it; reversion audit: break A (search ignores the stack) fired its 3 named checks, break B (press hands no stack) its 3, break C (fold once, never again) its named settle checks, nothing else.
+- ⚠ **OBSERVED, NOT YET MEASURED CLEANLY:** `take_edit` with this
+  project's 81 lassos over 18 captures took 350–361 s in both headless
+  runs (one with other work on the machine, one without) — every photograph
+  press in the Studio pays that walk before the search starts. Worth
+  timing alone; likely the lasso test per scan, not the search.
+- **On the live job:** reopen the restaurant project in the rebuilt
+  Studio, press Deep align on scan 21 (the note should say settled at the
+  rig's geometry, then the content), then Deep align them all for the
+  other doubtful photographs, and save.
+
 
 **▶ TENTH PART (2026-09-14, small hours): a placement made on the earlier
 decode is carried across on open, photographs included.** The operator,

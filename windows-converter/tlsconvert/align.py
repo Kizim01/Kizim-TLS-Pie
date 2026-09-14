@@ -1453,6 +1453,13 @@ def _folder_number(path):
     return None
 
 
+#: How many times the content's sideways reading is folded into a deep
+#: press's heading before the press stops asking. `paint_drift` reads +-2.5
+#: degrees, the search can leave the heading 2 degrees out (capture 21,
+#: 2026-09-14), so two folds normally settle it; four is the ceiling.
+CONTENT_SETTLE_ROUNDS = 4
+
+
 class AlignServer(object):
     """Serves the alignment workbench on loopback until stopped."""
 
@@ -5023,6 +5030,15 @@ class AlignServer(object):
 
         report("starting", 0, 5)
         undo_lift = None
+        # ⭐⭐ THE RIG'S OWN GEOMETRY IS READ BEFORE THE SEARCH, NOT AFTER,
+        # and handed to it: the heading is settled at the bolted stack the
+        # confirmed siblings agree on, and only then do tilt, height and
+        # seat go free. Measured on the restaurant's capture 21 (2026-09-14):
+        # with the operator's cuts in force the free screening let a false
+        # heading 140 degrees out dress itself in a -2.2/-2.6 lean and a
+        # 0.40 m camera and win; at the rig's stack the true heading wins
+        # two to one at every stage. See `colour.deep_align`.
+        rig = self._rig_stack(scan)
         try:
             rgb_img, lum0 = colour_mod.load_panorama(photo)
             # ⛔ THE SEARCH JUDGES THE LIFTED IMAGE THE POSE WAS FITTED ON.
@@ -5038,7 +5054,7 @@ class AlignServer(object):
                 roll_deg=float(info.get("roll_deg") or 0.0),
                 seconds=(float(seconds) if seconds
                          else colour_mod.DEEP_SECONDS),
-                progress=report)
+                progress=report, stack=rig)
             # ⭐⭐ THE CONTENT GETS THE LAST WORD HERE TOO. Measured on scan
             # 21 (2026-09-01): the search's own judge PREFERRED a pose whose
             # content sat 4-5 degrees adrift -- the term gate and the score's
@@ -5051,7 +5067,7 @@ class AlignServer(object):
             # PAST the +-5 degree window (see colour.content_offset), and
             # the stack the content prefers by a real margin is the answer.
             got["content"] = None
-            rig = (self._rig_stack(scan) if got.get("ok") else None)
+            rig = (rig if got.get("ok") else None)
             if rig is not None:
                 report("asking the content where it sits", 5, 6)
                 searched = colour_mod.content_offset(
@@ -5080,21 +5096,55 @@ class AlignServer(object):
                     # A zero camera would send _repaint's colour_scan back
                     # up the climb, overwriting the adoption on the spot.
                     cz = float(rig["camera_z"]) or 0.005
-                    got.update(
-                        yaw_deg=float((got["yaw_deg"]
-                                       + stacked["dlon_deg"]) % 360.0),
-                        pitch_deg=float(rig["pitch_deg"]),
-                        roll_deg=float(rig["roll_deg"]),
-                        camera_z=cz, camera_x=0.0, camera_y=0.0)
+                    got.update(pitch_deg=float(rig["pitch_deg"]),
+                               roll_deg=float(rig["roll_deg"]),
+                               camera_z=cz, camera_x=0.0, camera_y=0.0)
+                    read = stacked
+                else:
+                    read = searched if searched.get("ok") else None
+                if read is not None:
+                    # ⭐⭐ THE CONTENT'S SIDEWAYS READING IS FOLDED IN UNTIL
+                    # IT SETTLES, WHICHEVER STACK WON. Measured on the
+                    # restaurant's capture 21 (2026-09-14): the search's own
+                    # judge put the heading 2 degrees either side of the
+                    # truth (70.6 with the cuts, 74.6 without; the content
+                    # reads 72.8 from both), and `paint_drift` sees only
+                    # +-2.5 degrees sideways, so one fold left a rail
+                    # reading standing -- 10 cm at three metres, which is
+                    # "the image still sits wrong". A second read at the
+                    # folded heading lands inside the window and settles.
+                    # The kept branch folded NOTHING before, which now that
+                    # the search starts at the rig's stack is the branch a
+                    # healthy capture takes -- so it settles too.
                     # The plateau was read on the RAW image, so its offset
                     # IS the photograph's whole lift -- stored before the
                     # repaint reloads the image, replacing a lift that was
                     # measured under the discarded pose.
                     undo_lift = int(scan.colour_info.get("image_up_px")
                                     or 0)
-                    scan.colour_info["image_up_px"] = int(round(
-                        stacked["offset_deg"] * float(lum0.shape[0])
-                        / 180.0))
+                    seat = (float(got.get("camera_x") or 0.0),
+                            float(got.get("camera_y") or 0.0),
+                            float(got.get("camera_z") or 0.0))
+                    folded = 0.0
+                    for _round in range(CONTENT_SETTLE_ROUNDS):
+                        got["yaw_deg"] = float((got["yaw_deg"]
+                                                + read["dlon_deg"]) % 360.0)
+                        folded += float(read["dlon_deg"])
+                        scan.colour_info["image_up_px"] = int(round(
+                            read["offset_deg"] * float(lum0.shape[0])
+                            / 180.0))
+                        if abs(read["dlon_deg"]) < colour_mod.DRIFT_SETTLE_DEG:
+                            break
+                        report("settling the heading on the content", 5, 6)
+                        again = colour_mod.content_offset(
+                            sample, refl, lum0, got["yaw_deg"],
+                            got["pitch_deg"], got["roll_deg"], seat)
+                        if not again.get("ok"):
+                            break
+                        read = again
+                    got["content"]["folded_deg"] = round(folded, 2)
+                    got["content"]["settled"] = bool(
+                        abs(read["dlon_deg"]) < colour_mod.DRIFT_SETTLE_DEG)
                     moved = abs((got["yaw_deg"] - float(info["yaw_deg"])
                                  + 180.0) % 360.0 - 180.0)
                     got["turned_deg"] = float(moved)
@@ -5105,7 +5155,8 @@ class AlignServer(object):
                         got["roll_deg"]
                         - float(info.get("roll_deg") or 0.0)))
                     got["raised_m"] = float(
-                        cz - float(info.get("camera_z") or 0.0))
+                        float(got["camera_z"])
+                        - float(info.get("camera_z") or 0.0))
         except Exception as exc:                          # noqa: BLE001
             return {"ok": False, "error": "could not search (%s)" % exc}
         finally:
@@ -5145,6 +5196,13 @@ class AlignServer(object):
                           and k not in (got.get("stood_down") or []))
         note = ("searched all 360° with %d evaluations in %.0f s. "
                 % (got.get("evaluations") or 0, got.get("seconds") or 0.0))
+        if got.get("stacked"):
+            # ⭐ SAID, because it is the difference between this press and
+            # the one that dressed a wrong heading to fit.
+            note += ("The heading was settled at the rig's own bolted "
+                     "geometry (read from %d confirmed siblings) before the "
+                     "tilt and height were freed. "
+                     % ((got.get("content") or {}).get("siblings") or 0))
         if voted:
             note += "Voting: %s. " % voted
         for term in (got.get("stood_down") or []):
@@ -5152,6 +5210,12 @@ class AlignServer(object):
                      "cloud, so it was noise rather than evidence. "
                      % names.get(term, term).capitalize())
         content = got.get("content") or {}
+        if content.get("folded_deg"):
+            note += ("The photograph's content then settled the heading, "
+                     "moving it %+.1f°%s. "
+                     % (content["folded_deg"],
+                        "" if content.get("settled")
+                        else " (and had not fully settled)"))
         if content.get("adopted"):
             # ⭐⭐ THE ADOPTION IS SAID IN THE CONTENT'S OWN NUMBERS. The
             # searched answer was set aside, so reporting its gain or its

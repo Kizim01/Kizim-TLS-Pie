@@ -3035,11 +3035,32 @@ def content_offset(xyz, refl, lum, yaw_deg, pitch_deg=0.0, roll_deg=0.0,
 def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                pitch_deg=0.0, roll_deg=0.0, weights=None,
                seconds=DEEP_SECONDS, budget=DEEP_BUDGET, seeds=DEEP_SEEDS,
-               progress=None):
+               progress=None, stack=None):
     """
     Search the whole circle for the best pose of one photograph on one cloud.
 
     Returns a dict; never raises. See the note above `DEEP_LON_BINS`.
+
+    ⭐⭐ THE HEADING IS SETTLED AT THE RIG'S OWN BOLTED GEOMETRY WHEN THE
+    SURVEY KNOWS IT, AND ONLY THEN DO TILT, HEIGHT AND SEAT GO FREE. `stack`
+    is {"pitch_deg", "roll_deg", "camera_z"}, the confirmed siblings' median
+    (`align.AlignServer._rig_stack`); None means no prior, and the search
+    runs exactly as it always did. Measured on the restaurant's capture 21
+    (2026-09-14, "deep align not working on scan 21"): with the operator's
+    cuts in force the reflectivity sweep AT THE STORED STACK put the true
+    heading (70) at confidence 3.4 and a false one (-142) at 2.3 -- and the
+    screening then freed the tilt, so the false basin bought itself a lean of
+    -2.2/-2.6 and a camera 0.40 m up and won the fine judge 5.2 to 3.9. The
+    scan sweeps only 190.8 degrees, so over the covered half-circle a tilt
+    acts nearly uniform and a wrong heading can always be dressed to fit. At
+    the rig's stack the same sweep reads 5.0 against 2.7, and the fine judge
+    4.4 against 1.7 with the heading alone free: the camera is bolted, so
+    the one number a wrong basin cannot fake is where the rig actually sits.
+    So with a stack the sweep, the scale and the screening all take it, the
+    screening moves the heading ONLY, and the single best basin goes on to
+    the free polish; the content check in `align.deep` still arbitrates the
+    tilt afterwards, and the incumbent is still judged last by the same
+    fine judge, so the answer is never worse than the pose handed in.
 
     ⛔⛔ THIS ONE CAN MOVE A LONG WAY, WHICH IS BOTH THE POINT AND THE DANGER.
     `refine_pose` is railed so that it cannot quietly re-solve; this
@@ -3075,6 +3096,15 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
              "camera_z": float(camera[2] if len(camera) > 2 else 0.0),
              "camera_x": float(camera[0] if len(camera) > 0 else 0.0),
              "camera_y": float(camera[1] if len(camera) > 1 else 0.0)}
+    # ⭐ THE GEOMETRY THE HEADING IS JUDGED AT: the rig's when it is known,
+    # otherwise the pose handed in (see the docstring). The seat stays the
+    # incumbent's either way -- a centimetre sideways decides nothing about
+    # which basin, and the polish moves it later.
+    base = dict(start)
+    if stack:
+        base.update(pitch_deg=float(stack.get("pitch_deg") or 0.0),
+                    roll_deg=float(stack.get("roll_deg") or 0.0),
+                    camera_z=float(stack.get("camera_z") or 0.0))
 
     def tell(stage, n=0, total=5):
         if progress:
@@ -3086,15 +3116,16 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     tell("reading the cloud from the tripod", 0)
     coarse = PoseScorer(xyz, lum, camera=camera, refl=refl,
                         lon_bins=DEEP_LON_BINS, lat_bins=DEEP_LAT_BINS)
-    if coarse.filled(start["camera_z"]) < MIN_FILLED_FRACTION:
+    if coarse.filled(base["camera_z"]) < MIN_FILLED_FRACTION:
         return dict(start, ok=False, improved=False,
                     reason="this cloud's panorama is too sparse to search "
                            "against -- the same bar the solve itself sets")
 
     obj_c = DeepObjective(coarse, weights)
-    tell("sweeping all 360 headings, three ways", 1)
-    yaws, profile, per = obj_c.sweep(start["pitch_deg"], start["roll_deg"],
-                                     start["camera_z"], deadline=deadline)
+    tell("sweeping all 360 headings, three ways"
+         + (" at the rig's own geometry" if stack else ""), 1)
+    yaws, profile, per = obj_c.sweep(base["pitch_deg"], base["roll_deg"],
+                                     base["camera_z"], deadline=deadline)
     if profile is None:
         return dict(start, ok=False, improved=False,
                     reason="ran out of time during the sweep -- give it "
@@ -3130,14 +3161,19 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     # nomination: a bump that comes second by half a degree of tip can come
     # first once the tip is free to move. That is what this pass is for.
     tell("following up %d candidate headings" % (len(bumps) + 1), 2)
-    screen = _live_axes(free_yaw=True, height=False)
+    # ⛔ WITH A RIG STACK THE SCREENING MOVES THE HEADING AND NOTHING ELSE.
+    # Freeing the tilt here is how a false basin dressed itself to win on
+    # capture 21 (docstring); the tilt goes free in the polish, once the
+    # basin is chosen at the geometry the rig is known to have.
+    screen = ([("yaw_deg", None, None, 1.0)] if stack
+              else _live_axes(free_yaw=True, height=False))
     tried = []
     for cand in ([{"yaw_deg": start["yaw_deg"], "confidence": None,
                    "seed": "where you are"}]
                  + [dict(b, seed="sweep") for b in bumps]):
         if time.time() > deadline:
             break
-        pose = dict(start, yaw_deg=float(cand["yaw_deg"]))
+        pose = dict(base, yaw_deg=float(cand["yaw_deg"]))
         got, sc, _r = _pattern(obj_c, pose, screen, 2.0, 0.05,
                                min(budget, obj_c.calls + 900), deadline)
         tried.append({"from_deg": float(cand["yaw_deg"]), "pose": got,
@@ -3151,18 +3187,24 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
     tell("judging the finalists on the full grid", 3)
     fine = PoseScorer(xyz, lum, camera=camera, refl=refl)
     obj_f = DeepObjective(fine, obj_c.weights)
-    _y, _p, per_f = obj_f.sweep(start["pitch_deg"], start["roll_deg"],
-                                start["camera_z"], bins=72, deadline=None)
+    _y, _p, per_f = obj_f.sweep(base["pitch_deg"], base["roll_deg"],
+                                base["camera_z"], bins=72, deadline=None)
     if per_f is None:
         return dict(start, ok=False, improved=False,
                     reason="could not set a scale on the full grid")
 
     tried.sort(key=lambda t: -t["coarse"])
-    short = tried[:2]
+    # ⭐ WITH A RIG STACK ONE BASIN GOES ON: the second finalist existed so
+    # that a bump "second by half a degree of tip" could win once the tip was
+    # free -- which is exactly the freedom a rig prior withdraws from the
+    # choice of basin. The incumbent is still judged last, below, at its own
+    # geometry, so the promise of never-worse is kept by `was`, not by a
+    # seat at this table.
+    short = tried[:1] if stack else tried[:2]
     here = [t for t in short
             if abs((t["pose"]["yaw_deg"] - start["yaw_deg"] + 180.0) % 360.0
                    - 180.0) < 1e-6]
-    if not here:
+    if not here and not stack:
         short = short + [{"from_deg": start["yaw_deg"], "pose": dict(start),
                           "coarse": None, "seed": "where you are",
                           "sweep_confidence": None}]
@@ -3224,6 +3266,7 @@ def deep_align(xyz, lum, refl=None, camera=(0.0, 0.0, 0.0), yaw_deg=0.0,
                 improved=bool(best_score > was + 1e-9),
                 score=float(best_score), was=float(was),
                 gain=float(best_score - was),
+                stacked=bool(stack),
                 terms_was=dict((k, None if v is None else float(v))
                                for k, v in r0.items()),
                 terms_now=dict((k, None if v is None else float(v))

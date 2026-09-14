@@ -14181,7 +14181,11 @@ def _ct_fake(xyz, refl, lum, yaw, pitch=0.0, roll=0.0, camera=(0, 0, 0)):
     if pitch < 0:                           # the searched, tilted answer
         return {"ok": True, "offset_deg": 4.6, "dlon_deg": 0.4,
                 "rungs": 5, "spread_deg": 0.05}
-    return {"ok": True, "offset_deg": 0.9, "dlon_deg": -0.2,
+    # at the rig's stack the content sits at heading 9.5, read through a
+    # window a quarter of a degree wide (paint_drift's is 2.5): a read at
+    # 10 says -0.25, one at 9.75 says -0.25 again, one at 9.5 says settled
+    return {"ok": True, "offset_deg": 0.9,
+            "dlon_deg": float(np.clip(9.5 - float(yaw), -0.25, 0.25)),
             "rungs": 6, "spread_deg": 0.03}
 
 
@@ -14209,16 +14213,32 @@ check("THE RIG'S ANSWER IS ADOPTED WHEN THE CONTENT PREFERS IT BY THE "
       _r_ad.get("error") or {k: _ci2.get(k) for k in
                              ("pitch_deg", "roll_deg", "camera_z")})
 check("...the heading folds in the content's own sideways reading",
-      close(_ci2.get("yaw_deg") or 0, 9.8, 1e-6), _ci2.get("yaw_deg"))
+      close(_ci2.get("yaw_deg") or 0, 9.5, 1e-6), _ci2.get("yaw_deg"))
 check("...THE STITCH LIFT IS REMEASURED UNDER THE ADOPTED POSE, replacing "
       "one measured under the discarded pose",
       _ci2.get("image_up_px") == 2, _ci2.get("image_up_px"))
 check("...both candidates were asked at their own seat -- the winner at "
       "its solved camera, the rig at the siblings' height",
-      len(_ct_calls) == 2 and _ct_calls[0][0] == -10.5
+      len(_ct_calls) >= 2 and _ct_calls[0][0] == -10.5
       and _ct_calls[0][2] == (0.03, 0.01, 0.395)
       and _ct_calls[1][0] == 2.3 and _ct_calls[1][2] == (0.0, 0.0, 0.08),
       _ct_calls)
+# ⛔ AND THE SIDEWAYS READING IS FOLDED IN UNTIL IT SETTLES (capture 21,
+# 2026-09-14: one fold of a +-2.5 degree window left the heading 2 degrees
+# out; it took two, +2.25 then +2.5). The fake's window is a quarter of a
+# degree, so the content is asked again at each folded heading, at the
+# adopted stack: -0.25, -0.25, then 0 -- two folds and a confirming read.
+check("...THE HEADING SETTLES ON THE CONTENT: asked again at each folded "
+      "heading, at the adopted stack, until the sideways reading is under "
+      "the settle line -- two folds here, not one",
+      len(_ct_calls) == 4
+      and all(c[0] == 2.3 and c[2] == (0.0, 0.0, 0.08)
+              for c in _ct_calls[1:])
+      and ((_ci2.get("deep") or {}).get("content") or {}).get("settled")
+      is True
+      and close(((_ci2.get("deep") or {}).get("content") or {})
+                .get("folded_deg") or 0.0, -0.5, 1e-9),
+      (_ct_calls, (_ci2.get("deep") or {}).get("content")))
 check("...the note says what was adopted, in the content's own numbers",
       "adopted" in (_r_ad.get("note") or "") and "4.6" in _r_ad["note"]
       and "0.9" in _r_ad["note"], _r_ad.get("note"))
@@ -14259,6 +14279,59 @@ check("INSIDE THE MARGIN THE SEARCHED ANSWER STANDS -- 0.3 against 0.6 is "
       (_ci2k.get("pitch_deg"), (_ci2k.get("deep") or {}).get("content")))
 check("...and the note says the check ran and kept it",
       "kept it" in (_r_kp.get("note") or ""), _r_kp.get("note"))
+
+# ⭐ THE KEPT BRANCH SETTLES TOO. It used to fold nothing -- and now that
+# the search starts at the rig's stack, a healthy capture takes this branch,
+# so a heading the search left 1.5 degrees out would have stood.
+_ct_kept_reads = []
+
+
+def _ct_kept(xyz, refl, lum, yaw, pitch=0.0, roll=0.0, camera=(0, 0, 0)):
+    _ct_kept_reads.append((float(yaw), float(pitch)))
+    if pitch < 0:                           # the searched answer, kept
+        # content sits at heading 11.5, read through a one-degree window:
+        # 10 reads +1.0, 11 reads +0.5, 11.5 reads 0
+        return {"ok": True, "offset_deg": 0.6,
+                "dlon_deg": float(np.clip(11.5 - float(yaw), -1.0, 1.0)),
+                "rungs": 6, "spread_deg": 0.03}
+    return {"ok": True, "offset_deg": 0.3, "dlon_deg": 0.0,
+            "rungs": 6, "spread_deg": 0.03}
+
+
+_rs2.colour_info = {"ok": True, "photo": "fake.jpg", "yaw_deg": 10.0,
+                    "pitch_deg": -9.0, "roll_deg": -4.0, "rung": 4,
+                    "camera_x": 0.03, "camera_y": 0.01, "camera_z": 0.395,
+                    "grade": "doubtful", "given": False, "caution": None,
+                    "candidates": [], "image_up_px": 24,
+                    "second": {"yaw_deg": 9.0, "confidence": 6.5}}
+_patch_colour()
+colour.load_panorama = lambda p: (_fake_rgb, np.zeros((360, 720), np.float32))
+colour.deep_align = lambda pts, lum, **kw: dict(_tilt_fake)
+colour.content_offset = _ct_kept
+try:
+    _r_ks = _rsrv2.deep(0, seconds=0.1)
+finally:
+    (colour.deep_align, colour.content_offset,
+     colour.load_panorama) = _real_ct
+    _restore_colour()
+_ci2s = _rs2.colour_info or {}
+check("the kept answer's heading settles on the content too: +1.0 then "
+      "+0.5 folded in, read again at the searched stack each time, "
+      "settled at 0",
+      _r_ks.get("ok") and close(_ci2s.get("yaw_deg") or 0, 11.5, 1e-6)
+      and close(_ci2s.get("pitch_deg") or 0, -10.5, 1e-9)
+      and [r for r in _ct_kept_reads if r[1] < 0] == [(10.0, -10.5),
+                                                       (11.0, -10.5),
+                                                       (11.5, -10.5)]
+      and ((_ci2s.get("deep") or {}).get("content") or {}).get("adopted")
+      is False,
+      (_ci2s.get("yaw_deg"), _ct_kept_reads, _r_ks.get("error")))
+check("...its lift is the searched reading's own, and the note says the "
+      "content settled the heading",
+      _ci2s.get("image_up_px") == 1
+      and "content then settled the heading, moving it +1.5" in
+      (_r_ks.get("note") or ""),
+      (_ci2s.get("image_up_px"), _r_ks.get("note")))
 
 # ⛔ NO CONFIRMED SIBLINGS, NO CHALLENGE -- a prior read from nothing would
 # be an invented one, so the search's answer stands unquestioned and the
@@ -17710,6 +17783,158 @@ check("the page says what was carried, and what could not be",
       and "own measured tilt (about half a degree), photographs included"
       in _p57
       and "could not be " in _p57 and "carried across, so " in _p57)
+
+# --- the heading is settled at the rig's own bolted geometry ---------------
+#
+# ⛔⛔ MEASURED ON THE RESTAURANT'S CAPTURE 21 (2026-09-14, "deep align not
+# working on scan 21"): with the operator's cuts in force the sweep at the
+# STORED stack read the true heading 3.4 against a false one 2.3, and the
+# screening then freed the tilt -- so the false basin, 140 degrees out,
+# bought itself a -2.2/-2.6 lean and a 0.40 m camera and won the fine judge
+# 5.2 to 3.9. The scan sweeps 190.8 degrees, so over the covered half a tilt
+# acts nearly uniform and a wrong heading can always be dressed to fit. At
+# the rig's stack the same sweep read 5.0 against 2.7 and the fine judge 4.4
+# against 1.7 with the heading alone free. The camera is bolted: where the
+# rig sits is the one number a wrong basin cannot fake.
+print("\ncolour: the deep search settles the heading at the rig's stack")
+_dk_sweeps, _dk_screen = [], []
+
+
+class _StackScorer(object):
+    """Enough PoseScorer to let deep_align run on a synthetic objective."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def filled(self, camera_z=None):
+        return 1.0
+
+
+def _dk_bump(yaw, centre, height, width=12.0):
+    d = abs((yaw - centre + 180.0) % 360.0 - 180.0)
+    return height * max(0.0, 1.0 - d / width)
+
+
+def _dk_score(yaw, pitch, roll, z):
+    # near the rig's stack the true heading (60) towers; at the stored,
+    # tilted stack a false one (-120) does -- the capture-21 shape
+    near = abs(pitch - 2.3) < 1.0 and abs(roll - 0.6) < 1.0
+    if near:
+        return 5.0 * _dk_bump(yaw, 60.0, 1.0) + 1.0 * _dk_bump(yaw, -120.0, 1.0)
+    return 1.0 * _dk_bump(yaw, 60.0, 1.0) + 6.0 * _dk_bump(yaw, -120.0, 1.0)
+
+
+class _StackObjective(object):
+    """A DeepObjective whose one term is `_dk_score`, and which writes down
+    the geometry every sweep and every screening call was taken at."""
+    TERMS = ("edge", "mi", "beacon", "mark")
+
+    def __init__(self, scorer, weights=None):
+        self.weights = dict(colour.DEEP_WEIGHTS)
+        self.stats = {"mi": (0.0, 1.0)}
+        self.have = {"mi": True}
+        self.calls = 0
+
+    def sweep(self, pitch_deg=0.0, roll_deg=0.0, camera_z=None, bins=180,
+              deadline=None):
+        _dk_sweeps.append((float(pitch_deg), float(roll_deg),
+                           float(camera_z or 0.0), int(bins)))
+        _dk_screen.append("sweep")
+        yaws = (np.arange(bins) / float(bins)) * 360.0 - 180.0
+        prof = np.array([_dk_score(y, pitch_deg, roll_deg, camera_z)
+                         for y in yaws])
+        return yaws, prof, {"mi": prof}
+
+    def combine(self, raw):
+        return np.asarray(raw["mi"], dtype=np.float64)
+
+    def used(self):
+        return ["mi"]
+
+    def raw(self, yaw, pitch=0.0, roll=0.0, z=None, x=None, y=None):
+        return {"mi": _dk_score(yaw, pitch, roll, z)}
+
+    def __call__(self, yaw, pitch=0.0, roll=0.0, z=None, x=None, y=None):
+        self.calls += 1
+        _dk_screen.append((float(pitch), float(roll), float(z or 0.0)))
+        return _dk_score(yaw, pitch, roll, z)
+
+
+_real_dk = (colour.PoseScorer, colour.DeepObjective)
+_dk_kw = dict(camera=(0.03, 0.01, 0.395), yaw_deg=10.0, pitch_deg=-9.0,
+              roll_deg=-4.0, seconds=30.0, budget=4000)
+try:
+    colour.PoseScorer, colour.DeepObjective = _StackScorer, _StackObjective
+    _dk_plain = colour.deep_align(_shell, _img9, **_dk_kw)
+    _dk_sweeps[:], _dk_screen[:] = [], []
+    _dk_rig = colour.deep_align(_shell, _img9, stack={"pitch_deg": 2.3,
+                                                       "roll_deg": 0.6,
+                                                       "camera_z": 0.08,
+                                                       "n": 3}, **_dk_kw)
+finally:
+    colour.PoseScorer, colour.DeepObjective = _real_dk
+check("without a rig stack the search runs as it did, and on this shape "
+      "the stored tilt hands the false basin the win",
+      _dk_plain.get("ok") and not _dk_plain.get("stacked")
+      and abs((_dk_plain["yaw_deg"] + 120.0 + 180.0) % 360.0 - 180.0) < 1.0,
+      (_dk_plain.get("yaw_deg"), _dk_plain.get("reason")))
+check("WITH THE RIG'S STACK THE TRUE HEADING WINS, and the answer says the "
+      "heading was settled there",
+      _dk_rig.get("ok") and _dk_rig.get("stacked")
+      and abs((_dk_rig["yaw_deg"] - 60.0 + 180.0) % 360.0 - 180.0) < 1.0,
+      (_dk_rig.get("yaw_deg"), _dk_rig.get("reason")))
+check("...every sweep -- coarse and fine -- was taken at the rig's stack, "
+      "not the stored one",
+      len(_dk_sweeps) >= 2
+      and all(s[:3] == (2.3, 0.6, 0.08) for s in _dk_sweeps), _dk_sweeps)
+# the screening is every call between the coarse sweep and the fine one
+_dk_marks = [i for i, s in enumerate(_dk_screen) if s == "sweep"]
+_dk_screening = [s for s in _dk_screen[_dk_marks[0]:_dk_marks[1]]
+                 if s != "sweep"] if len(_dk_marks) >= 2 else []
+_dk_polish = [s for s in _dk_screen[_dk_marks[-1]:] if s != "sweep"]
+check("...and the screening moved the heading alone: no call before the "
+      "polish left the rig's tilt or height",
+      _dk_screening and all(s == (2.3, 0.6, 0.08) for s in _dk_screening),
+      set(_dk_screening))
+check("...the free polish still ran afterwards (tilt and height probed)",
+      any(s != (2.3, 0.6, 0.08) for s in _dk_polish))
+check("...and the incumbent was still judged last by the same fine judge",
+      _dk_rig.get("was") is not None and _dk_rig["score"] >= _dk_rig["was"])
+
+# and the press hands its rig stack to the search, read BEFORE it runs
+print("\nalign: the deep press hands the rig stack to the search")
+_dk_seen = []
+_patch_colour()
+colour.deep_align = (lambda pts, lum, **kw:
+                     (_dk_seen.append(kw.get("stack")),
+                      dict(_tilt_fake, stacked=kw.get("stack") is not None))[1])
+colour.content_offset = _ct_near
+try:
+    _r_dk2 = _rsrv2.deep(0, seconds=0.1)
+    _r_dk1 = _rsrv.deep(0, seconds=0.1)
+finally:
+    (colour.deep_align, colour.content_offset,
+     colour.load_panorama) = _real_ct
+    _restore_colour()
+check("THE PRESS HANDS THE CONFIRMED SIBLINGS' STACK TO THE SEARCH",
+      _r_dk2.get("ok") and len(_dk_seen) == 2
+      and _dk_seen[0] == {"pitch_deg": 2.3, "roll_deg": 0.6,
+                          "camera_z": 0.08, "n": 3},
+      (_r_dk2.get("error"), _dk_seen))
+check("...and none when there are no confirmed siblings to read one from",
+      _r_dk1.get("ok") and _dk_seen[1] is None, (_r_dk1.get("error"),
+                                                 _dk_seen))
+check("...the note says the heading was settled at the rig's geometry",
+      "settled at the rig's own bolted geometry" in (_r_dk2.get("note") or "")
+      and "3 confirmed siblings" in _r_dk2["note"]
+      and "settled at" not in (_r_dk1.get("note") or ""),
+      (_r_dk2.get("note"), _r_dk1.get("note")))
+_dk_src = inspect.getsource(align.AlignServer.deep)
+check("...and the stack is read BEFORE the search, from one line",
+      0 < _dk_src.find("rig = self._rig_stack(scan)")
+      < _dk_src.find("colour_mod.deep_align(")
+      and "progress=report, stack=rig)" in _dk_src
+      and "rig = (rig if got.get(\"ok\") else None)" in _dk_src)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
