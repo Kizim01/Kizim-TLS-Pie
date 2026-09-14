@@ -1315,7 +1315,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # place, `post()`. The picker is the one door that solves
             # nothing, so it is spared the walk over every cloud.
             if path.startswith("/photo/") and path != "/photo/browse":
-                srv.take_edit(body.get("edit"), body.get("level"))
+                # ⭐ DEEP ALIGN HEARS NO CUTS -- the operator's call
+                # (2026-09-14: "i dont think the cut list helps here"),
+                # made on the numbers: the mask walk cost 279 s on the
+                # restaurant job (81 lassos tested on all 18 captures, 0.13 s
+                # a test over 1.2M points) against a 30 s search. Both deep
+                # doors CLEAR every mask and read the whole capture; every
+                # other photograph door still hears the list, and sends it
+                # fresh on its own press, so nothing is kept across.
+                deep_press = path in ("/photo/deep", "/photo/deepall")
+                srv.take_edit(None if deep_press else body.get("edit"),
+                              None if deep_press else body.get("level"))
             if path == "/photo/shoot":
                 return self._json(srv.solve_shoot(
                     body.get("apply", True)))
@@ -5007,8 +5017,10 @@ class AlignServer(object):
                     "error": "there is no pose to search from yet -- give "
                              "this photograph a heading first, even a rough "
                              "one"}
-        # ⭐ THE SAME POINTS `colour_scan` SOLVES ON -- minus the cuts, see
-        # `solve_sample` -- and THE SAME FRAME, see the note there. The
+        # ⭐ THE SAME POINTS `colour_scan` SOLVES ON -- the WHOLE capture:
+        # the route hands `take_edit` nothing for a deep press (the
+        # operator's call, 2026-09-14), so `solve_sample` has no mask to
+        # apply -- and THE SAME FRAME, see the note there. The
         # reflectivity is per-point and rides along, narrowed with them.
         # ⛔ THE SOLVER'S OWN DECIMATED REFLECTIVITY, NOT THE ONE ON SCREEN.
         # `view_refl` lines up with the displayed points and `sample_refl` with

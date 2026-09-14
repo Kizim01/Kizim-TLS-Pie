@@ -5,9 +5,13 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-14, morning):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-14, evening):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the ELEVENTH PART first. Latest: **Deep align settles the HEADING at the
+> the ELEVENTH PART first. Latest: **Deep align HEARS NO CUTS** (the
+> operator's call on the numbers: the mask walk cost 279 s on the
+> restaurant job against a 30 s search; both deep doors clear every mask
+> and read the whole capture, every other photograph door still sends the
+> list); before that **Deep align settles the HEADING at the
 > rig's own bolted geometry before tilt, height and seat go free, and then
 > folds the content's sideways reading in until it settles** ("deep align
 > not working on scan 21", the restaurant's capture 21 again: with the
@@ -31,7 +35,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2187 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2189 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6631,11 +6635,20 @@ patches), `revert61.py` (the audit).
   free; incumbent judged last), four on the press (the stack handed over,
   none without siblings, the note, read before the search), the settle
   in both branches. Suite 2174 → **2187 passed, 0 failed**. ✅ Exes rebuilt 02:09-02:10 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0) carry it; reversion audit: break A (search ignores the stack) fired its 3 named checks, break B (press hands no stack) its 3, break C (fold once, never again) its named settle checks, nothing else.
-- ⚠ **OBSERVED, NOT YET MEASURED CLEANLY:** `take_edit` with this
-  project's 81 lassos over 18 captures took 350–361 s in both headless
-  runs (one with other work on the machine, one without) — every photograph
-  press in the Studio pays that walk before the search starts. Worth
-  timing alone; likely the lasso test per scan, not the search.
+- **THEN (evening) THE CUT WALK, MEASURED ALONE AND SETTLED BY THE
+  OPERATOR.** `edit65.py` (cProfile): `take_edit` alone 279 s on this
+  project — all of it `Lasso.inside`, 81 lassos × 18 captures = 1458 tests
+  at 0.13 s each over 1.2M-point solve samples (polygon crossing test 69 s,
+  the clip box 56 s, the frame transform 31 s), against a 30 s search. Two
+  cures were offered: test only the pressed capture (about 15 s, cuts
+  still honoured) or leave the cuts out of Deep align. The operator:
+  *"maybe lets not add that step"*, *"i dont think the cut list helps
+  here"* → chose **leave cuts out of Deep align**. Shipped: the route
+  hands `take_edit` nothing for `/photo/deep` and `/photo/deepall`
+  (`deep_press`), which CLEARS every mask, so both deep doors read the
+  whole capture; every other photograph door still sends its list on its
+  own press. Two checks. Suite 2187 → **2189 passed, 0 failed**. ✅ Exes rebuilt 18:32-18:33 (selftest 0, --gpu 0) carry it; the audit (deep_press forced False) fired its named check. The
+  press on this job now starts its search at once.
 - **On the live job:** reopen the restaurant project in the rebuilt
   Studio, press Deep align on scan 21 (the note should say settled at the
   rig's geometry, then the content), then Deep align them all for the

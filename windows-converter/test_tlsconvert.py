@@ -14102,7 +14102,7 @@ check("a frameless cut is tested under the level it was drawn on",
       _te_a.spare is not None and np.array_equal(_te_a.spare, _te_want)
       and not np.array_equal(_te_want, _te_flat),
       None if _te_a.spare is None else int((~_te_a.spare).sum()))
-_te_hook = _ALIGN_SRC.find('srv.take_edit(body.get("edit"), body.get("level"))')
+_te_hook = _ALIGN_SRC.find('srv.take_edit(None if deep_press else body.get("edit"),')
 check("EVERY PHOTOGRAPH ROUTE HEARS THE CUT LIST FIRST, from one line ahead "
       "of the first of them",
       0 < _te_hook and all(
@@ -17935,6 +17935,24 @@ check("...and the stack is read BEFORE the search, from one line",
       < _dk_src.find("colour_mod.deep_align(")
       and "progress=report, stack=rig)" in _dk_src
       and "rig = (rig if got.get(\"ok\") else None)" in _dk_src)
+
+# ⭐ DEEP ALIGN HEARS NO CUTS -- the operator's call (2026-09-14, "i dont
+# think the cut list helps here"), on the numbers: the mask walk cost 279 s
+# on the restaurant job against a 30 s search. Both deep doors clear every
+# mask; every other photograph door still sends the list on its own press.
+print("\nalign: the deep doors hear no cuts")
+_nc_hook = _ALIGN_SRC.find('deep_press = path in ("/photo/deep", "/photo/deepall")')
+check("THE TWO DEEP DOORS HAND take_edit NOTHING, from the one line every "
+      "photograph route goes through",
+      0 < _nc_hook < _te_hook < _ALIGN_SRC.find('if path == "/photo/shoot"')
+      and 'srv.take_edit(None if deep_press else body.get("edit"),' in _ALIGN_SRC
+      and 'None if deep_press else body.get("level"))' in _ALIGN_SRC,
+      _nc_hook)
+_rs.spare = np.zeros(len(_lc_pts), dtype=bool)
+_rsrv.take_edit(None, None)
+check("...and hearing nothing CLEARS a mask a previous press left, so the "
+      "search reads the whole capture",
+      _rs.spare is None)
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
