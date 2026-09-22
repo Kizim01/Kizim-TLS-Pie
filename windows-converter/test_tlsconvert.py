@@ -18224,5 +18224,33 @@ check("...and hearing nothing CLEARS a mask a previous press left, so the "
       _rs.spare is None)
 
 
+# ⭐ "I NEED TO BE ABLE TO CONTROL EACH POINT CLOUD" (operator, 2026-09-22):
+# the merged .laz Export writes sits beside the .tlspie under the same name,
+# and brought in through Add it is one cloud with nothing to place. The log
+# now says which file each Open and each Add were given, and the page says
+# what a merged export is, with the door that has the scans.
+print("\nthe log names what Open and Add were given; a merged export is said")
+check("a project open writes one line naming the file and its scan count",
+      align.opened_line(r"C:\x\job.tlspie", {"ok": True, "scans": [1, 2, 3]})
+      == r"project opened: C:\x\job.tlspie -> 3 scans"
+      and align.opened_line("j.tlspie", {"ok": True, "scans": [1]})
+      == "project opened: j.tlspie -> 1 scan")
+check("...and a refused open says why",
+      align.opened_line("a.laz", {"ok": False, "error": "not a project"})
+      == "project refused: a.laz -> not a project")
+check("an Add names an exported cloud as one merged cloud with nothing to "
+      "place, and a capture as itself",
+      align.added_line([r"C:\x\job.laz", r"C:\x\a.pcap"])
+      == r"add: C:\x\job.laz (exported cloud: one merged cloud, nothing to "
+         r"place); C:\x\a.pcap"
+      and align.added_line([]) == "add: nothing")
+check("both routes write those lines",
+      'log_event(opened_line(body.get("path"), got))' in _ALIGN_SRC
+      and "log_event(added_line(paths))" in _ALIGN_SRC)
+check("and the page says a merged export is one cloud, naming Open project",
+      "filter(s=>s.source==='cloud')" in _js_func("ingest")
+      and "use Open project and pick " in _js_func("ingest"))
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

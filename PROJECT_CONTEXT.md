@@ -49,7 +49,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2211 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2216 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6638,6 +6638,26 @@ it"*.
 - **On the live job:** the operator has since placed capture 23 (saved
   at x 0.28, y 2.36, yaw −5.1, z 1.185). In the rebuilt Studio it shows
   whole; cuts drawn from now on reach it.
+- **THEN (21:00–21:40) "WHEN THE PROJECT OPENS I CAN ONLY SEE ONE
+  COMBINED CLOUD" / "I NEED TO BE ABLE TO CONTROL EACH POINT CLOUD".** The
+  path given was `06.09.26 placements restored.laz` — the merged EXPORT of
+  09-06 21:05, sitting beside the `.tlspie` under the same name. Verified:
+  today's commits do not touch the open path; Open project lists only
+  `.tlspie` and refuses the `.laz` ("that file is not a TLS-Pie project");
+  the `.tlspie` opens to 19 scans with 19 placements; the only door that
+  takes a `.laz` is Add scans (or a drop), which brings it in as ONE cloud
+  with no placement, as since 08-20; the exporter writes no per-scan
+  point-source id, so a merged export cannot be split back. Shipped
+  (`said78.py`): the studio log now names what every Open and Add were
+  given (`opened_line`: `project opened: <path> -> N scans` / `project
+  refused: <path> -> <why>`; `added_line`: each path, an exported cloud
+  tagged `(exported cloud: one merged cloud, nothing to place)`), and the
+  page's Add message says a merged export is one cloud with nothing to
+  place and names Open project + the `.tlspie`. Five checks. Suite 2211 →
+  **2216 passed, 0 failed**. ✅ Exes rebuilt 21:37-21:38 (selftest 0, --gpu 0).
+  No reversion audit: two pure helpers with direct unit checks and a message.
+  The answer for the operator stands: open the `.tlspie` through Open
+  project; the `.laz` is for handing the finished cloud on.
 
 
 **▶ TWELFTH PART (2026-09-22): the moved cloud's cut replay is one

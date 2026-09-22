@@ -127,6 +127,31 @@ LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA")
 LOG_FILE = os.path.join(LOG_DIR, "studio.log")
 
 
+def opened_line(path, got):
+    """
+    The studio log's one line per project open: which file, and what came of
+    it. ⭐ Written on 2026-09-22, when "the project opens as one combined
+    cloud" could not be told from the log: the .tlspie and the merged .laz
+    Export writes sit side by side under the same name, only one of them is
+    a project, and the log said nothing about which had been opened.
+    """
+    if got.get("ok"):
+        n = len(got.get("scans") or [])
+        return "project opened: %s -> %d scan%s" % (path, n,
+                                                    "" if n == 1 else "s")
+    return "project refused: %s -> %s" % (path, got.get("error"))
+
+
+def added_line(paths):
+    """One line per Add press: every file, an exported cloud named as such."""
+    kinds = []
+    for p in paths:
+        cloud = library.is_cloud(str(p))
+        kinds.append("%s%s" % (p, " (exported cloud: one merged cloud, "
+                                   "nothing to place)" if cloud else ""))
+    return "add: " + ("; ".join(kinds) if kinds else "nothing")
+
+
 def log_event(text):
     """One line into the studio log, timestamped. Never raises."""
     try:
@@ -1375,8 +1400,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                                  body.get("x"),
                                                  body.get("y")))
             if path == "/add":
-                return self._json(srv.add(body.get("paths") or [],
-                                          body.get("colour", True)))
+                paths = body.get("paths") or []
+                log_event(added_line(paths))
+                return self._json(srv.add(paths, body.get("colour", True)))
             if path == "/remove":
                 return self._json(srv.remove(body.get("index")))
             if path == "/density":
@@ -1388,7 +1414,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(srv.save_project(body.get("path"),
                                                    body.get("state")))
             if path == "/project/open":
-                return self._json(srv.open_project(body.get("path")))
+                got = srv.open_project(body.get("path"))
+                log_event(opened_line(body.get("path"), got))
+                return self._json(got)
             if path == "/project/browse":
                 return self._json(srv.browse_project(bool(body.get("save"))))
             if path == "/save":
@@ -15673,6 +15701,12 @@ async function ingest(paths, opts){
        import's clothes. */
     const fresh = V.scans.length>was ? V.scans[V.scans.length-1] : null;
     if(fresh) aimAt(fresh.index);
+    /* ⭐ A MERGED EXPORT IS SAID TO BE ONE CLOUD. "I need to be able to control
+       each point cloud" (operator, 2026-09-22): the .laz Export writes sits
+       beside the .tlspie under the same name, and brought in through Add it
+       is one cloud with nothing inside it to place -- the scans were merged
+       when it was written. Said here, once, with the door that has them. */
+    const merged = V.scans.slice(was).filter(s=>s.source==='cloud');
     refreshLists(); syncSliders();
     syncClipSliders(); showTurn(); clipLabels();
     if(V.edits.length) recomputeLive();
@@ -15680,6 +15714,14 @@ async function ingest(paths, opts){
     invalidate(); watch(false); dirty();
     $('addpath').value='';
     say('added '+j.added.map(a=>a.name).join(', ')+
+        (merged.length
+          ? ' \u26a0 '+merged.map(s=>s.name).join(', ')+
+            (merged.length===1 ? ' is' : ' are')+
+            ' a merged export: one cloud, with nothing inside it to place '+
+            'or control separately, because the scans were merged when it '+
+            'was written. To work on each scan, use Open project and pick '+
+            'the .tlspie project it was exported from.'
+          : '')+
         /* ⛔ THE RE-AIM IS SAID OUT LOUD, and it reads off the same `fresh`
            the aim was taken from -- a message computed a second time from
            "the last scan in the list" is a message that can name a different
