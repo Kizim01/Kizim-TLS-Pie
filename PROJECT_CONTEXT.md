@@ -6637,9 +6637,12 @@ hand happened to be on. Scripts `replay75.py` (the patch), `tests75.py`
   the page's, a whole-job replay mid-flight dropping what follows, the
   source the shipped functions verbatim and parsing alone; plus three
   source pins. Suite 2189 → **2204 passed, 0 failed**. ✅ Exes rebuilt 18:42-18:43 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0, card 9.1x) carry it. Reversion audit: break A (the replay re-tests every cloud again) fired *THE REPLAY IS ASKED OF THE MOVED CLOUD ALONE*, the [3, 9] mask check and the `recomputeLive` pin, 2201/3; break B (a stale answer painted on) fired *THE STALE ANSWER IS DROPPED* and the equal-mask check, 2202/2; break C (the replay never leaves the page) fired *THE MOVED CLOUD'S REPLAY GOES TO A WORKER, NOT THE PAGE* and five that follow from it, 2198/6; restored, `BROKEN75` marks 0, final run 2204 passed, 0 failed. Breaks B and C first CRASHED the harness (a job never posted; no worker made) instead of failing by name, so the harness now tolerates both and the named checks fire.
-- **On the live job:** the Studio open since 17:48 still runs the old
-  page, and the capture it moved is in no project on disk — save there
-  first, then close it and reopen with the rebuilt exe.
+- **On the live job:** the operator saved `06.09.26 placements
+  restored.tlspie` at 18:33 (now 19 captures, 82 cuts; the moved capture
+  is index [18] and 82 cuts still hold no frame for it, so its next move
+  is the first through the new path) and closed the Studio at 18:33:20
+  after one more 76 s replay at 18:20. The rebuilt exe of 18:42 is what
+  opens next.
 
 
 **▶ ELEVENTH PART (2026-09-14, morning): Deep align settles the heading at
