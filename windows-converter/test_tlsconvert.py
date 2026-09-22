@@ -3675,7 +3675,7 @@ _ml_src = _js_func("markLasso")
 check("markLasso honours it through the one shared hide test",
       "const q = l.clip ? prepClip(l.clip) : null;" in _ml_src)
 check("...a keep KEEPS the hidden point rather than leaving it to die",
-      "if(to===1) seg[i]=1;" in _ml_src)
+      "if(to===1 && l.keep) seg[i]=1;" in _ml_src)
 _cl_src = _js_func("commitLasso")
 check("the cut's message says the clipped points were spared",
       "V.clip ? ' Points the clip box hides were left alone.'" in _cl_src)
@@ -3691,9 +3691,10 @@ check("...and the cut says how many points it actually took",
 check("...a cut that took NOTHING is a warning, whatever spared it",
       "(gone===0 ? 'warn' : null)" in _cl_src
       and "(gone===0 ? 'warn' : null)" in _js_func("addBox"))
-check("...and the count is only paid for when a clip stamp was made",
-      "const spared = (cut.clip && gone!=null) ? clipSpared(cut) : 0;"
-      in _cl_src)
+check("...and the count is only paid for when a clip stamp was made, and "
+      "never for a bring-back",
+      "const spared = (cut.clip && gone!=null && mode!=='restore')"
+      in _cl_src and "? clipSpared(cut) : 0;" in _cl_src)
 # ⛔ THE DIAGNOSTIC RUNS ON A COPY. It walks the same mask the cut just
 # wrote; writing to it would delete the very points it is counting.
 check("counting the spared points cannot delete them",
@@ -18250,6 +18251,186 @@ check("both routes write those lines",
 check("and the page says a merged export is one cloud, naming Open project",
       "filter(s=>s.source==='cloud')" in _js_func("ingest")
       and "use Open project and pick " in _js_func("ingest"))
+
+
+# ⭐⭐ "I WANT A TOOL IN THE DELETE POINT TAB THAT WHEN I DRAW A POLYGON ALL
+# DELETED POINTS IN THAT POLYGON APPEAR AGAIN" (operator, 2026-09-22). A third
+# lasso mode, `restore`: the deleted points inside come back. It is ORDERED --
+# a cut drawn after it deletes again -- so every op now carries its place in
+# the list, and the exporter and the page walk the drops and bring-backs in
+# that order after the keeps. Hidden points (the clip box) are left alone.
+print("\na bring-back lasso returns the deleted points inside it, in order")
+_BB_PTS = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0],
+                    [3.0, 0.0, 0.0], [-2.0, 0.0, 0.0]])
+_BB_BOX = {"lo": [-0.5, -1.0, -1.0], "hi": [3.5, 1.0, 1.0]}   # takes 0..3
+_bb_look = list(_look_down())
+# the camera is _look_down: NDC = world x 0.25, so +-0.1 encloses the origin
+# alone (world +-0.4) and +-0.6 encloses world +-2.4
+_bb_sq = [[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]]
+_bb_ring = [[-0.6, -0.6], [0.6, -0.6], [0.6, 0.6], [-0.6, 0.6]]
+_bb_back = pipeline.Lasso(_bb_look, _bb_sq, restore=True, order=1).as_dict()
+_bb_drop = dict(_BB_BOX, order=0)
+_bb_e = pipeline.Edit(drop=[_bb_drop], lassos=[_bb_back])
+_bb_plain = list(pipeline.Edit(drop=[_bb_drop]).mask(_BB_PTS))
+check("the box alone deletes four of five",
+      _bb_plain == [False, False, False, False, True], _bb_plain)
+_bb_got = list(_bb_e.mask(_BB_PTS))
+check("A BRING-BACK LASSO RETURNS THE DELETED POINTS INSIDE IT and leaves "
+      "the rest deleted",
+      _bb_got[0] is np.True_ or _bb_got[0] == True, _bb_got)
+check("...exactly the points inside: the origin came back, its neighbours "
+      "did not", _bb_got == [True, False, False, False, True], _bb_got)
+# order: a cut made after the bring-back deletes again
+_bb_after = pipeline.Edit(drop=[dict(_BB_BOX, order=2)],
+                          lassos=[pipeline.Lasso(_bb_look, _bb_sq, restore=True,
+                                                 order=1).as_dict(),
+                                  ])
+check("a cut drawn AFTER the bring-back deletes again: the order in the "
+      "list is the order applied",
+      list(_bb_after.mask(_BB_PTS)) == [False, False, False, False, True],
+      list(_bb_after.mask(_BB_PTS)))
+_bb_before = pipeline.Edit(drop=[dict(_BB_BOX, order=0)],
+                           lassos=[pipeline.Lasso(_bb_look, _bb_sq,
+                                                  restore=True, order=1)
+                                   .as_dict()])
+check("...and one drawn before it does not",
+      list(_bb_before.mask(_BB_PTS)) == [True, False, False, False, True])
+# a bring-back through a clip box leaves what the box hid alone
+_bb_clip = {"lo": [-10.0, -10.0, -10.0], "hi": [0.5, 10.0, 10.0],
+            "yaw_deg": 0.0, "pitch_deg": 0.0, "roll_deg": 0.0,
+            "hide_inside": True}                # hides x <= 0.5: the origin
+_bb_hid = pipeline.Edit(drop=[dict(_BB_BOX, order=0)],
+                        lassos=[pipeline.Lasso(_bb_look, _bb_ring,
+                                               restore=True, order=1,
+                                               clip=_bb_clip).as_dict()])
+check("a bring-back drawn through the clip box leaves the hidden points "
+      "deleted, as a delete leaves them alone",
+      list(_bb_hid.mask(_BB_PTS)) == [False, True, True, False, True],
+      list(_bb_hid.mask(_BB_PTS)))
+# a keep-only, then a bring-back outside it: the points come back
+_bb_keep = pipeline.Edit(keep=[{"lo": [-0.5, -1, -1], "hi": [0.5, 1, 1]}],
+                         lassos=[pipeline.Lasso(_bb_look, [[0.15, -0.1],
+                                                           [0.35, -0.1],
+                                                           [0.35, 0.1],
+                                                           [0.15, 0.1]],
+                                                restore=True, order=1)
+                                 .as_dict()])
+check("a bring-back returns what a keep-only had taken too",
+      list(_bb_keep.mask(_BB_PTS)) == [True, True, False, False, False],
+      list(_bb_keep.mask(_BB_PTS)))
+# the file form
+_bb_rt = pipeline.Lasso.from_dict(json.loads(json.dumps(_bb_back)))
+check("restore and order survive the project file, and an older lasso "
+      "reads back as a plain cut",
+      _bb_rt.restore is True and _bb_rt.order == 1
+      and _bb_back.get("restore") is True
+      and pipeline.Lasso(_bb_look, _bb_sq).as_dict().get("restore") is None
+      and pipeline.Lasso.from_dict({"matrix": _bb_look, "polygon": _bb_sq})
+      .restore is False)
+check("keep wins over restore if both are ever set",
+      pipeline.Lasso(_bb_look, _bb_sq, keep=True, restore=True).restore
+      is False)
+check("the edit names its bring-backs",
+      "1 bring-back lasso(s)" in _bb_e.describe()
+      and _bb_e.cut_lassos == [] and len(_bb_e.restore_lassos) == 1)
+# ⛔ THE PAGE'S OWN REPLAY, RUN: the shipped recomputeLive (through maskOf, the
+# very function the worker runs) over the same points, against the exporter,
+# and the fast path (pushEdit with mode 'restore') against the replay.
+if not _node:
+    print("  ---- node is not installed; the page's bring-back was NOT run")
+else:
+    _bb_js = """
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+let EDIT_ID = 0;
+const V={scans:[],edits:[],only:-1,editWho:-1,hidden:{},alive:0,total:0,
+         clip:false,inside:false,
+         box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0,o:[0,0,0]}};
+const HIST=[];
+const $=()=>({textContent:'',innerHTML:'',value:0});
+const say=()=>{}, invalidate=()=>{}, upload=()=>{}, showEdits=()=>{},
+      dirty=()=>{}, whoName=()=>'a cloud';
+function remember(){ HIST.push({}); }
+function affine(s){ return [1,0,0,0, 0,1,0,0, 0,0,1,0]; }
+const PTS=%s, LOOK=%s, SQ=%s, BOX=%s;
+function cloud(index){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:index, points:PTS.length, raw:flat, scale:[1,1,1],
+          offset:[0,0,0], chunks:[], live:new Uint8Array(PTS.length).fill(1),
+          setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}};
+}
+const mask=()=>Array.from(V.scans[0].live).map(v=>v===1);
+const out={};
+/* the replay: a drop box, then a bring-back lasso */
+V.scans=[cloud(0)];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX},
+         {kind:'lasso',mode:'restore',scan:null,matrix:LOOK,poly:SQ}];
+recomputeLive();
+out.replay=mask();
+/* the same two, the cut drawn after the bring-back */
+V.scans=[cloud(0)];
+V.edits=[{kind:'lasso',mode:'restore',scan:null,matrix:LOOK,poly:SQ},
+         {kind:'box',mode:'drop',scan:null,box:BOX}];
+recomputeLive();
+out.replayAfter=mask();
+/* the fast path: the press itself, through the shipped pushEdit */
+V.scans=[cloud(0)]; V.edits=[]; V.total=0; V.alive=0;
+pushEdit({kind:'box',mode:'drop',box:BOX});
+out.dropped=mask();
+const back=pushEdit({kind:'lasso',mode:'restore',matrix:LOOK,poly:SQ});
+out.pressed=mask(); out.cameBack=back; out.alive=V.alive;
+out.listed=V.edits.map(e=>e.mode);
+out.plan=editPlan().lassos.map(l=>[l.restore, l.order]);
+console.log(JSON.stringify(out));
+""" % ("\n".join(_js_func(f) for f in
+                 ("recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "editPlan", "planFor", "inScope", "reaches",
+                  "frameFor", "cutGroups", "world", "markBox", "markLasso",
+                  "prepClip", "clipHides", "rotOf", "shown", "pushEdit",
+                  "applyDrop", "cutFrames", "cutScope", "boxSpec",
+                  "boxCentre", "boxHalf", "boxMid", "boxRot", "rmul")),
+       json.dumps(_BB_PTS.tolist()), json.dumps(_bb_look), json.dumps(_bb_sq),
+       json.dumps(_BB_BOX))
+    _bbp = os.path.join(_rdir, "bringback.js")
+    with io.open(_bbp, "w", encoding="utf-8") as _fh:
+        _fh.write(_bb_js)
+    _bbr = subprocess.run([_node, _bbp], capture_output=True, text=True)
+    check("the page's bring-back rules run at all", _bbr.returncode == 0,
+          (_bbr.stderr or "")[:500])
+    if _bbr.returncode == 0:
+        _bb = json.loads(_bbr.stdout.strip().splitlines()[-1])
+        check("THE PAGE'S REPLAY BRINGS THE POINTS BACK EXACTLY AS THE "
+              "EXPORTER DOES", _bb["replay"] == _bb_got, _bb)
+        check("...and, drawn before the cut, the page deletes again as the "
+              "exporter does",
+              _bb["replayAfter"] == list(map(bool, _bb_after.mask(_BB_PTS))),
+              _bb)
+        check("THE PRESS ITSELF (the fast path) reaches the replay's mask and "
+              "counts what came back",
+              _bb["dropped"] == _bb_plain and _bb["pressed"] == _bb_got
+              and _bb["cameBack"] == 1 and _bb["alive"] == 2, _bb)
+        check("the edit is listed as a bring-back and the plan carries "
+              "restore and order",
+              _bb["listed"] == ["drop", "restore"]
+              and _bb["plan"] == [[True, 1]], _bb)
+check("the tray offers Bring back inside, wired to the restore mode, and "
+      "Alt-Enter does the same",
+      'id="lback"' in _PAGE
+      and "$('lback').onclick=()=>commitLasso('restore');" in _PAGE
+      and "e.altKey ? 'restore' : 'cut'" in _PAGE)
+check("the press says what came back, in words and a number",
+      "Brought back the deleted points inside the" in _js_func("commitLasso")
+      and "' came back.' : ' went.'" in _js_func("commitLasso"))
+check("the list and the undo name it",
+      "'bring back '" in _js_func("showEdits")
+      and "'bringing back '" in _js_func("pushEdit"))
+check("a bring-back looks at the dead points: no skip in the fast path, and "
+      "none in the replay when one is present",
+      "world(s, base, k, A, to ? null : seg)" in _js_func("applyDrop")
+      and "const skip = later.some(o=>o.to===1) ? null : seg;"
+      in _js_func("maskOf"))
 
 
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))

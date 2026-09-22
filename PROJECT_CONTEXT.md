@@ -5,10 +5,15 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-22, evening):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-22, night):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the THIRTEENTH PART first. Latest: **A CUT REACHES ONLY THE CLOUDS THAT
-> WERE THERE WHEN IT WAS DRAWN** ("scan 23 is not displaying as a full
+> the FOURTEENTH PART first. Latest: **THE BRING-BACK LASSO** ("a tool in
+> the delete point tab that when I draw a polygon all deleted points in
+> that polygon appear again": a third outline mode, `restore`, on the
+> page, in the replay and the worker, and in the exporter; ORDERED, so a
+> cut drawn after it deletes again -- every op now carries `order`; hidden
+> points left alone; keep wins over restore); before that **A CUT REACHES
+> ONLY THE CLOUDS THAT WERE THERE WHEN IT WAS DRAWN** ("scan 23 is not displaying as a full
 > scan" → "make it so when a new cloud is imported that nothing effects
 > it": capture 23, brought in after the 82 cuts and unplaced at the
 > origin, kept 42% under lassos drawn for other clouds; `pipeline._reaches`
@@ -49,7 +54,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2216 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2235 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6588,6 +6593,60 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ FOURTEENTH PART (2026-09-22, night): the bring-back lasso.** The
+operator, once the `.tlspie` was open ("ok that worked"): *"i want a tool
+in the delete point tab that when i draw a polygon all deleted points in
+that colygon appear again"*. Shipped (`back79.py`):
+
+- **A third outline mode, `restore`.** On a finished outline the cut tray
+  now offers *Delete inside / Delete outside / Bring back inside*
+  (`#lback`), and Alt-Enter does the same as the button (Enter deletes,
+  Shift-Enter keeps only). The press goes through `pushEdit` like every
+  cut — scoped, framed, clip-stamped, listed ("bring back a lasso of N
+  points"), undone ("bringing back a lasso"), saved — and through the
+  fast path: `applyDrop` marks the insides to 1 instead of 0 (`to`), with
+  NO dead-point skip (a bring-back has to look at the dead points), and
+  the message says "N points came back". The clip-spared count is not
+  paid for a bring-back.
+- **It is ORDERED, and that changed the plan.** Keeps and drops commute,
+  so the plan split them into three lists and forgot the order they were
+  made in; a bring-back cannot (a cut drawn after it deletes again). Every
+  op the page sends now carries `order` (its place in `V.edits`,
+  `editPlan`), the lasso op carries `restore`, and the second phase of the
+  replay walks every drop and every bring-back in that order after the
+  keeps: `maskOf` builds `later` (drop boxes, cut lassos, bring-backs with
+  their frame `A`), sorts by `order`, re-runs `world` when the frame
+  changes, and uses the NaN skip only when the job holds no bring-back.
+  `cutGroups`/`replayJob` carry `restoreLas`, so the worker follows.
+- **The exporter does exactly the same.** `pipeline.Lasso` gains
+  `restore` and `order` (written to the file only when set, so an older
+  file reads back byte-for-byte; keep wins if both are set);
+  `Edit.__init__` reads a drop box's `order` off its dict; `Edit.mask`'s
+  second phase sorts drops and bring-backs by `order` and applies `live &=
+  ~hit` / `live |= hit`; `cut_lassos` excludes bring-backs,
+  `restore_lassos` names them, `describe` counts them. A hidden point (the
+  clip stamp) is left alone by a bring-back exactly as by a delete
+  (`Lasso.inside` claims `enclosed & ~hidden`; the page's `markLasso` now
+  keeps a hidden point only for a KEEP: `if(to===1 && l.keep)`).
+- **What comes back:** everything an earlier cut took inside the outline,
+  a keep-only's exclusions included (proved: keep the origin, bring back
+  its neighbour → both live).
+- **Checks.** Exporter: box then bring-back returns exactly the inside
+  point; a cut drawn after deletes again and one drawn before does not; a
+  bring-back through the clip box leaves the hidden points deleted; a
+  keep-only's loss comes back; `restore`/`order` survive the file, an old
+  lasso reads as a cut, keep wins; `describe` names them. Page (node): the
+  shipped `recomputeLive` (through `maskOf`, the worker's own function)
+  matches the exporter both ways round; the press itself (`pushEdit` mode
+  `restore`) reaches the replay's mask and counts 1 back; the list and the
+  plan carry it; the tray button, Alt-Enter, the words, the undo label and
+  the no-skip lines pinned. Suite 2216 → **2235 passed, 0 failed**. ✅ Exes rebuilt 23:12-23:13 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0) carry it. Reversion audit: break P (the exporter's bring-back deletes) fired its five exporter checks and the two page-versus-exporter parity checks, 2228/7; break J (the page's replay, the worker's function, deletes) fired exactly *THE PAGE'S REPLAY BRINGS THE POINTS BACK EXACTLY AS THE EXPORTER DOES*, 2234/1; break F (the press treats it as a delete) fired exactly *THE PRESS ITSELF … counts what came back*, 2234/1; restored, marks 0, final run 2235 passed, 0 failed.
+- **Not done on purpose:** no bring-back BOX (the outline is what was
+  asked for; a box would be the same two lines in `addBox`), and the
+  bring-back is not offered while the outline is still being drawn — it
+  is a decision on a finished outline like the other two.
+
 
 **▶ THIRTEENTH PART (2026-09-22, evening): a cut reaches only the
 clouds that were there when it was drawn.** The operator, with the 18:42

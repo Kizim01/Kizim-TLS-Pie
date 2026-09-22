@@ -456,10 +456,16 @@ class Lasso(object):
     """
 
     def __init__(self, matrix, polygon, keep=False, scan=None, frames=None,
-                 clip=None):
+                 clip=None, restore=False, order=None):
         self.matrix = np.asarray(matrix, dtype=np.float64).reshape(16)
         self.polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
         self.keep = bool(keep)
+        # ⭐ A BRING-BACK: the points inside come back rather than go
+        # (operator, 2026-09-22). Never both keep and restore; keep wins.
+        self.restore = bool(restore) and not self.keep
+        # its place in the edit list, because a bring-back is ordered
+        # against the cuts around it -- see `Edit.mask`
+        self.order = None if order is None else int(order)
         self.scan = _scope(scan)
         # The camera is frozen at the moment of the drag; ⭐ so is where every
         # cloud stood underneath it. Freezing one and not the other leaves the
@@ -521,6 +527,11 @@ class Lasso(object):
         out = {"matrix": [float(v) for v in self.matrix],
                "polygon": [[float(a), float(b)] for a, b in self.polygon],
                "keep": self.keep}
+        # written only when set, so an older file reads back byte-for-byte
+        if self.restore:
+            out["restore"] = True
+        if self.order is not None:
+            out["order"] = self.order
         if self.scan is not None:
             out["scan"] = (list(self.scan) if isinstance(self.scan, tuple)
                            else self.scan)
@@ -535,7 +546,8 @@ class Lasso(object):
     @classmethod
     def from_dict(cls, data):
         return cls(data["matrix"], data["polygon"], data.get("keep", False),
-                   data.get("scan"), data.get("frames"), data.get("clip"))
+                   data.get("scan"), data.get("frames"), data.get("clip"),
+                   data.get("restore", False), data.get("order"))
 
 
 def _inside_polygon(x, y, poly):
@@ -603,6 +615,13 @@ class Edit(object):
         self.drop = [Box.parse(b) for b in (drop or [])]
         self.lassos = [l if isinstance(l, Lasso) else Lasso.from_dict(l)
                        for l in (lassos or [])]
+        # ⭐ THE ORDER A DROP BOX WAS MADE IN, read off its dict when the page
+        # sent one (`editPlan` stamps every op); a box is otherwise unordered
+        # and goes before every lasso, which is what `mask` always did.
+        for box, data in zip(self.drop, drop or []):
+            box.order = (int(data["order"]) if isinstance(data, dict)
+                         and data.get("order") is not None
+                         else getattr(box, "order", None))
 
     @property
     def keep_lassos(self):
@@ -610,7 +629,12 @@ class Edit(object):
 
     @property
     def cut_lassos(self):
-        return [l for l in self.lassos if not l.keep]
+        return [l for l in self.lassos if not l.keep and not l.restore]
+
+    @property
+    def restore_lassos(self):
+        """The bring-backs (operator, 2026-09-22): points inside return."""
+        return [l for l in self.lassos if l.restore]
 
     def is_empty(self):
         return not self.keep and not self.drop and not self.lassos
@@ -759,10 +783,24 @@ class Edit(object):
                 live |= shape.inside(self._seen(shape, xyz, local))
         else:
             live = np.ones(len(xyz), dtype=bool)
-        for box in self.drop:
-            live &= ~self._inside(self._seen(box, xyz, local), box)
-        for shape in self.cut_lassos:
-            live &= ~shape.inside(self._seen(shape, xyz, local))
+        # ⭐ THEN EVERY DROP AND EVERY BRING-BACK IN THE ORDER THEY WERE MADE
+        # (operator, 2026-09-22: "all deleted points in that polygon appear
+        # again"). Drops commute, so boxes then lassos was as good as any
+        # order; a bring-back does not -- a cut drawn after it deletes again
+        # -- so the walk follows `order`, an unordered op keeping its old
+        # place. The page's `maskOf` walks the same list the same way.
+        later = ([(box, "drop") for box in self.drop]
+                 + [(shape, "drop") for shape in self.cut_lassos]
+                 + [(shape, "back") for shape in self.restore_lassos])
+        later.sort(key=lambda pair: (getattr(pair[0], "order", None) or 0))
+        for op, what in later:
+            seen = self._seen(op, xyz, local)
+            hit = (op.inside(seen) if isinstance(op, Lasso)
+                   else self._inside(seen, op))
+            if what == "drop":
+                live &= ~hit
+            else:
+                live |= hit
         return live
 
     def as_dict(self):
@@ -788,6 +826,8 @@ class Edit(object):
             parts.append("%d keep lasso(s)" % len(self.keep_lassos))
         if self.cut_lassos:
             parts.append("%d cut lasso(s)" % len(self.cut_lassos))
+        if self.restore_lassos:
+            parts.append("%d bring-back lasso(s)" % len(self.restore_lassos))
         # Named, not counted: "3 cut boxes" reads as three cuts across the job,
         # and the whole point of a scope is that it is not.
         one = self.scoped

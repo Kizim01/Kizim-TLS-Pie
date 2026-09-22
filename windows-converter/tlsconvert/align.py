@@ -7632,10 +7632,13 @@ PAGE = r"""<!doctype html>
   <div id="lassoask" style="display:none">
     <div class="row"><button id="lin" class="go">Delete inside</button>
       <button id="lout" class="go">Delete outside</button></div>
-    <div class="row"><button id="lcancel">Cancel</button></div>
+    <div class="row"><button id="lback" class="go" title="Every point inside
+      the outline that an earlier cut deleted comes back. Points the clip box
+      is hiding are left as they are.">Bring back inside</button>
+      <button id="lcancel">Cancel</button></div>
     <div style="font-size:10px;color:var(--faint)">Enter deletes what is
-      inside &middot; Shift-Enter keeps only that &middot; Esc throws the
-      outline away</div>
+      inside &middot; Shift-Enter keeps only that &middot; Alt-Enter brings
+      the deleted points inside back &middot; Esc throws the outline away</div>
   </div>
   <div id="editlist"></div>
   </div></div>
@@ -10907,17 +10910,28 @@ async function surveyAlign(){
    2 cm thinning while the export re-reads every return, so a list of point
    numbers from one means nothing to the other. A placement is twelve numbers
    and means the same thing at both densities. See `pipeline._frames`. */
+/* ⭐⭐ "I WANT A TOOL IN THE DELETE POINT TAB THAT WHEN I DRAW A POLYGON ALL
+   DELETED POINTS IN THAT POLYGON APPEAR AGAIN" (operator, 2026-09-22). A
+   lasso has a third mode, `restore`: every point inside the outline that an
+   earlier cut took comes back. It is an edit like the others -- listed,
+   undone, scoped, framed, clip-limited, saved -- and it is ORDERED: a cut
+   drawn after it deletes again. Keeps and drops used to commute, so the
+   plan could split them into three lists and forget the order they were
+   made in; a bring-back cannot, so every op now carries `order`, its place
+   in the list, and the replay (`maskOf`) and the exporter (`Edit.mask`)
+   both walk the drops and the bring-backs in that order after the keeps.
+   The exporter's `Lasso` reads `restore` and `order` the same way. */
 function editPlan(){
   const plan={keep:[], drop:[], lassos:[]};
-  for(const e of V.edits){
+  V.edits.forEach((e, i)=>{
     const who = (e.scan==null) ? null : e.scan;
     if(e.kind==='box')
       (e.mode==='keep'?plan.keep:plan.drop).push(
-        Object.assign({}, e.box, {scan:who, frames:e.frames}));
+        Object.assign({}, e.box, {scan:who, frames:e.frames, order:i}));
     else plan.lassos.push({matrix:e.matrix, polygon:e.poly,
-                           keep:e.mode==='keep', scan:who, frames:e.frames,
-                           clip:e.clip});
-  }
+                           keep:e.mode==='keep', restore:e.mode==='restore',
+                           scan:who, frames:e.frames, clip:e.clip, order:i});
+  });
   return plan;
 }
 /* ⛔ ONE HOME FOR THE SCOPE TEST, mirroring `pipeline._in_scope`. Three copies
@@ -11019,7 +11033,8 @@ function showEdits(){
     try{ V.histOpen=localStorage.getItem(HISTKEY)==='1'; }catch(e){}
   }
   const rows=V.edits.map((e,i)=>
-    '<div>'+(i+1)+'. '+(e.mode==='keep'?'keep only ':'delete ')+
+    '<div>'+(i+1)+'. '+(e.mode==='keep' ? 'keep only '
+                         : (e.mode==='restore' ? 'bring back ' : 'delete '))+
     (e.kind==='box' ? ('the box '+boxSize(e.box))
                     : ('a lasso of '+e.poly.length+' points'+
                        (e.clip ? ', only what the clip box showed' : '')))+
@@ -11087,7 +11102,8 @@ function pushEdit(e){
      by Ctrl-Z at all. The entry holds the edit OBJECT, not its position -- the
      list is spliced by `undoEdit`, by Clear all and by removing a scan, so an
      index would name a different cut by the time it was used. */
-  remember((e.mode==='keep' ? 'keeping only ' : 'deleting ')+
+  remember((e.mode==='keep' ? 'keeping only '
+            : (e.mode==='restore' ? 'bringing back ' : 'deleting '))+
            (e.kind==='box' ? 'a box' : 'a lasso')+
            (e.scan==null ? '' : ' from '+whoName(e.scan)),
            ()=>dropEdit(e.eid));
@@ -11111,6 +11127,9 @@ function pushEdit(e){
      so what it "took" is the rest of the job, which is a different question
      from the one this number answers. */
   if(e.mode==='keep'){ recomputeLive(); dirty(); return null; }
+  /* ⭐ A BRING-BACK IS THE SAME FAST PATH THE OTHER WAY UP: it is the last
+     edit in the list, so marking its insides live on the mask as it stands
+     is exactly what the full replay would reach. */
   const gone=applyDrop(e);
   dirty();
   return gone;
@@ -11126,8 +11145,11 @@ function applyDrop(e){
                                              {scan:who, frames:e.frames})
                              : null;
   const las = box ? null : {matrix:e.matrix, polygon:e.poly,
-                            keep:false, scan:who, frames:e.frames,
-                            clip:e.clip};
+                            keep:false, restore:e.mode==='restore',
+                            scan:who, frames:e.frames, clip:e.clip};
+  /* what this edit sets a point to: dead for a delete, live for a bring-back
+     -- and a bring-back has to look at the DEAD points, so it takes no skip */
+  const to = (e.mode==='restore') ? 1 : 0;
   /* ⛔⛔ THE COUNTERS DESCRIBE A SET OF SCANS, so the question is whether
      they still describe THIS one -- not whether they have ever been set.
      `V.total` is written only here and in recomputeLive, and adding a scan,
@@ -11160,11 +11182,11 @@ function applyDrop(e){
     for(let base=0;base<n;base+=BLOCK){
       const k=Math.min(BLOCK,n-base);
       const seg=live.subarray(base,base+k);
-      if(!world(s, base, k, A, seg)) continue;
+      if(!world(s, base, k, A, to ? null : seg)) continue;
       let before=0; for(let i=0;i<k;i++) if(seg[i]) before++;
-      if(box) markBox(seg,k,box,0); else markLasso(seg,k,las,0);
+      if(box) markBox(seg,k,box,to); else markLasso(seg,k,las,to);
       let after=0; for(let i=0;i<k;i++) if(seg[i]) after++;
-      if(after!==before){ touched=true; gone+=(before-after);
+      if(after!==before){ touched=true; gone+=Math.abs(before-after);
                           V.alive-=(before-after); }
     }
     if(touched){ s.alive=null; upload(s); }
@@ -11491,13 +11513,15 @@ function cutGroups(plan, s){
   const put=(op, into, kind)=>{
     const A=frameFor(op,s), key=A.join(',');
     let g=byKey[key];
-    if(!g){ g={A:A, keepBox:[], keepLas:[], dropBox:[], dropLas:[]};
+    if(!g){ g={A:A, keepBox:[], keepLas:[], dropBox:[], dropLas:[],
+               restoreLas:[]};
             byKey[key]=g; groups.push(g); }
     g[into+kind].push(op);
   };
   for(const b of plan.keep) put(b, 'keep', 'Box');
   for(const b of plan.drop) put(b, 'drop', 'Box');
-  for(const l of plan.lassos) put(l, l.keep?'keep':'drop', 'Las');
+  for(const l of plan.lassos)
+    put(l, l.keep?'keep':(l.restore?'restore':'drop'), 'Las');
   return groups;
 }
 /* ⭐⭐ "WHEN MOVING POINT CLOUDS IN THE Z DIRECTION THE PROGRAM SLOWS DOWN
@@ -11563,11 +11587,29 @@ function maskOf(job, raw, into){
       for(const b of g.keepBox) markBox(seg,k,b,1);
       for(const l of g.keepLas) markLasso(seg,k,l,1);
     }
+    /* ⭐ THEN EVERY DROP AND EVERY BRING-BACK, IN THE ORDER THEY WERE MADE.
+       Drops commute, so groups used to be walked one after another; a
+       bring-back does not -- a cut drawn after it deletes again -- so the
+       walk follows `order`. ⛔ AND A BRING-BACK LOOKS AT THE DEAD POINTS:
+       the skip that spares dead points the transform (`world` with the
+       mask, NaN) would hide from it the very points it exists to find, so
+       it is used only when the job holds no bring-back at all. */
+    const later=[];
     for(const g of job.groups){
-      if(!g.dropBox.length && !g.dropLas.length) continue;
-      if(!world(s, base, k, g.A, seg)) break;
-      for(const b of g.dropBox) markBox(seg,k,b,0);
-      for(const l of g.dropLas) markLasso(seg,k,l,0);
+      for(const b of g.dropBox) later.push({A:g.A, box:b, to:0, order:b.order});
+      for(const l of g.dropLas) later.push({A:g.A, las:l, to:0, order:l.order});
+      for(const l of (g.restoreLas||[]))
+        later.push({A:g.A, las:l, to:1, order:l.order});
+    }
+    later.sort((a,b)=>((a.order||0)-(b.order||0)));
+    const skip = later.some(o=>o.to===1) ? null : seg;
+    let at=null;
+    for(const o of later){
+      if(o.A!==at){
+        if(!world(s, base, k, o.A, skip)) break;
+        at=o.A;
+      }
+      if(o.box) markBox(seg,k,o.box,o.to); else markLasso(seg,k,o.las,o.to);
     }
     for(let i=0;i<k;i++) if(seg[i]) alive++;
   }
@@ -11588,7 +11630,8 @@ function replayJob(s, plan){
           keepers:!!(plan.keep.length || plan.lassos.some(l=>l.keep)),
           groups:cutGroups(plan, s).map(g=>({A:Array.from(g.A),
             keepBox:g.keepBox.map(bare), keepLas:g.keepLas.map(bare),
-            dropBox:g.dropBox.map(bare), dropLas:g.dropLas.map(bare)}))};
+            dropBox:g.dropBox.map(bare), dropLas:g.dropLas.map(bare),
+            restoreLas:(g.restoreLas||[]).map(bare)}))};
 }
 /* How many of a cloud's points are live -- cached, because the whole-job
    count is one byte per point across the job and a single cloud's replay
@@ -11794,7 +11837,7 @@ function markLasso(seg,k,l,to){
        see no NaN -- their `world` call takes no mask -- and a drop's dead
        points were already caught by the line above.) */
     if(q && clipHides(q,_wx[i],_wy[i],_wz[i])){
-      if(to===1) seg[i]=1;
+      if(to===1 && l.keep) seg[i]=1;
       continue;
     }
     const w=_wx[i]*m[3]+_wy[i]*m[7]+_wz[i]*m[11]+m[15];
@@ -12113,11 +12156,15 @@ function commitLasso(mode, keepTool){
      ⛔ COUNTED ONLY WHEN THE CLIP BOX IS ON, because the count is a whole
      extra pass over the cloud and the answer is zero by construction whenever
      no stamp was made. */
-  const spared = (cut.clip && gone!=null) ? clipSpared(cut) : 0;
+  const spared = (cut.clip && gone!=null && mode!=='restore')
+                 ? clipSpared(cut) : 0;
   const took = (gone==null) ? ''
-             : ' '+gone.toLocaleString()+' point'+(gone===1?'':'s')+' went.';
+             : ' '+gone.toLocaleString()+' point'+(gone===1?'':'s')+
+               (mode==='restore' ? ' came back.' : ' went.');
   say((mode==='keep' ? 'Deleted everything outside the outline'
-                    : 'Deleted the points inside the outline')+
+       : (mode==='restore' ? 'Brought back the deleted points inside the '+
+                             'outline'
+                           : 'Deleted the points inside the outline'))+
       whoSuffix()+'.'+took+
       /* ⛔ SAID OUT LOUD, for the same reason whoSuffix is: a cut that
          quietly spared the clipped-away points is indistinguishable from a
@@ -16454,7 +16501,7 @@ const DRAW_TOOLS = {lasso:1, rect:1, circle:1};
          leaves a pending outline; a second Enter cuts it. */
       if(polyClose()) return;
       if(!V.pending) return;                    /* nothing drawn: not ours */
-      commitLasso(e.shiftKey ? 'keep' : 'cut');
+      commitLasso(e.shiftKey ? 'keep' : (e.altKey ? 'restore' : 'cut'));
     }
     else if(k==='Escape'){
       /* ⭐ ESC EMPTIES THE POLYGON TOOL'S HANDS BUT LEAVES IT ARMED -- asked
@@ -16835,6 +16882,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('undo').onclick=undoEdit;
   $('lin').onclick=()=>commitLasso('cut');
   $('lout').onclick=()=>commitLasso('keep');
+  $('lback').onclick=()=>commitLasso('restore');
   $('lcancel').onclick=()=>{ V.pending=null; askLasso(false); setTool('');
                              invalidate(); };
   $('det').oninput=e=>{ V.detail=parseInt(e.target.value,10);
