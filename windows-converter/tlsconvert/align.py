@@ -10901,11 +10901,31 @@ function inScope(scope, index){
   if(Array.isArray(scope)) return scope.indexOf(index)>=0;
   return scope===index;
 }
+/* ⭐⭐ "MAKE IT SO WHEN A NEW CLOUD IS IMPORTED THAT NOTHING AFFECTS IT"
+   (operator, 2026-09-22). Does this cut reach this cloud? Its scope must name
+   the cloud AND, when the cut remembers where the clouds stood, the cloud
+   must be among them. A cloud brought in after a cut was drawn has no frame
+   in it, and it used to be tested in the merged frame wherever it sat: the
+   restaurant's capture 23, unplaced at the origin under 81 lassos drawn for
+   the other clouds, showed 42% of itself. Now a cut reaches the clouds that
+   were there when it was drawn and no other, and a newcomer is whole until
+   the operator cuts it -- the cuts made from then on stamp it (`cutFrames`).
+   ⛔ A CUT THAT REMEMBERS NOTHING (a project saved before 2026-08-29) still
+   reaches its whole scope in the merged frame, as it always did.
+   ⛔ THE MIRROR OF `pipeline._reaches`, AND IT HAS TO STAY ONE: the plan, the
+   fast drop and the spared count all read it, and so does the exporter. */
+function reaches(op, index){
+  if(!inScope(op.scan, index)) return false;
+  const fr=op.frames;
+  if(!fr || Object.keys(fr).length===0) return true;
+  return !!fr[index];
+}
 /* The placement a cut was drawn against for THIS cloud, or where the cloud
    stands now. ⛔ THE FALLBACK IS NOT A GAP: a project saved before cuts
-   remembered anything has no frames at all, and neither does a cloud that
-   arrived after the cut was made. Both were written against the merged frame
-   and go on being tested in it, which is what they mean. */
+   remembered anything has no frames at all, and such a cut was written
+   against the merged frame and goes on being tested in it, which is what it
+   means. A cloud that arrived after a cut was made never gets here for it:
+   `reaches` keeps that cut out of the cloud's plan. */
 function frameFor(op, s){
   return (op.frames && op.frames[s.index]) || affine(s);
 }
@@ -10925,7 +10945,7 @@ function cutFrames(scope){
    Python disagreed, the preview would show one thing and the exported file
    would hold another, which is the failure this program keeps finding. */
 function planFor(plan, index){
-  const mine = o => inScope(o.scan, index);
+  const mine = o => reaches(o, index);
   return {keep:plan.keep.filter(mine), drop:plan.drop.filter(mine),
           lassos:plan.lassos.filter(mine)};
 }
@@ -11098,7 +11118,7 @@ function applyDrop(e){
       for(let i=0;i<s.points;i++) if(s.live[i]) V.alive++;
   }
   for(const s of V.scans){
-    if(!inScope(who, s.index)) continue;
+    if(!reaches(box||las, s.index)) continue;
     /* ⭐ THE PLACEMENT THE CUT WAS DRAWN AGAINST, not the one the cloud is at
        now. ⚠ Be honest about what this line buys today: `pushEdit` stamps the
        frames and calls this in the same breath, so `frameFor` and `affine(s)`
@@ -11142,7 +11162,7 @@ function clipSpared(e){
              scan:(e.scan==null?null:e.scan), frames:e.frames};
   let n=0;
   for(const s of V.scans){
-    if(!inScope(las.scan, s.index)) continue;
+    if(!reaches(las, s.index)) continue;
     const A=frameFor(las, s);
     for(let base=0;base<s.points;base+=BLOCK){
       const k=Math.min(BLOCK,s.points-base);

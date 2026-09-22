@@ -268,6 +268,31 @@ def _in_scope(scope, index):
     return scope == index
 
 
+def _reaches(op, index):
+    """
+    Does this cut reach this cloud? Its scope must name the cloud AND, when
+    the cut remembers where the clouds stood, the cloud must be among them.
+
+    ⭐⭐ "MAKE IT SO WHEN A NEW CLOUD IS IMPORTED THAT NOTHING AFFECTS IT"
+    (operator, 2026-09-22). A cloud brought into the job after a cut was
+    drawn has no frame in it, and it used to be tested in the merged frame
+    at wherever it happened to sit: the restaurant's capture 23, unplaced at
+    the origin under 81 lassos drawn for the other eighteen clouds, showed
+    42% of itself, three of those lassos taking half, a third and a quarter
+    of it. A cut reaches the clouds that were there when it was drawn and no
+    other; a cloud that arrives later is whole until the operator cuts it.
+
+    ⛔ A CUT THAT REMEMBERS NOTHING STILL REACHES ITS WHOLE SCOPE. A project
+    saved before frames (2026-08-29) carries none, and those cuts were drawn
+    against the merged frame and go on being tested in it, as they always
+    were. ⛔ ONE HOME: `for_scan` reads this and nothing else decides it; the
+    page's `reaches` mirrors it, or the preview and the file disagree.
+    """
+    if not _in_scope(op.scan, index):
+        return False
+    return (not op.frames) or (index in op.frames)
+
+
 def _frames(data):
     """
     Where every named cloud STOOD when the cut was drawn: {index: 3x4 affine}.
@@ -684,7 +709,7 @@ class Edit(object):
         # one place that already knows which cloud is in hand. `mask` is
         # deliberately not scope-aware, so it cannot look a frame up itself.
         def mine(op):
-            if not _in_scope(op.scan, index):
+            if not _reaches(op, index):
                 return None
             op = copy.copy(op)
             op.frame = op.frames.get(index)

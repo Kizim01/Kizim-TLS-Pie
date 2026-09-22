@@ -3503,7 +3503,7 @@ console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
                             old:boxSize([[-1,-1,-1],[1,2,3]])}));
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "maskOf", "replayJob", "tallyLive",
-                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "markBox",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "reaches", "markBox",
                   "forgetScan", "measure", "resetBox", "span", "boxSize",
                   # ⛔ AND THE ONES A CUT'S REMEMBERED PLACEMENT ADDED. The
                   # replay groups its cuts by the frame each was drawn
@@ -3633,7 +3633,7 @@ pushEdit({kind:'lasso', mode:'cut', matrix:CASES[0][0].matrix,
 console.log(JSON.stringify(Array.from(V.scans[0].live).map(v=>v===1)));
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "maskOf", "replayJob", "tallyLive",
-                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "inScope",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "reaches", "inScope",
                   "frameFor", "cutGroups", "world", "markBox", "markLasso",
                   "prepClip", "clipHides", "rotOf", "shown", "pushEdit",
                   "applyDrop", "cutFrames", "cutScope", "boxSpec",
@@ -4473,11 +4473,10 @@ out.framedWhy=replayNeeded(V.scans[1]);
 out.framedRan=followMoved(V.scans[1]);
 out.framedReplays=replays;
 out.framedAfter=[kept(V.scans[0]),kept(V.scans[1])];
-/* B: the cut has no frame for cloud 1 -- it arrived after the cut */
+/* B: the cut remembers nothing at all -- a project saved before frames */
 replays=0;
 V.scans=[cloud(0),cloud(1)];
-V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
-          frames:{0:affine(V.scans[0])}}];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX}];
 realReplay();
 /* a point of cloud 0 killed by hand: a replay that re-tested cloud 0 would
    bring it back, so its staying dead is the proof the replay was cloud 1's */
@@ -4489,6 +4488,20 @@ out.legacyReplays=replays;
 out.legacyOnly=onlys.slice();
 out.legacyAfter=[kept(V.scans[0]),kept(V.scans[1])];
 out.legacyAlive=V.alive;
+/* E: the cut remembers cloud 0 only -- cloud 1 arrived after it was drawn,
+   so the cut does not reach it: whole before the move, whole after, and the
+   move replays nothing */
+replays=0; onlys.length=0;
+V.scans=[cloud(0),cloud(1)];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
+          frames:{0:affine(V.scans[0])}}];
+realReplay();
+out.laterBefore=[kept(V.scans[0]),kept(V.scans[1])];
+V.scans[1].setup.x_m=10;
+out.laterWhy=replayNeeded(V.scans[1]);
+out.laterRan=followMoved(V.scans[1]);
+out.laterReplays=replays;
+out.laterAfter=[kept(V.scans[0]),kept(V.scans[1])];
 /* C: a cut on cloud 0 only never sends cloud 1 to the replay at all */
 replays=0;
 V.scans=[cloud(0),cloud(1)];
@@ -4504,7 +4517,7 @@ out.noneReplays=replays;
 console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "maskOf", "replayJob", "tallyLive",
-                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "markBox", "inScope",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "reaches", "markBox", "inScope",
                   "frameFor", "cutGroups", "world", "shown", "cutScope",
                   "showHidden", "replayNeeded", "followMoved", "tellServer",
                   "replayOne", "replayWorker", "replayWorkerSource",
@@ -4528,7 +4541,7 @@ console.log(JSON.stringify(out));
         check("...and its mask is exactly what it was -- the cut named "
               "points, and they went with it",
               _mv["framedAfter"] == [4, 4], _mv)
-        check("a cut with no frame for the moved cloud still replays, once",
+        check("a cut that remembers nothing at all still replays, once",
               _mv["legacyRan"] is True and _mv["legacyReplays"] == 1
               and _mv["legacyWhy"] == 0, _mv)
         check("...and that cloud, carried out of the box, comes back whole "
@@ -4545,6 +4558,22 @@ console.log(JSON.stringify(out));
         check("a cut scoped to another cloud does not send this one to the "
               "replay",
               _mv["otherRan"] is False and _mv["otherReplays"] == 0, _mv)
+        # ⭐⭐ "make it so when a new cloud is imported that nothing affects
+        # it" (operator, 2026-09-22): the cut remembers cloud 0 only.
+        check("A CLOUD THAT ARRIVED AFTER A CUT IS NOT TOUCHED BY IT: whole "
+              "before the move, whole after, and the move replays nothing",
+              _mv["laterBefore"] == [4, 9] and _mv["laterWhy"] is None
+              and _mv["laterRan"] is False and _mv["laterReplays"] == 0
+              and _mv["laterAfter"] == [4, 9], _mv)
+        check("the rule has one home on the page, `reaches`, and the plan, "
+              "the fast drop and the spared count all read it",
+              "function reaches(op, index){" in _PAGE
+              and "const mine = o => reaches(o, index);"
+              in _js_func("planFor")
+              and "if(!reaches(box||las, s.index)) continue;"
+              in _js_func("applyDrop")
+              and "if(!reaches(las, s.index)) continue;"
+              in _js_func("clipSpared"))
         check("and no cuts at all costs nothing",
               _mv["noneRan"] is False and _mv["noneReplays"] == 0, _mv)
     # ⭐⭐ "WHEN MOVING POINT CLOUDS IN THE Z DIRECTION THE PROGRAM SLOWS DOWN
@@ -4600,8 +4629,7 @@ function answer(sent){
 }
 const out={};
 V.scans=[cloud(0),cloud(1)];
-V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
-          frames:{0:affine(V.scans[0])}}];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX}];   /* remembers nothing */
 realReplay();
 out.before=[kept(V.scans[0]),kept(V.scans[1])];
 uploads=[]; invalidates=0; replays=0;
@@ -4654,7 +4682,7 @@ out.src=replayWorkerSource();
 console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
                  ("recomputeLive", "maskOf", "replayJob", "tallyLive",
-                  "aliveOf", "editPlan", "planFor", "inScope", "frameFor",
+                  "aliveOf", "editPlan", "planFor", "reaches", "inScope", "frameFor",
                   "cutGroups", "world", "markBox", "markLasso", "prepClip",
                   "clipHides", "rotOf", "shown", "cutScope", "showHidden",
                   "replayNeeded", "followMoved", "tellServer", "replayOne",
@@ -4902,7 +4930,7 @@ console.log(JSON.stringify({
 """ % ("\n".join(_js_func(f) for f in
                  ("editsWithout", "inScope", "recomputeLive", "maskOf", "replayJob", "tallyLive",
                   "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan",
-                  "planFor", "markBox", "frameFor", "cutGroups", "world",
+                  "planFor", "reaches", "markBox", "frameFor", "cutGroups", "world",
                   "dimOf", "snapLook", "upVec", "basis", "eye", "setEye",
                   "setOrtho")),
        json.dumps([[_rb_page(c), only] for c, only in _rb_cases]),
@@ -7565,7 +7593,8 @@ if _node:
                           # -- one home for the test, mirroring
                           # `pipeline._in_scope`. A harness that runs the real
                           # functions has to follow them wherever they go.
-                          ("shown", "cutScope", "inScope", "planFor")) + """
+                          ("shown", "cutScope", "inScope", "reaches",
+                           "planFor")) + """
     var V = {scans:[{index:0},{index:1},{index:2}], hidden:{}, only:-1,
              editWho:-1};
     var out = {};
@@ -16380,6 +16409,33 @@ _lasso_free = pipeline.Edit(lassos=[pipeline.Lasso(_look_down(),
 check("a lasso remembers it too, not only a box",
       list(_lasso_frozen.for_scan(0).mask(_MOVED, local=_LOCAL))
       != list(_lasso_free.for_scan(0).mask(_MOVED, local=_LOCAL)))
+# ⭐⭐ "MAKE IT SO WHEN A NEW CLOUD IS IMPORTED THAT NOTHING AFFECTS IT"
+# (operator, 2026-09-22). A cloud that arrived after a cut was drawn has no
+# frame in it and used to be tested in the merged frame wherever it sat --
+# the restaurant's capture 23, unplaced at the origin, showed 42% of itself
+# under lassos drawn for other clouds. A cut reaches the clouds that were
+# there when it was drawn and no other.
+_later = pipeline.Edit(drop=[dict(_CUT, frames={"0": _FR0})])
+check("A CUT REACHES ONLY THE CLOUDS THAT WERE THERE WHEN IT WAS DRAWN: a "
+      "cloud that arrived later is untouched by it",
+      not _later.for_scan(1).drop
+      and list(_later.for_scan(1).mask(_MOVED, local=_LOCAL)) == [True] * 5,
+      list(_later.for_scan(1).mask(_MOVED, local=_LOCAL)))
+check("...while a cut that remembers nothing still reaches every cloud in "
+      "its scope, in the merged frame, as before",
+      list(_drift.for_scan(1).mask(_MOVED, local=_LOCAL))
+      == [True, True, True, True, False])
+check("...and a keep drawn before the cloud arrived does not keep-only it",
+      not pipeline.Edit(keep=[dict(_CUT, frames={"0": _FR0})])
+      .for_scan(1).keep)
+check("...nor a lasso",
+      not pipeline.Edit(lassos=[pipeline.Lasso(
+          _look_down(), _SQ, frames={"0": _FR0}).as_dict()]).for_scan(1).lassos)
+check("the rule has one home, `_reaches`, and for_scan reads it",
+      "def _reaches(op, index):" in _PIPE_SRC
+      and "if not _reaches(op, index):" in _PIPE_SRC
+      and "if not _in_scope(op.scan, index):\n                return None"
+      not in _PIPE_SRC)
 
 # ⛔ THE EXPORTER HAS TO BE HANDED THE SCAN'S OWN POINTS or it cannot do this
 # at all -- and it keeps them only while some cut carries a frame, so an
@@ -16408,8 +16464,10 @@ check("each cloud is put back where IT stood, not where its neighbour did",
       == [True, True, True, True, False],
       (list(_two.for_scan(0).mask(_MOVED, local=_LOCAL)),
        list(_two.for_scan(1).mask(_MOVED, local=_LOCAL))))
-check("a cloud that arrived after the cut was made gets no frame",
-      _two.for_scan(4).drop[0].frame is None)
+# ⭐ 2026-09-22: it used to get the cut with no frame (tested in the merged
+# frame wherever it sat); now the cut does not reach it at all.
+check("a cloud that arrived after the cut was made is not reached by it",
+      not _two.for_scan(4).drop)
 
 # ⛔⛔ AND FRAMES RENUMBER WITH THE SCOPE. They are keyed by POSITION exactly
 # as a scope is, so leaving a cloud out of an export would otherwise hand the
@@ -16514,7 +16572,7 @@ console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
                  ("pushEdit", "applyDrop", "recomputeLive", "maskOf", "replayJob", "tallyLive",
                   "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan",
-                  "planFor", "inScope", "frameFor", "cutFrames", "cutGroups",
+                  "planFor", "reaches", "inScope", "frameFor", "cutFrames", "cutGroups",
                   "world", "markBox", "markLasso", "cutScope", "shown")),
        json.dumps(_LOCAL.tolist()), json.dumps(_CUT), json.dumps(_AWAY),
        json.dumps(list(_look_down())), json.dumps(_SQ), json.dumps(_FR0),
@@ -16644,7 +16702,7 @@ out.liveCuts = V.edits.length===1 && alive()===3
 console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
                  ("pushEdit", "applyDrop", "clipSpared", "commitLasso",
-                  "clearPending", "whoSuffix", "inScope",
+                  "clearPending", "whoSuffix", "inScope", "reaches",
                   "frameFor", "cutFrames", "cutScope", "shown", "world",
                   "markBox", "markLasso", "prepClip", "clipHides", "rotOf")),
        json.dumps(_SLAB), json.dumps(list(_look_down())), json.dumps(_SQ),

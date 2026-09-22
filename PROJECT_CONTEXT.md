@@ -5,10 +5,17 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-22):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-22, evening):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the TWELFTH PART first. Latest: **the moved cloud's cut replay is ONE
-> cloud, in a Worker** ("when moving point clouds in the Z direction the
+> the THIRTEENTH PART first. Latest: **A CUT REACHES ONLY THE CLOUDS THAT
+> WERE THERE WHEN IT WAS DRAWN** ("scan 23 is not displaying as a full
+> scan" → "make it so when a new cloud is imported that nothing effects
+> it": capture 23, brought in after the 82 cuts and unplaced at the
+> origin, kept 42% under lassos drawn for other clouds; `pipeline._reaches`
+> and the page's `reaches` now keep a cut out of the plan of any cloud it
+> holds no frame for, page and exporter together; a cut that remembers
+> nothing still reaches its whole scope); before that **the moved cloud's
+> cut replay is ONE cloud, in a Worker** ("when moving point clouds in the Z direction the
 > progam slows down too much": not Z; a capture brought in after the cuts
 > were drawn has no frame in them, and every nudge of it replayed every
 > cut against every cloud on the main thread, 50-58 s in the log;
@@ -42,7 +49,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2204 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2211 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6581,6 +6588,57 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ THIRTEENTH PART (2026-09-22, evening): a cut reaches only the
+clouds that were there when it was drawn.** The operator, with the 18:42
+Studio open on the restaurant job: *"scan 23 is not displaying as a full
+scan for some reason"*. Measured headlessly (`mask76.py`: open the saved
+project, `take_edit` the page's plan, count `spare` per cloud, then every
+cut alone on the asked cloud): capture 23 (`23\TLS_26_08_20_17_07_55`,
+the cloud moved in the twelfth part) decodes whole — 2.9M points, all 36
+azimuth bins, elevation −68..89, the same as its neighbours, and every
+one of the 60 restaurant captures is the same 190.8° "180° Rapid" profile
+— but the job's 82 cuts kept **42%** of it against 90–99% of every placed
+cloud: cut 4 took 51%, cut 16 31%, cut 62 25%, the keep box 4%, 61 cuts
+nothing. It sat UNPLACED at the origin (x 0, y 0, yaw 0, lifted 1.46 m),
+on top of the reference, and having arrived after the cuts it held no
+frame in any of them, so the 08-29 rule tested it in the merged frame
+right there, under lassos drawn to clear the reference's surroundings.
+Two ways out were offered (place it first, and the cuts apply where it
+lands; or change the rule) with the caution that the solve doors hear
+the cut list, so Auto align would have seen 58% of its sample. The
+operator: *"make it so when a new cloud is imported that nothing effects
+it"*.
+
+- **Shipped, page and exporter together** (`reach77.py`): `pipeline._reaches(op, index)`
+  = in scope AND (the cut remembers nothing OR it remembers this cloud);
+  `Edit.for_scan` reads it and nothing else decides it. The page's
+  `reaches(op, index)` mirrors it and is read by `planFor` (so the
+  replay, `replayNeeded` and the worker job all follow), by the fast drop
+  (`applyDrop`) and by the spared count (`clipSpared`). A cut that
+  remembers nothing at all (a project saved before frames, or a frames
+  dict with nobody in it) still reaches its whole scope in the merged
+  frame, as it always did — so old projects export unchanged. A cut made
+  after the cloud arrived stamps it (`cutFrames`) and reaches it. So a
+  newcomer is whole until the operator cuts it, and its move replays
+  nothing (there is no cut reaching it without a frame).
+- **Consequence for the twelfth part:** the 50 s / 1.5 s replay was the
+  newcomer's; under this rule it does not happen at all. The worker path
+  stays for the legacy case (a project saved before frames).
+- **Checks.** Python: a cut with frames for cloud 0 does not reach cloud
+  1 (drop, keep and lasso alike; mask all True; `for_scan(1).drop` empty),
+  a cut with no frames still reaches cloud 1 in the merged frame, one
+  home pinned; the old "arrived after the cut gets no frame" check
+  inverted to "is not reached". Page: the move-rules harness case B is
+  now the true legacy (no frames), and case E (frames for cloud 0 only)
+  proves the newcomer whole before and after its move with zero replays;
+  the hide-rules harness lifts `reaches`; four source pins. Suite 2204 →
+  **2211 passed, 0 failed**. ✅ Exes rebuilt 20:07-20:08 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0) carry it. Reversion audit: break P (`_reaches` ignores the frames) fired its four named Python checks, 2207/4; break J (the page's `reaches` ignores the frames) fired exactly *A CLOUD THAT ARRIVED AFTER A CUT IS NOT TOUCHED BY IT*, 2210/1; restored, marks 0, final run 2211 passed, 0 failed.
+- **Measured after:** `mask77.py` (the same headless walk after the patch): capture 23 kept **1,228,949 of 1,228,949 (100%)**, every other cloud byte-for-byte the same as before (95, 97, 96 … 93%).
+- **On the live job:** the operator has since placed capture 23 (saved
+  at x 0.28, y 2.36, yaw −5.1, z 1.185). In the rebuilt Studio it shows
+  whole; cuts drawn from now on reach it.
+
 
 **▶ TWELFTH PART (2026-09-22): the moved cloud's cut replay is one
 cloud, off the page.** The operator: *"when moving point clouds in the Z
