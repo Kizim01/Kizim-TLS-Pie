@@ -2444,7 +2444,7 @@ try:
     check("...dead points skip the world transform and untouched scans "
           "skip the re-upload",
           "if(seg && !seg[i]){ _wx[i]=NaN; continue; }" in _page
-          and "if(touched) upload(s);" in _page)
+          and "if(touched){ s.alive=null; upload(s); }" in _page)
     check("the lasso test rejects on the outline's own bounds before "
           "walking its edges",
           "if(x<bx0||x>bx1) continue;" in _page
@@ -3352,6 +3352,15 @@ def _js_func(name):
     raise AssertionError("unbalanced braces in " + name)
 
 
+def _js_const(name):
+    """One top-level `const NAME=...;` line of the page, for a harness that
+    reaches page state a lifted function reads."""
+    m = re.search(r"^const %s=.*?;$" % re.escape(name), _PAGE, re.M)
+    if not m:
+        raise AssertionError("no const " + name + " in the page")
+    return m.group(0)
+
+
 # ⛔⛔ THE PHOTO PANEL'S PERCENTAGE, RUN RATHER THAN READ. `refine` refuses to
 # print a percentage when the reflectivity judge voted: that score is a
 # standardised SUM through zero, and a gain over a near-zero "was" prints as a
@@ -3493,7 +3502,8 @@ console.log(JSON.stringify({refitted:V.box.hi}));
 console.log(JSON.stringify({sized:boxSize({lo:[-1,-1,-1],hi:[1,2,3]}),
                             old:boxSize([[-1,-1,-1],[1,2,3]])}));
 """ % ("\n".join(_js_func(f) for f in
-                 ("recomputeLive", "editPlan", "planFor", "markBox",
+                 ("recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "markBox",
                   "forgetScan", "measure", "resetBox", "span", "boxSize",
                   # ⛔ AND THE ONES A CUT'S REMEMBERED PLACEMENT ADDED. The
                   # replay groups its cuts by the frame each was drawn
@@ -3622,7 +3632,8 @@ pushEdit({kind:'lasso', mode:'cut', matrix:CASES[0][0].matrix,
           poly:CASES[0][0].poly});
 console.log(JSON.stringify(Array.from(V.scans[0].live).map(v=>v===1)));
 """ % ("\n".join(_js_func(f) for f in
-                 ("recomputeLive", "editPlan", "planFor", "inScope",
+                 ("recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "inScope",
                   "frameFor", "cutGroups", "world", "markBox", "markLasso",
                   "prepClip", "clipHides", "rotOf", "shown", "pushEdit",
                   "applyDrop", "cutFrames", "cutScope", "boxSpec",
@@ -4447,8 +4458,9 @@ function cloud(i){
 }
 const BOX={lo:[-1,-1,-1],hi:[1,1,1],yaw_deg:0,pitch_deg:0,roll_deg:0};
 const kept=s=>{ let n=0; for(let i=0;i<s.points;i++) n+=s.live[i]; return n; };
-let replays=0; const realReplay=recomputeLive;
-recomputeLive=function(){ replays++; return realReplay(); };
+let replays=0; const onlys=[]; const realReplay=recomputeLive;
+recomputeLive=function(only){ replays++; onlys.push(only?only.index:null);
+                              return realReplay(only); };
 const out={};
 /* A: every cut remembers where both clouds stood -- the ordinary job */
 V.scans=[cloud(0),cloud(1)];
@@ -4467,11 +4479,16 @@ V.scans=[cloud(0),cloud(1)];
 V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
           frames:{0:affine(V.scans[0])}}];
 realReplay();
+/* a point of cloud 0 killed by hand: a replay that re-tested cloud 0 would
+   bring it back, so its staying dead is the proof the replay was cloud 1's */
+V.scans[0].live[2]=0; V.scans[0].alive=null;
 V.scans[1].setup.x_m=10;
 out.legacyWhy=replayNeeded(V.scans[1]);
 out.legacyRan=followMoved(V.scans[1]);
 out.legacyReplays=replays;
+out.legacyOnly=onlys.slice();
 out.legacyAfter=[kept(V.scans[0]),kept(V.scans[1])];
+out.legacyAlive=V.alive;
 /* C: a cut on cloud 0 only never sends cloud 1 to the replay at all */
 replays=0;
 V.scans=[cloud(0),cloud(1)];
@@ -4485,10 +4502,15 @@ V.edits=[]; replays=0;
 out.noneRan=followMoved(V.scans[1]);
 out.noneReplays=replays;
 console.log(JSON.stringify(out));
-""" % "\n".join(_js_func(f) for f in
-                ("recomputeLive", "editPlan", "planFor", "markBox", "inScope",
-                 "frameFor", "cutGroups", "world", "shown", "cutScope",
-                 "showHidden", "replayNeeded", "followMoved", "tellServer"))
+""" % ("\n".join(_js_func(f) for f in
+                 ("recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan", "planFor", "markBox", "inScope",
+                  "frameFor", "cutGroups", "world", "shown", "cutScope",
+                  "showHidden", "replayNeeded", "followMoved", "tellServer",
+                  "replayOne", "replayWorker", "replayWorkerSource",
+                  "replayPost", "replayBack", "replayTold", "markLasso",
+                  "prepClip", "clipHides"))
+           + "\n" + _js_const("REPLAY"))
     _mvp = os.path.join(_rdir, "moverules.js")
     with io.open(_mvp, "w", encoding="utf-8") as _fh:
         _fh.write(_mv_js)
@@ -4511,12 +4533,195 @@ console.log(JSON.stringify(out));
               and _mv["legacyWhy"] == 0, _mv)
         check("...and that cloud, carried out of the box, comes back whole "
               "while the other keeps its cut",
-              _mv["legacyAfter"] == [4, 9], _mv)
+              _mv["legacyAfter"] == [3, 9], _mv)
+        # ⭐⭐ 2026-09-22: "when moving point clouds in the Z direction the
+        # program slows down too much" -- the legacy replay was the WHOLE job
+        # (50-58 s per nudge in the log). It is
+        # the moved cloud alone now: cloud 0's hand-killed point stays dead,
+        # and the count is summed from what the others already hold.
+        check("THE REPLAY IS ASKED OF THE MOVED CLOUD ALONE, and the other "
+              "cloud's mask is not re-tested",
+              _mv["legacyOnly"] == [1] and _mv["legacyAlive"] == 12, _mv)
         check("a cut scoped to another cloud does not send this one to the "
               "replay",
               _mv["otherRan"] is False and _mv["otherReplays"] == 0, _mv)
         check("and no cuts at all costs nothing",
               _mv["noneRan"] is False and _mv["noneReplays"] == 0, _mv)
+    # ⭐⭐ "WHEN MOVING POINT CLOUDS IN THE Z DIRECTION THE PROGRAM SLOWS DOWN
+    # TOO MUCH" (operator, 2026-09-22). Not Z: the legacy replay above, for a
+    # cloud brought in after the cuts were drawn, was the WHOLE job on the
+    # main thread -- 50-58 s per nudge in the log. It is the moved cloud
+    # alone now, in a Worker, and the newest move wins. Run with a fake
+    # Worker that records what it is sent; the worker's OWN source is then
+    # executed the way a worker executes it and its answer fed back through
+    # the page, so the page's rules for a stale answer are exercised too.
+    print("\nthe moved cloud's replay runs off the page, and the newest wins")
+    _wk_js = """
+%s
+%s
+const BLOCK = 1 << 19;
+const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK),
+      _wz=new Float64Array(BLOCK);
+const V={scans:[],edits:[],hidden:{},alive:0,total:0,
+         box:{lo:[0,0,0],hi:[1,1,1],yaw:0,pitch:0,roll:0}};
+const STAT={textContent:''}; const $=()=>STAT;
+let invalidates=0, uploads=[];
+const invalidate=()=>{ invalidates++; }, upload=s=>{ uploads.push(s.index); };
+let followTimer=null;
+const TOLD=[]; const post=(w,b)=>{ TOLD.push(b); return {catch:()=>{}}; };
+function affine(s){ return [1,0,0,+s.setup.x_m, 0,1,0,0, 0,0,1,0]; }
+/* the Worker the page makes: it records what it is handed */
+class Worker{
+  constructor(url){ this.url=url; this.sent=[]; Worker.made.push(this); }
+  postMessage(m, t){ this.sent.push({m:m, t:t}); }
+}
+Worker.made=[];
+const PTS=[[0.3,0.3,0.3],[0.5,0.5,0.5],[2,2,2],[0.2,0.1,0.3],[5,5,5],
+           [0.9,0.9,0.9],[3,0,0],[0,3,0],[0.1,0.1,0.1]];
+function cloud(i){
+  const flat=[]; for(const p of PTS) flat.push(p[0],p[1],p[2]);
+  return {index:i, name:'cloud '+i, points:PTS.length, raw:flat,
+          scale:[1,1,1], offset:[0,0,0], chunks:[],
+          live:new Uint8Array(PTS.length).fill(1),
+          setup:{x_m:0,y_m:0,z_m:0,yaw_deg:0}};
+}
+const BOX={lo:[-1,-1,-1],hi:[1,1,1],yaw_deg:0,pitch_deg:0,roll_deg:0};
+const kept=s=>{ let n=0; for(let i=0;i<s.points;i++) n+=s.live[i]; return n; };
+let replays=0; const realReplay=recomputeLive;
+recomputeLive=function(only){ replays++; return realReplay(only); };
+/* the worker's own source, run the way a worker runs it */
+function answer(sent){
+  if(!sent) return null;   /* a job never posted: the checks say so */
+  const self={}; let got=null;
+  self.postMessage=m=>{ got=m; };
+  new Function('self', replayWorkerSource())(self);
+  self.onmessage({data:sent.m});
+  return got;
+}
+const out={};
+V.scans=[cloud(0),cloud(1)];
+V.edits=[{kind:'box',mode:'drop',scan:null,box:BOX,
+          frames:{0:affine(V.scans[0])}}];
+realReplay();
+out.before=[kept(V.scans[0]),kept(V.scans[1])];
+uploads=[]; invalidates=0; replays=0;
+V.scans[1].setup.x_m=10;
+out.ran=followMoved(V.scans[1]);
+out.workers=Worker.made.length;
+const w=Worker.made[0]||{sent:[], onmessage:()=>{}};  /* none made: the checks say so */
+out.posted=w.sent.length;
+const s0=w.sent[0]&&w.sent[0].m;
+out.postedIndex=s0?s0.job.index:null;
+out.postedSeq=s0?s0.job.seq:null;
+out.copied=!!s0&&(s0.raw!==V.scans[1].raw);
+out.pageReplays=replays;
+out.busy=REPLAY.busy;
+out.stillOld=kept(V.scans[1]);
+/* a second move while the first is in flight waits; it is not posted */
+V.scans[1].setup.x_m=20;
+followMoved(V.scans[1]);
+out.postedAfterSecond=w.sent.length;
+out.nextSeq=REPLAY.next && REPLAY.next.seq;
+/* the first answer lands: stale, so dropped, and the waiting job goes out */
+const a1=answer(w.sent[0]);
+out.a1=a1?[a1.seq, a1.alive]:null;
+if(a1) w.onmessage({data:a1});
+out.afterStale=kept(V.scans[1]);
+out.postedAfterStale=w.sent.length;
+out.uploadsAfterStale=uploads.length;
+/* the second answer lands and is the one applied */
+const a2=answer(w.sent[1]);
+if(a2) w.onmessage({data:a2});
+out.applied=[kept(V.scans[0]),kept(V.scans[1])];
+out.uploads=uploads.slice();
+out.alive=V.alive; out.total=V.total; out.stat=STAT.textContent;
+out.invalidated=invalidates;
+out.busyAfter=REPLAY.busy; out.nextAfter=REPLAY.next;
+out.pageReplaysAfter=replays;
+out.told=TOLD.map(t=>t.kind);
+/* the worker's answer is the page's own answer */
+const asWorker=a2?Array.from(a2.live).join(''):'none';
+V.scans[1].live.fill(1); realReplay(V.scans[1]);
+out.sameMask=(Array.from(V.scans[1].live).join('')===asWorker);
+/* a whole-job replay while an answer is in flight: that answer is dropped */
+V.scans[1].setup.x_m=10; followMoved(V.scans[1]);
+const a3=answer(w.sent[2]);
+V.scans[1].setup.x_m=0; realReplay();
+out.wholeKept=kept(V.scans[1]);
+if(a3) w.onmessage({data:a3});
+out.afterWhole=kept(V.scans[1]);
+out.src=replayWorkerSource();
+console.log(JSON.stringify(out));
+""" % ("\n".join(_js_func(f) for f in
+                 ("recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "editPlan", "planFor", "inScope", "frameFor",
+                  "cutGroups", "world", "markBox", "markLasso", "prepClip",
+                  "clipHides", "rotOf", "shown", "cutScope", "showHidden",
+                  "replayNeeded", "followMoved", "tellServer", "replayOne",
+                  "replayWorker", "replayWorkerSource", "replayPost",
+                  "replayBack", "replayTold")),
+           _js_const("REPLAY"))
+    _wkp = os.path.join(_rdir, "replayworker.js")
+    with io.open(_wkp, "w", encoding="utf-8") as _fh:
+        _fh.write(_wk_js)
+    _wkr = subprocess.run([_node, _wkp], capture_output=True, text=True)
+    check("the worker replay rules run at all", _wkr.returncode == 0,
+          (_wkr.stderr or "")[:600])
+    if _wkr.returncode == 0:
+        _wk = json.loads(_wkr.stdout.strip().splitlines()[-1])
+        # the harness file is written in text mode, so node read CRLF and
+        # toString hands the CRLF back: compared as lines, not bytes
+        _wk_src = _wk.pop("src").replace("\r\n", "\n")
+        check("the box takes five of nine from each cloud to start",
+              _wk["before"] == [4, 4], _wk)
+        check("THE MOVED CLOUD'S REPLAY GOES TO A WORKER, NOT THE PAGE",
+              _wk["ran"] is True and _wk["workers"] == 1
+              and _wk["posted"] == 1 and _wk["postedIndex"] == 1
+              and _wk["postedSeq"] == 1 and _wk["pageReplays"] == 0
+              and _wk["busy"] is True, _wk)
+        check("...handed a COPY of its points, its mask untouched until the "
+              "answer lands",
+              _wk["copied"] is True and _wk["stillOld"] == 4, _wk)
+        check("a second move while one is in flight waits rather than "
+              "queues behind it",
+              _wk["postedAfterSecond"] == 1 and _wk["nextSeq"] == 2, _wk)
+        check("THE STALE ANSWER IS DROPPED, and the waiting job goes out",
+              _wk["a1"] == [1, 9] and _wk["afterStale"] == 4
+              and _wk["postedAfterStale"] == 2
+              and _wk["uploadsAfterStale"] == 0, _wk)
+        check("the newest answer lands: the moved cloud whole, the other "
+              "still cut, one upload, the count summed right",
+              _wk["applied"] == [4, 9] and _wk["uploads"] == [1]
+              and _wk["alive"] == 13 and _wk["total"] == 18
+              and "13 of 18 points kept" in _wk["stat"]
+              and _wk["invalidated"] >= 1 and _wk["busyAfter"] is False
+              and _wk["nextAfter"] is None and _wk["pageReplaysAfter"] == 0
+              and _wk["told"] == [], _wk)
+        check("THE WORKER'S MASK IS THE PAGE'S OWN MASK", _wk["sameMask"],
+              _wk)
+        check("a whole-job replay mid-flight drops the answer that follows",
+              _wk["wholeKept"] == 4 and _wk["afterWhole"] == 4, _wk)
+        check("the worker's source is the shipped functions, lifted verbatim",
+              all(_js_func(f) in _wk_src for f in
+                  ("world", "markBox", "markLasso", "prepClip", "clipHides",
+                   "rotOf", "maskOf"))
+              and "self.onmessage=function(e){" in _wk_src)
+        _wsp = os.path.join(_rdir, "replayworker_src.js")
+        with io.open(_wsp, "w", encoding="utf-8") as _fh:
+            _fh.write(_wk_src)
+        _wsr = subprocess.run([_node, "--check", _wsp], capture_output=True,
+                              text=True)
+        check("...and it parses as a script on its own",
+              _wsr.returncode == 0, (_wsr.stderr or "")[:300])
+    check("followMoved sends the moved cloud to the one-cloud replay",
+          "replayOne(s, why);" in _js_func("followMoved"))
+    check("recomputeLive re-tests one cloud when given one, through the "
+          "same maskOf the worker runs",
+          "if(only && s!==only) continue;" in _js_func("recomputeLive")
+          and "maskOf(replayJob(s, plan), s.raw, s.live)"
+          in _js_func("recomputeLive"))
+    check("a fast drop clears the cached count of the cloud it touched",
+          "if(touched){ s.alive=null; upload(s); }" in _js_func("applyDrop"))
     # ⛔ AND THE CALLERS, or the rule above is a function nobody reaches.
     # Every door that moves ONE scan hands it over; the bare form is kept for
     # the changes that move every cloud at once (level, origin), which owe
@@ -4540,7 +4745,11 @@ console.log(JSON.stringify(out));
           and "axis!==null && V.edits.length" not in _PAGE
           and "leaning!==null && V.edits.length" not in _PAGE)
     check("a replay that was still needed says so in the log, with its cost",
-          "tellServer('replay'" in _js_func("followMoved"))
+          "replayOne(s, why);" in _js_func("followMoved")
+          and "replayTold(s, why, " in _js_func("replayOne")
+          and "replayTold(s, r.why, r.ms, " in _js_func("replayBack")
+          and "tellServer('replay', ms+' ms re-testing every cut against '"
+          in _js_func("replayTold"))
     check("...and a release does not owe a second replay to the timer",
           "if(followTimer){ clearTimeout(followTimer); followTimer=null; }"
           in _js_func("followMoved"))
@@ -4691,7 +4900,8 @@ console.log(JSON.stringify({
   atLimit: (()=>{ const u=upAt(0.7, Math.PI/2);
                   return [+u[0].toFixed(3), +u[1].toFixed(3)]; })()}));
 """ % ("\n".join(_js_func(f) for f in
-                 ("editsWithout", "inScope", "recomputeLive", "editPlan",
+                 ("editsWithout", "inScope", "recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan",
                   "planFor", "markBox", "frameFor", "cutGroups", "world",
                   "dimOf", "snapLook", "upVec", "basis", "eye", "setEye",
                   "setOrtho")),
@@ -16302,7 +16512,8 @@ recomputeLive();
 out.ordered = mask();
 console.log(JSON.stringify(out));
 """ % ("\n".join(_js_func(f) for f in
-                 ("pushEdit", "applyDrop", "recomputeLive", "editPlan",
+                 ("pushEdit", "applyDrop", "recomputeLive", "maskOf", "replayJob", "tallyLive",
+                  "aliveOf", "cutGroups", "frameFor", "inScope", "editPlan",
                   "planFor", "inScope", "frameFor", "cutFrames", "cutGroups",
                   "world", "markBox", "markLasso", "cutScope", "shown")),
        json.dumps(_LOCAL.tolist()), json.dumps(_CUT), json.dumps(_AWAY),

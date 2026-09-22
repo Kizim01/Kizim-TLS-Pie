@@ -5,9 +5,16 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-14, evening):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-22):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the ELEVENTH PART first. Latest: **Deep align HEARS NO CUTS** (the
+> the TWELFTH PART first. Latest: **the moved cloud's cut replay is ONE
+> cloud, in a Worker** ("when moving point clouds in the Z direction the
+> progam slows down too much": not Z; a capture brought in after the cuts
+> were drawn has no frame in them, and every nudge of it replayed every
+> cut against every cloud on the main thread, 50-58 s in the log;
+> `recomputeLive(only)` re-tests the moved cloud alone, `replayOne` does
+> it off the page from a copy of its points, the newest move wins, a
+> stale answer is dropped); before that **Deep align HEARS NO CUTS** (the
 > operator's call on the numbers: the mask walk cost 279 s on the
 > restaurant job against a 30 s search; both deep doors clear every mask
 > and read the whole capture, every other photograph door still sends the
@@ -35,7 +42,7 @@
 > walls too; the 0.22-degree-short full turn was an artefact, STEPS_PER_REV
 > stays), **the corrected decode as the DEFAULT** (effective pitch 8.67),
 > **Smooth surfaces**, **Keep within N m**, **the point budget follows the
-> SHOWN clouds**, and the measurement behind them. Suite 2189 passed, 0 failed. Nothing
+> SHOWN clouds**, and the measurement behind them. Suite 2204 passed, 0 failed. Nothing
 > is in flight. **OFFERED, NOT
 > STARTED (the operator asked "what else"):** (1) per-laser fan-angle
 > offsets plus a twice-per-turn term, fitted on the full-360 captures in
@@ -6574,6 +6581,66 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ TWELFTH PART (2026-09-22): the moved cloud's cut replay is one
+cloud, off the page.** The operator: *"when moving point clouds in the Z
+direction the progam slows down too much"*. Not Z. The Studio open since
+17:48 on the restaurant job had logged the cause four times before the
+report: `page replay: 50956 ms re-testing every cut after moving
+TLS_26_08_20_17_07_55.pcap, because cut 1 has no frame for it` (50.0,
+51.0, 57.2 and 58.3 s). That capture is in no saved project on disk: it
+was brought into the job AFTER its cuts were drawn, so no cut holds a
+frame for it, so it is rightly tested in the merged frame and re-tested
+when it moves (`frameFor`, 2026-08-29) — and the 09-08 fix ("a move
+re-tests only what a move can change") had left that legacy case paying
+the WHOLE replay: every cut against every cloud of the job, on the thread
+that draws, a quarter second after every nudge, on whichever axis the
+hand happened to be on. Scripts `replay75.py` (the patch), `tests75.py`
+(the suite), `revert75.py` (the audit), `ctx75.py` (this record).
+
+- **Two faults, one sentence apart.** `followMoved` said *moving one
+  cloud can change one mask — its own* and then called `recomputeLive()`
+  for every cloud. And the replay ran on the main thread, so the page
+  drew nothing and heard nothing until it was done.
+- **Shipped.** `recomputeLive(only)` re-tests one cloud when given one
+  and sums the rest from a cached per-cloud count (`aliveOf`, cleared by
+  the fast drop when it touches a cloud). The moved cloud's mask is
+  computed in a Web Worker: `replayOne` → `replayJob` (the cuts that reach
+  it, grouped by the frame each was drawn against, frames stripped) →
+  `maskOf` in the worker over a COPY of its points (`raw.slice()`,
+  transferred) → `replayBack` (`s.live.set`, `upload`, `tallyLive`).
+  `maskOf` is the one walk both the page and the worker run; the
+  worker's source is the page's own functions lifted by `toString`
+  (`world`, `markBox`, `markLasso`, `prepClip`, `clipHides`, `rotOf`,
+  `maskOf`), so there is no second copy of the maths. Newest wins: one
+  job in flight, at most one waiting; each job carries a `seq` the cloud
+  remembers (`s.replayAt`); a stale answer is dropped, and a whole-job
+  replay clears `replayAt` so nothing in flight can overwrite a Level.
+  No Worker (node; a WebView without Blob workers) → the same job on the
+  page for the moved cloud alone, and the log line says which (`... N ms
+  re-testing every cut against X alone, in the background / on the page,
+  after moving it, because cut K has no frame for it`).
+- **Expected on this job, not yet measured live:** the 50 s was every
+  cloud of the job; one cloud is a fraction of that, and it now runs off
+  the main thread, so the page keeps drawing while the moved cloud's mask
+  sharpens a couple of seconds behind the hand. The next `page replay:`
+  line is the number.
+- **Checks.** The move-rules harness now proves the replay is asked of
+  the moved cloud ALONE (a hand-killed point of the other cloud stays
+  dead; the count is summed, 12). New block *the moved cloud's replay
+  runs off the page, and the newest wins*: a fake Worker records what it
+  is sent, the worker's OWN source is executed the way a worker executes
+  it and its answer fed back through the page — posted once with a copy,
+  the mask untouched until the answer lands, a second move waits rather
+  than queues, the stale answer dropped and the waiting job posted, the
+  newest applied (one upload, 13 of 18 kept), the worker's mask equal to
+  the page's, a whole-job replay mid-flight dropping what follows, the
+  source the shipped functions verbatim and parsing alone; plus three
+  source pins. Suite 2189 → **2204 passed, 0 failed**. ✅ Exes rebuilt 18:42-18:43 (selftest 0, edgechromium, RTX 3050 Ti; --gpu 0, card 9.1x) carry it. Reversion audit: break A (the replay re-tests every cloud again) fired *THE REPLAY IS ASKED OF THE MOVED CLOUD ALONE*, the [3, 9] mask check and the `recomputeLive` pin, 2201/3; break B (a stale answer painted on) fired *THE STALE ANSWER IS DROPPED* and the equal-mask check, 2202/2; break C (the replay never leaves the page) fired *THE MOVED CLOUD'S REPLAY GOES TO A WORKER, NOT THE PAGE* and five that follow from it, 2198/6; restored, `BROKEN75` marks 0, final run 2204 passed, 0 failed. Breaks B and C first CRASHED the harness (a job never posted; no worker made) instead of failing by name, so the harness now tolerates both and the named checks fire.
+- **On the live job:** the Studio open since 17:48 still runs the old
+  page, and the capture it moved is in no project on disk — save there
+  first, then close it and reopen with the rebuilt exe.
+
 
 **▶ ELEVENTH PART (2026-09-14, morning): Deep align settles the heading at
 the rig's stack, then on the content.** The operator: *"deep align not

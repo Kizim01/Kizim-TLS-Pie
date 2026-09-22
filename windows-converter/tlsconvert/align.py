@@ -10550,13 +10550,7 @@ function followMoved(s){
   if(followTimer){ clearTimeout(followTimer); followTimer=null; }
   const why=replayNeeded(s);
   if(why===null) return false;
-  const t0=performance.now();
-  recomputeLive();
-  const ms=Math.round(performance.now()-t0);
-  if(ms>250)
-    tellServer('replay', ms+' ms re-testing every cut after moving '+
-               (s.name||('cloud '+(s.index+1)))+', because cut '+(why+1)+
-               ' has no frame for it');
+  replayOne(s, why);
   return true;
 }
 /* Recomputed on a trailing timer rather than per frame. Given the scan that
@@ -11125,7 +11119,7 @@ function applyDrop(e){
       if(after!==before){ touched=true; gone+=(before-after);
                           V.alive-=(before-after); }
     }
-    if(touched) upload(s);
+    if(touched){ s.alive=null; upload(s); }
   }
   $('stat').textContent = V.scans.length+' scan'+
     (V.scans.length===1?'':'s')+' · '+V.alive.toLocaleString()+' of '+
@@ -11458,51 +11452,215 @@ function cutGroups(plan, s){
   for(const l of plan.lassos) put(l, l.keep?'keep':'drop', 'Las');
   return groups;
 }
-function recomputeLive(){
-  const whole=editPlan();
-  let total=0, alive=0;
-  for(const s of V.scans){
-    const n=s.points, live=s.live;
-    total+=n;
-    /* ⛔ NARROWED PER CLOUD, AND THE KEEP TEST WITH IT. "Keep only this box"
-       means "of that cloud": if the keep stayed in the list while another
-       cloud was tested it would survive nothing and wipe a scan the operator
-       never touched. An empty share is not a keep-nothing, it is no edit. */
-    const plan=planFor(whole, s.index);
-    const keepers = plan.keep.length || plan.lassos.some(l=>l.keep);
-    const any = plan.keep.length || plan.drop.length || plan.lassos.length;
-    if(!any){ live.fill(1); alive+=n; upload(s); continue; }
-    const groups=cutGroups(plan, s);
-    for(let base=0;base<n;base+=BLOCK){
-      const k=Math.min(BLOCK,n-base);
-      const seg=live.subarray(base,base+k);
-      seg.fill(keepers?0:1);
-      /* ⛔⛔ EVERY KEEP BEFORE EVERY DROP, ACROSS ALL THE GROUPS -- not each
-         group's keeps and drops in turn. What survives is the union of the
-         keeps MINUS the union of the drops, so a drop drawn before a keep
-         still wins; run group by group and a drop made at one placement would
-         be undone by a keep made at another, which is a rule nobody wrote and
-         nothing on screen would explain. */
-      for(const g of groups){
-        if(!g.keepBox.length && !g.keepLas.length) continue;
-        world(s, base, k, g.A, null);
-        for(const b of g.keepBox) markBox(seg,k,b,1);
-        for(const l of g.keepLas) markLasso(seg,k,l,1);
-      }
-      for(const g of groups){
-        if(!g.dropBox.length && !g.dropLas.length) continue;
-        if(!world(s, base, k, g.A, seg)) break;
-        for(const b of g.dropBox) markBox(seg,k,b,0);
-        for(const l of g.dropLas) markLasso(seg,k,l,0);
-      }
-      for(let i=0;i<k;i++) if(seg[i]) alive++;
+/* ⭐⭐ "WHEN MOVING POINT CLOUDS IN THE Z DIRECTION THE PROGRAM SLOWS DOWN
+   TOO MUCH" (operator, 2026-09-22). Not Z -- any axis -- and the log had the
+   cause beside it four times over: `page replay: 50956 ms re-testing every
+   cut after moving TLS_26_08_20_17_07_55.pcap, because cut 1 has no frame
+   for it`. A cloud brought into a job AFTER its cuts were drawn has no frame
+   in any of them, so it is rightly tested in the merged frame and re-tested
+   when it moves (`frameFor`); on 2026-09-08 that legacy case was left paying
+   the WHOLE replay -- every cut against every cloud of the job -- fifty
+   seconds frozen, a quarter second after every nudge.
+
+   ⛔ TWO THINGS WERE WRONG WITH THAT, AND BOTH ARE FIXED HERE. Moving one
+   cloud can change one mask -- its own -- and the doctrine at `followMoved`
+   said so while the code re-tested every cloud: `recomputeLive(only)` now
+   re-tests the moved cloud alone and sums the rest from what they already
+   hold (`aliveOf`). And a test that takes seconds has no business on the
+   thread that draws: the moved cloud's mask is computed in a Worker from a
+   COPY of its points and the cuts that reach it, and lands when it is
+   ready. The page keeps drawing, the hand keeps moving, and the mask
+   sharpens a moment behind it -- exactly as the full-detail points already
+   refine in behind the twin (`REFINE_POINTS`).
+
+   ⛔ ONE COPY OF THE MATHS, OR THE WORKER AND THE PAGE DRIFT. The worker's
+   source is the page's own functions lifted by `toString` -- `world`,
+   `markBox`, `markLasso`, the clip test, `maskOf` itself -- so what it
+   computes is byte-for-byte what `recomputeLive` computes, and the suite
+   runs that source under node against the shipped replay over real points.
+
+   ⛔ THE NEWEST MOVE WINS. A slider dragged across its range asks every
+   quarter second; one job runs at a time, at most one waits (the newest),
+   and an answer for a placement the hand has since left is DROPPED rather
+   than painted over a newer one: each job carries a `seq`, the cloud
+   remembers the seq it is waiting for (`replayAt`), and a whole-job replay
+   clears it -- so a Level pressed mid-flight cannot be overwritten by a
+   stale answer either.
+
+   ⭐ AND WITHOUT A WORKER IT STILL WORKS, ONLY SLOWER: the same job runs on
+   the page for the moved cloud alone -- what node does in the tests, and
+   what a WebView without Blob workers would do -- and the log says which. */
+const REPLAY={seq:0, w:null, tried:false, busy:false, flying:null, next:null};
+/* The mask of ONE cloud under the cuts handed to it, from the job and the
+   points alone -- no `V`, no `gl`, no document -- so it is the same function
+   in the Worker, on the page and under node. `into` lets the page write
+   straight into `s.live`; the worker allocates its own. */
+function maskOf(job, raw, into){
+  const s={raw:raw, scale:job.scale, offset:job.offset};
+  const n=job.points, live=into||new Uint8Array(n);
+  let alive=0;
+  for(let base=0;base<n;base+=BLOCK){
+    const k=Math.min(BLOCK,n-base);
+    const seg=live.subarray(base,base+k);
+    seg.fill(job.keepers?0:1);
+    /* ⛔⛔ EVERY KEEP BEFORE EVERY DROP, ACROSS ALL THE GROUPS -- not each
+       group's keeps and drops in turn. What survives is the union of the
+       keeps MINUS the union of the drops, so a drop drawn before a keep
+       still wins; run group by group and a drop made at one placement would
+       be undone by a keep made at another, which is a rule nobody wrote and
+       nothing on screen would explain. */
+    for(const g of job.groups){
+      if(!g.keepBox.length && !g.keepLas.length) continue;
+      world(s, base, k, g.A, null);
+      for(const b of g.keepBox) markBox(seg,k,b,1);
+      for(const l of g.keepLas) markLasso(seg,k,l,1);
     }
-    upload(s);
+    for(const g of job.groups){
+      if(!g.dropBox.length && !g.dropLas.length) continue;
+      if(!world(s, base, k, g.A, seg)) break;
+      for(const b of g.dropBox) markBox(seg,k,b,0);
+      for(const l of g.dropLas) markLasso(seg,k,l,0);
+    }
+    for(let i=0;i<k;i++) if(seg[i]) alive++;
   }
+  return {live:live, alive:alive};
+}
+/* What one cloud's replay needs and nothing a Worker cannot be handed: the
+   cuts that reach it, grouped by the placement each was drawn against, with
+   the frames stripped -- the group's `A` IS the frame that matters.
+   ⛔ NARROWED PER CLOUD, AND THE KEEP TEST WITH IT. "Keep only this box"
+   means "of that cloud": if the keep stayed in the list while another cloud
+   was tested it would survive nothing and wipe a scan the operator never
+   touched. An empty share is not a keep-nothing, it is no edit. */
+function replayJob(s, plan){
+  plan = plan || planFor(editPlan(), s.index);
+  const bare=o=>{ const c=Object.assign({}, o); delete c.frames; return c; };
+  return {index:s.index, points:s.points,
+          scale:Array.from(s.scale), offset:Array.from(s.offset),
+          keepers:!!(plan.keep.length || plan.lassos.some(l=>l.keep)),
+          groups:cutGroups(plan, s).map(g=>({A:Array.from(g.A),
+            keepBox:g.keepBox.map(bare), keepLas:g.keepLas.map(bare),
+            dropBox:g.dropBox.map(bare), dropLas:g.dropLas.map(bare)}))};
+}
+/* How many of a cloud's points are live -- cached, because the whole-job
+   count is one byte per point across the job and a single cloud's replay
+   must not pay it. Cleared wherever the mask is written behind its back. */
+function aliveOf(s){
+  if(s.alive==null){
+    let n=0; for(let i=0;i<s.points;i++) if(s.live[i]) n++;
+    s.alive=n;
+  }
+  return s.alive;
+}
+function tallyLive(){
+  let total=0, alive=0;
+  for(const s of V.scans){ total+=s.points; alive+=aliveOf(s); }
   V.alive=alive; V.total=total;
   $('stat').textContent = V.scans.length+' scan'+(V.scans.length===1?'':'s')+
     ' · '+alive.toLocaleString()+' of '+total.toLocaleString()+
     ' points kept';
+}
+/* The Worker is the page's own functions, so there is nothing here to keep
+   in step with anything: change `markLasso` and the worker changes with it. */
+function replayWorkerSource(){
+  return ['const BLOCK = 1 << 19;',
+          'const _wx=new Float64Array(BLOCK), _wy=new Float64Array(BLOCK), '+
+          '_wz=new Float64Array(BLOCK);',
+          world, markBox, markLasso, prepClip, clipHides, rotOf, maskOf,
+          'self.onmessage=function(e){',
+          '  const job=e.data.job, t0=Date.now();',
+          '  const got=maskOf(job, e.data.raw);',
+          '  self.postMessage({seq:job.seq, index:job.index, why:job.why,',
+          '                    live:got.live, alive:got.alive,',
+          '                    ms:Date.now()-t0}, [got.live.buffer]);',
+          '};'].map(f=>f.toString()).join('\n');
+}
+function replayWorker(){
+  if(REPLAY.tried) return REPLAY.w;
+  REPLAY.tried=true;
+  try{
+    const url=URL.createObjectURL(new Blob([replayWorkerSource()],
+                                           {type:'text/javascript'}));
+    const w=new Worker(url);
+    w.onmessage=replayBack;
+    w.onerror=e=>{
+      /* given up, not retried: the next move replays on the page, and the
+         job this one dropped is run now so no cloud is left wearing a mask
+         for a placement it has left */
+      tellServer('replay-worker', 'failed, replaying on the page: '+
+                 ((e && e.message) || e));
+      REPLAY.w=null; REPLAY.busy=false; REPLAY.next=null;
+      const s=V.scans.find(x=>x.index===REPLAY.flying);
+      REPLAY.flying=null;
+      if(s) recomputeLive(s);
+    };
+    REPLAY.w=w;
+  }catch(e){
+    tellServer('replay-worker', 'unavailable, replaying on the page: '+
+               e.message);
+    REPLAY.w=null;
+  }
+  return REPLAY.w;
+}
+function replayOne(s, why){
+  if(!replayWorker()){
+    const t0=performance.now();
+    recomputeLive(s);
+    replayTold(s, why, performance.now()-t0, 'on the page');
+    return;
+  }
+  const job=replayJob(s);
+  job.seq=++REPLAY.seq; job.why=why;
+  s.replayAt=job.seq;
+  if(REPLAY.busy){ REPLAY.next=job; return; }
+  replayPost(job);
+}
+function replayPost(job){
+  const s=V.scans.find(x=>x.index===job.index); if(!s) return;
+  /* a copy, handed over outright: the page keeps its own for the next cut */
+  const raw=s.raw.slice();
+  REPLAY.busy=true; REPLAY.flying=job.index;
+  REPLAY.w.postMessage({job:job, raw:raw}, raw.buffer ? [raw.buffer] : []);
+}
+function replayBack(e){
+  const r=e.data;
+  REPLAY.busy=false; REPLAY.flying=null;
+  const s=V.scans.find(x=>x.index===r.index);
+  if(s && r.seq===s.replayAt && r.live.length===s.points){
+    s.live.set(r.live); s.alive=r.alive; s.replayAt=null;
+    upload(s); tallyLive(); invalidate();
+    replayTold(s, r.why, r.ms, 'in the background');
+  }
+  if(REPLAY.next){
+    const j=REPLAY.next; REPLAY.next=null;
+    /* and only if it is still the answer the cloud is waiting for */
+    const t=V.scans.find(x=>x.index===j.index);
+    if(t && t.replayAt===j.seq) replayPost(j);
+  }
+}
+function replayTold(s, why, ms, where){
+  ms=Math.round(ms);
+  if(ms>250)
+    tellServer('replay', ms+' ms re-testing every cut against '+
+               (s.name||('cloud '+(s.index+1)))+' alone, '+where+
+               ', after moving it, because cut '+(why+1)+
+               ' has no frame for it');
+}
+function recomputeLive(only){
+  const whole=editPlan();
+  for(const s of V.scans){
+    if(only && s!==only) continue;
+    const plan=planFor(whole, s.index);
+    const any = plan.keep.length || plan.drop.length || plan.lassos.length;
+    if(!any){ s.live.fill(1); s.alive=s.points; s.replayAt=null; upload(s);
+              continue; }
+    s.alive=maskOf(replayJob(s, plan), s.raw, s.live).alive;
+    /* a worker answer still in flight for this cloud describes a placement
+       this pass has just re-read; it is dropped when it lands */
+    s.replayAt=null;
+    upload(s);
+  }
+  tallyLive();
   invalidate();
 }
 function upload(s){
