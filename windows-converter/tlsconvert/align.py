@@ -7681,8 +7681,8 @@ PAGE = r"""<!doctype html>
     <button id="saveclip">Clip box only</button></div>
   <div class="row"><button id="savesketchup" class="go" title="A compressed
       .laz beside your file, named “… sketchup.laz”: every cloud on screen,
-      levelled, one point per 1 cm across the whole job — the size Scan
-      Essentials imports reliably.">Export for SketchUp</button></div>
+      levelled, cut to the clip box when it is on, one point per 1 cm — the
+      size Scan Essentials imports reliably.">Export for SketchUp</button></div>
   <div class="row"><button id="saveoutline">Outline from clip box (DXF)</button></div>
   <div class="row"><button id="savewhere">Save as…</button></div>
   <div id="outpath" style="font-size:10.5px;color:var(--faint);margin:4px 0 2px"></div>
@@ -15934,10 +15934,25 @@ async function saveMerged(clipOnly, forSketchup){
   if(!OUTPATH && !await chooseOut()) return;
   const plan=editPlan();
   if(clipOnly) plan.keep.push(boxSpec());
+  /* ⭐⭐ THE SKETCHUP EXPORT IS WHAT THE CLIP BOX SHOWS (operator, 2026-09-23:
+     "make it so when it exports to sketchup it uses whats inside the clip
+     box"). Box on and hiding outside: only the inside is written. Hiding
+     inside: the inside is left out, because that is what the screen shows --
+     as a drop placed LAST, so no bring-back drawn earlier can return what the
+     box is hiding. Box off: the whole job, and the result says so. */
+  const sketchClip = forSketchup && V.clip;
+  if(sketchClip){
+    if(V.inside) plan.drop.push(Object.assign(boxSpec(),
+                                              {order:V.edits.length}));
+    else plan.keep.push(boxSpec());
+  }
   const step=forSketchup ? {v:null, t:SKETCHUP_T} : DETAIL[V.exdet];
   const hid=V.scans.filter(s=>!shown(s.index)).map(s=>s.index);
   say('writing '+on.length+' cloud'+(on.length===1?'':'s')+' to '+
-      (forSketchup ? 'a SketchUp copy beside '+OUTPATH : OUTPATH)+
+      (forSketchup ? 'a SketchUp copy beside '+OUTPATH+
+        (sketchClip ? (V.inside ? ', leaving out what the clip box hides'
+                                : ', only what is inside the clip box')
+                    : ' (clip box off, so the whole job)') : OUTPATH)+
       ' at '+step.t+' …'); watch(true);
   $('save').disabled=true; $('saveclip').disabled=true;
   $('savesketchup').disabled=true;
@@ -15958,7 +15973,11 @@ async function saveMerged(clipOnly, forSketchup){
     say('saved '+j.points.toLocaleString()+' points from '+j.written+
         ' cloud'+(j.written===1?'':'s')+' to '+j.out+' at '+step.t+
         (j.bytes ? ' ('+(j.bytes/1048576).toFixed(0)+' MB)' : '')+
-        (forSketchup ? '. In SketchUp: Scan Essentials → Import, pick this '+
+        (forSketchup ? (sketchClip ? (V.inside
+            ? '. What the clip box hides was left out'
+            : '. Only what is inside the clip box')
+          : '. The clip box was off, so this is the whole job')+
+          '. In SketchUp: Scan Essentials → Import, pick this '+
           'file; it converts it once and remembers it' : '')+
         /* ⭐ WHAT THE ONE GRID SAVED, because "186 million points" and "12
            million points" are the difference between a file that opens and one

@@ -7,7 +7,8 @@
 
 > **▶ WHERE THE WORK IS NOW (2026-09-23, morning):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the SIXTEENTH PART first. Latest: **THE MERGE ON FOUR THREADS (1.9×,
+> the SEVENTEENTH PART first. Latest: **EXPORT FOR SKETCHUP FOLLOWS THE
+> CLIP BOX**, and SketchUp read over its MCP extension. Before that **THE MERGE ON FOUR THREADS (1.9×,
 > byte-identical) AND "EXPORT FOR SKETCHUP"** (1 cm grid, 33.6M points on
 > the restaurant job, `… sketchup.laz` beside the chosen file). Before that
 > **THE EXPORT, 6× FASTER AND ".laz"
@@ -6599,6 +6600,33 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ SEVENTEENTH PART (2026-09-23, before noon): the SketchUp export writes
+what the clip box shows, and the first SketchUp session read over MCP.**
+The operator: *"make it so when it exports to sketchup it uses whats inside
+the clip box"*. `saveMerged(clipOnly, forSketchup)`: box on and hiding
+outside → a keep box (only the inside); hiding inside → a drop box with
+`order = V.edits.length`, so no earlier bring-back can return what the box
+hides; box off → the whole job, and the status line says which. An ordinary
+Export is not cut by this. Checks: the SHIPPED `saveMerged` run under node
+with `fetch` caught, four presses (off / inside / hiding inside / plain);
+suite 2254 → **2260 passed, 0 failed**; audit (`sketchClip = false`) fired
+exactly the two box checks and the pin, 2257/3. ✅ Exes rebuilt (selftest 0,
+`--gpu` 0, `check_build_carries` finds `sketchClip`).
+- **SketchUp over MCP, read-only.** SketchUp 2026 (26.2.243) runs the
+  `sketchup-mcp2` extension 0.3.1 on **127.0.0.1:9877** (not the default
+  9876): 4-byte big-endian length + JSON-RPC 2.0, `hello` with
+  `client_version` first, then `tools/call` with `{name, arguments}`
+  (`eval_ruby` on). Scratch client `su.py`. Found: model
+  `Restaurant_16.09.26.skp` (mm, 674 entities); Scan Essentials
+  1.2026.0421 keeps its state in the model dictionaries `PCP` (`RWP`, the
+  linked `.rwp`) and `Trimble Scan Essentials` (`Global_Settings` JSON).
+  **The freeze:** `"density":100` — full density while orbiting; 0–20
+  advised. **The vanished cloud after a re-import with align-to-origin:**
+  `"clouds":{"tse.cloud.main":false,"classification.las.0":false}`; the
+  operator switched them back on and it showed. SketchUp was on the NVIDIA
+  card (nvidia-smi), one cloud loaded, the 30.8M-point export converted in
+  ~1 min to a 616 MB `.rwcx`.
 
 **▶ SIXTEENTH PART (2026-09-23, late morning): the merge runs on four
 threads, and Export for SketchUp.** The operator: *"build it multi

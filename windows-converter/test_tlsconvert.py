@@ -6998,6 +6998,74 @@ check("the tray has the button, wired to a SketchUp press, disabled while "
       and _PAGE.count("$('savesketchup').disabled=true;") == 2
       and "sketchup:!!forSketchup" in _PAGE)
 
+# ⭐⭐ AND IT WRITES WHAT THE CLIP BOX SHOWS (operator, 2026-09-23: "make it so
+# when it exports to sketchup it uses whats inside the clip box"). The SHIPPED
+# `saveMerged` is run under node with `fetch` caught, and what it would send
+# is read back: box off, box hiding outside, box hiding inside, and an
+# ordinary export with the box on (which must NOT be cut to it).
+_sk_node = shutil.which("node")
+if not _sk_node:
+    print("  ---- node is not installed; the SketchUp clip press was NOT run")
+else:
+    _sk_js = """
+%s
+%s
+let OUTPATH='C:/job.laz', OUT='';
+const DETAIL=[{v:0.02, t:'2 cm'}];
+const V={scans:[{index:0}], edits:[{kind:'box'}, {kind:'lasso'}], exdet:0,
+         clip:false, inside:false, level:null};
+const shown=()=>true, watch=()=>{}, chooseOut=async()=>OUTPATH;
+const $=()=>({disabled:false});
+const SAID=[]; const say=(m)=>SAID.push(m);
+function editPlan(){ return {keep:[], drop:[], lassos:[]}; }
+function boxSpec(){ return {lo:[0,0,0], hi:[1,1,1], yaw_deg:0,
+                            pitch_deg:0, roll_deg:0}; }
+let SENT=null;
+const fetch=async(url, o)=>{ SENT=JSON.parse(o.body);
+  return {json:async()=>({ok:true, points:5, written:1, out:'x', bytes:1})}; };
+(async()=>{
+  const got={};
+  for(const [name, clip, inside, sk] of [['off',false,false,true],
+      ['in',true,false,true], ['hide',true,true,true],
+      ['plain',true,false,false]]){
+    V.clip=clip; V.inside=inside; SAID.length=0;
+    await saveMerged(false, sk);
+    got[name]={keep:SENT.edit.keep, drop:SENT.edit.drop,
+               sketchup:SENT.sketchup, said:SAID.join(' | ')};
+  }
+  console.log(JSON.stringify(got));
+})();
+""" % ("const SKETCHUP_T = 'SketchUp';", "async " + _js_func("saveMerged"))
+    _skr_run = subprocess.run([_sk_node, "-e", _sk_js], capture_output=True,
+                              text=True, encoding="utf-8", timeout=60)
+    try:
+        _skg = json.loads((_skr_run.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        _skg = {}
+    check("the SketchUp press runs under node", bool(_skg),
+          (_skr_run.stderr or "")[-400:])
+    if _skg:
+        check("box ON, hiding outside: only the inside is written",
+              len(_skg["in"]["keep"]) == 1 and not _skg["in"]["drop"]
+              and _skg["in"]["sketchup"] is True
+              and "only what is inside the clip box" in _skg["in"]["said"],
+              _skg["in"])
+        check("box ON, hiding inside: the inside is left out, as a drop "
+              "placed after every edit",
+              not _skg["hide"]["keep"] and len(_skg["hide"]["drop"]) == 1
+              and _skg["hide"]["drop"][0]["order"] == 2, _skg["hide"])
+        check("box OFF: the whole job, and it says so",
+              not _skg["off"]["keep"] and not _skg["off"]["drop"]
+              and "clip box off, so the whole job" in _skg["off"]["said"],
+              _skg["off"])
+        check("an ordinary Export is not cut to the box by this",
+              not _skg["plain"]["keep"] and not _skg["plain"]["drop"]
+              and _skg["plain"]["sketchup"] is False, _skg["plain"])
+check("(pinned) the SketchUp press reads the clip box",
+      "const sketchClip = forSketchup && V.clip;" in _PAGE
+      and _PAGE.count("$('savesketchup').disabled=true;") == 2
+      and "sketchup:!!forSketchup" in _PAGE)
+
 
 # --- which scan a press with no chosen target fits onto ---------------------
 #
