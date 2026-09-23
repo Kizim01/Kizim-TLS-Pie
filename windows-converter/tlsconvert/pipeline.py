@@ -502,10 +502,22 @@ class Lasso(object):
         enclosed = self._enclosed(xyz)
         if self.clip is None:
             return enclosed
-        hidden = self.clip.inside(xyz)
-        if not self.clip_hides_inside:
-            hidden = ~hidden
-        return (enclosed | hidden) if self.keep else (enclosed & ~hidden)
+        if self.keep:
+            hidden = self.clip.inside(xyz)
+            if not self.clip_hides_inside:
+                hidden = ~hidden
+            return enclosed | hidden
+        # ⭐ A CUT OR A BRING-BACK CLAIMS `enclosed & ~hidden`, so only the
+        # enclosed points need the clip test -- usually a sliver of the cloud.
+        # The export profile (2026-09-23) had the clip box on every point at
+        # 71 s of one capture's 388.
+        idx = np.flatnonzero(enclosed)
+        if idx.size:
+            hidden = self.clip.inside(xyz[idx])
+            if not self.clip_hides_inside:
+                hidden = ~hidden
+            enclosed[idx[hidden]] = False
+        return enclosed
 
     def _enclosed(self, xyz):
         """True where a point falls within the drawn outline."""
@@ -571,6 +583,65 @@ def _inside_polygon(x, y, poly):
                 inside ^= straddles & (x < cut)
         j = i
     return inside
+
+
+#: The block an outline rules points out by, in metres. Coarse enough that a
+#: chunk of millions of points is a few thousand blocks; fine enough that an
+#: outline round a chair does not drag in the whole room behind it.
+CUT_CELL_M = 0.5
+#: Blocks are grown by this, and the outline's rectangle by `CUT_CELL_NDC`,
+#: so rounding at a block face can only ever keep a block in, never rule one out.
+CUT_CELL_PAD_M = 1e-6
+CUT_CELL_NDC = 1e-6
+
+
+class _Cells(object):
+    """
+    One chunk's points grouped into blocks, for ruling blocks out of a cut.
+
+    ⭐ WHY RULING OUT IS EXACT. A perspective camera maps a box lying wholly in
+    front of it onto the convex hull of its eight projected corners. So if
+    every corner is in front (`w > 0`) and every corner lands left of the
+    outline's screen rectangle -- or right, above, below -- then so does every
+    point in the block, and none can be enclosed. Anything short of that
+    (a corner behind the eye, corners on both sides) keeps the block, and its
+    points go through `Lasso.inside` exactly as they always did.
+    """
+
+    _OFF = np.array([[i, j, k] for i in (0, 1) for j in (0, 1)
+                     for k in (0, 1)], dtype=np.float64)
+
+    def __init__(self, base):
+        base = np.asarray(base, dtype=np.float64)
+        keys = pack_voxel_keys(base, CUT_CELL_M)
+        _u, first, self.inv = np.unique(keys, return_index=True,
+                                        return_inverse=True)
+        self.inv = self.inv.reshape(-1)
+        lo = np.floor(base[first] / CUT_CELL_M) * CUT_CELL_M - CUT_CELL_PAD_M
+        span = CUT_CELL_M + 2.0 * CUT_CELL_PAD_M
+        self.corners = (lo[:, None, :] + self._OFF[None, :, :] * span
+                        ).reshape(-1, 3)
+
+    def near(self, lasso, frame=None):
+        """Per block: True where the outline could enclose one of its points."""
+        c = self.corners if frame is None else _at_frame(frame, self.corners)
+        m = lasso.matrix
+        x = (c[:, 0] * m[0] + c[:, 1] * m[4] + c[:, 2] * m[8] + m[12]
+             ).reshape(-1, 8)
+        y = (c[:, 0] * m[1] + c[:, 1] * m[5] + c[:, 2] * m[9] + m[13]
+             ).reshape(-1, 8)
+        w = (c[:, 0] * m[3] + c[:, 1] * m[7] + c[:, 2] * m[11] + m[15]
+             ).reshape(-1, 8)
+        front = w > 1e-6
+        safe = np.where(front, w, 1.0)
+        sx, sy = x / safe, y / safe
+        lo = lasso.polygon.min(axis=0) - CUT_CELL_NDC
+        hi = lasso.polygon.max(axis=0) + CUT_CELL_NDC
+        off = ((sx < lo[0]).all(axis=1) | (sx > hi[0]).all(axis=1)
+               | (sy < lo[1]).all(axis=1) | (sy > hi[1]).all(axis=1))
+        # wholly behind the eye: `_enclosed` refuses every such point anyway
+        behind = (w < 0.0).all(axis=1)
+        return ~((front.all(axis=1) & off) | behind)
 
 
 class Edit(object):
@@ -770,17 +841,58 @@ class Edit(object):
         return _at_frame(frame, local)
 
     def mask(self, xyz, local=None):
-        """True where a point survives the edit."""
+        """
+        True where a point survives the edit.
+
+        ⭐⭐ EACH CUT TESTS ONLY THE POINTS IT COULD CHANGE (2026-09-23: "exporting
+        the point cloud from the program has taken a long time"). Profiled on
+        the restaurant job, 84 cuts made this 353 s of a 388 s capture: every
+        cut put all 22M points through its frame, its camera and its outline.
+        Two things narrow that, and neither changes a single answer:
+          - a delete can only take a point that is still there, a bring-back
+            can only return one that is gone, and a keep can only add one not
+            yet kept -- so each is handed that subset and nothing else;
+          - an outline's points are grouped into `CUT_CELL_M` blocks, and a
+            block whose eight corners all land off the same side of the
+            outline's screen rectangle cannot hold an enclosed point, so its
+            points are never projected (see `_Cells`).
+        The survivors are tested by the very same `inside` as before.
+        """
         xyz = np.asarray(xyz)
         if self.is_empty():
             return np.ones(len(xyz), dtype=bool)
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        cells = {}
+
+        def near(op, sel):
+            """The selected points `op` could possibly claim, as indices."""
+            # ⛔ NOT FOR A KEEP OUTLINE: with a clip box it also claims every
+            # hidden point, enclosed or not, so no block may be ruled out.
+            if (isinstance(op, Lasso) and not op.keep
+                    and len(op.polygon) >= 3):
+                framed = (getattr(op, "frame", None) is not None
+                          and local is not None)
+                key = "local" if framed else "xyz"
+                if key not in cells:
+                    cells[key] = _Cells(local if framed else xyz)
+                grid = cells[key]
+                sel = sel & grid.near(op, op.frame if framed else None)[
+                    grid.inv]
+            return np.flatnonzero(sel)
+
+        def claims(op, idx):
+            part = None if local is None else local[idx]
+            seen = self._seen(op, xyz[idx], part)
+            return (op.inside(seen) if isinstance(op, Lasso)
+                    else self._inside(seen, op))
+
         keepers = self.keep_lassos
         if self.keep or keepers:
             live = np.zeros(len(xyz), dtype=bool)
-            for box in self.keep:
-                live |= self._inside(self._seen(box, xyz, local), box)
-            for shape in keepers:
-                live |= shape.inside(self._seen(shape, xyz, local))
+            for op in list(self.keep) + list(keepers):
+                idx = near(op, ~live)
+                live[idx[claims(op, idx)]] = True
         else:
             live = np.ones(len(xyz), dtype=bool)
         # ⭐ THEN EVERY DROP AND EVERY BRING-BACK IN THE ORDER THEY WERE MADE
@@ -794,13 +906,8 @@ class Edit(object):
                  + [(shape, "back") for shape in self.restore_lassos])
         later.sort(key=lambda pair: (getattr(pair[0], "order", None) or 0))
         for op, what in later:
-            seen = self._seen(op, xyz, local)
-            hit = (op.inside(seen) if isinstance(op, Lasso)
-                   else self._inside(seen, op))
-            if what == "drop":
-                live &= ~hit
-            else:
-                live |= hit
+            idx = near(op, live if what == "drop" else ~live)
+            live[idx[claims(op, idx)]] = (what != "drop")
         return live
 
     def as_dict(self):

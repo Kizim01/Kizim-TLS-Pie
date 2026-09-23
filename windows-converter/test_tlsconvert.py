@@ -18433,5 +18433,113 @@ check("a bring-back looks at the dead points: no skip in the fast path, and "
       in _js_func("maskOf"))
 
 
+# ⛔⛔ A ".laz" IS COMPRESSED (2026-09-23). laspy read compression off the
+# extension of `x.laz.part`, so for four weeks every ".laz" was plain LAS:
+# 26 bytes a point, an 11.8 GB export on the restaurant job.
+for _ext, _want in ((".laz", True), (".las", False)):
+    _lp = os.path.join(tmp, "compressed" + _ext)
+    _lx = np.random.default_rng(1).uniform(-5, 5, size=(5000, 3))
+    _lw = export.writer_for(_lp)
+    _lw.write(_lx, np.full((5000, 3), 90, np.uint8),
+              intensity=np.full(5000, 7, np.uint8))
+    _lw.close()
+    import laspy as _laspy
+    with _laspy.open(_lp) as _lr:
+        check("a %s export is %scompressed" % (_ext, "" if _want else "NOT "),
+              bool(_lr.header.are_points_compressed) == _want
+              and _lr.header.point_count == 5000)
+
+# ⭐⭐ THE CUT WALK TESTS ONLY WHAT A CUT COULD CHANGE, AND ANSWERS EXACTLY AS
+# THE FULL WALK DID (2026-09-23: 84 cuts were 353 s of a 388 s capture; now
+# 30 s, with 0 of 23.7M points different on the real job). The reference below
+# is the walk as it stood: every op, every point, in order.
+_cr = np.random.default_rng(923)
+_CPTS = _cr.uniform(-6, 6, size=(60000, 3))
+_cth = 0.4
+_CFR = [np.cos(_cth), -np.sin(_cth), 0, 1.5, np.sin(_cth), np.cos(_cth), 0,
+        -0.7, 0, 0, 1, 0.3]                             # a placement, 3x4
+
+
+def _cmat(sx, sy, tx, ty, wz):
+    # column-major: screen x = sx*x + tx, y = sy*y + ty, w = 1 + wz*z --
+    # with |wz|*6 > 1 some points sit behind the eye, as they do in a room
+    return [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, 0, wz, tx, ty, 0, 1]
+
+
+def _cpoly(cx, cy, r, n):
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    rr = r * (0.6 + 0.4 * np.abs(np.sin(3 * a)))          # concave
+    return np.stack([cx + rr * np.cos(a), cy + rr * np.sin(a)], 1).tolist()
+
+
+_cops = []
+for _k in range(14):
+    _mode = ("restore" if _k in (5, 11) else "keep" if _k == 3 else "cut")
+    _op = {"matrix": _cmat(0.2, 0.25, _cr.uniform(-.3, .3),
+                           _cr.uniform(-.3, .3), _cr.choice([0.1, -0.25])),
+           "polygon": _cpoly(_cr.uniform(-.5, .5), _cr.uniform(-.5, .5),
+                             _cr.uniform(.1, .5), 40),
+           "keep": _mode == "keep", "restore": _mode == "restore",
+           "order": _k}
+    if _k % 2:
+        _op["frames"] = {"0": _CFR}
+    if _k % 3 == 0:
+        _op["clip"] = {"lo": [-2, -2, -2], "hi": [3, 2.5, 1.5],
+                       "yaw_deg": 20.0, "hide_inside": _k % 2 == 0}
+    _cops.append(_op)
+_cplan = {"keep": [], "drop": [{"lo": [0, 0, -9], "hi": [2, 2, 9],
+                                "order": 7}], "lassos": _cops}
+_ce = pipeline.Edit.from_dict(_cplan).for_scan(0)
+_CLOC = _CPTS @ np.array(_CFR).reshape(3, 4)[:, :3].T * 0.9  # "own frame"
+
+
+def _cref(e, xyz, local):
+    live = np.zeros(len(xyz), dtype=bool)
+    for s in e.keep_lassos:
+        live |= s.inside(e._seen(s, xyz, local))
+    later = ([(b, "drop") for b in e.drop]
+             + [(s, "drop") for s in e.cut_lassos]
+             + [(s, "back") for s in e.restore_lassos])
+    later.sort(key=lambda p: getattr(p[0], "order", None) or 0)
+    for op, what in later:
+        seen = e._seen(op, xyz, local)
+        hit = (op.inside(seen) if isinstance(op, pipeline.Lasso)
+               else pipeline.Box.parse(op).inside(seen))
+        if what == "drop":
+            live &= ~hit
+        else:
+            live |= hit
+    return live
+
+
+_cgot = _ce.mask(_CPTS, local=_CLOC)
+_cwant = _cref(_ce, _CPTS, _CLOC)
+check("THE NARROWED CUT WALK ANSWERS EXACTLY AS THE FULL ONE (keep, cut, "
+      "bring-back, drop box, frames, clip, points behind the eye)",
+      np.array_equal(_cgot, _cwant) and 0 < _cgot.sum() < len(_cgot),
+      (int((_cgot != _cwant).sum()), int(_cgot.sum())))
+check("...and without the scan's own frame too",
+      np.array_equal(_ce.mask(_CPTS), _cref(_ce, _CPTS, None)))
+_cclip = [o for o in _ce.cut_lassos if o.clip is not None][0]
+_cfull = _cclip._enclosed(_CPTS)
+_chid = _cclip.clip.inside(_CPTS)
+if not _cclip.clip_hides_inside:
+    _chid = ~_chid
+check("a cut outline through a clip box claims enclosed-and-not-hidden, the "
+      "clip tested on the enclosed points only",
+      np.array_equal(_cclip.inside(_CPTS), _cfull & ~_chid))
+_cg = pipeline._Cells(_CPTS)
+_csmall = pipeline.Lasso(_cmat(0.2, 0.25, 0, 0, 0.0), _cpoly(.8, .8, .05, 12))
+_cnear = _cg.near(_csmall)
+check("a small outline rules most blocks out before any point is projected",
+      _cnear.mean() < 0.2 and np.array_equal(
+          _csmall._enclosed(_CPTS) & ~_cnear[_cg.inv],
+          np.zeros(len(_CPTS), dtype=bool)), float(_cnear.mean()))
+check("a block wholly behind the eye is ruled out",
+      not _cg.near(pipeline.Lasso(_cmat(0.2, 0.25, 0, 0, -1.0),
+                                  _cpoly(0, 0, .9, 12)))[
+          _cg.inv[np.argmax(_CPTS[:, 2])]])
+
+
 print("\n%d passed, %d failed" % (PASS[0], FAIL[0]))
 sys.exit(1 if FAIL[0] else 0)

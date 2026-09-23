@@ -156,7 +156,17 @@ class LasWriter:
         self._header = header
         # Beside the destination, moved onto it at close: see `PART_EXT`.
         self._part = path + PART_EXT
-        self._writer = laspy.open(self._part, mode="w", header=header)
+        # ⛔⛔ COMPRESSION IS NAMED, NOT INFERRED. laspy decides it from the
+        # extension of the file it opens, and that file is `x.laz.part` -- so
+        # from 2026-08-28 (`PART_EXT`) to 2026-09-23 every ".laz" was plain LAS
+        # under the wrong name: 26 bytes a point, the restaurant's 453M-point
+        # export 11.8 GB. ⭐ And on every core: lazrs's parallel backend
+        # compresses the chunks side by side, 8-9M points/s on this laptop
+        # against 3.5M on one core, for the same bytes.
+        laz = self.ext == ".laz"
+        self._writer = laspy.open(
+            self._part, mode="w", header=header, do_compress=laz,
+            laz_backend=(laspy.LazBackend.LazrsParallel if laz else None))
 
     def write(self, xyz, rgb, intensity=None):
         n = xyz.shape[0]

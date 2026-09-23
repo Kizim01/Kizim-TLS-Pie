@@ -5,9 +5,12 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
-> **▶ WHERE THE WORK IS NOW (2026-09-22, night):** search this file
+> **▶ WHERE THE WORK IS NOW (2026-09-23, morning):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the FOURTEENTH PART first. Latest: **THE BRING-BACK LASSO** ("a tool in
+> the FIFTEENTH PART first. Latest: **THE EXPORT, 6× FASTER AND ".laz"
+> COMPRESSED AGAIN** (84 cuts were 353 s of a 388 s capture, now 30 s with
+> identical answers; every ".laz" since 08-28 was plain LAS; exes rebuilt
+> 08:34-08:35). Before that **THE BRING-BACK LASSO** ("a tool in
 > the delete point tab that when I draw a polygon all deleted points in
 > that polygon appear again": a third outline mode, `restore`, on the
 > page, in the replay and the worker, and in the exporter; ORDERED, so a
@@ -6593,6 +6596,55 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ FIFTEENTH PART (2026-09-23, morning): the export, 6× faster and
+compressed again.** The operator: *"exporting the point cloud from the
+program has taken a long time"*. Measured, not guessed: one restaurant
+capture (index 5, 23.7M returns, 84 cuts, Smooth surfaces 0.05) through the
+real `pipeline.convert` under cProfile took **388 s, 353 s of it
+`Edit.mask`** — every cut put all 22M points through its frame, its camera
+and its outline (`_inside_polygon` 118 s, `_enclosed` 116 s, the clip box
+71 s, `_at_frame` 37 s). Decode was 3 s; the writer is not the cost.
+
+- **Shipped in `Edit.mask`, answers unchanged:** each op is handed only
+  what it could change (a drop the live points, a bring-back the dead, a
+  keep the not-yet-kept); an outline rules out whole `CUT_CELL_M` (0.5 m)
+  blocks first (`_Cells`: a block whose 8 corners are all in front of the
+  eye and all off one side of the outline's screen rectangle cannot hold an
+  enclosed point — a perspective map of a box in front of the eye is the
+  hull of its corners; wholly behind the eye is ruled out too); and a cut's
+  clip box is tested on the enclosed points only (`Lasso.inside`). On the
+  real capture, old against new chunk by chunk: **353 s → 30 s, 0 of
+  23,721,248 points different**, with and without a synthetic bring-back
+  and keep outline. Whole capture 388 → 65 s; what is left is smoothing
+  (~20 s), the remaining outline tests (~16 s) and colour.
+- **⛔⛔ AND EVERY ".laz" SINCE 2026-08-28 WAS UNCOMPRESSED.** laspy infers
+  compression from the extension of the file it opens, which since
+  `PART_EXT` is `x.laz.part`. Headers checked: pre-08-28 exports 4.5
+  B/pt compressed; after, 26 B/pt, `lidar exort 22.08.26.laz` 453M points
+  in 11.8 GB. `LasWriter` now names `do_compress` and uses
+  `LazBackend.LazrsParallel` (bench on the 7.4M-point export: 8.3M pt/s,
+  3.7× smaller, points identical; single-core lazrs 3.5M pt/s). Files
+  already written open fine everywhere — they are just big.
+- **Checks.** `.laz` compressed / `.las` not; the narrowed walk equals the
+  full reference walk (keep, cuts, bring-backs, a drop box, frames, clip
+  both ways, points behind the eye) with and without `local`; the clip on
+  enclosed only; a small outline rules out >80% of blocks and none holding
+  an enclosed point; a block behind the eye ruled out. Suite 2235 →
+  **2242 passed, 0 failed** (run with `PYTHONUTF8=1`, or the node
+  harness's output fails to decode). Reversion audit: `.any` for `.all` on
+  one side of the block test + compression back to inferred fired exactly
+  the four named checks, 2238/4; restored.
+- ✅ **Exes rebuilt 08:34-08:35** after the operator closed Studio
+  (selftest 0, edgechromium, RTX 3050 Ti; `tlsconvert.exe --gpu` 0;
+  `check_build_carries.py` finds `CUT_CELL_M` and `LazrsParallel` in all
+  three). The export that was running at 08:27 (`23.09.26 point
+  cloud.laz.part`, 1.9 GB) was the OLD code and did not finish.
+- **Not done, offered:** exporting captures in parallel processes (each
+  capture is independent until the writer; 16 cores); a vertex-bbox
+  prefilter inside `_inside_polygon`; the same block rule-out in the
+  page's JS replay (`maskOf`), which has the same all-points walk.
+
 
 **▶ FOURTEENTH PART (2026-09-22, night): the bring-back lasso.** The
 operator, once the `.tlspie` was open ("ok that worked"): *"i want a tool
