@@ -5,6 +5,28 @@
 > previously said about the MicroView driving the system is now historical — see
 > "Architecture change" below before acting on anything.
 
+> **▶ RESTART HERE (2026-09-23, noon, saved before a context compact).**
+> Today, in order, all committed and pushed to `origin/main`
+> (github.com/Kizim01/Kizim-TLS-Pie), exes rebuilt and verified after each:
+> `39d5c2f` export cut walk 12× faster + `.laz` compressed again;
+> `b5327a4` merge on 4 threads + **Export for SketchUp** (1 cm grid);
+> `e6baddd` the SketchUp export follows the clip box. Suite **2260 passed,
+> 0 failed** — ⚠ run it as `PYTHONUTF8=1 .venv\Scripts\python.exe
+> test_tlsconvert.py` from `windows-converter\`, or a node harness's output
+> fails to decode and the run crashes. Diagnostic scripts (profiler, old/new
+> mask parity, merge benchmark, grid counter, SketchUp MCP client) are in
+> `windows-converter\tools\` with a README. **Open / offered, not started:**
+> (1) the operator's original ask — compare SketchUp wall dimensions with the
+> cloud to check how the points are read; SketchUp is now reachable over MCP
+> (`tools\su.py`, port 9877, `eval_ruby` — read-only unless asked), but the
+> model's walls must come from TAPE/PLANS, not traced from this cloud, or the
+> comparison proves nothing; (2) the far-field halo (the SketchUp export
+> spans 231 × 88 m, 99% of points within 40 m) — a "keep within" on export;
+> (3) the same block rule-out in the page's JS replay (`maskOf`);
+> (4) Scan Essentials density is still 100 in the operator's model — they
+> were told to set 0–20. `windows-converter/cutjs_tmp.js` is an untracked
+> leftover, not ours to delete without asking.
+>
 > **▶ WHERE THE WORK IS NOW (2026-09-23, morning):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
 > the SEVENTEENTH PART first. Latest: **EXPORT FOR SKETCHUP FOLLOWS THE
