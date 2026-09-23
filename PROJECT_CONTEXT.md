@@ -7,7 +7,10 @@
 
 > **▶ WHERE THE WORK IS NOW (2026-09-23, morning):** search this file
 > for `LIVE STATE (2026-09-13, fifty-sixth pass)` and read it top down,
-> the FIFTEENTH PART first. Latest: **THE EXPORT, 6× FASTER AND ".laz"
+> the SIXTEENTH PART first. Latest: **THE MERGE ON FOUR THREADS (1.9×,
+> byte-identical) AND "EXPORT FOR SKETCHUP"** (1 cm grid, 33.6M points on
+> the restaurant job, `… sketchup.laz` beside the chosen file). Before that
+> **THE EXPORT, 6× FASTER AND ".laz"
 > COMPRESSED AGAIN** (84 cuts were 353 s of a 388 s capture, now 30 s with
 > identical answers; every ".laz" since 08-28 was plain LAS; exes rebuilt
 > 08:34-08:35). Before that **THE BRING-BACK LASSO** ("a tool in
@@ -6596,6 +6599,53 @@ grows: **the sorter should read the NAME clocks first** and fall back to offset 
 when the two names disagree.
 
 ### ⚠ LIVE STATE (2026-09-13, fifty-sixth pass) — wall noise MEASURED, then Smooth surfaces and Keep within SHIPPED
+
+**▶ SIXTEENTH PART (2026-09-23, late morning): the merge runs on four
+threads, and Export for SketchUp.** The operator: *"build it multi
+threaded"*, then *"what is the optimal amount of points to load into
+sketchup on my computer? and make an export option in the program just for
+sketchup"*.
+
+- **Threads, not processes** (`pipeline.merge(workers=)`,
+  `MERGE_WORKERS = 4`, `merge_workers` = min(4, captures, cores/2)): each
+  capture converts into a `_Held` buffer on a pool thread; the writer takes
+  them IN CAPTURE ORDER (`OnePerCell` keeps the first point per cell, so
+  finishing order would change the file); at most `workers` captures ahead
+  of the writer; a failure fails the merge by name and cancels the rest;
+  lazy decode tables warmed before the threads start. Measured on 6
+  restaurant captures with every cut, clean, pose and the level: **335 s on
+  one thread, 177 s on four (1.9×), output byte-identical** (sha
+  430d9c96…). Bandwidth-bound laptop (Ryzen 7 6800HS, 8 cores, 32 GB), as
+  the 33rd pass found; more threads were not measured.
+- **The whole job, measured** (`grids.py`: the real merge, 20 captures, 84
+  cuts, cleans, level, colour off, a counting writer): 441,348,990 returns
+  in 1013 s on four threads (it was ~2 h before this morning). One point per
+  cell: 5 mm 91.6M, 7.5 mm 51.8M, **1 cm 33.6M (~150 MB .laz, ~870 MB as the
+  plain LAS RealWorks converts)**, 1.5 cm 17.9M, 2 cm 11.6M, 3 cm 6.3M, 5 cm
+  2.9M.
+- **SketchUp's limit is the import, not the card.** Trimble publishes no
+  point limit; Scan Essentials converts every cloud to a RealWorks `.rwp` on
+  import; forum reports have 1–2 GB working and 4–8 GB `.las` crashing or
+  converting to nothing even on 64 GB machines; requirements 16 GB RAM, 3 GB
+  VRAM recommended (this laptop: 32 GB, RTX 3050 Ti 4 GB). So: **~30–50M
+  points is the comfortable range here; 1 cm is the default.**
+- **Export for SketchUp** (Export tray, `#savesketchup`): writes `<chosen
+  name> sketchup.laz` BESIDE the chosen file (like the outline DXF), at
+  `SKETCHUP_GRID_M = 0.01`, whatever the detail slider says; the operator's
+  path and slider are untouched; the result names its size in MB and says
+  how to import. `save(..., sketchup=True)`; the reply now carries `bytes`.
+- **Checks.** Six on the threaded merge (reverse-finishing stub: same rows
+  and thinning as one worker, parts in order, 2–4 in flight, a failure
+  named with the old export kept and no worker left, `merge_workers`
+  bounds), five on the SketchUp press (name, grid, path untouched, ordinary
+  export untouched, the button wired and disabled during exports). Suite
+  2242 → **2254 passed, 0 failed**. Reversion audit: threads writing
+  straight to the sink fired the two order checks; dropping the suffix fired
+  the name check; 2251/3; restored. ✅ Exes rebuilt (selftest 0,
+  edgechromium, RTX 3050 Ti; `--gpu` 0; `check_build_carries` finds
+  `MERGE_WORKERS`, `CUT_CELL_M`, `savesketchup`). ⚠ The SketchUp button
+  has not been pressed on the real job in the exe, nor the file opened in
+  SketchUp — that is the operator's next step.
 
 **▶ FIFTEENTH PART (2026-09-23, morning): the export, 6× faster and
 compressed again.** The operator: *"exporting the point cloud from the

@@ -77,6 +77,19 @@ from . import library, pipeline, registration, viewer
 # the large one's sake.
 DEFAULT_ALIGN_VOXEL = 0.0
 
+#: ⭐⭐ THE SKETCHUP EXPORT'S GRID (2026-09-23). Scan Essentials converts every
+#: cloud it is given into a RealWorks project on import, and that conversion is
+#: what fails on big files -- forum reports of 4-8 GB .las crashing or coming
+#: out empty even on 64 GB machines, 1-2 GB working; Trimble publishes no limit.
+#: The restaurant job at every return is 453M points (11.8 GB as plain LAS).
+#: One point per SKETCHUP_GRID_M cell across the whole job is surfaces one layer
+#: thick, finer than the VLP-16's own ~3 cm range noise. Measured on that job,
+#: all 20 captures with the 84 cuts: 5 mm 91.6M points (~2.4 GB for RealWorks
+#: to convert), 7.5 mm 51.8M (~1.35 GB), 1 cm 33.6M (~870 MB; ~150 MB .laz),
+#: 2 cm 11.6M. 1 cm is the finest grid well inside the size reported to work.
+SKETCHUP_GRID_M = 0.01
+SKETCHUP_SUFFIX = " sketchup.laz"
+
 
 PROJECT_EXT = ".tlspie"
 PROJECT_VERSION = 1
@@ -276,6 +289,14 @@ def _placement(scan):
     out.update(getattr(scan, "lean", None) and scan.lean.as_dict()
                or registration.Lean().as_dict())
     return out
+
+
+def _size_of(path):
+    """The written file's size, or None -- a report, never a reason to fail."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
 
 
 def _take_placement(scan, data):
@@ -1435,7 +1456,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                            body.get("level"),
                                            body.get("hidden"),
                                            body.get("out"),
-                                           bool(body.get("outline"))))
+                                           bool(body.get("outline")),
+                                           bool(body.get("sketchup"))))
         except Exception as exc:                       # noqa: BLE001
             return self._json({"ok": False, "error": str(exc)}, 500)
         self.send_error(404)
@@ -6620,7 +6642,7 @@ class AlignServer(object):
             return {"ok": False, "error": str(exc)}
 
     def save(self, setups, voxel=None, edit=None, level=None, hidden=None,
-             out=None, outline=False):
+             out=None, outline=False, sketchup=False):
         """
         Write every cloud that is on screen into one file.
 
@@ -6643,6 +6665,14 @@ class AlignServer(object):
         # under its own name, and `self.out_path` is left pointing where it was.
         target = self.out_path
         writer_kw = None
+        if sketchup and not outline:
+            # ⭐⭐ ONE PRESS FOR SKETCHUP (operator, 2026-09-23: "make an
+            # export option in the program just for sketchup"). Beside the
+            # chosen file under its own name, like the outline, and always
+            # a compressed .laz on SKETCHUP_GRID_M -- see that constant for
+            # why the grid and not the format decides whether it opens.
+            target = os.path.splitext(self.out_path)[0] + SKETCHUP_SUFFIX
+            voxel = SKETCHUP_GRID_M
         if outline:
             target = os.path.splitext(self.out_path)[0] + " outline.dxf"
             # no evidence dots and no metre grid: the operator asked for the
@@ -6740,6 +6770,7 @@ class AlignServer(object):
                 # camera. A drawing gets none; `write_beside` says so.
                 made = self._manifest_beside(target, [only], lvl, written)
                 return {"ok": True, "out": target, "points": written,
+                        "bytes": _size_of(target),
                         "levels": draw.get("levels"),
                         "outline_vertices": draw.get("outline_vertices"),
                         "levels_skipped": draw.get("levels_skipped"),
@@ -6781,6 +6812,7 @@ class AlignServer(object):
         # camera never claims a cloud that is not there.
         made = self._manifest_beside(info["out"], scans, lvl, info["points"])
         return {"ok": True, "out": info["out"], "points": info["points"],
+                "bytes": _size_of(info["out"]),
                 "levels": draw.get("levels"),
                 "outline_vertices": draw.get("outline_vertices"),
                 "levels_skipped": draw.get("levels_skipped"),
@@ -7647,6 +7679,10 @@ PAGE = r"""<!doctype html>
   <input type="range" id="ex" min="0" max="5" step="1" value="2">
   <div class="row"><button id="save" class="go">Export merged cloud</button>
     <button id="saveclip">Clip box only</button></div>
+  <div class="row"><button id="savesketchup" class="go" title="A compressed
+      .laz beside your file, named “… sketchup.laz”: every cloud on screen,
+      levelled, one point per 1 cm across the whole job — the size Scan
+      Essentials imports reliably.">Export for SketchUp</button></div>
   <div class="row"><button id="saveoutline">Outline from clip box (DXF)</button></div>
   <div class="row"><button id="savewhere">Save as…</button></div>
   <div id="outpath" style="font-size:10.5px;color:var(--faint);margin:4px 0 2px"></div>
@@ -15886,7 +15922,11 @@ function showOut(){
     ? 'writes to <b>'+safe(OUTPATH)+'</b>'
     : 'No file chosen — <b>Export will ask you where to put it.</b>';
 }
-async function saveMerged(clipOnly){
+/* ⭐⭐ ONE PRESS FOR SKETCHUP (operator, 2026-09-23). The server decides the
+   grid and the name (`SKETCHUP_GRID_M`, `SKETCHUP_SUFFIX`), so the detail
+   slider is left where the operator set it for ordinary exports. */
+const SKETCHUP_T = 'SketchUp (one point per 1 cm)';
+async function saveMerged(clipOnly, forSketchup){
   if(!V.scans.length) return say('Nothing to save yet.', 'warn');
   const on=V.scans.filter(s=>shown(s.index));
   if(!on.length) return say('Every cloud is hidden, so there is nothing to '+
@@ -15894,11 +15934,13 @@ async function saveMerged(clipOnly){
   if(!OUTPATH && !await chooseOut()) return;
   const plan=editPlan();
   if(clipOnly) plan.keep.push(boxSpec());
-  const step=DETAIL[V.exdet];
+  const step=forSketchup ? {v:null, t:SKETCHUP_T} : DETAIL[V.exdet];
   const hid=V.scans.filter(s=>!shown(s.index)).map(s=>s.index);
-  say('writing '+on.length+' cloud'+(on.length===1?'':'s')+' to '+OUTPATH+
+  say('writing '+on.length+' cloud'+(on.length===1?'':'s')+' to '+
+      (forSketchup ? 'a SketchUp copy beside '+OUTPATH : OUTPATH)+
       ' at '+step.t+' …'); watch(true);
   $('save').disabled=true; $('saveclip').disabled=true;
+  $('savesketchup').disabled=true;
   try{
     const r=await fetch('save',{method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -15908,12 +15950,16 @@ async function saveMerged(clipOnly){
                               edits to match -- a cut is scoped by POSITION in
                               the list it is handed, so dropping a cloud
                               re-aims every cut after it. */
-                           hidden:hid, out:OUTPATH})});
+                           hidden:hid, out:OUTPATH,
+                           sketchup:!!forSketchup})});
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
     watch(false);
     say('saved '+j.points.toLocaleString()+' points from '+j.written+
         ' cloud'+(j.written===1?'':'s')+' to '+j.out+' at '+step.t+
+        (j.bytes ? ' ('+(j.bytes/1048576).toFixed(0)+' MB)' : '')+
+        (forSketchup ? '. In SketchUp: Scan Essentials → Import, pick this '+
+          'file; it converts it once and remembers it' : '')+
         /* ⭐ WHAT THE ONE GRID SAVED, because "186 million points" and "12
            million points" are the difference between a file that opens and one
            that does not, and the operator should see which they just made. */
@@ -15943,6 +15989,7 @@ async function saveMerged(clipOnly){
         (j.hidden&&j.hidden.length) ? 'warn' : null);
   }catch(e){ watch(false); say('Save failed: '+e.message, 'bad'); }
   $('save').disabled=false; $('saveclip').disabled=false;
+  $('savesketchup').disabled=false;
 }
 
 /* ⭐ THE OUTLINE, BOUNDED BY THE CLIP BOX. The operator asked for exactly
@@ -15968,6 +16015,7 @@ async function saveOutline(){
   const hid=V.scans.filter(s=>!shown(s.index)).map(s=>s.index);
   say('tracing the outline inside the clip box …'); watch(true);
   $('save').disabled=true; $('saveclip').disabled=true;
+  $('savesketchup').disabled=true;
   $('saveoutline').disabled=true;
   try{
     const r=await fetch('save',{method:'POST',
@@ -15994,6 +16042,7 @@ async function saveOutline(){
         (j.hidden&&j.hidden.length) ? 'warn' : null);
   }catch(e){ watch(false); say('Outline failed: '+e.message, 'bad'); }
   $('save').disabled=false; $('saveclip').disabled=false;
+  $('savesketchup').disabled=false;
   $('saveoutline').disabled=false;
 }
 
@@ -16812,6 +16861,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   $('survey').onclick=surveyAlign;
   $('save').onclick=()=>saveMerged(false);
   $('saveoutline').onclick=()=>saveOutline();
+  $('savesketchup').onclick=()=>saveMerged(false, true);
   $('savewhere').onclick=chooseOut;
   $('saveclip').onclick=()=>saveMerged(true);
   $('lasso').onclick=()=>setTool(V.tool==='lasso'?'':'lasso');

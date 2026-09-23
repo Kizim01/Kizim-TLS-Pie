@@ -3176,6 +3176,96 @@ check("the real convert is restored afterwards",
       pipeline.convert is _real_convert)
 
 
+# --- ⭐⭐ the merge converts captures side by side, and writes them in order --
+#
+# 2026-09-23, "build it multi threaded". Tested through merge with convert
+# stubbed to finish in REVERSE order (the last capture first), because the
+# failure to fear is a file whose order -- and so whose thinning, since
+# `OnePerCell` keeps the first point in a cell -- depends on which thread won.
+print("\nthe merge converts captures side by side, and writes them in order")
+import threading as _thr
+
+_mt_live = [0]
+_mt_peak = [0]
+_mt_lock = _thr.Lock()
+_mt_fail = [None]
+
+
+def _mt_convert(path, out_path, writer=None, **kw):
+    i = int(os.path.basename(path).split(".")[0])
+    with _mt_lock:
+        _mt_live[0] += 1
+        _mt_peak[0] = max(_mt_peak[0], _mt_live[0])
+    try:
+        time.sleep(0.05 * (6 - i))                   # the last finishes first
+        if _mt_fail[0] == i:
+            raise RuntimeError("capture %d failed" % i)
+        # every capture puts one point in the SAME cell, then one of its own
+        xyz = np.array([[0.001 * i, 0.0, 0.0], [10.0 + i, 0.0, 0.0]])
+        writer.write(xyz, np.full((2, 3), i, np.uint8),
+                     intensity=np.full(2, i, np.uint8))
+        return {"points": 2, "i": i}
+    finally:
+        with _mt_lock:
+            _mt_live[0] -= 1
+
+
+class _MtWriter(object):
+    def __init__(self):
+        self.count = 0
+        self.rows = []
+
+    def write(self, xyz, rgb, intensity=None):
+        self.rows += [int(v) for v in rgb[:, 0]]
+        self.count += len(xyz)
+
+    def close(self, keep=True):
+        self.kept = keep
+
+
+_mt_caps = ["%d.pcap" % i for i in range(6)]
+try:
+    pipeline.convert = _mt_convert
+    _mt_w = []
+    export.writer_for = lambda *a, **k: _mt_w.append(_MtWriter()) or _mt_w[-1]
+    _mt_one = pipeline.merge(_mt_caps, "o.las", setups=[{}] * 6, workers=1,
+                             thin_m=0.05)
+    _mt_four = pipeline.merge(_mt_caps, "o.las", setups=[{}] * 6, workers=4,
+                              thin_m=0.05)
+    check("four workers write exactly what one does, capture by capture, "
+          "even when the last capture finishes first",
+          _mt_w[0].rows == _mt_w[1].rows
+          and _mt_w[1].rows[:3] == [0, 0, 1], (_mt_w[0].rows, _mt_w[1].rows))
+    check("...and thin the shared cell the same way (the first capture's "
+          "point is the one kept)",
+          _mt_one["thinned"] == _mt_four["thinned"] == 5
+          and _mt_w[1].rows.count(0) == 2)
+    check("...and report every capture's part, in order",
+          [p["i"] for p in _mt_four["parts"]] == list(range(6)))
+    check("captures really ran side by side, and never more than asked",
+          2 <= _mt_peak[0] <= 4, _mt_peak[0])
+    _mt_peak[0] = 0
+    _mt_fail[0] = 2
+    _mt_err = None
+    try:
+        pipeline.merge(_mt_caps, "o.las", setups=[{}] * 6, workers=3)
+    except RuntimeError as exc:
+        _mt_err = str(exc)
+    check("a capture that fails in a worker fails the merge, by name, and "
+          "the previous export is kept",
+          _mt_err == "capture 2 failed" and _mt_w[-1].kept is False,
+          _mt_err)
+    check("...and no worker is left running afterwards", _mt_live[0] == 0)
+finally:
+    pipeline.convert, export.writer_for = _real_convert, _real_writer
+check("merge_workers: never more than the captures, nor half the cores, "
+      "nor the cap; at least one",
+      pipeline.merge_workers(2, cores=16) == 2
+      and pipeline.merge_workers(20, cores=16) == pipeline.MERGE_WORKERS
+      and pipeline.merge_workers(20, cores=4) == 2
+      and pipeline.merge_workers(20, cores=1) == 1)
+
+
 # --- the return strength reaching the page ----------------------------------
 #
 # ⛔⛔ THE HOOKUP THAT WOULD HAVE FAILED IN SILENCE. `viewer.py` can carry the
@@ -6857,6 +6947,56 @@ finally:
     pipeline.convert, export.writer_for = _real_convert2, _real_writer2
 check("the real convert is restored afterwards (export pose)",
       pipeline.convert is _real_convert2)
+
+
+# --- ⭐⭐ Export for SketchUp: one press, its own file, the SketchUp grid ----
+#
+# 2026-09-23, "make an export option in the program just for sketchup".
+# Through the real `save`, with convert and the writer stubbed: what is under
+# test is where it writes, at what grid, and that the operator's own output
+# path and detail are left alone.
+print("\nExport for SketchUp")
+_sk_paths, _sk_vox = [], []
+
+
+def _sk_convert(path, out_path, **kw):
+    _sk_vox.append(kw.get("voxel_m"))
+    return {"points": 0, "out": out_path}
+
+
+def _sk_writer(path, *a, **k):
+    _sk_paths.append(path)
+    return _NullWriter()
+
+
+try:
+    pipeline.convert = _sk_convert
+    export.writer_for = _sk_writer
+    _sk_out = os.path.join(_sdir, "job.laz")
+    _sk = align.AlignServer([_posed_scan("a", 1.0), _posed_scan("b", 2.0)],
+                            out_path=_sk_out)
+    _skr = _sk.save([{}, {}], voxel=0.0, sketchup=True)
+    check("it writes '<name> sketchup.laz' beside the chosen file",
+          _skr.get("ok") and _sk_paths == [os.path.join(_sdir,
+                                                         "job sketchup.laz")]
+          and _skr.get("out") == _sk_paths[0], (_skr, _sk_paths))
+    check("...at the SketchUp grid, whatever the detail slider said",
+          _sk_vox == [align.SKETCHUP_GRID_M] * 2, _sk_vox)
+    check("...and the operator's own output path is left where it was",
+          _sk.out_path == _sk_out)
+    _sk_paths[:], _sk_vox[:] = [], []
+    _sk.save([{}, {}], voxel=0.0)
+    check("an ordinary export is untouched: the chosen file, the chosen detail",
+          _sk_paths == [_sk_out] and _sk_vox == [0.0] * 2,
+          (_sk_paths, _sk_vox))
+finally:
+    pipeline.convert, export.writer_for = _real_convert2, _real_writer2
+check("the tray has the button, wired to a SketchUp press, disabled while "
+      "any export runs",
+      'id="savesketchup"' in _PAGE
+      and "$('savesketchup').onclick=()=>saveMerged(false, true);" in _PAGE
+      and _PAGE.count("$('savesketchup').disabled=true;") == 2
+      and "sketchup:!!forSketchup" in _PAGE)
 
 
 # --- which scan a press with no chosen target fits onto ---------------------

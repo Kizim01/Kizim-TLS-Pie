@@ -1511,9 +1511,52 @@ def _pose_kwargs(colours, i):
             "camera": tuple(pose.get("camera") or (0.0, 0.0, 0.0))}
 
 
+#: How many captures a merge converts at once (2026-09-23: "build it multi
+#: threaded"). Threads, not processes: the work is numpy on arrays of millions,
+#: which lets go of the interpreter lock, and a thread hands its cloud to the
+#: writer without copying gigabytes between processes -- nor does it need
+#: anything special to run inside the frozen exe. Bounded by memory as much as
+#: by cores: each capture in flight holds its whole converted cloud (~0.6 GB at
+#: 22M points) plus the working set of its smoothing and its cuts.
+MERGE_WORKERS = 4
+
+
+def merge_workers(n_captures, cores=None):
+    """Captures to convert at once: never more than there are, nor than half
+    the logical cores (the other half is the numpy inside each one)."""
+    cores = cores or os.cpu_count() or 1
+    return max(1, min(MERGE_WORKERS, n_captures, cores // 2))
+
+
+class _Held(object):
+    """
+    One capture's finished points, held until it is that capture's turn.
+
+    ⛔ THE FILE IS WRITTEN IN CAPTURE ORDER, WHATEVER ORDER THE WORK FINISHES
+    IN. `OnePerCell` keeps the FIRST point to reach each cell, so the order the
+    captures reach the writer decides which points survive thinning; written
+    in finishing order, the same export would differ from run to run.
+    """
+
+    def __init__(self):
+        self.chunks = []
+        self.count = 0
+
+    def write(self, xyz, rgb, intensity=None):
+        if xyz.shape[0] == 0:
+            return
+        self.chunks.append((xyz, rgb, intensity))
+        self.count += xyz.shape[0]
+
+    def replay(self, sink):
+        while self.chunks:
+            xyz, rgb, intensity = self.chunks.pop(0)
+            sink.write(xyz, rgb, intensity=intensity)
+
+
 def merge(captures, out_path, setups=None, progress=None, edit=None, writer_kw=None,
           level=None, colours=None, cleans=None, leans=None, thin_m=None,
-          **kwargs):
+          workers=None, **kwargs):
     """
     Several captures into ONE cloud, each transformed into the first's frame.
 
@@ -1584,33 +1627,71 @@ def merge(captures, out_path, setups=None, progress=None, edit=None, writer_kw=N
     # See `export.PART_EXT`: a merge that dies on capture 9 of 15 must not
     # take the operator's previous export with it.
     finished = False
+    n = len(captures)
+    workers = merge_workers(n) if workers is None else max(1, int(workers))
+
+    def one(i, into):
+        path, setup = captures[i], setups[i]
+        # ⭐ EACH CAPTURE GETS ONLY THE CUTS THAT NAME IT, plus the ones
+        # that name nobody. Handing the whole edit to every capture is
+        # what made a cut a cut across the job; see `Edit.for_scan`.
+        mine = None if edit is None else edit.for_scan(i)
+        # ⛔⛔ AND THE COLOUR POSE THAT WAS DECIDED FOR IT, WHICH USED TO
+        # BE THROWN AWAY HERE. Without this every capture re-solved its own
+        # heading from scratch during the export, so the accepted solve,
+        # the nudges, the candidate picked off the shortlist, the camera
+        # height and the heading typed in by hand all reached the screen
+        # and none of them reached the file. The hand-set heading was the
+        # worst case: `prepare_colour` refuses below MIN_CONFIDENCE, and
+        # that control exists precisely BECAUSE a correct pair scored 2.01,
+        # so the one case it was built for exported grey.
+        return convert(path, out_path, setup=setup, writer=into,
+                       progress=None, level=level,
+                       lean=(leans[i] if i < len(leans) else None),
+                       edit=None if (mine is None or mine.is_empty())
+                       else mine,
+                       clean_spec=(cleans[i] if cleans
+                                   and i < len(cleans) else None),
+                       **dict(kwargs, **_pose_kwargs(colours, i)))
+
+    pool = None
     try:
-        for i, (path, setup) in enumerate(zip(captures, setups)):
-            if progress:
-                progress("converting %s" % os.path.basename(path))
-            # ⭐ EACH CAPTURE GETS ONLY THE CUTS THAT NAME IT, plus the ones
-            # that name nobody. Handing the whole edit to every capture is
-            # what made a cut a cut across the job; see `Edit.for_scan`.
-            mine = None if edit is None else edit.for_scan(i)
-            # ⛔⛔ AND THE COLOUR POSE THAT WAS DECIDED FOR IT, WHICH USED TO
-            # BE THROWN AWAY HERE. Without this every capture re-solved its own
-            # heading from scratch during the export, so the accepted solve,
-            # the nudges, the candidate picked off the shortlist, the camera
-            # height and the heading typed in by hand all reached the screen
-            # and none of them reached the file. The hand-set heading was the
-            # worst case: `prepare_colour` refuses below MIN_CONFIDENCE, and
-            # that control exists precisely BECAUSE a correct pair scored 2.01,
-            # so the one case it was built for exported grey.
-            parts.append(convert(path, out_path, setup=setup, writer=sink,
-                                 progress=None, level=level,
-                                 lean=(leans[i] if i < len(leans) else None),
-                                 edit=None if (mine is None or mine.is_empty())
-                                 else mine,
-                                 clean_spec=(cleans[i] if cleans
-                                             and i < len(cleans) else None),
-                                 **dict(kwargs, **_pose_kwargs(colours, i))))
+        if workers <= 1:
+            for i in range(n):
+                if progress:
+                    progress("converting %s" % os.path.basename(captures[i]))
+                parts.append(one(i, sink))
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            # lazy module state set up once, here, not raced for by the threads
+            from . import gpu
+            decode._vertical_offsets(np)
+            if gpu.on():
+                decode._vertical_angles(gpu.xp())
+                decode._vertical_offsets(gpu.xp())
+
+            def held(i):
+                got = _Held()
+                return one(i, got), got
+
+            pool = ThreadPoolExecutor(max_workers=workers,
+                                      thread_name_prefix="merge")
+            # ⭐ AT MOST `workers` CAPTURES AHEAD OF THE WRITER, so memory is
+            # bounded by the pool and not by the length of the job.
+            ahead = {}
+            for i in range(n):
+                while len(ahead) < workers and i + len(ahead) < n:
+                    j = i + len(ahead)
+                    ahead[j] = pool.submit(held, j)
+                if progress:
+                    progress("converting %s" % os.path.basename(captures[i]))
+                info, got = ahead.pop(i).result()
+                got.replay(sink)
+                parts.append(info)
         finished = True
     finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
         writer.close(keep=finished)
 
     return {
